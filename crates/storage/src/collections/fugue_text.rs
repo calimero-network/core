@@ -24,41 +24,41 @@
 //! Ordering is *computed*: the stored blocks are expanded into a
 //! [`FugueTree`](super::fugue::FugueTree) and the tree is asked for the order.
 //!
-//! ## The ordered index
+//! ## No node-local derived state, on any path
 //!
-//! On top of that authoritative path sits a **node-local, derived, non-synced
-//! ordered index** over the [`StorageAdaptor`] `index_*` seam — the same seam
-//! [`SortedMap`](super::SortedMap) uses, with the same `full_hash` validity
-//! marker. One index entry describes one **segment**: a maximal run of
-//! consecutive nodes of one stored block that are also consecutive in document
-//! order. The order key is the segment's live start position, so a range scan
-//! over the index yields document order, and the key also carries the segment's
-//! live length — which is what makes [`len`](FugueText::len) cost zero entity
-//! loads and [`char_at`](FugueText::char_at) cost exactly one.
+//! Every operation — read and write alike — derives its answer from the stored
+//! blocks and the tree built from them. Nothing consults a cache, an index or a
+//! validity marker, and that is a correctness requirement, not a simplification.
 //!
-//! Two properties of this index are load-bearing and must not be relaxed.
+//! **A write must not read derived state**, because `parent` and `side` are
+//! *synced* fields: a position resolved through a stale index does not produce a
+//! wrong local view that a rebuild repairs — it mints a wrong causal edge that
+//! ships in the delta and diverges every replica permanently.
 //!
-//! **The index never feeds a write.** `parent` and `side` are *synced* fields.
-//! An id resolved through a stale index does not produce a wrong local view
-//! that a rebuild repairs — it mints a wrong causal edge that ships in the
-//! delta and diverges every replica permanently. So
-//! [`insert`](FugueText::insert), [`delete`](FugueText::delete) and
-//! [`delete_range`](FugueText::delete_range) resolve positions against the
-//! authoritative block set and the tree built from it, exactly as they did
-//! before the index existed. The index is written by those paths, never read
-//! by them. Reads that *do* consult it re-validate every entry against the
-//! authoritative child set (see [`FugueText::indexed_segments`]) and fall back
-//! to the tree on any disagreement.
+//! **A read must not read node-local derived state either**, because the COST
+//! would then depend on it. An ordered index over the [`StorageAdaptor`]
+//! `index_*` seam is only ever warm on a node that has WRITTEN locally; a node
+//! that acquired the document by sync has the same state and a cold index. A
+//! read served from a warm index and a read served from the authoritative path
+//! are the same logical operation at very different gas, so one replica can
+//! complete a read-then-write guest call while another traps on `GasExhausted` —
+//! divergence, not slowness. `crates/runtime/tests/metering_determinism.rs`
+//! exists to catch exactly this class.
 //!
-//! **Maintenance cost never depends on node-local state.** The index is
-//! rebuilt *unconditionally* at the end of every mutating call — never "only if
-//! the marker says it is stale". A marker-conditional rebuild would make the
-//! same logical write cost different gas on a cold and a warm node, so one
-//! replica could complete a write while another traps on `GasExhausted`; that
-//! is divergence, and `crates/runtime/tests/metering_determinism.rs` exists to
-//! catch it. Run-length blocks are what make the unconditional choice
-//! affordable: the rebuild is `O(segments)`, and segments count *runs*, not
-//! characters, on a path that already loads every block and builds the tree.
+//! An earlier revision of this file carried such an index, gated on a
+//! `full_hash` validity marker, to make [`len`](FugueText::len) cost zero entity
+//! loads and [`char_at`](FugueText::char_at) exactly one. It was removed rather
+//! than repaired: the property above admits only two shapes — never read the
+//! index, or rebuild it unconditionally before every read — and the second pays
+//! the whole authoritative cost *plus* the index writes, so it is strictly worse
+//! than not having one. Positional reads therefore cost `O(blocks + nodes)`,
+//! like the whole-document read. Run-length blocks are what keep that
+//! affordable: `blocks` counts *runs*, not characters.
+//!
+//! What survives from that work is [`tombstone_repairs`], which is not an index:
+//! it writes the authoritative delete-wins join back into overlapping stored
+//! copies of one run, so two replicas holding the same node set also hold the
+//! same bytes for it.
 //!
 //! ## Example
 //!
@@ -413,7 +413,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         }
         // Unconditional, once per call: see the module doc on why a
         // marker-conditional rebuild would make write gas node-dependent.
-        self.rebuild_index()
+        self.normalise_blocks()
     }
 
     /// Delete the character at the given visible position.
@@ -447,11 +447,11 @@ impl<S: StorageAdaptor> FugueText<S> {
         // way to get document-order ids out of the pure module. Deleting at
         // `start` repeatedly walks forward, because each tombstone removes that
         // character from the live sequence.
-        // NOTE (Constraint 1): the ordered index is deliberately NOT consulted
-        // here. `parent` and `side` are synced fields, so a position resolved
-        // through a stale index would mint a wrong causal edge that ships in
-        // the delta and diverges every replica permanently. `tree` above is
-        // built from the authoritative block set.
+        // NOTE (Constraint 1): no derived state is consulted here. `parent` and
+        // `side` are synced fields, so a position resolved through anything but
+        // the stored blocks could mint a wrong causal edge that ships in the
+        // delta and diverges every replica permanently. `tree` above is built
+        // from the authoritative block set.
         let count = end.min(tree.len()).saturating_sub(start);
         let mut targets: Vec<(u64, u32)> = Vec::with_capacity(count);
         for _ in 0..count {
@@ -461,7 +461,7 @@ impl<S: StorageAdaptor> FugueText<S> {
             }
         }
         if targets.is_empty() {
-            return self.rebuild_index();
+            return self.normalise_blocks();
         }
 
         // Overlapping copies of one run can both define a node (a split that
@@ -489,23 +489,20 @@ impl<S: StorageAdaptor> FugueText<S> {
 
         for (index, mut block) in touched {
             tomb_trim(&mut block.tombstones);
-            let _ignored = self.blocks.insert(BlockKey::new(loaded[index].id), block)?;
+            self.put_block(BlockKey::new(loaded[index].id), block)?;
         }
 
-        self.rebuild_index()
+        self.normalise_blocks()
     }
 
     /// The document text, tombstones excluded.
     ///
-    /// Served from the ordered index when it is valid (`O(segments)` block
-    /// loads, no tree build), otherwise from the authoritative block set.
+    /// Derived from the authoritative block set — see the module doc on why no
+    /// read consults node-local derived state.
     ///
     /// # Errors
     /// Returns an error if storage fails.
     pub fn get_text(&self) -> Result<String, StoreError> {
-        if let Some(text) = self.indexed_text(0, usize::MAX)? {
-            return Ok(text);
-        }
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.values())
     }
@@ -527,9 +524,6 @@ impl<S: StorageAdaptor> FugueText<S> {
         if start > end {
             return Err(invalid("start must be <= end"));
         }
-        if let Some(text) = self.indexed_text(start, end)? {
-            return Ok(text);
-        }
         let loaded = self.load()?;
         let text = build_tree(&loaded)?.values();
         Ok(slice_chars(&text, start, end).to_owned())
@@ -540,32 +534,24 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// Positions are `char` indices — Unicode scalar values, not bytes and not
     /// grapheme clusters.
     ///
-    /// Served from the ordered index when it is valid, in which case exactly
-    /// one block is loaded whatever the document's size.
+    /// Derived from the authoritative block set — see the module doc on why no
+    /// read consults node-local derived state.
     ///
     /// # Errors
     /// Returns an error if storage fails.
     pub fn char_at(&self, pos: usize) -> Result<Option<char>, StoreError> {
-        if let Some(text) = self.indexed_text(pos, pos.saturating_add(1))? {
-            return Ok(text.chars().next());
-        }
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.values().chars().nth(pos))
     }
 
     /// The number of visible characters.
     ///
-    /// Served from the ordered index when it is valid, in which case no block
-    /// is loaded at all — the live counts live in the order keys.
+    /// Derived from the authoritative block set — see the module doc on why no
+    /// read consults node-local derived state.
     ///
     /// # Errors
     /// Returns an error if storage fails.
     pub fn len(&self) -> Result<usize, StoreError> {
-        if let Some(segments) = self.indexed_segments()? {
-            return Ok(segments
-                .last()
-                .map_or(0, |last| last.live_start + last.live_len));
-        }
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.len())
     }
@@ -626,7 +612,7 @@ impl<S: StorageAdaptor> FugueText<S> {
                         // implicit, so the bitmap is untouched.
                         let mut block = lb.block.clone();
                         block.text.push(node.value.unwrap_or('\u{fffd}'));
-                        let _ignored = self.blocks.insert(BlockKey::new(lb.id), block)?;
+                        self.put_block(BlockKey::new(lb.id), block)?;
                         return Ok(());
                     }
                 }
@@ -640,7 +626,34 @@ impl<S: StorageAdaptor> FugueText<S> {
             side: node.side.into(),
             tombstones: Vec::new(),
         };
-        let _ignored = self.blocks.insert(BlockKey::new(id), block)?;
+        self.put_block(BlockKey::new(id), block)?;
+        Ok(())
+    }
+
+    /// Write one block, stamping its ENTRY element `CrdtType::FugueTextBlock`.
+    ///
+    /// Every write of a `TextBlock` goes through here, and the stamp is the
+    /// whole point: an entry element is created untagged, and an untagged
+    /// entity is reconciled by last-writer-wins in
+    /// `Interface::try_merge_non_root`. `TextBlock` values are MUTABLE — a run
+    /// grows in place when [`materialize`](Self::materialize) coalesces into it
+    /// and shrinks in place when [`write_segments`](Self::write_segments)
+    /// splits it — so two replicas routinely hold different values for one key,
+    /// and LWW drops the nodes only the loser defines. The tag routes that
+    /// collision to [`join_block`] instead. (`ReplicatedGrowableArray` needs no
+    /// such tag: an `RgaChar` is immutable once written, so its keys never
+    /// collide on differing values.)
+    fn put_block(&mut self, key: BlockKey, block: TextBlock) -> Result<(), StoreError> {
+        use crate::entities::Data as _;
+
+        let inherited = self.blocks.element().metadata.storage_type.clone();
+        let _ignored = self.blocks.insert_with_storage_type_and_crdt_type(
+            key,
+            block,
+            inherited,
+            None,
+            Some(CrdtType::FugueTextBlock),
+        )?;
         Ok(())
     }
 
@@ -677,192 +690,27 @@ impl<S: StorageAdaptor> FugueText<S> {
                 side,
                 tombstones: tomb_slice(&lb.block.tombstones, from, to),
             };
-            let _ignored = self.blocks.insert(BlockKey::new(id), block)?;
+            self.put_block(BlockKey::new(id), block)?;
         }
         Ok(())
     }
 
-    /// The id of the collection the index is keyed under.
-    fn collection_id(&self) -> crate::address::Id {
-        use crate::entities::Data as _;
-        self.blocks.element().id()
-    }
-
-    /// The collection's current `full_hash` — the ordered index's validity
-    /// signal — or `None` if it cannot be read.
+    /// Normalise the stored blocks against the authoritative join.
     ///
-    /// Fails **closed**: a read error yields `None`, which can only ever mean
-    /// "do not certify" and "do not trust". (`SortedMap::current_full_hash`
-    /// substitutes `[0u8; 32]` on a read error and will happily stamp that as
-    /// valid; that shape must not be copied.)
-    fn current_full_hash(&self) -> Option<[u8; 32]> {
-        match crate::index::Index::<S>::get_hashes_for(self.collection_id()) {
-            Ok(Some((full, _own))) => Some(full),
-            Ok(None) | Err(_) => None,
-        }
-    }
-
-    /// `true` only if the stamped marker provably equals the collection's
-    /// current `full_hash`. Unreadable hash or absent marker ⇒ `false`.
-    fn index_marker_current(&self) -> bool {
-        let Some(full) = self.current_full_hash() else {
-            return false;
-        };
-        S::index_meta_get(self.collection_id()).as_deref() == Some(&full[..])
-    }
-
-    /// Rebuild the ordered index from the authoritative block set.
-    ///
-    /// Called **unconditionally** at the end of every mutating operation — see
-    /// the module doc: a marker-conditional rebuild would make write gas depend
-    /// on node-local state, which is cross-replica divergence, not slowness.
-    /// Cost is `O(segments)` on a path that already loads every block.
-    ///
-    /// Normalises overlap as it goes: where two stored copies of one run
-    /// disagree about a tombstone, the authoritative join (delete-wins, what
-    /// [`build_tree`] computes) is written back into the owning copy, so the
-    /// index's live counts and a later block-local read of the same window can
-    /// never disagree.
-    fn rebuild_index(&mut self) -> Result<(), StoreError> {
-        if !S::index_supported() {
-            return Ok(());
-        }
-
+    /// Called **unconditionally** at the end of every mutating operation. Where
+    /// two overlapping stored copies of one run disagree about a tombstone, the
+    /// authoritative join (delete-wins, what [`build_tree`] computes) is written
+    /// back into the owning copy, so two replicas that hold the same node set
+    /// also hold the same BYTES for it. Cost is `O(nodes)` on a path that has
+    /// already loaded every block and built the tree.
+    fn normalise_blocks(&mut self) -> Result<(), StoreError> {
         let loaded = self.load()?;
         let tree = build_tree(&loaded)?;
-        let (segments, repairs) = segment_document(&loaded, &tree)?;
 
-        for (index, block) in repairs {
-            let _ignored = self.blocks.insert(BlockKey::new(loaded[index].id), block)?;
-        }
-
-        let collection = self.collection_id();
-        let mut persisted = S::index_clear(collection);
-        for segment in &segments {
-            let entry = self.blocks.entry_id(&BlockKey::new(segment.block));
-            persisted &= S::index_put(collection, &segment.order_key(), entry);
-        }
-
-        // Only stamp a marker we can prove: a dropped index write or an
-        // unreadable hash leaves the marker stale, and the next read falls back
-        // to the authoritative path instead of trusting a partial index.
-        if persisted {
-            if let Some(full) = self.current_full_hash() {
-                let _ignored = S::index_meta_put(collection, &full);
-            }
+        for (index, block) in tombstone_repairs(&loaded, &tree)? {
+            self.put_block(BlockKey::new(loaded[index].id), block)?;
         }
         Ok(())
-    }
-
-    /// The index's segments in document order, or `None` when the index cannot
-    /// be trusted for this read — the adaptor does not back it, the validity
-    /// marker is stale, or the entries disagree with the authoritative child
-    /// set.
-    ///
-    /// The validation is the point. Entries must form a dense `seq` sequence
-    /// whose live lengths accumulate to the recorded start positions (which
-    /// catches a dropped or duplicated entry), and the distinct blocks they
-    /// name must number exactly as many as the collection actually holds
-    /// (which catches a wiped or over-full index). Every block owns at least
-    /// its own first node — no tighter block can start later than that — so
-    /// that cardinality is an equality, not a bound.
-    fn indexed_segments(&self) -> Result<Option<Vec<Segment>>, StoreError> {
-        if !S::index_supported() || !self.index_marker_current() {
-            return Ok(None);
-        }
-
-        let hits = S::index_range(
-            self.collection_id(),
-            core::ops::Bound::Unbounded,
-            core::ops::Bound::Unbounded,
-            0,
-            None,
-        );
-
-        let mut segments = Vec::with_capacity(hits.len());
-        let mut blocks: std::collections::BTreeSet<BlockId> = std::collections::BTreeSet::new();
-        let mut live_start = 0_usize;
-        for (seq, (order_key, _entry)) in hits.into_iter().enumerate() {
-            let Some(segment) = Segment::decode(&order_key) else {
-                return Ok(None);
-            };
-            if segment.seq != seq || segment.live_start != live_start {
-                return Ok(None);
-            }
-            live_start += segment.live_len;
-            let _ignored = blocks.insert(segment.block);
-            segments.push(segment);
-        }
-
-        if blocks.len() != self.blocks.len()? {
-            return Ok(None);
-        }
-        Ok(Some(segments))
-    }
-
-    /// The live characters of `start..end` served from the ordered index, or
-    /// `None` when the index cannot be trusted and the caller must fall back.
-    fn indexed_text(&self, start: usize, end: usize) -> Result<Option<String>, StoreError> {
-        let Some(segments) = self.indexed_segments()? else {
-            return Ok(None);
-        };
-
-        let mut out = String::new();
-        let mut cached: Option<(BlockId, TextBlock)> = None;
-        for segment in &segments {
-            if segment.live_start.saturating_add(segment.live_len) <= start {
-                continue;
-            }
-            if segment.live_start >= end {
-                break;
-            }
-
-            if cached.as_ref().is_none_or(|(id, _)| *id != segment.block) {
-                let Some(block) = self.blocks.get(&BlockKey::new(segment.block))? else {
-                    return Ok(None);
-                };
-                cached = Some((segment.block, block.into_inner()));
-            }
-            let Some((_, block)) = cached.as_ref() else {
-                return Ok(None);
-            };
-
-            // Re-validate the index entry against the block it names before a
-            // single character is trusted: the block must be the one the key
-            // claims, must be long enough for the window, and must contain
-            // exactly the live count the key advertises.
-            if block.start_id != segment.block || block.len() < segment.offset + segment.nodes {
-                return Ok(None);
-            }
-            let text: String = block
-                .text
-                .chars()
-                .skip(segment.offset)
-                .take(segment.nodes)
-                .enumerate()
-                .filter(|(offset, _)| !tomb_get(&block.tombstones, segment.offset + offset))
-                .map(|(_, content)| content)
-                .collect();
-            if text.chars().count() != segment.live_len {
-                return Ok(None);
-            }
-
-            let from = start.saturating_sub(segment.live_start);
-            let to = end.saturating_sub(segment.live_start).min(segment.live_len);
-            out.push_str(slice_chars(&text, from, to));
-        }
-        Ok(Some(out))
-    }
-
-    /// The `(nodes, live)` totals the ordered index describes, or `None` when
-    /// the index cannot be trusted. Test-only: the index/authority agreement
-    /// assertion has no production caller.
-    #[cfg(test)]
-    fn index_cardinality(&self) -> Option<(usize, usize)> {
-        let segments = self.indexed_segments().ok().flatten()?;
-        Some(segments.iter().fold((0, 0), |(nodes, live), segment| {
-            (nodes + segment.nodes, live + segment.live_len)
-        }))
     }
 
     /// Every stored block, ascending by id, with its node count.
@@ -900,12 +748,9 @@ impl<S: StorageAdaptor> FugueText<S> {
             if let Some(mine) = self.blocks.get(&key)? {
                 let mine = mine.into_inner();
                 let mut merged = mine.clone();
-                tomb_or(&mut merged.tombstones, &incoming.tombstones);
-                if incoming.len() > merged.len() {
-                    merged.text = incoming.text;
-                }
+                join_block(&mut merged, incoming);
                 if merged != mine {
-                    let _ignored = self.blocks.insert(key, merged)?;
+                    self.put_block(key, merged)?;
                 }
                 continue;
             }
@@ -915,105 +760,81 @@ impl<S: StorageAdaptor> FugueText<S> {
             if crate::index::Index::<S>::is_deleted(self.blocks.entry_id(&key))? {
                 continue;
             }
-            let _ignored = self.blocks.insert(key, incoming)?;
+            self.put_block(key, incoming)?;
         }
-        self.rebuild_index()
+        self.normalise_blocks()
+    }
+
+    /// Join two stored ENTRIES of the block map, given as the raw bytes the
+    /// storage layer holds for them.
+    ///
+    /// This is the leaf-merge entry point the SYNC path reaches, via
+    /// `merge_by_crdt_type(CrdtType::FugueTextBlock, ..)` — see that variant's
+    /// doc for why a leaf tag is needed at all. The join itself is
+    /// [`join_block`], the same one [`merge_blocks_from`](Self::merge_blocks_from)
+    /// applies, so the two paths cannot drift apart.
+    ///
+    /// The byte layout is an `UnorderedMap` entry's:
+    /// `borsh(Entry<(BlockKey, TextBlock)>)`, i.e. the key and value followed by
+    /// the entry's `Element` (whose only serialized field is its id). Both sides
+    /// describe the same entity id, so the existing entry's `Element` is kept.
+    ///
+    /// # Errors
+    /// Returns [`MergeError::SerializationError`] if either side is not a valid
+    /// block-map entry.
+    pub(crate) fn merge_block_entry_bytes(
+        existing: &[u8],
+        incoming: &[u8],
+    ) -> Result<Vec<u8>, super::crdt_meta::MergeError> {
+        use super::crdt_meta::MergeError;
+
+        type BlockEntry = super::Entry<(BlockKey, TextBlock)>;
+
+        let mut existing_entry: BlockEntry = borsh::from_slice(existing)
+            .map_err(|error| MergeError::SerializationError(error.to_string()))?;
+        let incoming_entry: BlockEntry = borsh::from_slice(incoming)
+            .map_err(|error| MergeError::SerializationError(error.to_string()))?;
+
+        join_block(&mut existing_entry.item.1, incoming_entry.item.1);
+
+        borsh::to_vec(&existing_entry)
+            .map_err(|error| MergeError::SerializationError(error.to_string()))
     }
 }
 
-/// The fixed byte width of an ordered-index order key.
-const ORDER_KEY_LEN: usize = 40;
-
-/// One ordered-index entry: a maximal run of consecutive nodes of one stored
-/// block that are also consecutive in document order.
+/// The per-key join for two copies of one run: elementwise tombstone OR, longer
+/// `text` wins.
 ///
-/// A block usually contributes exactly one segment. It contributes more than
-/// one only when a foreign node orders *inside* it — which the split rule
-/// normally prevents, but which overlapping stored copies of one run (a split
-/// that raced a remote unsplit copy) can produce.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Segment {
-    /// Live characters before this segment: the primary sort field, so an
-    /// ascending scan of order keys is document order.
-    live_start: usize,
-    /// Position in document order. Ties `live_start` apart when a fully
-    /// tombstoned segment contributes no characters.
-    seq: usize,
-    /// Live characters in this segment.
-    live_len: usize,
-    /// The owning block.
-    block: BlockId,
-    /// Where this segment starts inside the owning block's run.
-    offset: usize,
-    /// The segment's node count, tombstones included.
-    nodes: usize,
-}
-
-impl Segment {
-    /// The order key: fixed-width big-endian fields, most significant first, so
-    /// the backend's byte order *is* document order.
-    fn order_key(&self) -> [u8; ORDER_KEY_LEN] {
-        let mut key = [0_u8; ORDER_KEY_LEN];
-        key[0..8].copy_from_slice(&(self.live_start as u64).to_be_bytes());
-        key[8..16].copy_from_slice(&(self.seq as u64).to_be_bytes());
-        key[16..20].copy_from_slice(&(self.live_len as u32).to_be_bytes());
-        key[20..24].copy_from_slice(&(self.offset as u32).to_be_bytes());
-        key[24..28].copy_from_slice(&(self.nodes as u32).to_be_bytes());
-        key[28..36].copy_from_slice(&self.block.replica.to_be_bytes());
-        key[36..40].copy_from_slice(&self.block.counter.to_be_bytes());
-        key
-    }
-
-    /// Parse an order key, rejecting anything self-inconsistent.
-    fn decode(key: &[u8]) -> Option<Self> {
-        let key: &[u8; ORDER_KEY_LEN] = key.try_into().ok()?;
-        let field8 = |from: usize| -> usize {
-            usize::try_from(u64::from_be_bytes(
-                key[from..from + 8].try_into().unwrap_or([0; 8]),
-            ))
-            .unwrap_or(usize::MAX)
-        };
-        let field4 = |from: usize| -> u32 {
-            u32::from_be_bytes(key[from..from + 4].try_into().unwrap_or([0; 4]))
-        };
-        let segment = Self {
-            live_start: field8(0),
-            seq: field8(8),
-            live_len: field4(16) as usize,
-            offset: field4(20) as usize,
-            nodes: field4(24) as usize,
-            block: BlockId::new(
-                u64::from_be_bytes(key[28..36].try_into().unwrap_or([0; 8])),
-                field4(36),
-            ),
-        };
-        (segment.nodes > 0 && segment.live_len <= segment.nodes).then_some(segment)
+/// A lattice join, so it is idempotent, commutative and associative — which is
+/// what lets it run in any delivery order, on either side of a sync, without a
+/// timestamp. The `text` rule is exact rather than a heuristic: a run only ever
+/// grows at its tail, and only its own replica can grow it, so two copies of one
+/// key are always prefixes of one another and the longer one strictly contains
+/// the shorter. `parent` and `side` belong to the run's FIRST node, which both
+/// copies share by construction (a split keeps them on the first segment), so
+/// they need no join at all.
+fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
+    tomb_or(&mut mine.tombstones, &incoming.tombstones);
+    if incoming.len() > mine.len() {
+        mine.text = incoming.text;
     }
 }
 
-/// Split the document into ordered-index segments, and collect the tombstone
-/// repairs that make the stored blocks agree with the authoritative join.
+/// The tombstone repairs that make the stored blocks agree with the
+/// authoritative join, as `(index into `loaded`, repaired block)`.
 ///
 /// Ownership of a node is [`find_block`]'s rule — the tightest (most finely
-/// split) covering block — so overlapping copies of one run never double-count
-/// a node, and two replicas holding the same block set derive the same
-/// segments.
+/// split) covering block — so overlapping copies of one run never double-count a
+/// node, and two replicas holding the same block set derive the same repairs.
 ///
 /// Liveness comes from the TREE (delete-wins across every copy), not from the
-/// owning block's bitmap; where the two disagree the bitmap is repaired, which
-/// is what keeps an index-served read and an authoritative read identical.
-#[expect(
-    clippy::type_complexity,
-    reason = "one call site; naming the repair list adds a type for no reader benefit"
-)]
-fn segment_document(
+/// owning block's bitmap; where the two disagree the bitmap is repaired, so two
+/// replicas that agree on the node set also agree on the stored bytes.
+fn tombstone_repairs(
     loaded: &[LoadedBlock],
     tree: &FugueTree,
-) -> Result<(Vec<Segment>, Vec<(usize, TextBlock)>), StoreError> {
-    let mut segments: Vec<Segment> = Vec::new();
+) -> Result<Vec<(usize, TextBlock)>, StoreError> {
     let mut repairs: BTreeMap<usize, TextBlock> = BTreeMap::new();
-    let mut live_start = 0_usize;
-    let mut open: Option<(usize, Segment)> = None;
 
     for raw in tree.ordered_ids() {
         let id = BlockId::from_raw(raw);
@@ -1027,38 +848,9 @@ fn segment_document(
             tomb_set(&mut block.tombstones, offset);
             tomb_trim(&mut block.tombstones);
         }
-
-        match open.as_mut() {
-            Some((open_index, segment))
-                if *open_index == index && segment.offset + segment.nodes == offset =>
-            {
-                segment.nodes += 1;
-                segment.live_len += usize::from(live);
-            }
-            _ => {
-                if let Some((_, segment)) = open.take() {
-                    live_start += segment.live_len;
-                    segments.push(segment);
-                }
-                open = Some((
-                    index,
-                    Segment {
-                        live_start,
-                        seq: segments.len(),
-                        live_len: usize::from(live),
-                        block: lb.id,
-                        offset,
-                        nodes: 1,
-                    },
-                ));
-            }
-        }
-    }
-    if let Some((_, segment)) = open.take() {
-        segments.push(segment);
     }
 
-    Ok((segments, repairs.into_iter().collect()))
+    Ok(repairs.into_iter().collect())
 }
 
 /// A stored block plus the read-time facts derived from its neighbours.
@@ -1106,18 +898,43 @@ fn find_block(loaded: &[LoadedBlock], id: BlockId) -> Option<usize> {
     blocks_containing(loaded, id).into_iter().next_back()
 }
 
-/// The next unused counter for `replica`, one past the highest node it minted.
+/// The next unused counter for `replica`, one past the highest node of that
+/// replica the stored state mentions **anywhere**.
 ///
 /// Derived from the stored set rather than from node-local state: runs are
 /// tombstoned in place and never removed (Fugue nodes must survive deletion),
 /// so the high-water mark survives every deletion and a counter is never
 /// reused. Any future garbage collection of tombstoned blocks would break that
 /// and must carry the high-water mark some other way.
+///
+/// # Why the union of all DEFINITIONS, not just the block spans
+///
+/// The block spans alone are a high-water mark only while no block is ever
+/// shortened. A block IS shortened — `write_segments` splits a run in place —
+/// and if a shortened copy ever wins over a longer one, the nodes past the new
+/// end vanish from the span set and the replica re-mints ids it has already
+/// used. Re-minting is worse than losing a node: `FugueTree::integrate` keeps
+/// the FIRST definition of an id, so a peer still holding the long copy resolves
+/// the id to the old character while the minter resolves it to the new one, and
+/// the two never converge. That is divergence, not loss.
+///
+/// The leaf join (`CrdtType::FugueTextBlock`) is what makes the shortening
+/// impossible — a block can only grow at merge — but the counter must not depend
+/// on that being true. So the mark is taken over every *reference* to a node of
+/// `replica` the stored state carries: the runs that define nodes, AND the
+/// `parent` edges that point at them. A parent edge survives a split of the
+/// block that defined its target (the split's own tail points back into the
+/// head), so it keeps the mark up even for a node no surviving run spells out.
 fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError> {
     let mut next: u64 = 0;
     for lb in loaded {
         if lb.id.replica == replica {
             next = next.max(u64::from(lb.id.counter) + lb.len as u64);
+        }
+        if let Some(parent) = lb.block.parent {
+            if parent.replica == replica {
+                next = next.max(u64::from(parent.counter) + 1);
+            }
         }
     }
     u32::try_from(next).map_err(|_| invalid("replica counter space exhausted"))
@@ -1582,13 +1399,13 @@ mod model_tests {
     /// replica always cover `0..N` contiguously, whether split, coalesced or
     /// tombstoned.
     #[derive(Clone, Debug, Default)]
-    struct Model {
+    pub(super) struct Model {
         tree: FugueTree,
         next: BTreeMap<u64, u32>,
     }
 
     impl Model {
-        fn insert_str(&mut self, pos: usize, replica: u64, s: &str) {
+        pub(super) fn insert_str(&mut self, pos: usize, replica: u64, s: &str) {
             for (offset, content) in s.chars().enumerate() {
                 let counter = self.next.entry(replica).or_default();
                 let id = (replica, *counter);
@@ -1597,7 +1414,7 @@ mod model_tests {
             }
         }
 
-        fn delete_range(&mut self, start: usize, end: usize) {
+        pub(super) fn delete_range(&mut self, start: usize, end: usize) {
             let count = end.min(self.tree.len()).saturating_sub(start);
             for _ in 0..count {
                 if self.tree.delete(start).is_err() {
@@ -1606,7 +1423,7 @@ mod model_tests {
             }
         }
 
-        fn text(&self) -> String {
+        pub(super) fn text(&self) -> String {
             self.tree.values()
         }
 
@@ -1617,7 +1434,7 @@ mod model_tests {
         /// The union of several models: every node, delete-wins per node, read
         /// through a fresh tree. `integrate` is order-independent and keeps a
         /// tombstone over a live copy, so this is exactly the CRDT join.
-        fn union(models: &[&Self]) -> String {
+        pub(super) fn union(models: &[&Self]) -> String {
             let mut tree = FugueTree::new();
             for model in models {
                 for node in model.nodes() {
@@ -1638,7 +1455,7 @@ mod model_tests {
     /// One edit. `Ins` appends when `pos` lands at the end, which is what makes
     /// runs coalesce; a `pos` in the middle is what makes them split.
     #[derive(Clone, Debug)]
-    enum Op {
+    pub(super) enum Op {
         Ins(usize, &'static str),
         Del(usize, usize),
     }
@@ -1725,7 +1542,7 @@ mod model_tests {
     /// The op alphabet used by the exhaustive sweep: one appending insert (which
     /// coalesces), two mid-document inserts (which split), and two deletes (one
     /// single, one spanning).
-    const ALPHABET: [Op; 5] = [
+    pub(super) const ALPHABET: [Op; 5] = [
         Op::Ins(usize::MAX, "x"),
         Op::Ins(1, "y"),
         Op::Ins(2, "zz"),
@@ -1805,18 +1622,17 @@ mod model_tests {
     }
 }
 
-/// The ordered index and the positional read API.
+/// The positional read API.
 ///
 /// These tests are deliberately written against the *observable* contract —
-/// `text_range` / `char_at` agree with `get_text`, and a damaged index never
-/// misroutes a positional WRITE — rather than against the key encoding, which
-/// is an implementation detail free to change.
+/// `text_range` / `char_at` agree with `get_text`, and the stored form covers
+/// every authoritative node exactly once — rather than against any internal
+/// layout, which is free to change.
 #[cfg(test)]
-mod index_tests {
-    use super::{blocks_containing, build_tree, BlockId, FugueText, UnorderedMap};
+mod positional_read_tests {
+    use super::{blocks_containing, build_tree, find_block, BlockId, FugueText, UnorderedMap};
     use crate::collections::fugue::Rng;
     use crate::collections::Root;
-    use crate::entities::Data;
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
 
@@ -1942,10 +1758,15 @@ mod index_tests {
         assert_eq!(cjk.len().unwrap(), 10);
     }
 
-    /// The index describes exactly the authoritative node set: every stored
-    /// node is covered exactly once, and the covered live count is `len()`.
+    /// Every stored node is covered by exactly one owning block, and the live
+    /// nodes number `len()`.
+    ///
+    /// This is the invariant the ordered index used to assert about itself.
+    /// It survives the index because it is a property of the STORED FORM, not
+    /// of a cache: `find_block`'s tightest-cover rule must partition the node
+    /// set even when overlapping copies of one run are present.
     #[test]
-    fn index__cardinality_agrees_with_the_authoritative_node_set() {
+    fn stored_blocks__cover_every_authoritative_node_exactly_once() {
         env::reset_for_testing();
         type S = MockedStorage<882>;
         let mut rng = Rng::new(0x_ca_2d_11_0a);
@@ -1956,140 +1777,36 @@ mod index_tests {
 
             let loaded = doc.load().unwrap();
             let tree = build_tree(&loaded).unwrap();
-            let (nodes, live) = doc.index_cardinality().expect("index must be populated");
-            assert_eq!(
-                nodes,
-                tree.nodes().count(),
-                "seed {seed}: index must cover every authoritative node exactly once"
-            );
-            assert_eq!(live, doc.len().unwrap(), "seed {seed}: live count");
 
-            // …and the reads really are SERVED from it, rather than silently
-            // taking the authoritative fallback and passing for the wrong
-            // reason.
-            assert_eq!(
-                doc.indexed_text(0, usize::MAX).unwrap(),
-                Some(doc.get_text().unwrap()),
-                "seed {seed}: reads must be served from the index"
-            );
-        }
-    }
-
-    /// The index is live under `MainStorage` too, not just the test mock —
-    /// otherwise production would quietly keep paying the authoritative cost.
-    #[test]
-    fn index__is_populated_under_main_storage() {
-        env::reset_for_testing();
-        let mut doc = Root::new(FugueText::new);
-        doc.insert_str(0, "hello").unwrap();
-        doc.insert_str(2, "XY").unwrap();
-        doc.delete(0).unwrap();
-
-        let (_nodes, live) = doc.index_cardinality().expect("index must be populated");
-        assert_eq!(live, doc.len().unwrap());
-        assert_eq!(
-            doc.indexed_text(0, usize::MAX).unwrap(),
-            Some(doc.get_text().unwrap())
-        );
-    }
-
-    /// CONSTRAINT 1. A dropped index entry must never make a positional WRITE
-    /// target the wrong node: `parent`/`side` are SYNCED, so a wrong causal edge
-    /// ships in the delta and diverges every replica permanently. The write path
-    /// therefore resolves positions against the authoritative block set and
-    /// never through the index.
-    #[test]
-    fn corrupt_index__never_misroutes_a_positional_write() {
-        env::reset_for_testing();
-        type S = MockedStorage<883>;
-
-        for damage in 0..3_usize {
-            let mut doc = doc_in::<S>(&format!("dmg{damage}"));
-            doc.insert_str_with_replica(0, 1, "hello").unwrap();
-            doc.insert_str_with_replica(2, 2, "XY").unwrap();
-            doc.insert_str_with_replica(0, 3, "Z").unwrap();
-            assert_eq!(doc.get_text().unwrap(), "ZheXYllo");
-
-            let collection = doc.blocks.element().id();
-            let keys: Vec<Vec<u8>> = S::index_range(
-                collection,
-                core::ops::Bound::Unbounded,
-                core::ops::Bound::Unbounded,
-                0,
-                None,
-            )
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect();
-            assert!(!keys.is_empty(), "the index must be populated to damage it");
-
-            match damage {
-                // Drop one entry: positions computed from the index would shift.
-                0 => {
-                    let _ = S::index_remove(collection, &keys[0]);
-                }
-                // Corrupt an entry's payload without changing its cardinality.
-                1 => {
-                    let mut bogus = keys[keys.len() - 1].clone();
-                    if let Some(last) = bogus.last_mut() {
-                        *last ^= 0xff;
-                    }
-                    let _ = S::index_remove(collection, &keys[keys.len() - 1]);
-                    let _ = S::index_put(collection, &bogus, collection);
-                }
-                // Wipe it entirely.
-                _ => {
-                    let _ = S::index_clear(collection);
-                }
-            }
-
-            // A dropped or wiped entry is caught by the cardinality/density
-            // validation, so the index is REFUSED rather than merely surviving
-            // the damage by luck. (The mutated-payload case may still parse;
-            // it is caught downstream, when the block it names fails to match.)
-            if damage != 1 {
+            let mut owned: std::collections::BTreeSet<BlockId> = std::collections::BTreeSet::new();
+            for raw in tree.ordered_ids() {
+                let id = BlockId::from_raw(raw);
+                let index = find_block(&loaded, id).expect("ordered node must have a block");
+                let lb = &loaded[index];
                 assert!(
-                    doc.indexed_segments().unwrap().is_none(),
-                    "damage {damage}: a damaged index must be refused, not trusted"
+                    lb.id.counter <= id.counter && id.counter < lb.id.counter + lb.len as u32,
+                    "seed {seed}: owning block does not cover the node it owns"
                 );
+                assert!(owned.insert(id), "seed {seed}: node {id:?} covered twice");
             }
-
-            // Reads must refuse the damaged index and fall back, never serve a
-            // wrong view from it.
             assert_eq!(
-                doc.get_text().unwrap(),
-                "ZheXYllo",
-                "damage {damage}: a damaged index served a wrong read"
+                owned.len(),
+                tree.nodes().count(),
+                "seed {seed}: every authoritative node must be covered exactly once"
             );
-            assert_eq!(doc.text_range(1, 4).unwrap(), "heX", "damage {damage}");
-            assert_eq!(doc.char_at(3).unwrap(), Some('X'), "damage {damage}");
-            assert_eq!(doc.len().unwrap(), 8, "damage {damage}");
-
-            // The write must land on the character the AUTHORITATIVE order says
-            // is at position 3 ('X'), whatever the index claims.
-            doc.delete(3).unwrap();
             assert_eq!(
-                doc.get_text().unwrap(),
-                "ZheYllo",
-                "damage {damage}: a damaged index misrouted a positional write"
+                doc.get_text().unwrap().chars().count(),
+                doc.len().unwrap(),
+                "seed {seed}: live count"
             );
-
-            // And the insert origin must be authoritative too.
-            doc.insert_str_with_replica(1, 4, "Q").unwrap();
-            assert_eq!(doc.get_text().unwrap(), "ZQheYllo", "damage {damage}");
-
-            // Reads must be correct as well — either from a repaired index or
-            // from the authoritative fallback, never from the damaged one.
-            assert_eq!(doc.text_range(0, 4).unwrap(), "ZQhe");
-            assert_eq!(doc.char_at(2).unwrap(), Some('h'));
         }
     }
 
     /// THE WRINKLE. A split racing a remote copy of the unsplit run leaves
     /// overlapping stored blocks — the stored form no longer satisfies
     /// "unbroken right-chain, foreign children only at endpoints". Ordered
-    /// reads must still be exact, and the index must not double-count the
-    /// nodes both copies define.
+    /// reads must still be exact, and the tightest-cover ownership rule must
+    /// not double-count the nodes both copies define.
     #[test]
     fn overlapping_blocks__ordered_reads_stay_exact() {
         type A = MockedStorage<884>;
@@ -2138,14 +1855,23 @@ mod index_tests {
         }
 
         let tree = build_tree(&loaded).unwrap();
-        let (nodes, live) = merged.index_cardinality().expect("index populated");
-        assert_eq!(nodes, tree.nodes().count(), "overlap must not double-count");
-        assert_eq!(live, merged.len().unwrap());
+        let ordered = tree.ordered_ids();
+        assert!(
+            ordered
+                .iter()
+                .all(|raw| find_block(&loaded, BlockId::from_raw(*raw)).is_some()),
+            "every ordered node must be owned by a stored block"
+        );
+        assert_eq!(
+            ordered.len(),
+            tree.nodes().count(),
+            "overlap must not double-count"
+        );
     }
 
-    /// `len` and `is_empty` agree with `get_text` on an indexed document.
+    /// `len` and `is_empty` agree with `get_text`.
     #[test]
-    fn len__agrees_with_get_text_on_an_indexed_document() {
+    fn len__agrees_with_get_text() {
         env::reset_for_testing();
         type S = MockedStorage<887>;
         let mut rng = Rng::new(0x_5e_11_00_02);
@@ -2188,7 +1914,9 @@ mod apply_path_tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    use super::model_tests::{Model, Op, ALPHABET};
     use super::FugueText;
+    use crate::collections::fugue::Rng;
     use crate::collections::Root;
     use crate::delta::{clear_pending_delta, StorageDelta};
     use crate::env::{self, RuntimeEnv};
@@ -2199,8 +1927,14 @@ mod apply_path_tests {
     /// `crate::testing`'s, kept local so these tests need no feature flag.
     type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
 
-    /// Every replica in these tests is the same context.
-    const CONTEXT_ID: [u8; 32] = [7_u8; 32];
+    /// Every replica in these tests is the same context — and it must be the
+    /// NATIVE DEFAULT context (`[236; 32]`, see `env::mocked::context_id`).
+    /// `collections::ROOT_ID` is a process-global `LazyLock<Id>` seeded from
+    /// whatever `context_id()` returns the first time anything in the binary
+    /// asks, so a test that installs a different context id poisons the root id
+    /// for every other test in the process — every `Root::new` afterwards fails
+    /// with `CannotCreateOrphan`.
+    const CONTEXT_ID: [u8; 32] = [236_u8; 32];
 
     /// Both replicas must derive the SAME collection id or their actions build
     /// two parallel documents that never meet — see `INTERLEAVED_DOC_FIELD` in
@@ -2302,7 +2036,9 @@ mod apply_path_tests {
     /// a convergence check, only by checking the merged VALUE.
     #[test]
     fn coalesce_meeting_a_split_on_the_apply_path_keeps_every_node() {
-        env::reset_environment();
+        // Deliberately NOT `env::reset_environment()`: these replicas own their
+        // own `Store`s, and the reset clears PROCESS-global mocked state that
+        // other tests in this binary are using concurrently.
         let (dev_a, dev_b) = (device(1), device(2));
 
         // Genesis, authored by A so its nodes are A's to coalesce into.
@@ -2345,5 +2081,170 @@ mod apply_path_tests {
              remote COALESCED copy through the LWW branch of `try_merge_non_root`, \
              instead of joining with it"
         );
+    }
+
+    /// Run one two-replica scenario end to end through the APPLY path, and check
+    /// both replicas against the model oracle.
+    ///
+    /// The differential counterpart of `model_tests::scenario`, which reconciles
+    /// through `merge_blocks_from`. Identical script, identical oracle, different
+    /// reconciliation path — which is the whole point: 825 green scenarios
+    /// through the join said nothing about the path a node actually runs.
+    fn scenario_via_apply(tag: &str, left: &[Op], right: &[Op]) {
+        let (dev_a, dev_b) = (device(1), device(2));
+
+        // Genesis: an identical, already-synchronised history on both replicas.
+        // Seeded under replica 0 so neither writer's counter space starts used.
+        let genesis = new_store();
+        clear_pending_delta();
+        env::with_runtime_env(env_for(&genesis, dev_a), || {
+            let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FIELD));
+            doc.insert_str_with_replica(0, 0, "seed")
+                .expect("seed insert should succeed");
+            doc.commit();
+            let _ignored = env::take_last_artifact();
+        });
+        let (mut ma, mut mb) = (Model::default(), Model::default());
+        ma.insert_str(0, 0, "seed");
+        mb.insert_str(0, 0, "seed");
+
+        let store_a = genesis;
+        let store_b: Store = Rc::new(RefCell::new(store_a.borrow().clone()));
+
+        let deltas_a: Vec<Vec<u8>> = left
+            .iter()
+            .map(|op| edit_op(&store_a, dev_a, 1, op, &mut ma))
+            .collect();
+        let deltas_b: Vec<Vec<u8>> = right
+            .iter()
+            .map(|op| edit_op(&store_b, dev_b, 2, op, &mut mb))
+            .collect();
+
+        for delta in &deltas_b {
+            land(&store_a, dev_a, delta);
+        }
+        for delta in &deltas_a {
+            land(&store_b, dev_b, delta);
+        }
+
+        let expected = Model::union(&[&ma, &mb]);
+        assert_eq!(
+            text_in(&store_a, dev_a),
+            expected,
+            "{tag}: replica A disagrees with the model after applying B's deltas \
+             (left={left:?} right={right:?})"
+        );
+        assert_eq!(
+            text_in(&store_b, dev_b),
+            expected,
+            "{tag}: replica B disagrees with the model after applying A's deltas \
+             (left={left:?} right={right:?})"
+        );
+    }
+
+    /// Apply one op to a replica AND to its oracle, returning the delta the
+    /// commit emitted. Mirrors `model_tests::apply`, including the `pos % (len +
+    /// 1)` clamping that keeps a random script in bounds.
+    fn edit_op(
+        store: &Store,
+        device: [u8; 32],
+        replica: u64,
+        op: &Op,
+        model: &mut Model,
+    ) -> Vec<u8> {
+        let len = model.text().chars().count();
+        let delta = edit(store, device, |doc| match *op {
+            Op::Ins(pos, text) => {
+                doc.insert_str_with_replica(pos % (len + 1), replica, text)
+                    .expect("insert should succeed");
+            }
+            Op::Del(start, span) => {
+                let start = start % (len + 1);
+                doc.delete_range(start, start + span)
+                    .expect("delete should succeed");
+            }
+        });
+        match *op {
+            Op::Ins(pos, text) => model.insert_str(pos % (len + 1), replica, text),
+            Op::Del(start, span) => {
+                let start = start % (len + 1);
+                model.delete_range(start, start + span);
+            }
+        }
+        delta
+    }
+
+    /// EXHAUSTIVE over one op per replica — all 5 x 5 = 25 pairs of the model
+    /// sweep's alphabet — reconciled through `apply_action`.
+    ///
+    /// One op per side is where the coalesce-vs-split collision lives (it needs
+    /// exactly one local append and one remote mid-run insert), so this covers
+    /// the failure class exhaustively rather than by sampling.
+    #[test]
+    fn exhaustive__all_single_op_pairs_through_the_apply_path() {
+        let mut checked = 0_usize;
+        for (a, left) in ALPHABET.iter().enumerate() {
+            for (b, right) in ALPHABET.iter().enumerate() {
+                scenario_via_apply(
+                    &format!("ap1{a}{b}"),
+                    core::slice::from_ref(left),
+                    core::slice::from_ref(right),
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 25, "the single-op sweep must be exhaustive");
+    }
+
+    /// EXHAUSTIVE, not sampled: the same 5^4 = 625 two-op scripts
+    /// `model_tests::exhaustive__all_two_op_interleavings_across_two_replicas`
+    /// runs through `merge_blocks_from`, reconciled instead through
+    /// `apply_action`.
+    ///
+    /// Running the full space here is affordable — the apply path turns out to
+    /// be CHEAPER per scenario than the model sweep, because each replica's
+    /// script is committed op by op into its own small in-memory store rather
+    /// than replayed into three separate documents.
+    #[test]
+    fn exhaustive__all_two_op_interleavings_through_the_apply_path() {
+        let mut checked = 0_usize;
+        for index in 0..625_usize {
+            let pick = |shift: u32| ALPHABET[(index / 5_usize.pow(shift)) % 5].clone();
+            let left = [pick(0), pick(1)];
+            let right = [pick(2), pick(3)];
+            scenario_via_apply(&format!("ap2{index}"), &left, &right);
+            checked += 1;
+        }
+        assert_eq!(checked, 625, "the sweep must be exhaustive, not sampled");
+    }
+
+    /// Differential fuzz against the model, reconciled through `apply_action`.
+    ///
+    /// Same 200 seeds, same generator and same seed base as
+    /// `model_tests::fuzz__two_hundred_seeds_match_the_model`, so a failure here
+    /// has a directly comparable `merge_blocks_from` twin.
+    #[test]
+    fn fuzz__two_hundred_seeds_match_the_model_through_the_apply_path() {
+        const SEEDS: usize = 200;
+        const WORDS: [&str; 4] = ["a", "bc", "d", "ef"];
+
+        let mut rng = Rng::new(0x_f0_5e_ed_01);
+        for seed in 0..SEEDS {
+            let script = |rng: &mut Rng| -> Vec<Op> {
+                let count = 1 + rng.below(4);
+                (0..count)
+                    .map(|_| {
+                        if rng.below(3) == 0 {
+                            Op::Del(rng.below(8), 1 + rng.below(3))
+                        } else {
+                            Op::Ins(rng.below(8), WORDS[rng.below(WORDS.len())])
+                        }
+                    })
+                    .collect()
+            };
+            let left = script(&mut rng);
+            let right = script(&mut rng);
+            scenario_via_apply(&format!("apfz{seed}"), &left, &right);
+        }
     }
 }

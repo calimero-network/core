@@ -32,7 +32,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
 | `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
-| `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Blob       |
+| `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
+| `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -118,6 +119,7 @@ function is registered, it returns an error rather than silently falling back to
 | `PnCounter`    | `merge_pn_counter()`  | Counter::merge() - max per executor   |
 | `Rga`          | `merge_rga()`         | RGA::merge() - union characters       |
 | `FugueText`    | `merge_fugue_text()`  | FugueText::merge() - union blocks     |
+| `FugueTextBlock`| `merge_fugue_text_block()` | Per-block join; the arm the SYNC path reaches* |
 | `LwwRegister`  | Returns incoming      | Timestamp comparison done by caller   |
 | `UnorderedMap` | Returns incoming      | Entries are separate entities*        |
 | `UnorderedSet` | Returns incoming      | Entries are separate entities*        |
@@ -127,6 +129,15 @@ function is registered, it returns an error rather than silently falling back to
 | `Custom`       | WasmRequired error    | Needs app-defined merge via WASM      |
 
 *These types use "Structured" storage - container metadata only; entries sync separately.
+
+*`FugueTextBlock` is why `FugueText` entries carry their OWN `crdt_type`. An entry element
+is created untagged (`Element::new`), and an untagged entity merges by LWW. That is safe for
+`Rga` (an `RgaChar` is immutable once written, so two replicas never hold different values
+for one key) and UNSAFE for `FugueText`, whose blocks are mutated in place - a run grows when
+an append coalesces into it and shrinks when a mid-run insert splits it. LWW on such a
+collision drops every node only the loser defines. The tag is stamped by
+`FugueText::put_block` and dispatched on the APPLIED path only: a local write is not a merge,
+and joining it against the stored bytes would make a run un-shrinkable.
 
 ### is_builtin_crdt() Definition
 

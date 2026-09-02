@@ -587,15 +587,15 @@ fn fugue_text_insert(n: usize) {
 ///    snapshot deliberately gates rows and not bytes (entity ids are random,
 ///    so byte counts flake — see `lib.rs`'s module docs), so the linear part
 ///    of this cost is real, measured, and NOT gated.
-/// 2. **The ordered index is invisible here.** `FugueText`'s reads are served
-///    from the ordered index (`S::index_range`, see `fugue_text.rs`), and in
-///    this harness those calls fall through to the process thread-local mock
-///    in `crates/storage/src/env.rs`, which never reaches this crate's
-///    counting callbacks — the same blind spot the `all()` doc comment
-///    records for `SortedMap`. So index maintenance and index scans cost
-///    ZERO in every `fugue_text_*` row count here. Wiring the eight
-///    `IndexCallbacks` through the counting store is the separate piece of
-///    work that would close it.
+/// 2. **There is nothing invisible left to account for.** An earlier revision
+///    served these reads from a node-local ordered index whose `S::index_*`
+///    calls bypassed this crate's counting callbacks entirely, so index
+///    maintenance and index scans cost ZERO in every `fugue_text_*` row here.
+///    That index has been removed (see `fugue_text.rs`'s module doc: a read
+///    whose cost depends on index warmth makes gas depend on node-local state),
+///    so every row a `FugueText` read touches is now a `MainStorage` row and IS
+///    counted. The blind spot the `all()` doc comment records still applies to
+///    `SortedMap`.
 ///
 /// Named `get_text` rather than `get_nth` for a third reason: unlike
 /// `ReplicatedGrowableArray`, `FugueText` DOES have positional reads
@@ -615,10 +615,14 @@ fn fugue_text_get_text(n: usize) {
 /// position 0 could not make the measurement lie — the same discipline
 /// [`vector_get_nth`] applies.
 ///
-/// Measured: exactly `3` rows read at every size in [`SIZES`], hence
-/// [`CostShape::ConstantPerCall`]. There is no RGA counterpart to compare it
-/// against — that is the point of the workload — and the nearest thing,
-/// `vector_get_nth`, is `KnownLinearInN` at `13_279` rows at `n=10_000`.
+/// [`CostShape::ConstantPerCall`] at [`SIZES`], and constant for a structural
+/// reason rather than an indexed one: `build_fugue_text` appends, so the whole
+/// document is ONE run-length block whatever `n` is, and the read loads that
+/// one block however long it has grown. (An earlier revision made this constant
+/// via a node-local ordered index; that index is gone — see `fugue_text.rs`'s
+/// module doc — and the row count did not need it.) There is no RGA counterpart
+/// to compare against — that is the point of the workload — and the nearest
+/// thing, `vector_get_nth`, is `KnownLinearInN` at `13_279` rows at `n=10_000`.
 ///
 /// The two caveats on [`fugue_text_get_text`] apply here too, and matter LESS:
 /// `bytes_read` is `1_390` at `n=1_000` and `10_390` at `n=10_000`, i.e. this
@@ -648,9 +652,8 @@ const RANGE_READ_CHARS: usize = 100;
 /// read, and the smallest size is the baseline the growth ratio is taken
 /// against, so clamping there cannot flatter the curve.
 ///
-/// Measured: exactly `3` rows read at every size in [`SIZES`], hence
-/// [`CostShape::ConstantPerCall`]; identical to [`fugue_text_char_at`],
-/// because both are served by the same indexed block load. The same
+/// [`CostShape::ConstantPerCall`] at [`SIZES`]; identical to
+/// [`fugue_text_char_at`], because both load the same single block. The same
 /// rows-are-not-bytes caveat applies — see [`fugue_text_get_text`].
 fn fugue_text_text_range(n: usize) {
     let text = build_fugue_text(n);
@@ -726,10 +729,9 @@ fn fugue_text_insert_per_char(n: usize) {
 /// the number of CHARACTERS — and mid-document typing makes blocks and
 /// characters the same thing, then pays two rows per block where RGA pays one.
 ///
-/// Declaring it `QuadraticBuild` records that: the ordered index bought
-/// positional READS (see [`fugue_text_char_at`]) and cheap APPENDS (see
-/// [`fugue_text_insert_per_char`]); it did not buy cheap mid-document
-/// insertion, and it cost a factor of two there.
+/// Declaring it `QuadraticBuild` records that: run-length blocks buy cheap
+/// APPENDS (see [`fugue_text_insert_per_char`]); they do not buy cheap
+/// mid-document insertion, and it costs a factor of two there.
 fn fugue_text_insert_middle(n: usize) {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {
@@ -764,11 +766,10 @@ fn fugue_text_insert_middle(n: usize) {
 ///
 /// Still [`CostShape::QuadraticBuild`], exactly like its RGA counterpart, and
 /// WORSE than it at `n=10` (155.9 against 147.4) before pulling ahead by a
-/// constant 0.84x-0.90x at the larger sizes. Receiving is the one access
-/// pattern the ordered index did not fix: each remote character arrives from a
-/// different replica anchored at position 0, which splits the run it lands in,
-/// so the block count grows with the document and `load()` reads every block
-/// on the next call — the same mechanism that makes
+/// constant 0.84x-0.90x at the larger sizes. Each remote character arrives from
+/// a different replica anchored at position 0, which splits the run it lands
+/// in, so the block count grows with the document and `load()` reads every
+/// block on the next call — the same mechanism that makes
 /// [`fugue_text_insert_middle`] quadratic, arriving over the wire instead of
 /// from a keyboard.
 ///
@@ -1394,11 +1395,11 @@ mod tests {
         );
     }
 
-    /// `fugue_text_char_at` and `fugue_text_text_range` read `3` rows at every
-    /// size, which is the finding — and would be exactly as cheap if they
-    /// returned NOTHING. A `char_at` past the end costs one indexed lookup and
-    /// no block, so a document that failed to build, or a position that fell
-    /// off it, would publish the same flat curve and mean nothing.
+    /// `fugue_text_char_at` and `fugue_text_text_range` read a constant number
+    /// of rows at every size, which is the finding — and would be exactly as
+    /// cheap if they returned NOTHING, since a document that failed to build,
+    /// or a position that fell off it, would publish the same flat curve and
+    /// mean nothing.
     ///
     /// So the two point reads are asserted to return the characters they claim
     /// to, at the same position and size the workloads use.

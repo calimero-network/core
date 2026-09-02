@@ -342,9 +342,46 @@ where
     pub(crate) fn insert_with_storage_type(
         &mut self,
         key: K,
+        value: V,
+        storage_type: StorageType,
+        custom_id: Option<Id>,
+    ) -> Result<Option<V>, StoreError>
+    where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        self.insert_with_storage_type_and_crdt_type(key, value, storage_type, custom_id, None)
+    }
+
+    /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally
+    /// stamping each ENTRY element with its own `crdt_type` so the sync path
+    /// dispatches a value collision to that type's join instead of to LWW.
+    ///
+    /// See `Collection::insert_with_storage_type_and_crdt_type` for why an
+    /// untagged entry is a hazard for a container whose VALUES are mutable, and
+    /// `CrdtType::FugueTextBlock` — the only tag passed here today — for the
+    /// concrete data loss it prevents.
+    ///
+    /// The tag is stamped at CREATION only, and that is sufficient: an entry's
+    /// index metadata is written when its index row is first created (see
+    /// `Index::write_child_index`, which preserves the metadata of an existing
+    /// row) and is restored onto the element by `Interface::find_by_id`, so
+    /// every later update — local or applied — carries it forward unchanged. A
+    /// replica that first learns of the entry over the wire creates its index
+    /// row from the action's metadata, which carries the tag too.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    pub(crate) fn insert_with_storage_type_and_crdt_type(
+        &mut self,
+        key: K,
         mut value: V,
         storage_type: StorageType,
         custom_id: Option<Id>,
+        crdt_type: Option<CrdtType>,
     ) -> Result<Option<V>, StoreError>
     where
         K: AsRef<[u8]> + PartialEq + 'static,
@@ -370,9 +407,12 @@ where
 
         // Insert into the inner collection.
         // Pass the `StorageType` directly to the `Collection`.
-        let _ignored = self
-            .inner
-            .insert_with_storage_type(Some(id), (key, value), storage_type)?;
+        let _ignored = self.inner.insert_with_storage_type_and_crdt_type(
+            Some(id),
+            (key, value),
+            storage_type,
+            crdt_type,
+        )?;
 
         Ok(None)
     }

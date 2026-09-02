@@ -181,6 +181,31 @@ pub enum CrdtType {
     /// DECLARED LAST for the same reason as [`RotationLog`](Self::RotationLog):
     /// borsh enum discriminants are positional and must only ever be appended.
     FugueText,
+
+    /// One run-length block of a [`FugueText`](Self::FugueText) document.
+    ///
+    /// The LEAF counterpart of `FugueText`: `FugueText` tags the collection
+    /// element, this tags each `UnorderedMap` **entry** holding one `TextBlock`.
+    /// The distinction is load-bearing rather than cosmetic. Entry entities are
+    /// created by `Element::new`, which stamps no `crdt_type`, so without this
+    /// tag a same-key value collision reaches `Interface::try_merge_non_root`
+    /// as untyped "legacy data" and is resolved by last-writer-wins.
+    ///
+    /// LWW is wrong here because a `FugueText` block is MUTABLE: a run grows in
+    /// place when a local append coalesces into it, and shrinks in place when a
+    /// remote insertion splits it. Two replicas therefore routinely hold
+    /// different values for one key — a longer coalesced copy and a shorter
+    /// split copy — and picking one by timestamp DROPS the nodes only the other
+    /// defines. (`Rga` needs no leaf tag because an `RgaChar` is immutable once
+    /// written, so its keys can never collide on differing values.)
+    ///
+    /// Merge: elementwise tombstone OR, longer `text` wins — the same join
+    /// `FugueText::merge_blocks_from` applies, which is a lattice join and so
+    /// order-independent, idempotent and commutative.
+    ///
+    /// DECLARED LAST for the same reason as [`RotationLog`](Self::RotationLog):
+    /// borsh enum discriminants are positional and must only ever be appended.
+    FugueTextBlock,
 }
 
 impl Default for CrdtType {
@@ -376,6 +401,8 @@ mod tests {
         assert!(CrdtType::vector("u64").is_collection());
         assert!(CrdtType::Rga.is_collection());
         assert!(CrdtType::FugueText.is_collection());
+        // A single block is a LEAF value, not a collection.
+        assert!(!CrdtType::FugueTextBlock.is_collection());
         assert!(!CrdtType::lww_register("u64").is_collection());
         assert!(!CrdtType::GCounter.is_collection());
         assert!(!CrdtType::PnCounter.is_collection());
@@ -431,6 +458,7 @@ mod tests {
             CrdtType::Custom("my_type".to_string()),
             CrdtType::RotationLog,
             CrdtType::FugueText,
+            CrdtType::FugueTextBlock,
         ];
 
         for crdt_type in &types {
@@ -460,6 +488,7 @@ mod tests {
             CrdtType::Custom("my_type".to_string()),
             CrdtType::RotationLog,
             CrdtType::FugueText,
+            CrdtType::FugueTextBlock,
         ];
 
         for crdt_type in &types {
@@ -490,5 +519,6 @@ mod tests {
         assert_eq!(tag(&CrdtType::Custom("c".into())), 12);
         assert_eq!(tag(&CrdtType::RotationLog), 13);
         assert_eq!(tag(&CrdtType::FugueText), 14);
+        assert_eq!(tag(&CrdtType::FugueTextBlock), 15);
     }
 }

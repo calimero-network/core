@@ -420,6 +420,12 @@ pub fn merge_by_crdt_type(
         // Tree-Fugue text - union of run-length blocks, delete-wins per block
         CrdtType::FugueText => merge_fugue_text(existing, incoming),
 
+        // One run-length block of a Tree-Fugue document. The LEAF arm — this is
+        // the one the sync path actually reaches, because a `TextBlock` lives as
+        // an `UnorderedMap` entry and it is the ENTRY that carries this tag (the
+        // collection element carries `FugueText`). See `merge_fugue_text_block`.
+        CrdtType::FugueTextBlock => merge_fugue_text_block(existing, incoming),
+
         // App-defined types
         CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
             type_name: type_name.clone(),
@@ -556,6 +562,21 @@ fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeEr
     Mergeable::merge(&mut existing_doc, &incoming_doc)?;
 
     borsh::to_vec(&existing_doc).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
+/// Merge two stored ENTRIES of a `FugueText` block map.
+///
+/// This is the arm the sync path actually reaches for text: the collection
+/// element carries [`CrdtType::FugueText`], but the bytes that collide on the
+/// wire are one `UnorderedMap` entry, stamped [`CrdtType::FugueTextBlock`].
+///
+/// Delegates the whole join to
+/// [`FugueText::merge_block_entry_bytes`](crate::collections::FugueText), which
+/// owns the layout (`borsh(Entry<(BlockKey, TextBlock)>)`) and applies the
+/// elementwise tombstone OR plus longer-text rule — the same join
+/// `merge_blocks_from` uses, so there is exactly one block-join implementation.
+fn merge_fugue_text_block(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    FugueText::<MainStorage>::merge_block_entry_bytes(existing, incoming)
 }
 
 /// Merge two UnorderedMaps.

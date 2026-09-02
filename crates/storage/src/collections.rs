@@ -683,6 +683,26 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         item: T,
         storage_type: StorageType,
     ) -> StoreResult<(Id, T)> {
+        self.insert_with_storage_type_and_crdt_type(id, item, storage_type, None)
+    }
+
+    /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally
+    /// stamping the ENTRY element with its own `crdt_type`.
+    ///
+    /// Entry elements are otherwise untyped (`Element::new` leaves `crdt_type`
+    /// as `None`), and an untyped entity is merged by last-writer-wins in
+    /// `Interface::try_merge_non_root`. That is correct for a container whose
+    /// values never collide, and wrong for one whose values do — see
+    /// `CrdtType::FugueTextBlock`, the only caller today. The tag is persisted
+    /// through `Index::add_child_to` at creation and travels with the action, so
+    /// a receiving replica dispatches on it too.
+    pub(crate) fn insert_with_storage_type_and_crdt_type(
+        &mut self,
+        id: Option<Id>,
+        item: T,
+        storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
+    ) -> StoreResult<(Id, T)> {
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
@@ -691,6 +711,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         };
         // Update the `StorageType`.
         entry.storage.metadata.storage_type = storage_type;
+        entry.storage.metadata.crdt_type = crdt_type;
 
         collection.insert(&mut entry)?;
 
