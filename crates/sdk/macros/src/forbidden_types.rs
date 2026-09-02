@@ -1,6 +1,7 @@
 //! Shared compile-time check that rejects non-mergeable types in persistent state.
 //!
-//! Used by `#[app::state]` and `#[derive(Mergeable)]` to make sure every field
+//! Used by `#[app::state]`, `#[derive(Mergeable)]` and `#[app::mergeable]` to
+//! make sure every field
 //! either is a Calimero CRDT collection (or a `LwwRegister<T>` / `Option<T>` /
 //! user-derived `Mergeable` struct) — never a `std::collections::HashMap`, a
 //! bare `Vec`, a bare `String`, or a primitive. Without this check, those fields
@@ -15,6 +16,27 @@ use crate::errors::{Errors, ParseError};
 /// true for the field's own type, false for anything reached via a generic
 /// argument or tuple element — the rules differ at the root vs. nested.
 pub fn validate_field_type<T>(ty: &Type, errors: &Errors<'_, T>, is_top_level: bool) {
+    validate_field_type_inner(ty, errors, is_top_level, false);
+}
+
+/// `allow_bare` lifts only the bare-primitive rule.
+///
+/// That rule exists because a plain field has no merge semantics of its own and
+/// silently diverges. Under `#[app::mergeable]` it does have one — the app's,
+/// dispatched at the merge point — so the field converges by a declared rule
+/// rather than by accident, and forbidding it would rule out the only thing the
+/// attribute is for.
+///
+/// The other two rules do NOT lift. Interior mutability breaks determinism
+/// outright, and a `std::collections::HashMap` borsh-encodes in iteration
+/// order, so two replicas holding equal maps can serialize to different bytes
+/// and diverge on hash — neither of which an app-defined `merge` can repair.
+pub fn validate_field_type_inner<T>(
+    ty: &Type,
+    errors: &Errors<'_, T>,
+    is_top_level: bool,
+    allow_bare: bool,
+) {
     match ty {
         Type::Path(tp) => {
             let Some(last) = tp.path.segments.last() else {
@@ -37,7 +59,7 @@ pub fn validate_field_type<T>(ty: &Type, errors: &Errors<'_, T>, is_top_level: b
                         type_name: leak_str(ident_str.clone()),
                     },
                 ));
-            } else if is_top_level {
+            } else if is_top_level && !allow_bare {
                 if let Some(suggestion) = forbidden_top_level_bare(&ident_str) {
                     errors.subsume(syn::Error::new(
                         last.ident.span(),
@@ -57,20 +79,25 @@ pub fn validate_field_type<T>(ty: &Type, errors: &Errors<'_, T>, is_top_level: b
             if let PathArguments::AngleBracketed(args) = &last.arguments {
                 for arg in &args.args {
                     if let GenericArgument::Type(inner) = arg {
-                        validate_field_type(inner, errors, is_top_level && pass_through);
+                        validate_field_type_inner(
+                            inner,
+                            errors,
+                            is_top_level && pass_through,
+                            allow_bare,
+                        );
                     }
                 }
             }
         }
         Type::Tuple(t) => {
             for elem in &t.elems {
-                validate_field_type(elem, errors, false);
+                validate_field_type_inner(elem, errors, false, allow_bare);
             }
         }
-        Type::Array(t) => validate_field_type(&t.elem, errors, false),
-        Type::Group(g) => validate_field_type(&g.elem, errors, is_top_level),
-        Type::Paren(p) => validate_field_type(&p.elem, errors, is_top_level),
-        Type::Reference(r) => validate_field_type(&r.elem, errors, false),
+        Type::Array(t) => validate_field_type_inner(&t.elem, errors, false, allow_bare),
+        Type::Group(g) => validate_field_type_inner(&g.elem, errors, is_top_level, allow_bare),
+        Type::Paren(p) => validate_field_type_inner(&p.elem, errors, is_top_level, allow_bare),
+        Type::Reference(r) => validate_field_type_inner(&r.elem, errors, false, allow_bare),
         _ => {}
     }
 }
@@ -79,6 +106,14 @@ pub fn validate_field_type<T>(ty: &Type, errors: &Errors<'_, T>, is_top_level: b
 pub fn validate_fields<T>(fields: &Fields, errors: &Errors<'_, T>) {
     for field in fields.iter() {
         validate_field_type(&field.ty, errors, true);
+    }
+}
+
+/// [`validate_fields`] for `#[app::mergeable]`: bare primitives allowed, the
+/// determinism rules kept. See [`validate_field_type_inner`].
+pub fn validate_fields_allowing_bare<T>(fields: &Fields, errors: &Errors<'_, T>) {
+    for field in fields.iter() {
+        validate_field_type_inner(&field.ty, errors, true, true);
     }
 }
 

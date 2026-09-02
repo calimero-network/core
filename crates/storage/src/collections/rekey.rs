@@ -251,6 +251,38 @@ macro_rules! rekey_field_if_supported {
 /// ([`RekeyTarget::register_nested_value_types`]). So one call on a root field
 /// type transitively covers the whole reachable custom-struct value graph, not
 /// just one level.
+/// Register `$t`'s app-defined merge, if it has one.
+///
+/// Autoref specialisation, for the same reason [`register_rekey_if_supported`]
+/// uses it: the call site knows the concrete type, a generic `fn` would not.
+/// Resolving inside a generic function always picks the no-op arm, because `T`
+/// is unknown there — so this has to expand where the type is spelled.
+///
+/// Emitted beside the re-key registration on the same walk, so a type reachable
+/// through another custom struct's collection is registered by the cascade
+/// rather than only at the root.
+#[macro_export]
+macro_rules! register_custom_merge_if_supported {
+    ($t:ty) => {{
+        struct __CmProbe<T>(::core::marker::PhantomData<T>);
+        trait __CmViaReg {
+            fn __cm_go(self);
+        }
+        impl<T: $crate::collections::crdt_meta::CustomMergeable> __CmViaReg for __CmProbe<T> {
+            fn __cm_go(self) {
+                let _ = $crate::merge::register_custom_merge::<T>();
+            }
+        }
+        trait __CmViaNoop {
+            fn __cm_go(self);
+        }
+        impl<T> __CmViaNoop for &__CmProbe<T> {
+            fn __cm_go(self) {}
+        }
+        __CmProbe::<$t>(::core::marker::PhantomData).__cm_go()
+    }};
+}
+
 #[macro_export]
 macro_rules! register_rekey_if_supported {
     ($t:ty) => {{

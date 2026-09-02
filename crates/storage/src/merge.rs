@@ -32,6 +32,7 @@
 //! - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
 //!   entity metadata for correct dispatch.
 
+pub mod custom_registry;
 pub mod registry;
 
 // The registry is WASM-only in production. Host production binaries
@@ -47,6 +48,7 @@ pub mod registry;
 // sim tests) so they can keep exercising the WASM-side dispatch
 // shape without spinning up a real WASM runtime.
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+pub use custom_registry::{has_custom_merges, merge_custom, register_custom_merge};
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
 // Always-native wrapper for the in-process test harness. Unlike
@@ -57,6 +59,7 @@ pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResul
 pub use registry::register_crdt_merge_for_test;
 
 #[cfg(any(test, feature = "testing"))]
+pub use custom_registry::clear_custom_merge_registry;
 pub use registry::clear_merge_registry;
 
 use borsh::{BorshDeserialize, BorshSerialize};
