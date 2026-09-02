@@ -169,6 +169,18 @@ pub enum CrdtType {
     /// boundary (snapshots, persisted index metadata, mixed-binary peers),
     /// surfacing as `EntityIndex` borsh decode failures.
     RotationLog,
+
+    /// Tree-Fugue text.
+    ///
+    /// Collaborative text with Fugue ordering, stored as run-length blocks in an
+    /// `UnorderedMap` keyed by the id of each run's first node. Order is a pure
+    /// function of the synced `(parent, side)` edges, so merge is the map's own
+    /// add-wins union — no ordering state crosses the wire beyond the edges.
+    /// Merge: union of blocks; delete-wins per block.
+    ///
+    /// DECLARED LAST for the same reason as [`RotationLog`](Self::RotationLog):
+    /// borsh enum discriminants are positional and must only ever be appended.
+    FugueText,
 }
 
 impl Default for CrdtType {
@@ -280,6 +292,7 @@ impl CrdtType {
                 | Self::SortedSet { .. }
                 | Self::Vector { .. }
                 | Self::Rga
+                | Self::FugueText
         )
     }
 
@@ -362,6 +375,7 @@ mod tests {
         assert!(CrdtType::sorted_set("String").is_collection());
         assert!(CrdtType::vector("u64").is_collection());
         assert!(CrdtType::Rga.is_collection());
+        assert!(CrdtType::FugueText.is_collection());
         assert!(!CrdtType::lww_register("u64").is_collection());
         assert!(!CrdtType::GCounter.is_collection());
         assert!(!CrdtType::PnCounter.is_collection());
@@ -416,6 +430,7 @@ mod tests {
             CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
             CrdtType::RotationLog,
+            CrdtType::FugueText,
         ];
 
         for crdt_type in &types {
@@ -444,6 +459,7 @@ mod tests {
             CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
             CrdtType::RotationLog,
+            CrdtType::FugueText,
         ];
 
         for crdt_type in &types {
@@ -473,5 +489,6 @@ mod tests {
         assert_eq!(tag(&CrdtType::SharedStorage), 11);
         assert_eq!(tag(&CrdtType::Custom("c".into())), 12);
         assert_eq!(tag(&CrdtType::RotationLog), 13);
+        assert_eq!(tag(&CrdtType::FugueText), 14);
     }
 }

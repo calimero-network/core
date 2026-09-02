@@ -28,6 +28,8 @@ pub mod rga;
 pub use rga::ReplicatedGrowableArray;
 pub mod fugue;
 pub use fugue::{FugueError, FugueNode, FugueTree, Side};
+pub mod fugue_text;
+pub use fugue_text::FugueText;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;

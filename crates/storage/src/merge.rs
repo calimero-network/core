@@ -62,7 +62,7 @@ pub use registry::clear_merge_registry;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::collections::crdt_meta::{CrdtType, MergeError, Mergeable};
-use crate::collections::{Counter, ReplicatedGrowableArray};
+use crate::collections::{Counter, FugueText, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
 /// Canonical wire format for a host→WASM root-state merge invocation.
@@ -417,6 +417,9 @@ pub fn merge_by_crdt_type(
         // a correct-but-unreached arm to satisfy the exhaustive match.
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
+        // Tree-Fugue text - union of run-length blocks, delete-wins per block
+        CrdtType::FugueText => merge_fugue_text(existing, incoming),
+
         // App-defined types
         CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
             type_name: type_name.clone(),
@@ -528,6 +531,31 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     Mergeable::merge(&mut existing_rga, &incoming_rga)?;
 
     borsh::to_vec(&existing_rga).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
+/// Merge two `FugueText` documents (Tree-Fugue collaborative text).
+///
+/// Blocks are unioned; a block `existing` has tombstoned is never resurrected,
+/// and the tombstone flag is delete-wins. Ordering needs no merge at all — it is
+/// recomputed from the `(parent, side)` edges of whatever block set results.
+///
+/// # Arguments
+///
+/// * `existing` - Currently stored document (Borsh-serialized)
+/// * `incoming` - Incoming document to merge (Borsh-serialized)
+///
+/// # Returns
+///
+/// Merged document as Borsh-serialized bytes.
+fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    let mut existing_doc: FugueText =
+        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+    let incoming_doc: FugueText =
+        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+
+    Mergeable::merge(&mut existing_doc, &incoming_doc)?;
+
+    borsh::to_vec(&existing_doc).map_err(|e| MergeError::SerializationError(e.to_string()))
 }
 
 /// Merge two UnorderedMaps.
