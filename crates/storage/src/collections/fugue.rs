@@ -190,6 +190,15 @@ impl FugueTree {
         out
     }
 
+    /// Every attached node's id in document order, tombstones **included**.
+    ///
+    /// The ordering source for the storage layer's ordered index: an index
+    /// entry has to describe tombstoned nodes too, because they still occupy a
+    /// position in a run and still parent live nodes.
+    pub(super) fn ordered_ids(&self) -> Vec<RawId> {
+        self.traverse_all().into_iter().flatten().collect()
+    }
+
     /// The id of the `n`-th live (non-tombstoned) node in document order.
     fn nth_live(&self, order: &[NodeId], n: usize) -> Option<RawId> {
         let mut seen = 0;

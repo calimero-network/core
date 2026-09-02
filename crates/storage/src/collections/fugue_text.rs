@@ -23,8 +23,42 @@
 //!
 //! Ordering is *computed*: the stored blocks are expanded into a
 //! [`FugueTree`](super::fugue::FugueTree) and the tree is asked for the order.
-//! Reads are therefore O(n); the ordered index is deliberately out of scope
-//! here.
+//!
+//! ## The ordered index
+//!
+//! On top of that authoritative path sits a **node-local, derived, non-synced
+//! ordered index** over the [`StorageAdaptor`] `index_*` seam — the same seam
+//! [`SortedMap`](super::SortedMap) uses, with the same `full_hash` validity
+//! marker. One index entry describes one **segment**: a maximal run of
+//! consecutive nodes of one stored block that are also consecutive in document
+//! order. The order key is the segment's live start position, so a range scan
+//! over the index yields document order, and the key also carries the segment's
+//! live length — which is what makes [`len`](FugueText::len) cost zero entity
+//! loads and [`char_at`](FugueText::char_at) cost exactly one.
+//!
+//! Two properties of this index are load-bearing and must not be relaxed.
+//!
+//! **The index never feeds a write.** `parent` and `side` are *synced* fields.
+//! An id resolved through a stale index does not produce a wrong local view
+//! that a rebuild repairs — it mints a wrong causal edge that ships in the
+//! delta and diverges every replica permanently. So
+//! [`insert`](FugueText::insert), [`delete`](FugueText::delete) and
+//! [`delete_range`](FugueText::delete_range) resolve positions against the
+//! authoritative block set and the tree built from it, exactly as they did
+//! before the index existed. The index is written by those paths, never read
+//! by them. Reads that *do* consult it re-validate every entry against the
+//! authoritative child set (see [`FugueText::indexed_segments`]) and fall back
+//! to the tree on any disagreement.
+//!
+//! **Maintenance cost never depends on node-local state.** The index is
+//! rebuilt *unconditionally* at the end of every mutating call — never "only if
+//! the marker says it is stale". A marker-conditional rebuild would make the
+//! same logical write cost different gas on a cold and a warm node, so one
+//! replica could complete a write while another traps on `GasExhausted`; that
+//! is divergence, and `crates/runtime/tests/metering_determinism.rs` exists to
+//! catch it. Run-length blocks are what make the unconditional choice
+//! affordable: the rebuild is `O(segments)`, and segments count *runs*, not
+//! characters, on a path that already loads every block and builds the tree.
 //!
 //! ## Example
 //!
@@ -377,7 +411,9 @@ impl<S: StorageAdaptor> FugueText<S> {
         for (offset, content) in s.chars().enumerate() {
             self.insert_one(pos + offset, replica, content)?;
         }
-        Ok(())
+        // Unconditional, once per call: see the module doc on why a
+        // marker-conditional rebuild would make write gas node-dependent.
+        self.rebuild_index()
     }
 
     /// Delete the character at the given visible position.
@@ -411,6 +447,11 @@ impl<S: StorageAdaptor> FugueText<S> {
         // way to get document-order ids out of the pure module. Deleting at
         // `start` repeatedly walks forward, because each tombstone removes that
         // character from the live sequence.
+        // NOTE (Constraint 1): the ordered index is deliberately NOT consulted
+        // here. `parent` and `side` are synced fields, so a position resolved
+        // through a stale index would mint a wrong causal edge that ships in
+        // the delta and diverges every replica permanently. `tree` above is
+        // built from the authoritative block set.
         let count = end.min(tree.len()).saturating_sub(start);
         let mut targets: Vec<(u64, u32)> = Vec::with_capacity(count);
         for _ in 0..count {
@@ -420,7 +461,7 @@ impl<S: StorageAdaptor> FugueText<S> {
             }
         }
         if targets.is_empty() {
-            return Ok(());
+            return self.rebuild_index();
         }
 
         // Overlapping copies of one run can both define a node (a split that
@@ -451,23 +492,80 @@ impl<S: StorageAdaptor> FugueText<S> {
             let _ignored = self.blocks.insert(BlockKey::new(loaded[index].id), block)?;
         }
 
-        Ok(())
+        self.rebuild_index()
     }
 
     /// The document text, tombstones excluded.
     ///
+    /// Served from the ordered index when it is valid (`O(segments)` block
+    /// loads, no tree build), otherwise from the authoritative block set.
+    ///
     /// # Errors
     /// Returns an error if storage fails.
     pub fn get_text(&self) -> Result<String, StoreError> {
+        if let Some(text) = self.indexed_text(0, usize::MAX)? {
+            return Ok(text);
+        }
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.values())
     }
 
+    /// The characters in the half-open range `start..end`.
+    ///
+    /// Positions are `char` indices — Unicode scalar values, not bytes and not
+    /// grapheme clusters.
+    ///
+    /// Clamped in `end` exactly like [`delete_range`](Self::delete_range): a
+    /// range reaching past the end of the document returns up to the end rather
+    /// than erroring. A reader that errored when a concurrent remote delete
+    /// shrank the document out from under it would be a guaranteed production
+    /// bug.
+    ///
+    /// # Errors
+    /// Returns an error if `start > end` or storage fails.
+    pub fn text_range(&self, start: usize, end: usize) -> Result<String, StoreError> {
+        if start > end {
+            return Err(invalid("start must be <= end"));
+        }
+        if let Some(text) = self.indexed_text(start, end)? {
+            return Ok(text);
+        }
+        let loaded = self.load()?;
+        let text = build_tree(&loaded)?.values();
+        Ok(slice_chars(&text, start, end).to_owned())
+    }
+
+    /// The character at `pos`, or `None` if `pos` is past the end.
+    ///
+    /// Positions are `char` indices — Unicode scalar values, not bytes and not
+    /// grapheme clusters.
+    ///
+    /// Served from the ordered index when it is valid, in which case exactly
+    /// one block is loaded whatever the document's size.
+    ///
+    /// # Errors
+    /// Returns an error if storage fails.
+    pub fn char_at(&self, pos: usize) -> Result<Option<char>, StoreError> {
+        if let Some(text) = self.indexed_text(pos, pos.saturating_add(1))? {
+            return Ok(text.chars().next());
+        }
+        let loaded = self.load()?;
+        Ok(build_tree(&loaded)?.values().chars().nth(pos))
+    }
+
     /// The number of visible characters.
+    ///
+    /// Served from the ordered index when it is valid, in which case no block
+    /// is loaded at all — the live counts live in the order keys.
     ///
     /// # Errors
     /// Returns an error if storage fails.
     pub fn len(&self) -> Result<usize, StoreError> {
+        if let Some(segments) = self.indexed_segments()? {
+            return Ok(segments
+                .last()
+                .map_or(0, |last| last.live_start + last.live_len));
+        }
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.len())
     }
@@ -584,6 +682,189 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(())
     }
 
+    /// The id of the collection the index is keyed under.
+    fn collection_id(&self) -> crate::address::Id {
+        use crate::entities::Data as _;
+        self.blocks.element().id()
+    }
+
+    /// The collection's current `full_hash` — the ordered index's validity
+    /// signal — or `None` if it cannot be read.
+    ///
+    /// Fails **closed**: a read error yields `None`, which can only ever mean
+    /// "do not certify" and "do not trust". (`SortedMap::current_full_hash`
+    /// substitutes `[0u8; 32]` on a read error and will happily stamp that as
+    /// valid; that shape must not be copied.)
+    fn current_full_hash(&self) -> Option<[u8; 32]> {
+        match crate::index::Index::<S>::get_hashes_for(self.collection_id()) {
+            Ok(Some((full, _own))) => Some(full),
+            Ok(None) | Err(_) => None,
+        }
+    }
+
+    /// `true` only if the stamped marker provably equals the collection's
+    /// current `full_hash`. Unreadable hash or absent marker ⇒ `false`.
+    fn index_marker_current(&self) -> bool {
+        let Some(full) = self.current_full_hash() else {
+            return false;
+        };
+        S::index_meta_get(self.collection_id()).as_deref() == Some(&full[..])
+    }
+
+    /// Rebuild the ordered index from the authoritative block set.
+    ///
+    /// Called **unconditionally** at the end of every mutating operation — see
+    /// the module doc: a marker-conditional rebuild would make write gas depend
+    /// on node-local state, which is cross-replica divergence, not slowness.
+    /// Cost is `O(segments)` on a path that already loads every block.
+    ///
+    /// Normalises overlap as it goes: where two stored copies of one run
+    /// disagree about a tombstone, the authoritative join (delete-wins, what
+    /// [`build_tree`] computes) is written back into the owning copy, so the
+    /// index's live counts and a later block-local read of the same window can
+    /// never disagree.
+    fn rebuild_index(&mut self) -> Result<(), StoreError> {
+        if !S::index_supported() {
+            return Ok(());
+        }
+
+        let loaded = self.load()?;
+        let tree = build_tree(&loaded)?;
+        let (segments, repairs) = segment_document(&loaded, &tree)?;
+
+        for (index, block) in repairs {
+            let _ignored = self.blocks.insert(BlockKey::new(loaded[index].id), block)?;
+        }
+
+        let collection = self.collection_id();
+        let mut persisted = S::index_clear(collection);
+        for segment in &segments {
+            let entry = self.blocks.entry_id(&BlockKey::new(segment.block));
+            persisted &= S::index_put(collection, &segment.order_key(), entry);
+        }
+
+        // Only stamp a marker we can prove: a dropped index write or an
+        // unreadable hash leaves the marker stale, and the next read falls back
+        // to the authoritative path instead of trusting a partial index.
+        if persisted {
+            if let Some(full) = self.current_full_hash() {
+                let _ignored = S::index_meta_put(collection, &full);
+            }
+        }
+        Ok(())
+    }
+
+    /// The index's segments in document order, or `None` when the index cannot
+    /// be trusted for this read — the adaptor does not back it, the validity
+    /// marker is stale, or the entries disagree with the authoritative child
+    /// set.
+    ///
+    /// The validation is the point. Entries must form a dense `seq` sequence
+    /// whose live lengths accumulate to the recorded start positions (which
+    /// catches a dropped or duplicated entry), and the distinct blocks they
+    /// name must number exactly as many as the collection actually holds
+    /// (which catches a wiped or over-full index). Every block owns at least
+    /// its own first node — no tighter block can start later than that — so
+    /// that cardinality is an equality, not a bound.
+    fn indexed_segments(&self) -> Result<Option<Vec<Segment>>, StoreError> {
+        if !S::index_supported() || !self.index_marker_current() {
+            return Ok(None);
+        }
+
+        let hits = S::index_range(
+            self.collection_id(),
+            core::ops::Bound::Unbounded,
+            core::ops::Bound::Unbounded,
+            0,
+            None,
+        );
+
+        let mut segments = Vec::with_capacity(hits.len());
+        let mut blocks: std::collections::BTreeSet<BlockId> = std::collections::BTreeSet::new();
+        let mut live_start = 0_usize;
+        for (seq, (order_key, _entry)) in hits.into_iter().enumerate() {
+            let Some(segment) = Segment::decode(&order_key) else {
+                return Ok(None);
+            };
+            if segment.seq != seq || segment.live_start != live_start {
+                return Ok(None);
+            }
+            live_start += segment.live_len;
+            let _ignored = blocks.insert(segment.block);
+            segments.push(segment);
+        }
+
+        if blocks.len() != self.blocks.len()? {
+            return Ok(None);
+        }
+        Ok(Some(segments))
+    }
+
+    /// The live characters of `start..end` served from the ordered index, or
+    /// `None` when the index cannot be trusted and the caller must fall back.
+    fn indexed_text(&self, start: usize, end: usize) -> Result<Option<String>, StoreError> {
+        let Some(segments) = self.indexed_segments()? else {
+            return Ok(None);
+        };
+
+        let mut out = String::new();
+        let mut cached: Option<(BlockId, TextBlock)> = None;
+        for segment in &segments {
+            if segment.live_start.saturating_add(segment.live_len) <= start {
+                continue;
+            }
+            if segment.live_start >= end {
+                break;
+            }
+
+            if cached.as_ref().is_none_or(|(id, _)| *id != segment.block) {
+                let Some(block) = self.blocks.get(&BlockKey::new(segment.block))? else {
+                    return Ok(None);
+                };
+                cached = Some((segment.block, block.into_inner()));
+            }
+            let Some((_, block)) = cached.as_ref() else {
+                return Ok(None);
+            };
+
+            // Re-validate the index entry against the block it names before a
+            // single character is trusted: the block must be the one the key
+            // claims, must be long enough for the window, and must contain
+            // exactly the live count the key advertises.
+            if block.start_id != segment.block || block.len() < segment.offset + segment.nodes {
+                return Ok(None);
+            }
+            let text: String = block
+                .text
+                .chars()
+                .skip(segment.offset)
+                .take(segment.nodes)
+                .enumerate()
+                .filter(|(offset, _)| !tomb_get(&block.tombstones, segment.offset + offset))
+                .map(|(_, content)| content)
+                .collect();
+            if text.chars().count() != segment.live_len {
+                return Ok(None);
+            }
+
+            let from = start.saturating_sub(segment.live_start);
+            let to = end.saturating_sub(segment.live_start).min(segment.live_len);
+            out.push_str(slice_chars(&text, from, to));
+        }
+        Ok(Some(out))
+    }
+
+    /// The `(nodes, live)` totals the ordered index describes, or `None` when
+    /// the index cannot be trusted. Test-only: the index/authority agreement
+    /// assertion has no production caller.
+    #[cfg(test)]
+    fn index_cardinality(&self) -> Option<(usize, usize)> {
+        let segments = self.indexed_segments().ok().flatten()?;
+        Some(segments.iter().fold((0, 0), |(nodes, live), segment| {
+            (nodes + segment.nodes, live + segment.live_len)
+        }))
+    }
+
     /// Every stored block, ascending by id, with its node count.
     fn load(&self) -> Result<Vec<LoadedBlock>, StoreError> {
         let mut loaded: Vec<LoadedBlock> = self
@@ -636,8 +917,148 @@ impl<S: StorageAdaptor> FugueText<S> {
             }
             let _ignored = self.blocks.insert(key, incoming)?;
         }
-        Ok(())
+        self.rebuild_index()
     }
+}
+
+/// The fixed byte width of an ordered-index order key.
+const ORDER_KEY_LEN: usize = 40;
+
+/// One ordered-index entry: a maximal run of consecutive nodes of one stored
+/// block that are also consecutive in document order.
+///
+/// A block usually contributes exactly one segment. It contributes more than
+/// one only when a foreign node orders *inside* it — which the split rule
+/// normally prevents, but which overlapping stored copies of one run (a split
+/// that raced a remote unsplit copy) can produce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Segment {
+    /// Live characters before this segment: the primary sort field, so an
+    /// ascending scan of order keys is document order.
+    live_start: usize,
+    /// Position in document order. Ties `live_start` apart when a fully
+    /// tombstoned segment contributes no characters.
+    seq: usize,
+    /// Live characters in this segment.
+    live_len: usize,
+    /// The owning block.
+    block: BlockId,
+    /// Where this segment starts inside the owning block's run.
+    offset: usize,
+    /// The segment's node count, tombstones included.
+    nodes: usize,
+}
+
+impl Segment {
+    /// The order key: fixed-width big-endian fields, most significant first, so
+    /// the backend's byte order *is* document order.
+    fn order_key(&self) -> [u8; ORDER_KEY_LEN] {
+        let mut key = [0_u8; ORDER_KEY_LEN];
+        key[0..8].copy_from_slice(&(self.live_start as u64).to_be_bytes());
+        key[8..16].copy_from_slice(&(self.seq as u64).to_be_bytes());
+        key[16..20].copy_from_slice(&(self.live_len as u32).to_be_bytes());
+        key[20..24].copy_from_slice(&(self.offset as u32).to_be_bytes());
+        key[24..28].copy_from_slice(&(self.nodes as u32).to_be_bytes());
+        key[28..36].copy_from_slice(&self.block.replica.to_be_bytes());
+        key[36..40].copy_from_slice(&self.block.counter.to_be_bytes());
+        key
+    }
+
+    /// Parse an order key, rejecting anything self-inconsistent.
+    fn decode(key: &[u8]) -> Option<Self> {
+        let key: &[u8; ORDER_KEY_LEN] = key.try_into().ok()?;
+        let field8 = |from: usize| -> usize {
+            usize::try_from(u64::from_be_bytes(
+                key[from..from + 8].try_into().unwrap_or([0; 8]),
+            ))
+            .unwrap_or(usize::MAX)
+        };
+        let field4 = |from: usize| -> u32 {
+            u32::from_be_bytes(key[from..from + 4].try_into().unwrap_or([0; 4]))
+        };
+        let segment = Self {
+            live_start: field8(0),
+            seq: field8(8),
+            live_len: field4(16) as usize,
+            offset: field4(20) as usize,
+            nodes: field4(24) as usize,
+            block: BlockId::new(
+                u64::from_be_bytes(key[28..36].try_into().unwrap_or([0; 8])),
+                field4(36),
+            ),
+        };
+        (segment.nodes > 0 && segment.live_len <= segment.nodes).then_some(segment)
+    }
+}
+
+/// Split the document into ordered-index segments, and collect the tombstone
+/// repairs that make the stored blocks agree with the authoritative join.
+///
+/// Ownership of a node is [`find_block`]'s rule — the tightest (most finely
+/// split) covering block — so overlapping copies of one run never double-count
+/// a node, and two replicas holding the same block set derive the same
+/// segments.
+///
+/// Liveness comes from the TREE (delete-wins across every copy), not from the
+/// owning block's bitmap; where the two disagree the bitmap is repaired, which
+/// is what keeps an index-served read and an authoritative read identical.
+#[expect(
+    clippy::type_complexity,
+    reason = "one call site; naming the repair list adds a type for no reader benefit"
+)]
+fn segment_document(
+    loaded: &[LoadedBlock],
+    tree: &FugueTree,
+) -> Result<(Vec<Segment>, Vec<(usize, TextBlock)>), StoreError> {
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut repairs: BTreeMap<usize, TextBlock> = BTreeMap::new();
+    let mut live_start = 0_usize;
+    let mut open: Option<(usize, Segment)> = None;
+
+    for raw in tree.ordered_ids() {
+        let id = BlockId::from_raw(raw);
+        let index = find_block(loaded, id).ok_or_else(|| invalid("ordered node has no block"))?;
+        let lb = &loaded[index];
+        let offset = (id.counter - lb.id.counter) as usize;
+        let live = tree.node(raw).is_some_and(|node| node.value.is_some());
+
+        if !live && !tomb_get(&lb.block.tombstones, offset) {
+            let block = repairs.entry(index).or_insert_with(|| lb.block.clone());
+            tomb_set(&mut block.tombstones, offset);
+            tomb_trim(&mut block.tombstones);
+        }
+
+        match open.as_mut() {
+            Some((open_index, segment))
+                if *open_index == index && segment.offset + segment.nodes == offset =>
+            {
+                segment.nodes += 1;
+                segment.live_len += usize::from(live);
+            }
+            _ => {
+                if let Some((_, segment)) = open.take() {
+                    live_start += segment.live_len;
+                    segments.push(segment);
+                }
+                open = Some((
+                    index,
+                    Segment {
+                        live_start,
+                        seq: segments.len(),
+                        live_len: usize::from(live),
+                        block: lb.id,
+                        offset,
+                        nodes: 1,
+                    },
+                ));
+            }
+        }
+    }
+    if let Some((_, segment)) = open.take() {
+        segments.push(segment);
+    }
+
+    Ok((segments, repairs.into_iter().collect()))
 }
 
 /// A stored block plus the read-time facts derived from its neighbours.
@@ -1513,7 +1934,7 @@ mod index_tests {
         assert_eq!(doc.text_range(0, 5).unwrap(), "héllo");
         assert_eq!(doc.char_at(1).unwrap(), Some('é'));
 
-        let mut cjk = Root::new(FugueText::new_with_field_name("cjk"));
+        let mut cjk = Root::new(|| FugueText::new_with_field_name("cjk"));
         cjk.insert_str(0, "日本語のテキストです").unwrap();
         assert_eq!(cjk.text_range(0, 5).unwrap().chars().count(), 5);
         assert_eq!(cjk.text_range(0, 5).unwrap(), "日本語のテ");
@@ -1542,7 +1963,34 @@ mod index_tests {
                 "seed {seed}: index must cover every authoritative node exactly once"
             );
             assert_eq!(live, doc.len().unwrap(), "seed {seed}: live count");
+
+            // …and the reads really are SERVED from it, rather than silently
+            // taking the authoritative fallback and passing for the wrong
+            // reason.
+            assert_eq!(
+                doc.indexed_text(0, usize::MAX).unwrap(),
+                Some(doc.get_text().unwrap()),
+                "seed {seed}: reads must be served from the index"
+            );
         }
+    }
+
+    /// The index is live under `MainStorage` too, not just the test mock —
+    /// otherwise production would quietly keep paying the authoritative cost.
+    #[test]
+    fn index__is_populated_under_main_storage() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str(0, "hello").unwrap();
+        doc.insert_str(2, "XY").unwrap();
+        doc.delete(0).unwrap();
+
+        let (_nodes, live) = doc.index_cardinality().expect("index must be populated");
+        assert_eq!(live, doc.len().unwrap());
+        assert_eq!(
+            doc.indexed_text(0, usize::MAX).unwrap(),
+            Some(doc.get_text().unwrap())
+        );
     }
 
     /// CONSTRAINT 1. A dropped index entry must never make a positional WRITE
@@ -1594,6 +2042,28 @@ mod index_tests {
                     let _ = S::index_clear(collection);
                 }
             }
+
+            // A dropped or wiped entry is caught by the cardinality/density
+            // validation, so the index is REFUSED rather than merely surviving
+            // the damage by luck. (The mutated-payload case may still parse;
+            // it is caught downstream, when the block it names fails to match.)
+            if damage != 1 {
+                assert!(
+                    doc.indexed_segments().unwrap().is_none(),
+                    "damage {damage}: a damaged index must be refused, not trusted"
+                );
+            }
+
+            // Reads must refuse the damaged index and fall back, never serve a
+            // wrong view from it.
+            assert_eq!(
+                doc.get_text().unwrap(),
+                "ZheXYllo",
+                "damage {damage}: a damaged index served a wrong read"
+            );
+            assert_eq!(doc.text_range(1, 4).unwrap(), "heX", "damage {damage}");
+            assert_eq!(doc.char_at(3).unwrap(), Some('X'), "damage {damage}");
+            assert_eq!(doc.len().unwrap(), 8, "damage {damage}");
 
             // The write must land on the character the AUTHORITATIVE order says
             // is at position 3 ('X'), whatever the index claims.
