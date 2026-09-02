@@ -21,7 +21,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::rekey::field_child_id;
-use calimero_storage::collections::{Mergeable, Root, UnorderedMap};
+use calimero_storage::collections::{MergeStrategy, Mergeable, Root, UnorderedMap};
 use calimero_storage::env::{self, RuntimeEnv};
 use calimero_storage::store::Key;
 use calimero_storage::{register_crdt_merge_for_test, rekey_field_if_supported};
@@ -53,6 +53,12 @@ struct Counted {
     n: u32,
 }
 
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for Counted {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for Counted {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.n = self.n.max(other.n);
@@ -62,6 +68,12 @@ impl Mergeable for Counted {
 
 impl calimero_storage::collections::rekey::RekeyTarget for Counted {
     fn rekey_relative_to(&mut self, _parent_id: Id) {}
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for App {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for App {

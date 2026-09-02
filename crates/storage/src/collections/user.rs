@@ -8,7 +8,7 @@
 //! other cannot see. Which device performed a given write is still recorded, on
 //! the entry's `signature_data.signer`.
 
-use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeStrategy, Mergeable, StorageStrategy};
 use super::{StoreError, UnorderedMap, ValueRef};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::env;
@@ -254,6 +254,17 @@ where
     fn can_contain_crdts() -> bool {
         true // The inner map can contain CRDTs
     }
+}
+
+/// Structural: the storage layer merges this by its `crdt_type` variant, so
+/// there is no app rule to dispatch. See [`MergeStrategy`].
+#[diagnostic::do_not_recommend]
+impl<T, S> MergeStrategy for UserStorage<T, S>
+where
+    T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    const DISPATCHED: bool = false;
 }
 
 #[cfg(test)]

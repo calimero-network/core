@@ -1,6 +1,6 @@
 //! A wrapper type for immutable values stored in FrozenStorage.
 
-use crate::collections::crdt_meta::{MergeError, Mergeable};
+use crate::collections::crdt_meta::{MergeError, MergeStrategy, Mergeable};
 use borsh::io::{Read, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 use core::ops::Deref;
@@ -64,4 +64,11 @@ impl<T> From<T> for FrozenValue<T> {
     fn from(value: T) -> Self {
         Self(value)
     }
+}
+
+/// Structural: the storage layer merges this by its `crdt_type` variant, so
+/// there is no app rule to dispatch. See [`MergeStrategy`].
+#[diagnostic::do_not_recommend]
+impl<T: 'static> MergeStrategy for FrozenValue<T> {
+    const DISPATCHED: bool = false;
 }

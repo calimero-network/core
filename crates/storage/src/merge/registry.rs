@@ -338,7 +338,7 @@ mod tests {
     use serial_test::serial;
 
     use super::*;
-    use crate::collections::{Counter, Mergeable};
+    use crate::collections::{Counter, MergeStrategy, Mergeable};
     use crate::env;
 
     #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Debug)]
@@ -354,6 +354,12 @@ mod tests {
                 crate::collections::rekey::field_child_id(parent_id, "counter")
             );
         }
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for TestState {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for TestState {

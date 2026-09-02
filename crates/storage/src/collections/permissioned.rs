@@ -42,7 +42,7 @@ use std::marker::PhantomData;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::shared::WriterSetCell;
 use super::StoreError;
 use crate::entities::{ChildInfo, Data, Element, OpMask, SignatureData};
@@ -500,8 +500,20 @@ where
     }
 }
 
+/// Structural: the storage layer merges this by its `crdt_type` variant, so
+/// there is no app rule to dispatch. See [`MergeStrategy`].
+#[diagnostic::do_not_recommend]
+impl<T, A> MergeStrategy for PermissionedStorage<T, A>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + Default,
+    A: Authorizer,
+{
+    const DISPATCHED: bool = false;
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::collections::MergeStrategy;
     use std::collections::BTreeSet;
 
     use borsh::{BorshDeserialize, BorshSerialize};
@@ -529,6 +541,12 @@ mod tests {
                 crate::collections::rekey::field_child_id(parent_id, "0")
             );
         }
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for TestVal {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for TestVal {

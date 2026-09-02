@@ -24,7 +24,7 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::rekey::register_rekey_cascade;
-use calimero_storage::collections::{Mergeable, Root, UnorderedMap};
+use calimero_storage::collections::{MergeStrategy, Mergeable, Root, UnorderedMap};
 use calimero_storage::env::{self, RuntimeEnv};
 use calimero_storage::interface::ApplyContext;
 use calimero_storage::store::Key;
@@ -90,6 +90,12 @@ impl calimero_storage::collections::rekey::RekeyTarget for AuctionApp {
     fn register_nested_value_types() {
         register_rekey_cascade::<Auction>();
     }
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for AuctionApp {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for AuctionApp {

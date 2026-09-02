@@ -7,7 +7,7 @@ use ed25519_dalek::{Signer, SigningKey};
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::crdt_meta::{MergeError, Mergeable};
+use crate::collections::crdt_meta::{MergeError, MergeStrategy, Mergeable};
 use crate::entities::{
     AtomicUnit, ChildInfo, Collection, Data, Element, Metadata, OpMask, SignatureData, StorageType,
 };
@@ -46,6 +46,12 @@ impl crate::collections::rekey::RekeyTarget for EmptyData {
 }
 
 // LWW-based merge for test type (no CRDT fields)
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for EmptyData {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for EmptyData {
     fn merge(&mut self, _other: &Self) -> Result<(), MergeError> {
         // EmptyData has no data fields to merge
@@ -96,6 +102,12 @@ impl crate::collections::rekey::RekeyTarget for Page {
 }
 
 // LWW-based merge for test type (no CRDT fields)
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for Page {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for Page {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // For simple test types without CRDT fields, use LWW semantics
@@ -162,6 +174,12 @@ impl crate::collections::rekey::RekeyTarget for Paragraph {
 }
 
 // LWW-based merge for test type (no CRDT fields)
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for Paragraph {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for Paragraph {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.text = other.text.clone();
@@ -248,6 +266,12 @@ impl crate::collections::rekey::RekeyTarget for Person {
 }
 
 // LWW-based merge for test type (no CRDT fields)
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for Person {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for Person {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.name = other.name.clone();

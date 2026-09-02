@@ -85,6 +85,16 @@ pub fn derive(input: DeriveInput) -> TokenStream {
             }
         }
 
+        // Declares HOW this type merges when stored as a collection value:
+        // structurally. Field-by-field delegation reaches the same answer the
+        // storage layer does on its own, so nothing needs dispatching and no
+        // wasm call is paid. `#[app::mergeable]` is the other answer.
+        impl #impl_generics ::calimero_storage::collections::MergeStrategy
+            for #ident #ty_generics #where_clause
+        {
+            const DISPATCHED: bool = false;
+        }
+
         // Deterministic re-keying for use as a CRDT collection VALUE. When this
         // struct is stored as a map/set/vector value under a deterministic entry
         // id, each field's nested collection ids are re-keyed under a
