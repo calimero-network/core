@@ -95,6 +95,14 @@ bench = false
 name = "write_cost_profile"
 bench = false
 
+[[test]]
+name = "fugue_laws"
+bench = false
+
+[[test]]
+name = "fugue_conformance"
+bench = false
+
 [features]
 default = []
 # Exposes the WASM-side merge registry to host-build test code so
