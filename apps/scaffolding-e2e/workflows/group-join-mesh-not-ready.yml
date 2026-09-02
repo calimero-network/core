@@ -1,37 +1,44 @@
-name: E2E KV Store - Join With No Reachable Mesh Peer (not-stranded regression)
+name: E2E KV Store - Join With No Reachable Admitter (fails closed, then recovers)
 description: >
-  Regression guard for the Slack report (2026-07-23): a node joins a group via
-  invitation while its gossip mesh to the inviter hasn't formed / isn't
-  reachable. Before the fix this left the node "not a member", so every admin
-  list endpoint returned HTTP 500 ("node is not a member of group ..."). Fran
-  joined fine; Sandi didn't.
+  A join needs a live admitter, and this pins both halves of that: while no
+  admitter is reachable the join fails and records NOTHING, and once one is
+  reachable the same invitation joins normally.
 
-  Root cause (crates/context/src/handlers/join_group.rs): the handler did a
-  single `request_namespace_join(...).await?` (a direct stream to a mesh peer,
-  ~45s discovery budget), and wrote the joiner's OWN membership row only AFTER
-  that call. So if no namespace-mesh peer was reachable within the budget, the
-  `?` aborted the join BEFORE recording membership — the node was stranded
-  not-a-member, and its only symptom was a 500 from list_group_members /
-  list_group_contexts.
+  This scenario used to assert the opposite, and the reversal is deliberate
+  rather than a regression. Its original subject (Slack, 2026-07-23) was a node
+  left stranded "not a member" when its mesh to the inviter had not formed:
+  every admin list endpoint then returned HTTP 500 ("node is not a member of
+  group ..."), because `join_group` recorded the joiner's own membership only
+  AFTER a direct request that could not complete. The fix at the time was to
+  fall back to an empty join bundle and record membership from the verified
+  invitation alone, so the node became "joined, pending key" instead of
+  stranded.
 
-  The fix: on a failed direct request, fall back to an empty join bundle and
-  proceed. The invitation signature is already verified, so the joiner still
-  records local membership and publishes `MemberJoinedAt`; the group key,
-  contexts, and governance ops catch up via the gossip `KeyDelivery` fallback
-  and namespace sync once a peer is reachable. The node is "joined, pending
-  key" — never stranded, and list endpoints no longer 500.
+  That fallback cannot survive `admitters` being an authorization boundary.
+  Membership is now authorised by an `AdmitterEndorsement` — a signature from an
+  account the invitation named — and only a reachable admitter can produce one.
+  Recording membership from the invitation alone would mean any holder of a
+  bearer invitation could admit itself with nobody's live consent, which is the
+  hole the endorsement exists to close. So the joiner now refuses to publish an
+  unendorsed membership.
 
-  This scenario forces the condition deterministically with merobox's
-  `partition_peers` (merobox#278): a libp2p-only cut between node-1 and node-2
-  that leaves BOTH nodes RPC-reachable, so we can drive node-2's join while it
-  cannot reach node-1's mesh.
+  What that costs, stated plainly: joining while cut off from every admitter no
+  longer works, and the node really is not a member afterwards. What it buys is
+  that the failure is now explicit and diagnosable AT THE JOIN CALL — "join
+  could not be endorsed: no admitter named by this invitation was reached" —
+  rather than a silent strand whose only symptom was a mystifying 500 from an
+  unrelated list endpoint. The original report was about being unable to tell
+  what had gone wrong; that part is better, not worse.
 
-  RED→GREEN: the discriminating assertion is that `list_group_members` on the
-  joining node SUCCEEDS while partitioned. On pre-fix code the join aborts and
-  that list 500s (workflow red); with the fix the node is a member pending key
-  and the list returns 200 (workflow green). (The earlier characterization
-  commit on this branch asserted the 500 via `expected_failure` — its green run
-  is the proof that the 500 reproduces on pre-fix code.)
+  The condition is forced deterministically with merobox's `partition_peers`
+  (merobox#278): a libp2p-only cut between node-1 and node-2 that leaves BOTH
+  nodes RPC-reachable, so node-2's join can be driven while it cannot reach
+  node-1 — the only admitter.
+
+  The discriminating assertions are (1) node-2's account is absent from the
+  group while partitioned, which is the fail-closed property, and (2) the join
+  succeeds after the heal, which proves the refusal was about admitter
+  reachability and not about the invitation.
 
 force_pull_image: false
 
@@ -87,6 +94,14 @@ steps:
     outputs:
       invitation: invitation
 
+  # Captured before the partition: the join below fails, so it yields no
+  # account of its own, and the fail-closed assertion needs one to look for.
+  - name: Get node-2's account
+    type: node_identity
+    node: notready-node-2
+    outputs:
+      account_node2: accountId
+
   - name: Let the two nodes connect + namespace governance gossip
     type: wait
     seconds: 8
@@ -100,38 +115,28 @@ steps:
       - notready-node-2
 
   # ── Join under partition ─────────────────────────────────────────────
-  # request_namespace_join exhausts its ~45s discovery budget with no reachable
-  # peer. The join RPC still returns an error because no group key can be
-  # delivered while partitioned (the KeyDelivery fallback times out) — that
-  # typed "joined but not yet usable" error is intentional (PR #3288), so we
-  # keep expecting it here. The FIX is not that this call succeeds; it is that
-  # it no longer aborts BEFORE recording membership.
+  # node-1 is the only admitter this invitation names — the mint defaults the
+  # list to the namespace's admins and TEE nodes — so with node-1 unreachable
+  # there is nobody who can endorse the join. The joiner exhausts its discovery
+  # budget, finds no admitter, and refuses to publish a membership it cannot
+  # have authorised.
 
-  - name: Node-2 joins while partitioned (RPC still errors — no key yet)
+  - name: Node-2 joins while partitioned (no admitter reachable)
     type: join_namespace
     node: notready-node-2
     namespace_id: '{{namespace_id}}'
     invitation: '{{invitation}}'
     expected_failure: true
 
-  # THE regression signal (RED→GREEN). Pre-fix: the join aborted before
-  # recording node-2, so this returned HTTP 500 ("node is not a member") and
-  # the workflow went red. Post-fix: node-2 recorded local membership from the
-  # verified invitation before the key-wait, so this now SUCCEEDS (200) — the
-  # node is "joined, pending key", not stranded. A failed list step (500) here
-  # fails the workflow, which is exactly the pre-fix behavior we are guarding
-  # against.
-  - name: Node-2 lists group members while join is pending (was HTTP 500 pre-fix)
-    type: list_group_members
-    node: notready-node-2
+  # THE fail-closed signal. A join that could not be endorsed must leave no
+  # membership behind — not a local row, not a pending one. Asserted from
+  # node-1 because it is the node that can list: if node-2 had recorded itself
+  # locally it would answer this list too, and the point is that it has not.
+  - name: Assert the unendorsed join recorded no membership
+    type: assert_not_member
+    node: notready-node-1
     group_id: '{{namespace_id}}'
-    outputs:
-      pending_members: members
-
-  - name: Assert the joining node is listable, not stranded (no "not a member" 500)
-    type: assert
-    statements:
-      - "is_set({{pending_members}})"
+    account: '{{account_node2}}'
 
   # ── Recovery: heal the partition, then a re-join must succeed ─────────
 
@@ -141,21 +146,15 @@ steps:
     peers:
       - notready-node-2
 
-  # Convergence must happen unaided: a real user does not trigger a sync.
-  # Poll both nodes' group hash for up to 120s and require them to agree.
-  - name: Wait for libp2p to notice the heal before driving sync
+  - name: Wait for libp2p to notice the heal
     type: wait
     seconds: 20
 
-  - name: Wait for governance convergence after heal
-    type: wait_for_sync
-    group_id: '{{namespace_id}}'
-    nodes:
-      - notready-node-1
-      - notready-node-2
-    timeout: 120
-
-  - name: Node-2 re-joins the group (should now succeed)
+  # The join comes BEFORE the convergence wait now, and that ordering is the
+  # point: node-2 is not a member yet, so there is no shared governance state
+  # for the two nodes to agree on until the endorsed join lands. Waiting first
+  # would time out on state that does not exist.
+  - name: Node-2 joins now that an admitter is reachable (must succeed)
     type: join_namespace
     node: notready-node-2
     namespace_id: '{{namespace_id}}'
@@ -164,12 +163,22 @@ steps:
       member_identity_node2: memberIdentity
       member_account_node2: memberAccount
 
-  - name: Assert re-join returned a member identity
+  - name: Assert the join returned a member identity
     type: assert
     statements:
       - "is_set({{member_identity_node2}})"
 
-  - name: Node-2 lists group members after recovery
+  # Convergence must happen unaided: a real user does not trigger a sync.
+  # Poll both nodes' group hash for up to 120s and require them to agree.
+  - name: Wait for governance convergence after the endorsed join
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - notready-node-1
+      - notready-node-2
+    timeout: 120
+
+  - name: Node-2 lists group members after the endorsed join
     type: list_group_members
     node: notready-node-2
     group_id: '{{namespace_id}}'
