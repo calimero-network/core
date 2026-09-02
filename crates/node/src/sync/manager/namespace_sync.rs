@@ -1417,6 +1417,34 @@ impl SyncManager {
                         },
                     ..
                 })) => {
+                    // A peer that is not an admitter answers honestly and
+                    // simply has no endorsement to give. That is not this
+                    // peer's failure and not a reason to fail the join —
+                    // another mesh peer may well be an admitter — so it is
+                    // treated like a rejection and the loop moves on.
+                    //
+                    // Without this the first non-admitter to answer would end
+                    // the join: the bundle comes back whole, so nothing reads
+                    // as an error until the joiner refuses to publish an
+                    // unendorsed membership, by which point the peers that
+                    // could have endorsed it were never asked. Peer preference
+                    // makes that unlikely rather than impossible, and "unlikely"
+                    // is how a join becomes flaky in a mesh whose members are
+                    // mostly not admitters.
+                    if admitter_endorsement_bytes.is_none() {
+                        let detail =
+                            format!("peer {peer} served the bundle but is not an admitter");
+                        debug!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            %peer,
+                            attempt = protocol_attempt,
+                            "namespace join: responder is not an admitter, trying next peer"
+                        );
+                        rejected_peers.insert(peer);
+                        last_rejection = Some(detail);
+                        continue;
+                    }
+
                     return Ok(JoinBundle {
                         key_envelope_bytes,
                         context_ids,
