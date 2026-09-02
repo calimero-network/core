@@ -243,7 +243,43 @@ pub(super) async fn open_namespace_join_stream(
             break 'connect;
         }
 
-        let discovered = sync_network.subscribed_peers(topic.clone()).await;
+        let mut discovered = sync_network.subscribed_peers(topic.clone()).await;
+
+        // Once every announced subscriber is spent, fall back to peers we
+        // merely hold a connection to.
+        //
+        // "Connected" and "known to be subscribed" diverge for longer than is
+        // comfortable here. Gossipsub announces a subscription to the peers
+        // connected at the moment it subscribes, so a peer that connected
+        // first and subscribed later may never have told us — and the join
+        // path is reached precisely when the topic mesh has not settled. A
+        // four-node cluster showed the shape exactly: the joiner held live
+        // connections to all three members for twenty seconds before its
+        // join, saw one of them announce the namespace topic, spent that one
+        // discovering it was not an admitter, and then had nothing left to try
+        // while still connected to the admitter the whole time.
+        //
+        // Deliberately a fallback rather than a peer source of equal standing:
+        // asking an unsubscribed peer to serve a join is a wasted round trip,
+        // so it is worth paying only when the alternative is giving up. The
+        // exclusion set still applies, so a peer that already refused is not
+        // re-asked through this door.
+        if discovered.iter().all(|p| excluded_peers.contains(p)) {
+            let connected = sync_network.connected_peers().await;
+            let extra: Vec<PeerId> = connected
+                .into_iter()
+                .filter(|p| !excluded_peers.contains(p) && !discovered.contains(p))
+                .collect();
+            if !extra.is_empty() {
+                debug!(
+                    namespace_id = %hex::encode(namespace_id),
+                    subscribers = discovered.len(),
+                    fallback_candidates = extra.len(),
+                    "namespace join: announced subscribers exhausted, trying connected peers"
+                );
+                discovered.extend(extra);
+            }
+        }
 
         // Peers the invitation named as admitters come first, and are tried
         // even when discovery has surfaced nobody.
@@ -423,6 +459,68 @@ mod tests {
     /// exercise the protocol-level-retry rejection path.
     fn no_excluded() -> HashSet<PeerId> {
         HashSet::new()
+    }
+
+    /// The case a four-node cluster hit: the joiner holds a live connection to
+    /// the peer that can serve it, but that peer never announced the topic.
+    ///
+    /// Gossipsub announces a subscription to the peers connected when it
+    /// subscribes, so a peer that connected first and subscribed later may
+    /// never have told us. Without the fallback the joiner excludes the one
+    /// subscriber it can see, finds nothing else, and waits out its budget
+    /// while still connected to the peer it needed.
+    #[tokio::test(start_paused = true)]
+    async fn connected_peers_are_tried_once_announced_subscribers_are_spent() {
+        let mock = MockSyncNetwork::default();
+        let announced = PeerId::random();
+        let connected_only = PeerId::random();
+
+        // The one announced subscriber already refused, so it is excluded.
+        mock.push_subscribed_peers(vec![announced]);
+        let _ = mock.set_connected_peers(vec![announced, connected_only]);
+        mock.push_open_stream_ok();
+
+        let mut excluded = HashSet::new();
+        let _inserted = excluded.insert(announced);
+
+        let (_stream, peer) =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, defaults(), &excluded, &[])
+                .await
+                .expect("the connected-but-unannounced peer must be reachable");
+
+        assert_eq!(
+            peer, connected_only,
+            "the join must fall back to a peer it is connected to when every \
+             announced subscriber is spent"
+        );
+    }
+
+    /// The fallback must stay a fallback: while an announced subscriber is
+    /// still worth asking, a merely-connected peer is not tried.
+    ///
+    /// Asking an unsubscribed peer to serve a join is a wasted round trip, so
+    /// this ordering is the whole reason it is gated rather than merged into
+    /// the candidate set.
+    #[tokio::test(start_paused = true)]
+    async fn a_connected_peer_is_not_tried_while_a_subscriber_remains() {
+        let mock = MockSyncNetwork::default();
+        let announced = PeerId::random();
+        let connected_only = PeerId::random();
+
+        mock.push_subscribed_peers(vec![announced]);
+        let _ = mock.set_connected_peers(vec![connected_only]);
+        mock.push_open_stream_ok();
+
+        let (_stream, peer) =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, defaults(), &no_excluded(), &[])
+                .await
+                .expect("the announced subscriber opens");
+
+        assert_eq!(
+            peer, announced,
+            "an announced subscriber must be preferred over one we merely hold \
+             a connection to"
+        );
     }
 
     /// A dialable multiaddr distinguishable by its port.

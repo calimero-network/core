@@ -113,6 +113,9 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::PeerCount { outcome, .. } => {
                 let _ = outcome.send(0);
             }
+            NetworkMessage::ConnectedPeers { outcome, .. } => {
+                let _ = outcome.send(Vec::new());
+            }
             NetworkMessage::Publish { request, outcome } => {
                 self.publishes
                     .lock()

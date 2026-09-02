@@ -134,6 +134,11 @@ pub(crate) struct MockSyncNetwork {
     /// global counter can't tell whether a *specific* topic's queue
     /// was ever read.
     subscribed_peers_reads_by_topic: Mutex<HashMap<TopicHash, u32>>,
+    /// Peers reported by `connected_peers` — the namespace join's fallback
+    /// candidate source once announced subscribers are exhausted. Defaults to
+    /// empty, so a test that does not set it sees today's behaviour.
+    connected_peers: Mutex<Vec<PeerId>>,
+
     /// Number of connected peers reported by `connected_peer_count`.
     /// Defaults to 0; a test sets it via `set_connected_peer_count` to
     /// exercise the "connected but not subscribed" diagnostic branch.
@@ -146,6 +151,12 @@ impl MockSyncNetwork {
     /// that don't distinguish topics.
     pub(crate) fn push_subscribed_peers(&self, peers: Vec<PeerId>) -> &Self {
         self.subscribed_peers_responses.lock().push_back(peers);
+        self
+    }
+
+    /// Set the peers returned by `connected_peers`.
+    pub(crate) fn set_connected_peers(&self, peers: Vec<PeerId>) -> &Self {
+        *self.connected_peers.lock() = peers;
         self
     }
 
@@ -328,6 +339,10 @@ impl SyncNetwork for MockSyncNetwork {
         // the shared queue's "seeded but never read" guard.
         *self.shared_queue_reads.lock() += 1;
         sticky_last(&mut self.subscribed_peers_responses.lock())
+    }
+
+    async fn connected_peers(&self) -> Vec<PeerId> {
+        self.connected_peers.lock().clone()
     }
 
     async fn connected_peer_count(&self) -> usize {

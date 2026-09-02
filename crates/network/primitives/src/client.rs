@@ -1,7 +1,7 @@
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use calimero_utils_actix::LazyRecipient;
 use libp2p::gossipsub::{IdentTopic, MessageId, PublishError, TopicHash};
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
 use tokio::sync::oneshot;
 
 /// Returns true when `err`'s `eyre::Report` chain contains
@@ -33,9 +33,9 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 
 use crate::blob_types::BlobAuth;
 use crate::messages::{
-    AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
-    NetworkStatus, OpenStream, PeerAddrs, PeerCount, Publish, QueryBlob, RequestBlob, SetPeerScore,
-    Subscribe, SubscribedPeers, Unsubscribe,
+    AnnounceBlob, Bootstrap, ConnectedPeers, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats,
+    NetworkMessage, NetworkStatus, OpenStream, PeerAddrs, PeerCount, Publish, QueryBlob,
+    RequestBlob, SetPeerScore, Subscribe, SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
@@ -181,6 +181,24 @@ impl NetworkClient {
         self.network_manager
             .send(NetworkMessage::PeerAddrs {
                 request: PeerAddrs(peer_id),
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Every peer this node currently holds a connection to.
+    ///
+    /// See [`ConnectedPeers`] for when this differs usefully from the
+    /// topic-scoped listings.
+    pub async fn connected_peers(&self) -> Vec<PeerId> {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::ConnectedPeers {
+                request: ConnectedPeers,
                 outcome: tx,
             })
             .await
