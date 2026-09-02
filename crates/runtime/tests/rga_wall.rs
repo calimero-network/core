@@ -487,6 +487,109 @@ fn typing_and_reading_walls() {
 /// that can be pasted into an EMPTY document in ONE `insert_text` call before
 /// that one call itself exhausts gas.
 ///
+/// The MID-DOCUMENT write ceiling: type one character at a time into the
+/// MIDDLE of the document (`position: landed / 2`) until a call exhausts gas.
+///
+/// The RGA half of the same measurement `fugue_wall.rs`'s
+/// `mid_document_typing_wall` makes, added for the same reason and kept
+/// deliberately identical to it so the two ceilings are comparable: this file's
+/// other two probes only ever write at the END (`typing_and_reading_walls`
+/// types at `position: i`) or into an EMPTY document (`single_call_paste_wall`),
+/// so neither says anything about insertion into the middle.
+///
+/// For `ReplicatedGrowableArray` this is expected to land at or near the append
+/// ceiling rather than below it — `get_ordered_chars` linearises the whole
+/// document on every insert whatever the position, so RGA has no append fast
+/// path to lose. That expectation is exactly why the number is worth having:
+/// it is the control against which `FugueText`'s mid-document ceiling means
+/// something.
+#[test]
+#[ignore = "slow: executes thousands of real WASM calls against the compiled \
+            collaborative-editor app to find where a MID-DOCUMENT insert_text \
+            exhausts gas. The in-repo gate for the same underlying property is \
+            `cargo test -p storage-cost` (rga_insert_middle)."]
+fn mid_document_typing_wall() {
+    let wasm = editor_wasm();
+    let limits = VMLimits::default();
+    println!("guest:   real collaborative-editor app, built from this tree");
+    println!("max_gas: {:?}", limits.max_gas);
+    println!("position: landed / 2 (mid-document), NOT an append");
+
+    let module = Engine::with_limits(limits)
+        .compile(&wasm)
+        .expect("compile metered module");
+
+    preflight(&module);
+
+    let mut storage = InMemoryStorage::default();
+    expect_ok(
+        &call(&module, &mut storage, "init", &serde_json::json!({})),
+        "init",
+    );
+
+    let ceiling = ceiling();
+    const PROBE_STRIDE: usize = 100;
+
+    let mut landed = 0_usize;
+    let mut write_wall: Option<usize> = None;
+
+    println!("\n  n        insert_gas       i_reads   ms");
+
+    for _ in 0..ceiling {
+        let started = Instant::now();
+        let outcome = call(
+            &module,
+            &mut storage,
+            "insert_text",
+            &serde_json::json!({"position": landed / 2, "text": "x"}),
+        );
+        let write_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        if let Err(error) = &outcome.returns {
+            match classify("insert_text", error) {
+                Verdict::Wall { limit } => {
+                    println!("\nMID-DOCUMENT WRITE WALL at {landed} (gas limit {limit})");
+                    write_wall = Some(landed);
+                    break;
+                }
+                Verdict::Drift(detail) => drift(&format!(
+                    "{detail}\nThis appeared only after {landed} characters, so it is \
+                     state-dependent rather than a stale call signature."
+                )),
+            }
+        }
+        landed += 1;
+
+        if landed % PROBE_STRIDE == 0 {
+            println!(
+                "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1}",
+                outcome.gas_used, outcome.storage_reads,
+            );
+        }
+    }
+
+    println!("\n--- result ---");
+    println!("characters landed:  {landed}");
+    match write_wall {
+        Some(n) => println!("mid-document write wall (insert_text at landed/2): {n}"),
+        None => println!("mid-document write wall: none below {ceiling}"),
+    }
+
+    assert!(
+        landed > 0,
+        "no character was inserted even though preflight succeeded — the failure \
+         classification in this file is broken"
+    );
+    if let Some(n) = write_wall {
+        assert!(
+            n >= 50,
+            "walled after only {n} mid-document characters. Preflight passed, so the \
+             calls are well-formed, but a ceiling this low is a change in the app's work \
+             per call, not the cost curve this probe exists to measure."
+        );
+    }
+}
+
 /// This is a different question from the write wall above. The write wall is
 /// "how long can the document GET, one keystroke at a time" — the linearise
 /// cost dominates and grows with the document's EXISTING length. This is "how

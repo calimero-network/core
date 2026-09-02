@@ -18,6 +18,14 @@
 //! the number a user hits, and a wall measured against a DIFFERENT harness
 //! would not be comparable to RGA's.
 //!
+//! # Two write sweeps, not one
+//!
+//! `typing_and_reading_walls` types at `position: i`, which is always the END
+//! of the document — an append, the case run-length blocks coalesce — and
+//! `single_call_paste_wall` pastes into an EMPTY document. Neither touches
+//! mid-document insertion, which is the operation `FugueText`'s block layout
+//! most affects, so `mid_document_typing_wall` sweeps that separately.
+//!
 //! # Three reads, not one
 //!
 //! `ReplicatedGrowableArray` has exactly one read — `get_text()`, which
@@ -455,6 +463,112 @@ fn typing_and_reading_walls() {
              well-formed, but a ceiling this low is a change in the app's work per \
              call, not the cost curve this probe exists to measure. Investigate before \
              quoting the number."
+        );
+    }
+}
+
+/// The MID-DOCUMENT write ceiling: type one character at a time into the
+/// MIDDLE of the document (`position: landed / 2`) until a call exhausts gas.
+///
+/// # Why this exists as a separate probe
+///
+/// Until it did, nothing here measured mid-document insertion at all, and that
+/// blind spot had already produced a misleading result. `typing_and_reading_
+/// walls` types at `position: i` — `i` is the count of characters already
+/// landed, so every one of its writes is an APPEND at the end, which is
+/// precisely the case run-length blocks coalesce. `single_call_paste_wall`
+/// pastes into an EMPTY document at position 0, which is one run and no
+/// neighbours. So when `FugueText` stopped splitting runs on mid-run insert and
+/// the storage-cost table halved (`fugue_text_insert_middle`: 4,083 -> 2,045.5
+/// reads/entry at n=2,000), NEITHER wall moved — not because the change did
+/// nothing, but because neither wall was looking at the operation it changed.
+///
+/// Write-only on purpose: the three read walls are already swept by
+/// `typing_and_reading_walls`, and probing them again here would multiply the
+/// runtime of an already-slow `#[ignore]`d test without asking a new question.
+#[test]
+#[ignore = "slow: executes thousands of real WASM calls against the compiled \
+            fugue-editor app to find where a MID-DOCUMENT insert_text exhausts \
+            gas. The in-repo gate for the same underlying property is \
+            `cargo test -p storage-cost` (fugue_text_insert_middle)."]
+fn mid_document_typing_wall() {
+    let wasm = editor_wasm();
+    let limits = VMLimits::default();
+    println!("guest:   real fugue-editor app, built from this tree");
+    println!("max_gas: {:?}", limits.max_gas);
+    println!("position: landed / 2 (mid-document), NOT an append");
+
+    let module = Engine::with_limits(limits)
+        .compile(&wasm)
+        .expect("compile metered module");
+
+    preflight(&module);
+
+    let mut storage = InMemoryStorage::default();
+    expect_ok(
+        &call(&module, &mut storage, "init", &serde_json::json!({})),
+        "init",
+    );
+
+    let ceiling = ceiling();
+    const PROBE_STRIDE: usize = 100;
+
+    let mut landed = 0_usize;
+    let mut write_wall: Option<usize> = None;
+
+    println!("\n  n        insert_gas       i_reads   ms");
+
+    for _ in 0..ceiling {
+        let started = Instant::now();
+        let outcome = call(
+            &module,
+            &mut storage,
+            "insert_text",
+            &serde_json::json!({"position": landed / 2, "text": "x"}),
+        );
+        let write_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        if let Err(error) = &outcome.returns {
+            match classify("insert_text", error) {
+                Verdict::Wall { limit } => {
+                    println!("\nMID-DOCUMENT WRITE WALL at {landed} (gas limit {limit})");
+                    write_wall = Some(landed);
+                    break;
+                }
+                Verdict::Drift(detail) => drift(&format!(
+                    "{detail}\nThis appeared only after {landed} characters, so it is \
+                     state-dependent rather than a stale call signature."
+                )),
+            }
+        }
+        landed += 1;
+
+        if landed % PROBE_STRIDE == 0 {
+            println!(
+                "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1}",
+                outcome.gas_used, outcome.storage_reads,
+            );
+        }
+    }
+
+    println!("\n--- result ---");
+    println!("characters landed:  {landed}");
+    match write_wall {
+        Some(n) => println!("mid-document write wall (insert_text at landed/2): {n}"),
+        None => println!("mid-document write wall: none below {ceiling}"),
+    }
+
+    assert!(
+        landed > 0,
+        "no character was inserted even though preflight succeeded — the failure \
+         classification in this file is broken"
+    );
+    if let Some(n) = write_wall {
+        assert!(
+            n >= 50,
+            "walled after only {n} mid-document characters. Preflight passed, so the \
+             calls are well-formed, but a ceiling this low is a change in the app's work \
+             per call, not the cost curve this probe exists to measure."
         );
     }
 }
