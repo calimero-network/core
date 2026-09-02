@@ -30,6 +30,15 @@ pub mod fugue;
 pub use fugue::{FugueError, FugueNode, FugueTree, Side};
 pub mod fugue_text;
 pub use fugue_text::FugueText;
+// A measurement control for `FugueText`, not a product collection: one storage
+// entity per Fugue node (the paper's "Tree-Fugue Simple"), so the cost of
+// run-length blocks can be isolated from the cost of Fugue's ordering. Gated
+// off by default so it stays out of the published surface and out of any node
+// build; `cfg(test)` keeps this crate's own unit tests for it running.
+#[cfg(any(test, feature = "fugue-simple"))]
+pub mod fugue_text_simple;
+#[cfg(any(test, feature = "fugue-simple"))]
+pub use fugue_text_simple::FugueTextSimple;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;

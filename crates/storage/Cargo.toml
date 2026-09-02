@@ -113,6 +113,13 @@ default = []
 # crate boundaries so dependent crates' DAG-causal tests can share one
 # canonical copy instead of mirroring it.
 testing = []
+# Exposes `collections::FugueTextSimple`, the one-entity-per-node measurement
+# control for `FugueText`. Off by default and enabled only by
+# `tools/storage-cost`, so the control never reaches the published surface or a
+# node build. Deliberately NOT folded into `testing`: that feature swaps the
+# merge registry implementation, and enabling it inside the cost harness would
+# move numbers that have nothing to do with this type.
+fugue-simple = []
 
 # Registry tests live in `tests/` as separate integration binaries
 # rather than `src/tests/` unit modules so they exercise the production

@@ -42,6 +42,15 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
 
+`FugueTextSimple` is deliberately absent from that table: it has **no `CrdtType`** of its
+own. It is a **measurement control, not a product collection**, behind the
+off-by-default `fugue-simple` cargo feature and enabled only by `tools/storage-cost`. It is
+the paper's "Tree-Fugue Simple" shape — one storage entity per node — and exists so the
+`FugueText` vs `ReplicatedGrowableArray` win can be split into "Fugue's ordering" and
+"run-length blocks". Do not build on it, do not give it a `CrdtType`, do not grow it. See
+the module doc in `src/collections/fugue_text_simple.rs` and the matrix in
+`.superpowers/sdd/2026-09-02-rga-fugue-rework/variant-matrix-report.md`.
+
 ## AI Agent Mental Model: CRDT Merge Architecture
 
 ### Two Merge Contexts (Critical for Understanding)
@@ -181,6 +190,7 @@ src/
 │   ├── rga.rs                # RGA (replicated growable array)
 │   ├── fugue.rs              # Pure Tree-Fugue algorithm (no storage)
 │   ├── fugue_text.rs         # Storage-backed Fugue text, run-length blocks
+│   ├── fugue_text_simple.rs  # Cost control: one entity per node (feature `fugue-simple`)
 │   ├── root.rs               # Root collection
 │   ├── nested.rs             # Nested CRDTs
 │   ├── nested_map.rs         # Nested map
