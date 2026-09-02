@@ -36,6 +36,16 @@
 //! every *other* replica's deltas, also in shuffled order. Convergence =
 //! identical root hash across all replicas, regardless of interleaving.
 //!
+//! "Its own executor id" holds at **both** layers an app can observe: the
+//! storage `RuntimeEnv` and the SDK host are set together for each replica's
+//! scope, so `calimero_sdk::env::device_id()` — what app code actually calls —
+//! varies per replica, and `account_id()` follows
+//! [`one_account`](Converge::one_account). This matters for any rule that
+//! branches on the writer: with only the storage half set, such a rule reads one
+//! device on every replica and quietly degenerates into a rule that does not
+//! branch at all, which reads as a broken rule rather than a harness that never
+//! varied its input.
+//!
 //! # What this actually proves
 //!
 //! It proves your **app state converges end-to-end** — the property whose
@@ -77,6 +87,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::testing::with_identity;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -367,12 +378,12 @@ where
         // Genesis: install the base state once, then snapshot it byte-for-byte
         // into every replica so all replicas share identical ids + base hash.
         let genesis: Store = new_store();
-        env::with_runtime_env(
-            env_for(&genesis, GENESIS_EXECUTOR, self.account_of(usize::MAX)),
-            || {
+        let genesis_account = self.account_of(usize::MAX);
+        with_identity(GENESIS_EXECUTOR, genesis_account, || {
+            env::with_runtime_env(env_for(&genesis, GENESIS_EXECUTOR, genesis_account), || {
                 Root::new(|| (self.build)()).commit();
-            },
-        );
+            });
+        });
         let base = genesis.borrow().clone();
 
         let stores: Vec<Store> = (0..n)
@@ -397,15 +408,17 @@ where
             ));
 
             let mut replica_deltas = Vec::with_capacity(order.len());
-            env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
-                for &op_idx in &order {
-                    let mut app = Root::<T>::fetch().expect("converge: genesis not installed");
-                    (self.ops[op_idx])(&mut app);
-                    app.commit();
-                    if let Some(artifact) = env::take_last_artifact() {
-                        replica_deltas.push(artifact);
+            with_identity(executor_for(r), self.account_of(r), || {
+                env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
+                    for &op_idx in &order {
+                        let mut app = Root::<T>::fetch().expect("converge: genesis not installed");
+                        (self.ops[op_idx])(&mut app);
+                        app.commit();
+                        if let Some(artifact) = env::take_last_artifact() {
+                            replica_deltas.push(artifact);
+                        }
                     }
-                }
+                });
             });
             deltas.push(replica_deltas);
         }
@@ -422,7 +435,7 @@ where
                 self.seed ^ 0xDEAD_BEEF ^ (r as u64).wrapping_mul(0x85EB_CA77),
             ));
 
-            let failed =
+            let failed = with_identity(executor_for(r), self.account_of(r), || {
                 env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
                     for (s, k) in foreign {
                         Root::<T>::sync(&deltas[s][k], &ApplyContext::empty())
@@ -435,7 +448,8 @@ where
                         .filter(|(_, check)| !check(&app))
                         .map(|(desc, _)| desc.clone())
                         .collect::<Vec<_>>()
-                });
+                })
+            });
             hashes.push(env::root_hash());
             assert!(
                 failed.is_empty(),
