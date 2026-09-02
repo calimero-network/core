@@ -751,6 +751,68 @@ fn generate_registration_hook(
         //
         // Developer impact: ZERO — the macro hides the export entirely.
         //
+        // ============================================================================
+        // AUTO-GENERATED WASM Export — Host-Initiated Custom-Entry Merge
+        // ============================================================================
+        //
+        // The sibling of `__calimero_merge_root_state`, for a collection ENTRY
+        // holding an app-defined type. The host defers such an entry during
+        // sync apply — it cannot merge it there, because the rule lives in this
+        // module and the apply is a synchronous call inside the storage env —
+        // then dispatches here once the session is over.
+        //
+        // Unlike the root export this body is generic: it names no app type,
+        // because the entry carries its own `CustomTypeId` and the registry
+        // `__calimero_register_merge` populated resolves it. One export serves
+        // every `#[app::mergeable]` type in the app.
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_merge_custom() {
+            ::calimero_sdk::env::setup_panic_hook();
+
+            let Some(args) = ::calimero_sdk::env::input() else {
+                ::calimero_sdk::env::panic_str(
+                    "Expected MergeCustomRequest payload for __calimero_merge_custom",
+                )
+            };
+
+            let request: ::calimero_storage::merge::MergeCustomRequest =
+                ::calimero_sdk::borsh::from_slice(&args).unwrap_or_else(|err| {
+                    ::calimero_sdk::env::panic_str(&::std::format!(
+                        "Failed to deserialize MergeCustomRequest: {err}",
+                    ))
+                });
+
+            let response = match ::calimero_storage::merge::merge_custom(
+                request.type_id,
+                &request.existing,
+                &request.incoming,
+            ) {
+                ::core::result::Result::Ok(bytes) => {
+                    ::calimero_storage::merge::MergeCustomResponse::Ok(bytes)
+                }
+                ::core::result::Result::Err(err) => {
+                    ::calimero_storage::merge::MergeCustomResponse::Err(::std::format!("{err:?}"))
+                }
+            };
+
+            let serialized = ::calimero_sdk::borsh::to_vec(&response).unwrap_or_else(|err| {
+                ::calimero_sdk::env::panic_str(&::std::format!(
+                    "Failed to serialize MergeCustomResponse: {err}",
+                ))
+            });
+
+            // Same wire convention as every other generated export: the
+            // `Result` discriminant is the transport's, and the merge's own
+            // success or failure lives inside `MergeCustomResponse`. See the
+            // matching note on `__calimero_merge_root_state` below.
+            ::calimero_sdk::env::value_return(&::core::result::Result::<
+                ::std::vec::Vec<u8>,
+                ::std::vec::Vec<u8>,
+            >::Ok(serialized));
+        }
+
         #[cfg(target_arch = "wasm32")]
         #[no_mangle]
         pub extern "C" fn __calimero_merge_root_state() {

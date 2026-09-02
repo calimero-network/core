@@ -1783,6 +1783,102 @@ impl ContextClient {
         }
     }
 
+    /// Invoke the app's merge for one custom-typed collection ENTRY and return
+    /// the merged bytes.
+    ///
+    /// The receive-side counterpart to [`Self::merge_root_state`], for entries
+    /// rather than the root. Sync apply cannot do this itself: it is a
+    /// synchronous call inside the storage env, and reaching the rule means
+    /// reaching into this module. So the apply defers the entry and the sync
+    /// driver calls here once the session is over — nothing is nested, which is
+    /// why no second WASM instance is needed.
+    ///
+    /// Dispatch is by `CustomTypeId`, which the entry itself carries, so one
+    /// export serves every `#[app::mergeable]` type rather than one per type.
+    ///
+    /// Returns `InternalErrorKind::Merge` if the app's rule failed, if this
+    /// build's app no longer registers that id (an upgrade skew), or if the
+    /// module exports nothing — which means the app never used `#[app::state]`.
+    /// The caller leaves the entity for the next sync round rather than
+    /// resolving it by LWW, which is the wrong answer for a conflict the app
+    /// declared itself responsible for.
+    pub async fn merge_custom(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        request: calimero_storage::merge::MergeCustomRequest,
+    ) -> Result<Vec<u8>, ExecuteError> {
+        let payload = borsh::to_vec(&request).map_err(|err| {
+            tracing::error!(
+                %context_id,
+                %err,
+                "merge_custom: failed to serialize MergeCustomRequest"
+            );
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Merge,
+            }
+        })?;
+
+        let response = self
+            .execute(
+                context_id,
+                executor,
+                "__calimero_merge_custom".to_owned(),
+                payload,
+                None,
+            )
+            .await?;
+
+        let return_bytes = match response.returns {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                tracing::error!(
+                    %context_id,
+                    "merge_custom: WASM export returned no bytes"
+                );
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
+            }
+            Err(err) => {
+                tracing::error!(
+                    %context_id,
+                    ?err,
+                    "merge_custom: WASM export reported a function-call error"
+                );
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
+            }
+        };
+
+        let response: calimero_storage::merge::MergeCustomResponse =
+            borsh::from_slice(&return_bytes).map_err(|err| {
+                tracing::error!(
+                    %context_id,
+                    %err,
+                    "merge_custom: failed to deserialize MergeCustomResponse"
+                );
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                }
+            })?;
+
+        match response {
+            calimero_storage::merge::MergeCustomResponse::Ok(bytes) => Ok(bytes),
+            calimero_storage::merge::MergeCustomResponse::Err(msg) => {
+                tracing::error!(
+                    %context_id,
+                    error = %msg,
+                    "merge_custom: WASM Mergeable::merge returned an error"
+                );
+                Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                })
+            }
+        }
+    }
+
     /// Sends a request to update the application for a given context.
     /// This is an asynchronous operation handled by the `ContextManager` actor.
     ///

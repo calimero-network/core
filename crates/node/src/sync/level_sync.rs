@@ -161,6 +161,16 @@ pub struct LevelWiseStats {
     /// `ContextClient::merge_root_state` after the sync completes.
     /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
     pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+
+    /// Custom-typed ENTRIES deferred for WASM dispatch; same rationale as
+    /// `HashComparisonStats::deferred_custom_merges`. Applying one here would
+    /// fall through to LWW and contradict the in-WASM delta path.
+    pub deferred_custom_merges: Vec<(
+        [u8; 32],
+        calimero_primitives::crdt::CustomTypeId,
+        Vec<u8>,
+        u64,
+    )>,
 }
 
 // =============================================================================
@@ -475,14 +485,28 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // `apply_leaf_with_crdt_merge` which LWW-writes
                     // them directly (no Mergeable to dispatch).
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    let is_opaque = leaf_data.metadata.crdt_type.is_opaque_leaf();
-                    if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
-                        stats.deferred_root_merges.push((
-                            leaf_data.key,
-                            leaf_data.value.clone(),
-                            leaf_data.metadata.hlc_timestamp,
-                        ));
-                        continue;
+                    match crate::sync::helpers::classify_leaf(
+                        entity_id,
+                        &leaf_data.metadata.crdt_type,
+                    ) {
+                        crate::sync::helpers::LeafDisposition::DeferRoot => {
+                            stats.deferred_root_merges.push((
+                                leaf_data.key,
+                                leaf_data.value.clone(),
+                                leaf_data.metadata.hlc_timestamp,
+                            ));
+                            continue;
+                        }
+                        crate::sync::helpers::LeafDisposition::DeferCustom(type_id) => {
+                            stats.deferred_custom_merges.push((
+                                leaf_data.key,
+                                type_id,
+                                leaf_data.value.clone(),
+                                leaf_data.metadata.hlc_timestamp,
+                            ));
+                            continue;
+                        }
+                        crate::sync::helpers::LeafDisposition::Apply => {}
                     }
 
                     // PR-6b Task 6b.7: gate on the loaded reader so a
