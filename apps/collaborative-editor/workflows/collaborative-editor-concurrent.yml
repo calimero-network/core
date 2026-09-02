@@ -1,4 +1,4 @@
-description: A workflow exercising concurrent RGA edits on the collaborative editor
+description: A workflow exercising the backward-insertion RGA interleaving defect
 name: Collaborative Editor Concurrent Workflow
 
 # Force pull Docker images even if they exist locally
@@ -35,76 +35,26 @@ steps:
       member_public_key: memberPublicKey
 
   # ============================================
-  # Scenario 1: concurrent insert at the same position
+  # Scenario: backward-insertion interleaving (paper Figure 2)
   #
-  # Both nodes insert at position 0 with NO intervening propagation wait, so
-  # the merge is actually exercised. The assertion is that the two nodes
-  # converge to the same text - not a specific string, since under RGA today
-  # the winner between concurrent same-position inserts is timestamp-dependent.
-  # ============================================
-
-  - name: Concurrent insert from Node 1
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    method: insert_text
-    args:
-      position: 0
-      text: "AAA"
-    outputs:
-      concurrent_insert_node1_result: result
-
-  - name: Concurrent insert from Node 2
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    method: insert_text
-    args:
-      position: 0
-      text: "BBB"
-    outputs:
-      concurrent_insert_node2_result: result
-
-  - name: Wait for concurrent inserts to propagate
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  - name: Get Text After Concurrent Insert (Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      concurrent_insert_text_node1: result
-
-  - name: Get Text After Concurrent Insert (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      concurrent_insert_text_node2: result
-
-  - name: Assert both nodes converged on concurrent insert
-    type: json_assert
-    statements:
-      - 'json_equal({{concurrent_insert_text_node1}}, {{concurrent_insert_text_node2}})'
-
-  # ============================================
-  # Scenario 2: backward-insertion interleaving (paper Figure 2)
+  # This scenario is the acceptance test for the Fugue rework. Each node
+  # inserts a "passage", then moves back to the document start and inserts a
+  # "heading" (also at position 0, so it lands immediately before its own
+  # passage), with NO propagation wait between Node 1's pair of edits and
+  # Node 2's pair - the merge is genuinely concurrent.
   #
-  # Each node types a passage, then moves back to the document start and
-  # types a heading, with no propagation wait between the two nodes' edits.
-  # Under RGA the merged result may interleave the two nodes' headings and
-  # passages; under Fugue it must not. This scenario only asserts
-  # convergence (RGA does converge) - the merged text is the before-evidence
-  # captured by the human running this workflow, showing whether each node's
-  # contribution stayed contiguous.
+  # It is EXPECTED TO FAIL under today's RGA: RGA is proven to interleave
+  # concurrent backward insertions from different users (Weidner, Gentle,
+  # Kleppmann, "The Art of the Fugue", Table 1), so each node's
+  # heading+passage pair is not guaranteed to stay contiguous in the merged
+  # document. The `contains` assertions below check exactly that contiguity,
+  # per node, on both replicas. They must start red under RGA and must turn
+  # green once Fugue lands - do not weaken them to make them pass early.
+  #
+  # (Note: same-position *forward* concurrent insertion - i.e. two nodes
+  # both inserting at position 0 with no wait - is already covered by
+  # collaborative-editor.yml's "Insert ABC from Node 1" / "Insert XYZ from
+  # Node 2" steps, so it is intentionally not duplicated here.)
   # ============================================
 
   - name: Node 1 types passage
@@ -115,8 +65,6 @@ steps:
     args:
       position: 0
       text: "PASSAGE1"
-    outputs:
-      node1_passage_result: result
 
   - name: Node 1 goes back and types heading
     type: call
@@ -126,8 +74,6 @@ steps:
     args:
       position: 0
       text: "HEAD1"
-    outputs:
-      node1_heading_result: result
 
   - name: Node 2 types passage
     type: call
@@ -137,8 +83,6 @@ steps:
     args:
       position: 0
       text: "PASSAGE2"
-    outputs:
-      node2_passage_result: result
 
   - name: Node 2 goes back and types heading
     type: call
@@ -148,8 +92,6 @@ steps:
     args:
       position: 0
       text: "HEAD2"
-    outputs:
-      node2_heading_result: result
 
   - name: Wait for interleaving edits to propagate
     type: wait_for_sync
@@ -180,6 +122,21 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
+
+  # Contiguity assertions - the actual acceptance criterion for the Fugue
+  # rework. Each node's heading must stay immediately adjacent to its own
+  # passage, on both replicas. Expected to FAIL under today's RGA.
+  - name: Assert each contribution stays contiguous (Node 1's view)
+    type: assert
+    statements:
+      - "contains({{interleave_text_node1}}, 'HEAD1PASSAGE1')"
+      - "contains({{interleave_text_node1}}, 'HEAD2PASSAGE2')"
+
+  - name: Assert each contribution stays contiguous (Node 2's view)
+    type: assert
+    statements:
+      - "contains({{interleave_text_node2}}, 'HEAD1PASSAGE1')"
+      - "contains({{interleave_text_node2}}, 'HEAD2PASSAGE2')"
 
 # Configuration
 stop_all_nodes: false
