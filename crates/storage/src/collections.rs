@@ -26,6 +26,8 @@ pub mod vector;
 pub use vector::Vector;
 pub mod rga;
 pub use rga::ReplicatedGrowableArray;
+pub mod fugue;
+pub use fugue::{FugueError, FugueNode, FugueTree, Side};
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
