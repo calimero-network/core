@@ -83,3 +83,17 @@ fn team_stats_converge_to_correct_value() {
 //     own badge, asserting both end up holding both.
 //
 // A weaker restatement here would only look like coverage.
+
+// `assert_merge_laws` is NOT applied to `TeamStats`, and the reason is a real
+// limit rather than an oversight.
+//
+// The helper compares borsh encodings, and `TeamStats` embeds three `Counter`
+// handles. A handle is storage IDENTITY, not value: constructed outside a
+// storage env each one gets a random id, so `merge(a, b)` and `merge(b, a)`
+// encode differently in the first ~96 bytes while agreeing perfectly on
+// `badges` — the field the rule actually decides. The helper would report a
+// commutativity violation that is an artifact of the handles.
+//
+// That is not a gap in coverage. The counters converge structurally whatever
+// `merge` does, so the only thing worth checking here is `badges`, and the laws
+// belong on a type that is plain data. See `calimero-storage/tests/merge_laws.rs`.
