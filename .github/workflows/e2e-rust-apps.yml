@@ -277,6 +277,12 @@ jobs:
     name: Test (${{ matrix.workflow }})
     needs: [build-image, build-apps]
     runs-on: ubuntu-24.04-8cpu
+    # Per-entry opt-in via `matrix.expect_red` (default false — undefined is
+    # falsy in this comparison). Set on collaborative-editor-concurrent only:
+    # it is a red-expected acceptance test for the Fugue rework (see its
+    # matrix entry below) and must not fail the workflow run while it is
+    # expected to stay red.
+    continue-on-error: ${{ matrix.expect_red == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -634,6 +640,18 @@ jobs:
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
+          # Red-expected acceptance test for the Fugue rework (Stack 0). It
+          # asserts a defect RGA is proven to have (backward-insertion
+          # interleaving, paper Figure 2) — see the workflow file's own
+          # comments. It is EXPECTED TO FAIL until Fugue lands, and
+          # `expect_red: true` (consumed by the job-level `continue-on-error`
+          # above) keeps that failure from red-ing the workflow run. Do NOT
+          # "fix" this by weakening its assertions — a green run here before
+          # Fugue lands means the evidence base broke, not the defect.
+          - workflow: collaborative-editor-concurrent
+            file: workflows/collaborative-editor-concurrent.yml
+            app: collaborative-editor
+            expect_red: true
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init

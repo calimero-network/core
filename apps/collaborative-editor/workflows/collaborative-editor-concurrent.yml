@@ -39,15 +39,12 @@ steps:
   # containing "existing text..." above both users' sections - not an empty
   # document). This is also the working precondition for node 2 to write at
   # all: create_mesh alone leaves node 2's context with zero delta-log
-  # entries, and a node bootstrapping against a zero-delta context never
-  # completes snapshot sync (confirmed: contextStateHash stays at the null
-  # sentinel and writes are rejected with "Uninitialized" - see round-2 notes
-  # in the task report). collaborative-editor.yml never hits this because
-  # node 2's first write (step 63) always happens long after node 1's first
-  # edit ("Hello") has synced - node 2 never writes into an empty context.
-  # Seeding here reproduces that same working precondition AND the paper's
-  # setup in one step. This settle step sits BEFORE all four concurrent
-  # edits; no wait or sync goes between them, or they stop being concurrent.
+  # entries. collaborative-editor.yml never hits this because node 2's first
+  # write (step 63) always happens long after node 1's first edit ("Hello")
+  # has synced - node 2 never writes into an empty context. Seeding here
+  # reproduces that same working precondition AND the paper's setup in one
+  # step. This seed step sits BEFORE all four concurrent edits; no wait or
+  # sync goes between them, or they stop being concurrent.
   # ============================================
 
   - name: Seed the document from Node 1

@@ -460,9 +460,11 @@ fn remote_char_actions() -> Vec<Action> {
         actions.len(),
         REMOTE_CHAR_ACTIONS,
         "the remote replica's delta carried {} actions, not the {REMOTE_CHAR_ACTIONS} that \
-         typing ONE character emits — the thread-local pending-delta buffer leaked into it, \
-         so this workload is about to re-apply writes that were already done and report the \
-         cost as sync. Check that `clear_pending_delta()` above still runs.",
+         typing ONE character emits — either the thread-local pending-delta buffer leaked into \
+         it (check that `clear_pending_delta()` above still runs, so this workload is not about \
+         to re-apply writes that were already done and report the cost as sync), or a \
+         legitimate storage-layer change altered what one character insert emits, in which case \
+         move REMOTE_CHAR_ACTIONS deliberately per its doc comment and regenerate the snapshot.",
         actions.len()
     );
     actions
@@ -825,6 +827,22 @@ mod tests {
     use super::*;
     use crate::measure;
 
+    /// `#[ignore]`d by default, and NOT because it is optional.
+    ///
+    /// It iterates `all()` and measures every workload, including the
+    /// `CostShape::QuadraticBuild` set at `n=2_000` — the same set that makes
+    /// `tests/reproducible.rs`'s `declared_tolerances_bound_the_observed_spread`
+    /// slow. In the debug profile this alone measures ~260s.
+    /// `.github/workflows/ci-checks.yml`'s workspace-wide `cargo test` is a
+    /// DEBUG build and would pay that on every PR, on the critical path, for a
+    /// property that does not change between profiles.
+    ///
+    /// So it is excluded from the default run and re-included explicitly by
+    /// the dedicated `storage-cost` job, which already builds this crate in
+    /// release: `cargo test -p storage-cost --release -- --include-ignored`.
+    /// Removing the `--include-ignored` there deletes this coverage silently,
+    /// which is why it is named in that step's own comment too.
+    #[ignore = "minutes of work; run by the release storage-cost CI job via --include-ignored"]
     #[test]
     fn every_workload_is_measurable_and_touches_storage() {
         for workload in all() {
@@ -857,16 +875,6 @@ mod tests {
         );
     }
 
-    /// The sync half of `rga_insert_interleaved_sync` must actually arrive.
-    ///
-    /// Everything about that workload's value rests on the applied characters
-    /// being IN the document: if `apply_action` stopped landing them (a
-    /// diverging collection id, a dropped action, a root-skip that skips too
-    /// much), the workload would still read plausibly and still be measured —
-    /// it would simply be a single-replica build again, i.e. the exact blind
-    /// spot it was added to remove, restored silently. `every_workload_is_
-    /// measurable_and_touches_storage` above cannot see that: the cost is
-    /// nonzero either way.
     /// What `rga_insert_interleaved_sync` measures must not depend on which
     /// workloads ran before it.
     ///
@@ -915,6 +923,16 @@ mod tests {
         );
     }
 
+    /// The sync half of `rga_insert_interleaved_sync` must actually arrive.
+    ///
+    /// Everything about that workload's value rests on the applied characters
+    /// being IN the document: if `apply_action` stopped landing them (a
+    /// diverging collection id, a dropped action, a root-skip that skips too
+    /// much), the workload would still read plausibly and still be measured —
+    /// it would simply be a single-replica build again, i.e. the exact blind
+    /// spot it was added to remove, restored silently. `every_workload_is_
+    /// measurable_and_touches_storage` above cannot see that: the cost is
+    /// nonzero either way.
     #[test]
     fn every_remote_character_actually_lands() {
         let n = 10;
