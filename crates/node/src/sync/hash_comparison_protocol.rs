@@ -1925,8 +1925,11 @@ mod tests {
         let value = b"immutable-frozen-payload".to_vec();
         let key_hash: [u8; 32] = Sha256::digest(&value).into();
         let mut blob = Vec::new();
-        blob.extend_from_slice(&key_hash);
+        // Value-first: a map entry stores `(V, K)`, so a frozen entry blob is
+        // `[value][key_hash (32)][element id (32)]`. `verify_frozen_action_upsert`
+        // slices it at those offsets.
         blob.extend_from_slice(&value);
+        blob.extend_from_slice(&key_hash);
         blob.extend_from_slice(frozen_id.as_bytes());
 
         with_runtime_env(runtime_env.clone(), || {
@@ -2033,8 +2036,11 @@ mod tests {
         let value = b"freshly-pushed-frozen".to_vec();
         let key_hash: [u8; 32] = Sha256::digest(&value).into();
         let mut blob = Vec::new();
-        blob.extend_from_slice(&key_hash);
+        // Value-first: a map entry stores `(V, K)`, so a frozen entry blob is
+        // `[value][key_hash (32)][element id (32)]`. `verify_frozen_action_upsert`
+        // slices it at those offsets.
         blob.extend_from_slice(&value);
+        blob.extend_from_slice(&key_hash);
         blob.extend_from_slice(frozen_id.as_bytes());
 
         with_runtime_env(runtime_env.clone(), || {

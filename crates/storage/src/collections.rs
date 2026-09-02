@@ -265,18 +265,23 @@ struct Entry<T> {
 /// core#2716).
 ///
 /// A rotation-log map child is an ordinary [`UnorderedMap`] entry, so its stored
-/// value is `borsh(Entry<([u8; 32], RotationLogEntry)>)` — NOT a bare
+/// value is `borsh(Entry<(RotationLogEntry, [u8; 32])>)` — NOT a bare
 /// `RotationLog` blob. The node-side direct reader (`delta_store`) reads child
 /// bytes straight from RocksDB outside a storage env, so it cannot go through
 /// the `UnorderedMap` handle; this exposes the exact borsh layout the collection
 /// writes (`item` then the `#[storage]` `Element`, whose only serialized field
 /// is its id). Returns `None` if the bytes are not a valid map entry.
+///
+/// Note the tuple is VALUE-first: a map entry stores `(V, K)` so the value sits
+/// at offset 0 whatever the key type. This is the one reader that spells the
+/// layout out, so it moves in lockstep with
+/// [`UnorderedMap::inner`](unordered_map::UnorderedMap).
 pub fn decode_rotation_log_entry_child(
     bytes: &[u8],
 ) -> Option<crate::rotation_log::RotationLogEntry> {
-    borsh::from_slice::<Entry<([u8; 32], crate::rotation_log::RotationLogEntry)>>(bytes)
+    borsh::from_slice::<Entry<(crate::rotation_log::RotationLogEntry, [u8; 32])>>(bytes)
         .ok()
-        .map(|entry| entry.item.1)
+        .map(|entry| entry.item.0)
 }
 
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]

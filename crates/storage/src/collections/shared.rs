@@ -843,8 +843,9 @@ mod tests {
         let wrapper_id = guarded.element().id();
         let map_id = <Map as Data>::id(guarded.get().expect("get"));
         let child = compute_id(map_id, "k".as_bytes());
+        // Value-first: a map entry stores `(V, K)`.
         let entry = <Interface<MainStorage>>::find_by_id::<
-            crate::collections::Entry<(String, LwwRegister<String>)>,
+            crate::collections::Entry<(LwwRegister<String>, String)>,
         >(child)
         .expect("load child")
         .expect("child exists");

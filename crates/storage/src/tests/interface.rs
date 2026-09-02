@@ -2364,12 +2364,16 @@ mod frozen_storage_verification {
     use crate::env;
 
     /// Helper to create valid frozen data blob.
-    /// Format: [key_hash (32 bytes)] + [value_bytes (N bytes)] + [element_id (32 bytes)]
+    ///
+    /// Format: `[value_bytes (N)] + [key_hash (32)] + [element_id (32)]` — a
+    /// map entry is stored VALUE-FIRST, so this mirrors what `UnorderedMap`
+    /// actually writes. It is hand-built rather than produced by the collection,
+    /// which is why it has to be kept honest by `tests/map_entry_layout.rs`.
     fn create_valid_frozen_blob(value: &[u8], element_id: Id) -> Vec<u8> {
         let key_hash: [u8; 32] = Sha256::digest(value).into();
         let mut blob = Vec::new();
-        blob.extend_from_slice(&key_hash);
         blob.extend_from_slice(value);
+        blob.extend_from_slice(&key_hash);
         blob.extend_from_slice(element_id.as_bytes());
         blob
     }
@@ -2379,8 +2383,8 @@ mod frozen_storage_verification {
         let mut key_hash: [u8; 32] = Sha256::digest(value).into();
         key_hash[0] ^= 0xFF; // Corrupt the hash
         let mut blob = Vec::new();
-        blob.extend_from_slice(&key_hash);
         blob.extend_from_slice(value);
+        blob.extend_from_slice(&key_hash);
         blob.extend_from_slice(element_id.as_bytes());
         blob
     }
