@@ -1,0 +1,187 @@
+description: A workflow exercising concurrent RGA edits on the collaborative editor
+name: Collaborative Editor Concurrent Workflow
+
+# Force pull Docker images even if they exist locally
+force_pull_image: true
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: calimero-node
+
+steps:
+  # ============================================
+  # Setup Phase: Install app and create context
+  # ============================================
+
+  # Step 1: Install the collaborative editor application on Node 1
+  - name: Install Collaborative Editor on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: res/collaborative_editor.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create mesh with both nodes
+  - name: Create Mesh
+    type: create_mesh
+    context_node: calimero-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - calimero-node-2
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # ============================================
+  # Scenario 1: concurrent insert at the same position
+  #
+  # Both nodes insert at position 0 with NO intervening propagation wait, so
+  # the merge is actually exercised. The assertion is that the two nodes
+  # converge to the same text - not a specific string, since under RGA today
+  # the winner between concurrent same-position inserts is timestamp-dependent.
+  # ============================================
+
+  - name: Concurrent insert from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "AAA"
+    outputs:
+      concurrent_insert_node1_result: result
+
+  - name: Concurrent insert from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "BBB"
+    outputs:
+      concurrent_insert_node2_result: result
+
+  - name: Wait for concurrent inserts to propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Text After Concurrent Insert (Node 1)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      concurrent_insert_text_node1: result
+
+  - name: Get Text After Concurrent Insert (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      concurrent_insert_text_node2: result
+
+  - name: Assert both nodes converged on concurrent insert
+    type: json_assert
+    statements:
+      - 'json_equal({{concurrent_insert_text_node1}}, {{concurrent_insert_text_node2}})'
+
+  # ============================================
+  # Scenario 2: backward-insertion interleaving (paper Figure 2)
+  #
+  # Each node types a passage, then moves back to the document start and
+  # types a heading, with no propagation wait between the two nodes' edits.
+  # Under RGA the merged result may interleave the two nodes' headings and
+  # passages; under Fugue it must not. This scenario only asserts
+  # convergence (RGA does converge) - the merged text is the before-evidence
+  # captured by the human running this workflow, showing whether each node's
+  # contribution stayed contiguous.
+  # ============================================
+
+  - name: Node 1 types passage
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "PASSAGE1"
+    outputs:
+      node1_passage_result: result
+
+  - name: Node 1 goes back and types heading
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "HEAD1"
+    outputs:
+      node1_heading_result: result
+
+  - name: Node 2 types passage
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "PASSAGE2"
+    outputs:
+      node2_passage_result: result
+
+  - name: Node 2 goes back and types heading
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "HEAD2"
+    outputs:
+      node2_heading_result: result
+
+  - name: Wait for interleaving edits to propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Text After Interleaving (Node 1)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      interleave_text_node1: result
+
+  - name: Get Text After Interleaving (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      interleave_text_node2: result
+
+  - name: Assert both nodes converged on interleaving case
+    type: json_assert
+    statements:
+      - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 60
