@@ -677,12 +677,12 @@ fn fugue_text_text_range(n: usize) {
 ///
 /// | `n`    | `fugue_text_insert_per_char` | `rga_insert_per_char` |
 /// |--------|------------------------------|-----------------------|
-/// | 10     | 49.4                         | 63.5                  |
-/// | 100    | 42.7                         | 147.7                 |
+/// | 10     | 48.4                         | 63.5                  |
+/// | 100    | 41.7                         | 147.7                 |
 /// | 500    | —                            | 547.1                 |
-/// | 1,000  | 42.1                         | —                     |
+/// | 1,000  | 41.1                         | —                     |
 /// | 2,000  | —                            | 2,047.0               |
-/// | 10,000 | 42.0                         | —                     |
+/// | 10,000 | 41.0                         | —                     |
 ///
 /// An append extends the tail run in place, so the block COUNT does not grow
 /// and the number of rows one insert touches does not either.
@@ -715,10 +715,10 @@ fn fugue_text_insert_per_char(n: usize) {
 ///
 /// | `n`   | `fugue_text_insert_middle` | `rga_insert_middle` |
 /// |-------|----------------------------|---------------------|
-/// | 10    | 103.5                      | 63.5                |
-/// | 100   | 284.0                      | 147.7               |
-/// | 500   | 1,084.0                    | 547.1               |
-/// | 2,000 | 4,084.0                    | 2,047.0             |
+/// | 10    | 102.5                      | 63.5                |
+/// | 100   | 283.0                      | 147.7               |
+/// | 500   | 1,083.0                    | 547.1               |
+/// | 2,000 | 4,083.0                    | 2,047.0             |
 ///
 /// Roughly 2x RGA at every size, and the same shape — hence
 /// [`CostShape::QuadraticBuild`], measured at [`QUADRATIC_SIZES`] for the
@@ -759,13 +759,13 @@ fn fugue_text_insert_middle(n: usize) {
 ///
 /// | `n`   | `fugue_text_insert_interleaved_sync` | `rga_insert_interleaved_sync` |
 /// |-------|--------------------------------------|-------------------------------|
-/// | 10    | 155.9                                | 147.4                         |
-/// | 100   | 373.8                                | 413.8                         |
-/// | 500   | 1,283.5                              | 1,503.6                       |
-/// | 2,000 | 4,371.4                              | 5,180.7                       |
+/// | 10    | 154.8                                | 147.4                         |
+/// | 100   | 372.8                                | 413.8                         |
+/// | 500   | 1,282.5                              | 1,503.6                       |
+/// | 2,000 | 4,370.4                              | 5,180.7                       |
 ///
 /// Still [`CostShape::QuadraticBuild`], exactly like its RGA counterpart, and
-/// WORSE than it at `n=10` (155.9 against 147.4) before pulling ahead by a
+/// WORSE than it at `n=10` (154.8 against 147.4) before pulling ahead by a
 /// constant 0.84x-0.90x at the larger sizes. Each remote character arrives from
 /// a different replica anchored at position 0, which splits the run it lands
 /// in, so the block count grows with the document and `load()` reads every
