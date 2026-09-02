@@ -85,6 +85,69 @@ pub(super) struct ConnectBudget {
     pub(super) discovery_wait: std::time::Duration,
 }
 
+/// Reach the invitation's admitters, best-effort and time-boxed.
+///
+/// This is priming, not a prerequisite: [`open_namespace_join_stream`] has its
+/// own budget and will use whichever connection landed, so nothing here needs
+/// to finish for the join to work.
+///
+/// **Bounded by one timeout rather than by how many addresses the invitation
+/// carries.** A dial resolves only when the connection is established or the
+/// transport gives up, so awaiting them one after another let a handful of
+/// unroutable hints spend the whole join before peer selection was asked once.
+/// That is not an edge case: an address is a snapshot from mint time, and an
+/// admitter behind a NAT — or one whose advertised address is not reachable
+/// from where the joiner happens to sit — produces exactly this shape. Docker
+/// networks, split-horizon DNS and CI runners all do.
+///
+/// Concurrent across machines, sequential within one. Several addresses for a
+/// single peer are alternative routes to the same box, so trying them in order
+/// is the point of the per-machine cap in [`group_admitter_routes`]; two
+/// different machines have no reason to wait for each other.
+pub(super) async fn dial_admitter_machines<F, Fut>(
+    routes_by_machine: Vec<(libp2p::PeerId, Vec<libp2p::Multiaddr>)>,
+    budget: std::time::Duration,
+    dial: F,
+) where
+    F: Fn(libp2p::Multiaddr) -> Fut,
+    Fut: std::future::Future<Output = eyre::Result<()>>,
+{
+    // Returning early rather than arming a timeout over nothing: an invitation
+    // with no addresses is the ordinary case for one minted by a node that had
+    // no confirmed external address, and it should cost nothing.
+    if routes_by_machine.is_empty() {
+        return;
+    }
+
+    let attempts = routes_by_machine.into_iter().map(|(peer, routes)| {
+        let dial = &dial;
+        async move {
+            for addr in routes {
+                match dial(addr.clone()).await {
+                    Ok(()) => {
+                        debug!(%peer, %addr, "dialed an admitter named by the invitation");
+                        return;
+                    }
+                    Err(err) => {
+                        debug!(%peer, %addr, %err, "admitter address did not dial")
+                    }
+                }
+            }
+        }
+    });
+
+    if time::timeout(budget, futures_util::future::join_all(attempts))
+        .await
+        .is_err()
+    {
+        debug!(
+            ?budget,
+            "admitter dial budget elapsed; continuing to peer selection with \
+             whatever connected"
+        );
+    }
+}
+
 /// Group admitter addresses by the machine they reach, capped at `max_peers`.
 ///
 /// Order is preserved, and that is load-bearing rather than incidental: the mint
@@ -328,6 +391,7 @@ pub(super) async fn open_namespace_join_stream(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -359,6 +423,141 @@ mod tests {
     /// exercise the protocol-level-retry rejection path.
     fn no_excluded() -> HashSet<PeerId> {
         HashSet::new()
+    }
+
+    /// A dialable multiaddr distinguishable by its port.
+    fn addr(port: u16) -> libp2p::Multiaddr {
+        format!("/ip4/10.0.0.1/udp/{port}/quic-v1")
+            .parse()
+            .expect("a valid multiaddr")
+    }
+
+    /// The property the whole helper exists for: unreachable hints cost one
+    /// budget, not one budget each.
+    ///
+    /// A dial resolves only when the connection is established or the transport
+    /// gives up, so `pending` here is a faithful stand-in for the
+    /// `HandshakeTimedOut` an unroutable address produces. Eight of them
+    /// awaited in turn is how a best-effort priming step came to spend a whole
+    /// join.
+    #[tokio::test(start_paused = true)]
+    async fn unreachable_admitters_cost_one_budget_not_one_each() {
+        let budget = Duration::from_millis(100);
+        let machines: Vec<_> = (0..8)
+            .map(|i| (PeerId::random(), vec![addr(9_000 + i)]))
+            .collect();
+
+        let started = time::Instant::now();
+        dial_admitter_machines(machines, budget, |_addr| async {
+            std::future::pending::<eyre::Result<()>>().await
+        })
+        .await;
+
+        assert_eq!(
+            started.elapsed(),
+            budget,
+            "eight hanging dials must cost one budget; anything more means they \
+             were awaited in sequence"
+        );
+    }
+
+    /// Concurrency across machines, stated as a count rather than a duration so
+    /// it fails for the right reason.
+    ///
+    /// Each dial takes three quarters of the budget, so awaiting them in turn
+    /// would get through one before the deadline. Every machine being attempted
+    /// is only possible if they ran together.
+    #[tokio::test(start_paused = true)]
+    async fn every_machine_is_attempted_because_they_run_concurrently() {
+        let budget = Duration::from_millis(100);
+        let per_dial = Duration::from_millis(75);
+        let attempted = Arc::new(AtomicUsize::new(0));
+
+        let machines: Vec<_> = (0..8)
+            .map(|i| (PeerId::random(), vec![addr(9_100 + i)]))
+            .collect();
+
+        let counter = Arc::clone(&attempted);
+        dial_admitter_machines(machines, budget, move |_addr| {
+            let counter = Arc::clone(&counter);
+            async move {
+                let _prev = counter.fetch_add(1, Ordering::SeqCst);
+                time::sleep(per_dial).await;
+                Ok(())
+            }
+        })
+        .await;
+
+        assert_eq!(
+            attempted.load(Ordering::SeqCst),
+            8,
+            "every named machine must be attempted within one budget"
+        );
+    }
+
+    /// Within one machine the routes stay sequential, and stop at the first
+    /// that answers.
+    ///
+    /// Alternative routes to one peer are the same box — a direct address, a
+    /// relay circuit, whatever it had before it last moved — so dialing them
+    /// all at once would be several connections to one node, and continuing
+    /// after one succeeded would be pointless work.
+    #[tokio::test(start_paused = true)]
+    async fn routes_to_one_machine_are_tried_in_order_until_one_answers() {
+        let tried = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let machines = vec![(PeerId::random(), vec![addr(1), addr(2), addr(3)])];
+
+        let seen = Arc::clone(&tried);
+        dial_admitter_machines(machines, Duration::from_millis(500), move |addr| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.lock()
+                    .expect("the log is not poisoned")
+                    .push(addr.clone());
+                // The second route answers, so the third must never be reached.
+                if addr == self::addr(2) {
+                    Ok(())
+                } else {
+                    Err(eyre::eyre!("unreachable"))
+                }
+            }
+        })
+        .await;
+
+        let tried = tried.lock().expect("the log is not poisoned").clone();
+        assert_eq!(
+            tried,
+            vec![addr(1), addr(2)],
+            "routes must be tried in the order the mint put them in, and stop \
+             once the machine answers"
+        );
+    }
+
+    /// An invitation naming no addresses costs nothing.
+    ///
+    /// This is the ordinary case for one minted by a node with no confirmed
+    /// external address, so it must not arm a timeout over an empty set.
+    #[tokio::test(start_paused = true)]
+    async fn no_hints_is_a_no_op() {
+        let called = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&called);
+
+        let started = time::Instant::now();
+        dial_admitter_machines(Vec::new(), Duration::from_secs(30), move |_addr| {
+            let counter = Arc::clone(&counter);
+            async move {
+                let _prev = counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+
+        assert_eq!(
+            started.elapsed(),
+            Duration::ZERO,
+            "an empty set must not wait"
+        );
+        assert_eq!(called.load(Ordering::SeqCst), 0, "nothing to dial");
     }
 
     /// An admitter named by the invitation is tried before a peer that
