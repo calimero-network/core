@@ -322,6 +322,8 @@ steps:
     method: award_own_badge
     args:
       team_id: team-alpha
+    outputs:
+      own_badge_node1: result.output
 
   - name: Node 2 awards its own badge concurrently
     type: call
@@ -330,6 +332,17 @@ steps:
     method: award_own_badge
     args:
       team_id: team-alpha
+    outputs:
+      own_badge_node2: result.output
+
+  # Precondition, not decoration. If both nodes picked the same bit, a merged
+  # count of 1 is CORRECT and the assertion below would fail for a reason that
+  # has nothing to do with merging. Checking it here means a failure downstream
+  # can only mean the merge did not happen.
+  - name: Assert the two nodes picked different badges
+    type: assert
+    statements:
+      - "{{own_badge_node1}} != {{own_badge_node2}}"
 
   - name: Wait for the badge blobs to merge
     type: wait_for_sync

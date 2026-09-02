@@ -239,7 +239,11 @@ where
             return Ok(false);
         };
 
-        let _ignored = self.inner.insert(Some(id), value)?;
+        let _ignored = self.inner.insert(
+            Some(id),
+            value,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         Ok(true)
     }

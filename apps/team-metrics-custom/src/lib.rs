@@ -164,8 +164,13 @@ impl TeamMetricsApp {
     /// still produce divergent blobs that only a union can reconcile.
     pub fn award_own_badge(&mut self, team_id: String) -> app::Result<u64> {
         let badge = u64::from(calimero_sdk::env::device_id()[0] % 64);
+        let _ = self.award_badge(team_id, badge)?;
 
-        self.award_badge(team_id, badge)
+        // Returns the BIT, not the mask. A workflow has to be able to check
+        // that two nodes awarded DIFFERENT badges before it can read anything
+        // into a merged count of one: without that, "the merge never ran" and
+        // "both nodes happened to pick the same bit" look identical.
+        Ok(badge)
     }
 
     /// How many badges the team holds.

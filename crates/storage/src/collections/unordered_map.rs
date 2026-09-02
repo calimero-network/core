@@ -1011,7 +1011,11 @@ where
         super::rekey::rekey_nested_value(&mut value, id);
 
         // Insert the new (key, value) pair
-        drop(self.map.inner.insert(Some(id), (value, self.key))?);
+        drop(self.map.inner.insert(
+            Some(id),
+            (value, self.key),
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?);
 
         // Now, get a mutable guard to the new entry.
         // We `expect` here because this is a logic error: we just inserted

@@ -156,7 +156,11 @@ where
         // Register this vector type's nested-id re-key thunk so a vector stored
         // as a collection value is re-keyed when the outer collection is stored.
         super::rekey::register_rekey::<Self>();
-        let _ignored = self.inner.insert(None, value)?;
+        let _ignored = self.inner.insert(
+            None,
+            value,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         Ok(())
     }
