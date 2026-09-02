@@ -6,7 +6,7 @@ use crate::NetworkManager;
 
 mod announce_blob;
 mod bootstrap;
-mod dial;
+pub(crate) mod dial;
 mod listen;
 mod mesh_peer_count;
 mod mesh_peers;
