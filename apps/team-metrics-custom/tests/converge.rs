@@ -73,7 +73,12 @@ fn team_stats_converge_to_correct_value() {
 //      so the two agree whenever LWW's tiebreak picks the larger side;
 //   2. two `.ops(..)` closures awarding explicit badges — the harness applies
 //      EVERY op to EVERY replica, so both computed the union directly;
-//   3. a per-device badge — defeated by the thread-local above.
+//   3. a per-device badge — defeated by the thread-local above. It briefly
+//      lived in the workflow instead, where it worked but was FLAKY: two device
+//      ids can agree in the byte the badge came from, and CI duly produced
+//      badge 61 on both nodes. The workflow now passes explicit badges, which
+//      it can because every merobox step names the node it runs on — the
+//      same-op-list constraint that motivated deriving one exists only here.
 //
 // Where the proof actually lives:
 //
