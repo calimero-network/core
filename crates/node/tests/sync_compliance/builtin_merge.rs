@@ -18,7 +18,7 @@
 //! | FrozenStorage | Return existing (FWW) | `test_frozen_storage_*` |
 //! | Custom | WasmRequired error | `test_custom_*` |
 
-use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::merge::{is_builtin_crdt, merge_by_crdt_type};
 
@@ -229,14 +229,14 @@ fn test_custom_requires_wasm() {
     let bytes = vec![1, 2, 3];
 
     let result = merge_by_crdt_type(
-        &CrdtType::Custom("MyApp::CustomType".into()),
+        &CrdtType::Custom(CustomTypeId::of("MyApp::CustomType")),
         &bytes,
         &bytes,
     );
 
     assert!(
-        matches!(result, Err(MergeError::WasmRequired { type_name }) if type_name == "MyApp::CustomType"),
-        "Custom types should return WasmRequired with type name"
+        matches!(result, Err(MergeError::WasmRequired { type_id }) if type_id == CustomTypeId::of("MyApp::CustomType")),
+        "Custom types should return WasmRequired carrying the type id"
     );
 }
 
@@ -303,7 +303,7 @@ fn test_all_builtin_types_classification() {
 
     // Custom is the only non-builtin
     assert!(
-        !is_builtin_crdt(&CrdtType::Custom("X".into())),
+        !is_builtin_crdt(&CrdtType::Custom(CustomTypeId::of("X"))),
         "Custom should NOT be builtin"
     );
 }
@@ -350,6 +350,10 @@ fn test_builtin_merge_behavior_summary() {
     assert_eq!(result, existing, "FrozenStorage should return existing");
 
     // Custom returns error
-    let result = merge_by_crdt_type(&CrdtType::Custom("X".into()), &existing, &incoming);
+    let result = merge_by_crdt_type(
+        &CrdtType::Custom(CustomTypeId::of("X")),
+        &existing,
+        &incoming,
+    );
     assert!(matches!(result, Err(MergeError::WasmRequired { .. })));
 }

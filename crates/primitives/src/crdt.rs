@@ -35,6 +35,52 @@ impl LwwKind {
     }
 }
 
+/// Stable identifier for an app-defined CRDT type.
+///
+/// A [`CrdtType::Custom`] is stamped on every entry of a custom-valued
+/// collection, and entity metadata travels in `LeafMetadata`, lands in
+/// persisted rows, and enters `CausalDelta::compute_id`'s preimage through
+/// `ancestors`. A type *name* there would put a per-entry string in the hash
+/// preimage and on the wire — the surface core#3743 removed from the other
+/// variants. This carries a digest of the name instead, so the wire cost is
+/// eight bytes regardless of how the app spells its types.
+///
+/// The digest is over the type's **declared path**, taken from the source
+/// token at macro-expansion time. It is deliberately NOT
+/// `std::any::type_name`, whose rendering rustc is free to change (it did in
+/// 1.98) — the whole reason those strings were removed.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct CustomTypeId(u64);
+
+impl CustomTypeId {
+    /// Derive the id for a declared type path, e.g. `"team_metrics::TeamStats"`.
+    ///
+    /// FNV-1a/64: `const`, dependency-free, and fixed by this source — a hash
+    /// whose definition can drift is the same trap as `type_name`, so it is
+    /// spelled out here rather than delegated to a crate that may retune.
+    #[must_use]
+    pub const fn of(path: &str) -> Self {
+        let bytes = path.as_bytes();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut i = 0;
+        while i < bytes.len() {
+            hash ^= bytes[i] as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            i += 1;
+        }
+        Self(hash)
+    }
+
+    /// The raw digest, for the guest-side dispatch table.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// CRDT type indicator for merge semantics.
 ///
 /// Identifies the conflict resolution strategy used when merging replicated data.
@@ -155,10 +201,9 @@ pub enum CrdtType {
 
     /// Custom CRDT with app-defined merge.
     ///
-    /// For types annotated with `#[derive(CrdtState)]` that define custom merge logic.
-    /// The string identifies the custom type name within the application.
-    /// Merge: Dispatched to WASM runtime to call the app's merge function.
-    Custom(String),
+    /// Carries a [`CustomTypeId`] the guest resolves to its own merge function.
+    /// Merge: dispatched to the WASM runtime to call the app's merge function.
+    Custom(CustomTypeId),
 
     /// Rotation log (P3 of core#2716).
     ///
@@ -186,6 +231,10 @@ pub enum CrdtType {
 /// predates the removal must not read these bytes: an unknown discriminant
 /// fails the decode outright, where a shared tag would have it consume the
 /// following field as a string length and misalign everything after it.
+///
+/// `Custom` later traded its name for a [`CustomTypeId`] digest and moved to
+/// offset 14 for the same reason, leaving offset 12 as a read-only path for
+/// the name spelling.
 #[cfg(feature = "borsh")]
 const CRDT_TYPE_TAG_V2: u8 = 0x80;
 
@@ -214,11 +263,16 @@ impl BorshSerialize for CrdtType {
             Self::UserStorage => writer.write_all(&[tag(9)]),
             Self::FrozenStorage => writer.write_all(&[tag(10)]),
             Self::SharedStorage => writer.write_all(&[tag(11)]),
-            Self::Custom(name) => {
-                writer.write_all(&[tag(12)])?;
-                BorshSerialize::serialize(name, writer)
-            }
             Self::RotationLog => writer.write_all(&[tag(13)]),
+            // Appended at 14 rather than reusing 12: the payload changed from a
+            // name to a digest, and a reader that still expects a string would
+            // take the digest's first four bytes as a length and misalign
+            // everything after it. An unknown discriminant fails the decode
+            // instead — the same reason the whole tag space moved to 0x80.
+            Self::Custom(id) => {
+                writer.write_all(&[tag(14)])?;
+                BorshSerialize::serialize(id, writer)
+            }
         }
     }
 }
@@ -263,8 +317,14 @@ impl BorshDeserialize for CrdtType {
             9 => Ok(Self::UserStorage),
             10 => Ok(Self::FrozenStorage),
             11 => Ok(Self::SharedStorage),
-            12 => Ok(Self::Custom(String::deserialize_reader(reader)?)),
+            // Name-payload `Custom`, from either pre-0x80 rows or the window
+            // between the tag move and the digest change. Nothing in production
+            // ever constructed one, so this is belt-and-braces, not migration.
+            12 => Ok(Self::Custom(CustomTypeId::of(&String::deserialize_reader(
+                reader,
+            )?))),
             13 => Ok(Self::RotationLog),
+            14 if !legacy => Ok(Self::Custom(CustomTypeId::deserialize_reader(reader)?)),
             _ => Err(borsh::io::Error::new(
                 borsh::io::ErrorKind::InvalidData,
                 "unknown CrdtType discriminant",
@@ -464,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_is_custom() {
-        assert!(CrdtType::Custom("test".to_string()).is_custom());
+        assert!(CrdtType::Custom(CustomTypeId::of("test")).is_custom());
         assert!(!CrdtType::lww_register().is_custom());
     }
 
@@ -493,7 +553,7 @@ mod tests {
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
             CrdtType::SharedStorage,
-            CrdtType::Custom("my_type".to_string()),
+            CrdtType::Custom(CustomTypeId::of("my_type")),
             CrdtType::RotationLog,
         ];
 
@@ -521,7 +581,7 @@ mod tests {
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
             CrdtType::SharedStorage,
-            CrdtType::Custom("my_type".to_string()),
+            CrdtType::Custom(CustomTypeId::of("my_type")),
             CrdtType::RotationLog,
         ];
 
@@ -550,8 +610,12 @@ mod tests {
         assert_eq!(tag(&CrdtType::UserStorage), CRDT_TYPE_TAG_V2 + 9);
         assert_eq!(tag(&CrdtType::FrozenStorage), CRDT_TYPE_TAG_V2 + 10);
         assert_eq!(tag(&CrdtType::SharedStorage), CRDT_TYPE_TAG_V2 + 11);
-        assert_eq!(tag(&CrdtType::Custom("c".into())), CRDT_TYPE_TAG_V2 + 12);
         assert_eq!(tag(&CrdtType::RotationLog), CRDT_TYPE_TAG_V2 + 13);
+        // 12 is retired: it was `Custom(String)`, still readable, never written.
+        assert_eq!(
+            tag(&CrdtType::Custom(CustomTypeId::of("c"))),
+            CRDT_TYPE_TAG_V2 + 14
+        );
     }
 
     /// These bytes are persisted, sent on the wire and hashed into `delta_id`,
@@ -574,11 +638,11 @@ mod tests {
             (CrdtType::UserStorage, &[0x89]),
             (CrdtType::FrozenStorage, &[0x8A]),
             (CrdtType::SharedStorage, &[0x8B]),
-            (
-                CrdtType::Custom("my_type".to_owned()),
-                &[0x8C, 7, 0, 0, 0, b'm', b'y', b'_', b't', b'y', b'p', b'e'],
-            ),
             (CrdtType::RotationLog, &[0x8D]),
+            (
+                CrdtType::Custom(CustomTypeId::of("my_type")),
+                &[0x8E, 172, 230, 240, 133, 239, 162, 33, 227],
+            ),
         ];
 
         for (crdt_type, expected) in frozen {
@@ -629,6 +693,33 @@ mod tests {
         // Payload-free legacy variants are unchanged apart from their tag.
         assert_eq!(legacy(1, &[]), CrdtType::GCounter);
         assert_eq!(legacy(13, &[]), CrdtType::RotationLog);
+
+        // A name-payload `Custom` resolves to the digest of that name, from
+        // either tag space.
+        assert_eq!(
+            legacy(12, &["my_type"]),
+            CrdtType::Custom(CustomTypeId::of("my_type"))
+        );
+        assert_eq!(
+            legacy(CRDT_TYPE_TAG_V2 + 12, &["my_type"]),
+            CrdtType::Custom(CustomTypeId::of("my_type"))
+        );
+    }
+
+    /// `CustomTypeId` is stamped on entries, travels in `LeafMetadata` and
+    /// enters `compute_id`'s preimage, so the digest function is wire format.
+    /// Retuning it silently re-labels every custom entry in the network.
+    #[test]
+    fn custom_type_id_digest_is_frozen() {
+        assert_eq!(CustomTypeId::of("my_type").get(), 0xe321_a2ef_85f0_e6ac);
+        assert_eq!(
+            CustomTypeId::of("team_metrics::TeamStats").get(),
+            0x6e4a_e421_df5b_87da
+        );
+        // FNV-1a's offset basis, i.e. the empty path hashes to a fixed value
+        // rather than to zero - `Default` must stay distinguishable from it.
+        assert_eq!(CustomTypeId::of("").get(), 0xcbf2_9ce4_8422_2325);
+        assert_ne!(CustomTypeId::of(""), CustomTypeId::default());
     }
 
     /// A binary predating the payload removal must reject current bytes rather
@@ -636,7 +727,7 @@ mod tests {
     #[cfg(feature = "borsh")]
     #[test]
     fn current_tags_are_unknown_to_a_legacy_reader() {
-        for tag in 0x80..=0x8D_u8 {
+        for tag in 0x80..=0x8E_u8 {
             assert!(
                 LEGACY_TAGS.binary_search(&tag).is_err(),
                 "tag {tag:#x} collides with a legacy discriminant"
