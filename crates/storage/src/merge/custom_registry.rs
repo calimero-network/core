@@ -86,7 +86,13 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<CustomTypeId, CustomMergeFn>
 /// value graph (`Tree { children: UnorderedMap<_, Tree> }`) from recursing
 /// forever — the same guard `register_rekey_cascade` uses.
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
-pub fn register_custom_merge<T: CustomMergeable>() -> bool {
+pub fn register_custom_merge<T>() -> bool
+where
+    T: CustomMergeable
+        + crate::collections::Mergeable
+        + borsh::BorshSerialize
+        + borsh::BorshDeserialize,
+{
     let merge_fn: CustomMergeFn = |existing, incoming| {
         let mut existing_value = borsh::from_slice::<T>(existing)
             .map_err(|e| MergeError::SerializationError(format!("existing: {e}")))?;
@@ -165,6 +171,12 @@ pub fn clear_custom_merge_registry() {
     clippy::missing_const_for_fn,
     reason = "signature parity with the real one"
 )]
-pub fn register_custom_merge<T: CustomMergeable>() -> bool {
+pub fn register_custom_merge<T>() -> bool
+where
+    T: CustomMergeable
+        + crate::collections::Mergeable
+        + borsh::BorshSerialize
+        + borsh::BorshDeserialize,
+{
     false
 }

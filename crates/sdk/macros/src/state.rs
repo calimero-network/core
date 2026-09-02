@@ -935,15 +935,7 @@ pub(crate) fn rekey_register_calls(fields: &syn::Fields) -> TokenStream {
         .iter()
         .filter(|ty| seen.insert(ty.to_token_stream().to_string()))
         .map(|ty| {
-            // Both registrations ride the same walk. A custom-merge type is
-            // always a re-key target too (`#[app::mergeable]` emits both), and
-            // the re-key cascade re-runs this emission for every nested value
-            // type — so pairing them here is what carries app-defined merge
-            // registration through the whole value graph instead of one level.
-            quote! {
-                ::calimero_storage::register_rekey_if_supported!(#ty);
-                ::calimero_storage::register_custom_merge_if_supported!(#ty);
-            }
+            quote! { ::calimero_storage::register_rekey_if_supported!(#ty); }
         });
 
     quote! { #(#calls)* }

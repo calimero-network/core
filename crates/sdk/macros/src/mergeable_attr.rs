@@ -104,6 +104,15 @@ pub fn expand(args: &Args, input: DeriveInput) -> TokenStream {
             const TYPE_ID:
                 ::calimero_storage::collections::crdt_meta::CustomTypeId =
                 ::calimero_storage::collections::crdt_meta::CustomTypeId::of(#type_path);
+
+            // Generated here rather than defaulted on the trait: `Self` is
+            // concrete at this point, so the `Mergeable` + borsh bounds the
+            // registry needs are satisfiable without the trait carrying them.
+            // A missing `impl Mergeable for` this type surfaces as an
+            // unsatisfied bound on this call.
+            fn register_merge() -> bool {
+                ::calimero_storage::merge::register_custom_merge::<Self>()
+            }
         }
 
         // Declaring the type is what makes dispatch reachable: the entry is
@@ -149,6 +158,16 @@ pub fn expand(args: &Args, input: DeriveInput) -> TokenStream {
 
             fn register_nested_value_types() {
                 #rekey_register_body
+            }
+
+            // Hooks this type's merge into the registration walk. The walk is
+            // the re-key one; riding it means app-defined merge reaches the
+            // whole value graph, cascade and termination guard included,
+            // instead of one level down from the root.
+            fn register_own_custom_merge() {
+                let _ = <Self as
+                    ::calimero_storage::collections::crdt_meta::CustomMergeable
+                >::register_merge();
             }
         }
     }

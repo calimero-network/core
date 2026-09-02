@@ -109,11 +109,23 @@ pub trait Mergeable: crate::collections::rekey::RekeyTarget {
 /// **total**. The last one is the trap: `Err` is not validation, it is a
 /// refusal to converge — the entity stays divergent and repair retries it
 /// indefinitely. Reject bad input on the write path, not here.
-pub trait CustomMergeable:
-    Mergeable + borsh::BorshSerialize + borsh::BorshDeserialize + Sized + 'static
-{
+pub trait CustomMergeable: 'static {
     /// Stable identity for this type on the wire.
     const TYPE_ID: CustomTypeId;
+
+    /// Register this type's merge under [`Self::TYPE_ID`].
+    ///
+    /// Returns whether this was a NEW registration, so the cascade walk
+    /// terminates on a self-referential value graph.
+    ///
+    /// The body is macro-generated, which is the point: it needs `Mergeable`
+    /// and both borsh bounds, and carrying those as SUPERTRAITS would make
+    /// merely asking "does `T` implement this?" evaluate them. The registration
+    /// walk asks that of every field type reachable from the app state,
+    /// including types whose borsh impl is itself broken — and each such
+    /// question would then re-report that break. It cost a duplicated
+    /// `Authorizer` diagnostic before the bounds moved here.
+    fn register_merge() -> bool;
 }
 
 // Feature-insensitive compile guard for the `Mergeable: RekeyTarget` supertrait.

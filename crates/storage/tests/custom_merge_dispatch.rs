@@ -9,6 +9,10 @@
 //! `CrdtType::Custom("TestType")` straight into the merge function, proving the
 //! dispatch worked while nothing in production ever produced that value.
 //!
+//! Registration goes through `register_rekey_cascade`, which is the production
+//! walk — not a bespoke call — so these tests exercise the path an app actually
+//! takes rather than one built for them.
+//!
 //! Own integration binary (`required-features = ["testing"]`) because the
 //! custom-merge registry is process-global here, with no reset — so each test
 //! uses a DISTINCT type.
@@ -19,9 +23,9 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::{CustomTypeId, MergeError};
+use calimero_storage::collections::rekey::register_rekey_cascade;
 use calimero_storage::collections::{Counter, CrdtMeta, CrdtType, Mergeable};
 use calimero_storage::merge::{merge_by_crdt_type, merge_custom};
-use calimero_storage::register_custom_merge_if_supported;
 
 /// The id a `CrdtType::Custom` is carrying, or a failure naming what it was.
 fn custom_id_of<T: CrdtMeta>() -> CustomTypeId {
@@ -119,7 +123,7 @@ fn distinct_types_get_distinct_ids() {
 /// app's `max`, where delegation or LWW would yield whichever side won.
 #[test]
 fn registration_makes_the_apps_own_rule_reachable() {
-    register_custom_merge_if_supported!(HighestBid);
+    register_rekey_cascade::<HighestBid>();
 
     let low = borsh::to_vec(&HighestBid {
         amount: 3,
@@ -160,7 +164,7 @@ fn an_unregistered_type_reports_the_id_it_could_not_resolve() {
 /// change; this assertion is expected to be inverted then, not deleted.
 #[test]
 fn dispatch_is_declared_but_not_yet_reached() {
-    register_custom_merge_if_supported!(HighestBid);
+    register_rekey_cascade::<HighestBid>();
 
     let bytes = borsh::to_vec(&HighestBid::default()).unwrap();
     let result = merge_by_crdt_type(&HighestBid::crdt_type(), &bytes, &bytes);

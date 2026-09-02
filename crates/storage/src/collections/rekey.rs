@@ -94,6 +94,25 @@ pub trait RekeyTarget: Any {
     /// to cascade through a trait object won't compile rather than silently
     /// taking the no-op default. The instance-level `rekey_relative_to` stays
     /// object-safe — it is the one called through the type-erased thunk.
+    /// Register THIS type's app-defined merge, if it has one.
+    ///
+    /// Defaulted to nothing and overridden by `#[app::mergeable]`. It lives on
+    /// `RekeyTarget` rather than in its own `register_*_if_supported!` probe
+    /// because a probe has to NAME the type to dispatch on it, and naming a
+    /// type whose own bounds are unsatisfiable re-reports that failure. The
+    /// registration walk offers it every field type reachable from the app
+    /// state, so a second probe duplicated the diagnostic for a wrong
+    /// `Authorizer` — see `tests/macros/error_bad_authorizer.rs`. Ordinary
+    /// trait dispatch on a concrete `T` asks the same question for free.
+    ///
+    /// Every `CustomMergeable` is a `RekeyTarget`: `#[app::mergeable]` emits
+    /// both, so this hook is always available where it is needed.
+    fn register_own_custom_merge()
+    where
+        Self: Sized,
+    {
+    }
+
     fn register_nested_value_types()
     where
         Self: Sized,
@@ -122,6 +141,12 @@ pub fn field_child_id(parent_id: Id, field_name: &str) -> Id {
 /// already-registered type is never re-walked.
 #[doc(hidden)]
 pub fn register_rekey_cascade<T: RekeyTarget + 'static>() {
+    // Unconditional, unlike the cascade below: a type already present in the
+    // re-key registry (a collection self-registers in its constructor) would
+    // otherwise skip its merge registration entirely, depending on which ran
+    // first. The insert is idempotent, so repeating it is only cheap work.
+    T::register_own_custom_merge();
+
     if register_rekey::<T>() {
         T::register_nested_value_types();
     }
@@ -251,38 +276,6 @@ macro_rules! rekey_field_if_supported {
 /// ([`RekeyTarget::register_nested_value_types`]). So one call on a root field
 /// type transitively covers the whole reachable custom-struct value graph, not
 /// just one level.
-/// Register `$t`'s app-defined merge, if it has one.
-///
-/// Autoref specialisation, for the same reason [`register_rekey_if_supported`]
-/// uses it: the call site knows the concrete type, a generic `fn` would not.
-/// Resolving inside a generic function always picks the no-op arm, because `T`
-/// is unknown there — so this has to expand where the type is spelled.
-///
-/// Emitted beside the re-key registration on the same walk, so a type reachable
-/// through another custom struct's collection is registered by the cascade
-/// rather than only at the root.
-#[macro_export]
-macro_rules! register_custom_merge_if_supported {
-    ($t:ty) => {{
-        struct __CmProbe<T>(::core::marker::PhantomData<T>);
-        trait __CmViaReg {
-            fn __cm_go(self);
-        }
-        impl<T: $crate::collections::crdt_meta::CustomMergeable> __CmViaReg for __CmProbe<T> {
-            fn __cm_go(self) {
-                let _ = $crate::merge::register_custom_merge::<T>();
-            }
-        }
-        trait __CmViaNoop {
-            fn __cm_go(self);
-        }
-        impl<T> __CmViaNoop for &__CmProbe<T> {
-            fn __cm_go(self) {}
-        }
-        __CmProbe::<$t>(::core::marker::PhantomData).__cm_go()
-    }};
-}
-
 #[macro_export]
 macro_rules! register_rekey_if_supported {
     ($t:ty) => {{
