@@ -53,7 +53,9 @@ pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResul
 // Always available: both have a host fallback, so the registration walk and the
 // merge dispatch compile from any build rather than only the ones that can act
 // on them. See `custom_registry`.
-pub use custom_registry::{has_custom_merges, merge_custom, register_custom_merge};
+pub use custom_registry::{
+    custom_type_id_of, has_custom_merges, merge_custom, register_custom_merge,
+};
 
 // Always-native wrapper for the in-process test harness. Unlike
 // `register_crdt_merge` it isn't gated behind the `testing` feature, so an

@@ -43,7 +43,7 @@ use borsh::{from_slice, to_vec};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::address::Id;
 use crate::child_trie::ChildTrie;
@@ -3245,8 +3245,30 @@ impl<S: StorageAdaptor> Interface<S> {
         let final_data = if let Some(last_metadata) = &last_metadata {
             if matches!(
                 metadata.crdt_type,
-                Some(crate::collections::crdt_meta::CrdtType::RotationLog)
-            ) {
+                Some(
+                    crate::collections::crdt_meta::CrdtType::RotationLog
+                        | crate::collections::crdt_meta::CrdtType::Custom(_)
+                )
+            ) && !crate::collections::is_app_root_entry(id)
+            {
+                // `Custom` joins this arm for the same reason, and it is
+                // load-bearing rather than tidy. The `is_app_root_entry` guard
+                // keeps it to NON-root entries: a root stamped `Custom` has its
+                // own merge path below (`merge_root_state`), which raises the
+                // I5 error when the app registered no merger. Catching roots
+                // here instead would swallow that error and resolve them by
+                // LWW — `non_opaque_root_local_write_still_errors_when_unregistered`
+                // is the test that says so. The `updated_at` branches below
+                // short-circuit a stale incoming write with `return Ok(None)`,
+                // which is right for LWW — an older write loses anyway — and
+                // wrong for an app-defined rule, which still needs to SEE that
+                // write. Without this, whichever replica happened to write
+                // second merges and the other silently keeps its own value:
+                // concurrent 900 and 100 under a "highest wins" rule converge to
+                // 900 on one node and 100 on the other. The merge has to run in
+                // both directions or it is not commutative, and the entities
+                // never converge.
+                //
                 // P3 (core#2716) per-`delta_id` rotation-log child. Merge
                 // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
                 // would stale-skip a concurrent same-id write). `try_merge_non_root`
@@ -3876,14 +3898,54 @@ impl<S: StorageAdaptor> Interface<S> {
                     );
                 }
             }
+        } else if let CrdtType::Custom(type_id) = crdt_type {
+            // App-defined merge. The entry carries the id because its
+            // collection stamped it at insert from the value type's
+            // declaration; without that stamp this arm is unreachable and the
+            // app's rule silently never runs.
+            match crate::merge::merge_custom(*type_id, existing, incoming) {
+                Ok(merged) => {
+                    trace!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        "Merged via the app's own rule"
+                    );
+                    return Ok(merged);
+                }
+                // Nothing claimed the id in this build. In WASM that means the
+                // app no longer declares a type it once stamped — upgrade skew.
+                // On a host there is no registry at all and the merge belongs
+                // to the guest callback, which the caller reaches instead.
+                Err(MergeError::WasmRequired { .. }) => {
+                    debug!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        "No app merge registered here; leaving it to the caller"
+                    );
+                }
+                // The app's own rule failed. LWW is the wrong repair — it would
+                // resolve a conflict the app declared itself responsible for,
+                // and do it differently on each replica depending on which side
+                // arrived first. Refuse instead.
+                Err(err) => {
+                    error!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = ?err,
+                        "App-defined merge failed"
+                    );
+                    return Err(StorageError::MergeFailure(err));
+                }
+            }
         } else {
-            // Types that need WASM callback (LwwRegister, collections, Custom)
-            // For now, fall back to LWW. PR #1940 will add WASM callback support.
             debug!(
                 target: "storage::merge",
                 %id,
                 crdt_type = ?crdt_type,
-                "CRDT type requires WASM callback, falling back to LWW"
+                "CRDT type is not merged in this layer, falling back to LWW"
             );
         }
 

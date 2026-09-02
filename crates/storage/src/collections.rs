@@ -633,7 +633,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         for (index, (item, storage_type)) in snapshot.into_iter().enumerate() {
             let id = compute_id(parent, &(index as u64).to_le_bytes());
             let _reinserted = self
-                .insert_with_storage_type(Some(id), item, storage_type)
+                .insert_with_storage_type(Some(id), item, storage_type, None)
                 .expect("re-insert vector child during reindex");
         }
     }
@@ -648,7 +648,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // the bare `Collection::insert` (sets, vectors, RGA), so guarding a
         // collection covers those paths too — not only the direct `map.insert`.
         let inherited = self.storage.metadata.storage_type.clone();
-        self.insert_with_storage_type(id, item, inherited)
+        self.insert_with_storage_type(id, item, inherited, None)
             .map(|(_id, item)| item)
     }
 
@@ -685,11 +685,19 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// the id is the only stable way to address the entry afterwards —
     /// enumeration is `(created_at, id)` ordered over a set other replicas
     /// insert into, so a position is not (core#3637).
+    /// `crdt_type` stamps the ENTRY, not the collection.
+    ///
+    /// It is what makes app-defined merge reachable: `try_merge_non_root`
+    /// dispatches on the entry's own `crdt_type`, and an entry that declares
+    /// nothing takes the legacy branch and resolves last-write-wins. Only the
+    /// collections that know their value type pass `Some` — the generic
+    /// `insert` cannot, since `T` there is already the erased item.
     pub(crate) fn insert_with_storage_type(
         &mut self,
         id: Option<Id>,
         item: T,
         storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
         let mut collection = CollectionMut::new(self);
 
@@ -699,6 +707,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         };
         // Update the `StorageType`.
         entry.storage.metadata.storage_type = storage_type;
+        entry.storage.metadata.crdt_type = crdt_type;
 
         collection.insert(&mut entry)?;
 

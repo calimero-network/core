@@ -10,6 +10,8 @@
 //! `__calimero_register_merge` export, and are read by `Interface::save_internal`
 //! running in that same instance during delta apply.
 
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+use core::any::TypeId;
 #[cfg(test)]
 use core::cell::RefCell;
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
@@ -79,6 +81,51 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<CustomTypeId, CustomMergeFn>
     })
 }
 
+/// Rust type -> wire id, for stamping an entry at insert time.
+///
+/// Separate from the dispatch table because the two are looked up by different
+/// keys and at different moments. Dispatch arrives from the wire holding a
+/// [`CustomTypeId`]; stamping happens inside a generic `insert<V>` that knows
+/// only `V`, and cannot name a trait bound to ask `V` directly — the same
+/// constraint `rekey_nested_value` solves the same way.
+#[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
+static CUSTOM_TYPE_IDS: LazyLock<RwLock<HashMap<TypeId, CustomTypeId>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+#[cfg(test)]
+thread_local! {
+    static CUSTOM_TYPE_IDS: RefCell<HashMap<TypeId, CustomTypeId>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The wire id `V` was registered under, if it declared one.
+///
+/// Callable from a generic `insert<V>`: it keys on `TypeId`, so it needs no
+/// bound on `V` beyond `'static`.
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+#[must_use]
+pub fn custom_type_id_of<V: 'static>() -> Option<CustomTypeId> {
+    #[cfg(not(test))]
+    {
+        CUSTOM_TYPE_IDS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&TypeId::of::<V>())
+            .copied()
+    }
+    #[cfg(test)]
+    {
+        CUSTOM_TYPE_IDS.with(|m| m.borrow().get(&TypeId::of::<V>()).copied())
+    }
+}
+
+/// Host build: nothing registers, so nothing is stamped.
+#[cfg(not(any(target_arch = "wasm32", test, feature = "testing")))]
+#[must_use]
+pub const fn custom_type_id_of<V: 'static>() -> Option<CustomTypeId> {
+    None
+}
+
 /// Register `T`'s merge under its [`CustomMergeable::TYPE_ID`].
 ///
 /// Returns whether this was a NEW registration. The cascade walk offers every
@@ -94,9 +141,20 @@ where
         + borsh::BorshDeserialize,
 {
     let merge_fn: CustomMergeFn = |existing, incoming| {
-        let mut existing_value = borsh::from_slice::<T>(existing)
+        // These are ENTRY bytes, not value bytes: `borsh(item) ++ element id`,
+        // and for a map `item` is `(V, K)`. Only the leading `V` is ours — the
+        // key and the id belong to the collection and must come back byte for
+        // byte.
+        //
+        // Hence reader-decoding rather than `from_slice`, which rejects
+        // trailing bytes. The reader stops exactly where `V` ends, which is the
+        // whole reason entries are stored value-first: at offset 0 a value is
+        // decodable without knowing the key's type.
+        let mut existing_rest = existing;
+        let mut existing_value = T::deserialize_reader(&mut existing_rest)
             .map_err(|e| MergeError::SerializationError(format!("existing: {e}")))?;
-        let incoming_value = borsh::from_slice::<T>(incoming)
+
+        let incoming_value = T::deserialize_reader(&mut &incoming[..])
             .map_err(|e| MergeError::SerializationError(format!("incoming: {e}")))?;
 
         // Merge mode suppresses timestamp generation. Without it each replica
@@ -104,8 +162,30 @@ where
         // differ, so identical logical state hashes differently.
         crate::env::with_merge_mode(|| existing_value.merge(&incoming_value))?;
 
-        borsh::to_vec(&existing_value).map_err(|e| MergeError::SerializationError(e.to_string()))
+        // The merged value, then `existing`'s untouched tail. Taking the tail
+        // from `existing` rather than `incoming` keeps the entry's own id: both
+        // sides describe the same entity, so the key agrees, but the id is this
+        // replica's and is not the merge's to change.
+        let mut out = borsh::to_vec(&existing_value)
+            .map_err(|e| MergeError::SerializationError(e.to_string()))?;
+        out.extend_from_slice(existing_rest);
+        Ok(out)
     };
+
+    // Both tables or neither: a stamped entry whose id has no merge function
+    // would dispatch to nothing, and a registered merge whose type is never
+    // stamped would never be reached.
+    #[cfg(not(test))]
+    {
+        let _ = CUSTOM_TYPE_IDS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(TypeId::of::<T>(), T::TYPE_ID);
+    }
+    #[cfg(test)]
+    CUSTOM_TYPE_IDS.with(|m| {
+        let _ = m.borrow_mut().insert(TypeId::of::<T>(), T::TYPE_ID);
+    });
 
     with_registry_mut(|registry| registry.insert(T::TYPE_ID, merge_fn).is_none())
 }

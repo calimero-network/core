@@ -192,6 +192,7 @@ where
                     anchor,
                     signature_data: None,
                 },
+                None,
             )
             .expect("failed to write initial WriterSetCell value")
             .1;
@@ -273,6 +274,7 @@ where
                     anchor: new_anchor,
                     signature_data: None,
                 },
+                None,
             )
             .expect("failed to relocate WriterSetCell value")
             .1;
@@ -515,9 +517,9 @@ where
             anchor: self.inner.id(),
             signature_data: None,
         };
-        let (_new_id, new) = self
-            .inner
-            .insert_with_storage_type(Some(value_id), value, member)?;
+        let (_new_id, new) =
+            self.inner
+                .insert_with_storage_type(Some(value_id), value, member, None)?;
         *self.value.borrow_mut() = Some(new);
         Ok(Some(old))
     }

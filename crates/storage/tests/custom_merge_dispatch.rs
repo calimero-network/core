@@ -1,7 +1,5 @@
-//! `#[app::mergeable]` declares a type and registers its merge (links 1 and 3
-//! of #3785). Stamping the declaration onto collection entries is link 2 and is
-//! NOT here — `dispatch_is_declared_but_not_yet_reached` pins that gap so this
-//! change cannot be mistaken for a working feature.
+//! `#[app::mergeable]` declares a type, registers its merge, and gets that
+//! declaration stamped onto the entries holding it — links 1, 2 and 3 of #3785.
 //!
 //! Every id here is read back off the type via `CrdtMeta::crdt_type()` rather
 //! than written out by hand. Hand-built ids are what let PR #1995 ship a
@@ -25,7 +23,7 @@ use calimero_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::{CustomTypeId, MergeError};
 use calimero_storage::collections::rekey::register_rekey_cascade;
 use calimero_storage::collections::{Counter, CrdtMeta, CrdtType, Mergeable};
-use calimero_storage::merge::{merge_by_crdt_type, merge_custom};
+use calimero_storage::merge::{custom_type_id_of, merge_by_crdt_type, merge_custom};
 
 /// The id a `CrdtType::Custom` is carrying, or a failure naming what it was.
 fn custom_id_of<T: CrdtMeta>() -> CustomTypeId {
@@ -157,13 +155,13 @@ fn an_unregistered_type_reports_the_id_it_could_not_resolve() {
     );
 }
 
-/// **The gap this change does not close.** `merge_by_crdt_type` is what
-/// `Interface::try_merge_non_root` calls, and it still refuses a `Custom`
-/// instead of consulting the registry — and nothing stamps an entry with a
-/// `Custom` in the first place. Both are link 2, and land together in the next
-/// change; this assertion is expected to be inverted then, not deleted.
+/// The gap PR #3791 left open, now closed: `merge_by_crdt_type` is what
+/// `Interface::try_merge_non_root` consults, and a `Custom` reaching it used to
+/// be refused. It still is *here* — dispatch lives in `try_merge_non_root`
+/// itself, not in `merge_by_crdt_type`, because the registry lookup needs the
+/// entry's id rather than only its variant.
 #[test]
-fn dispatch_is_declared_but_not_yet_reached() {
+fn merge_by_crdt_type_still_defers_custom_to_the_caller() {
     register_rekey_cascade::<HighestBid>();
 
     let bytes = borsh::to_vec(&HighestBid::default()).unwrap();
@@ -171,6 +169,29 @@ fn dispatch_is_declared_but_not_yet_reached() {
 
     assert!(
         matches!(result, Err(MergeError::WasmRequired { .. })),
-        "storage still refuses Custom rather than dispatching it"
+        "variant-only dispatch cannot resolve a Custom; the id-aware caller does"
     );
+}
+
+/// **Link 2.** An entry holding a declared type is stamped with it at insert.
+/// Without this the entry carries `crdt_type: None`, `try_merge_non_root` takes
+/// its legacy branch, and every merge rule above is unreachable — which is
+/// precisely the state PR #1995 shipped in.
+#[test]
+fn a_collection_entry_is_stamped_with_its_value_type() {
+    register_rekey_cascade::<HighestBid>();
+
+    assert_eq!(
+        custom_type_id_of::<HighestBid>(),
+        Some(custom_id_of::<HighestBid>()),
+        "the stamping table must agree with what the type declares"
+    );
+}
+
+/// A type that never registered is not stamped, so an ordinary value keeps the
+/// legacy path rather than being labelled with someone else's id.
+#[test]
+fn an_unregistered_type_is_not_stamped() {
+    assert_eq!(custom_type_id_of::<u64>(), None);
+    assert_eq!(custom_type_id_of::<String>(), None);
 }

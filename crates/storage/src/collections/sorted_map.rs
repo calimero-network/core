@@ -383,9 +383,12 @@ where
         let order_key = S::index_supported().then(|| key.as_ref().to_vec());
         let collection = self.inner.id();
 
-        let _ignored = self
-            .inner
-            .insert_with_storage_type(Some(id), (value, key), storage_type)?;
+        let _ignored = self.inner.insert_with_storage_type(
+            Some(id),
+            (value, key),
+            storage_type,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         if let Some(order_key) = order_key {
             // Done after the inner write so the collection's `full_hash` already
