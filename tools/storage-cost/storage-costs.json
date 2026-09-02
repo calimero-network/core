@@ -124,6 +124,56 @@
       }
     }
   },
+  "rga_insert_interleaved_sync": {
+    "tolerance_pct": 5,
+    "sizes": {
+      "00000010": {
+        "rows_read": 1483,
+        "rows_written": 422,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 41341,
+        "rows_written": 3977,
+        "rows_removed": 0
+      },
+      "00000500": {
+        "rows_read": 751986,
+        "rows_written": 19777,
+        "rows_removed": 0
+      },
+      "00002000": {
+        "rows_read": 10387273,
+        "rows_written": 79027,
+        "rows_removed": 0
+      }
+    }
+  },
+  "rga_insert_middle": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 635,
+        "rows_written": 205,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 14765,
+        "rows_written": 1825,
+        "rows_removed": 0
+      },
+      "00000500": {
+        "rows_read": 273565,
+        "rows_written": 9025,
+        "rows_removed": 0
+      },
+      "00002000": {
+        "rows_read": 4094065,
+        "rows_written": 36025,
+        "rows_removed": 0
+      }
+    }
+  },
   "rga_insert_per_char": {
     "tolerance_pct": 0,
     "sizes": {
@@ -253,22 +303,22 @@
     "tolerance_pct": 18,
     "sizes": {
       "00000010": {
-        "rows_read": 41,
+        "rows_read": 42,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 300,
+        "rows_read": 304,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00001000": {
-        "rows_read": 2158,
+        "rows_read": 2152,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00010000": {
-        "rows_read": 13286,
+        "rows_read": 13279,
         "rows_written": 0,
         "rows_removed": 0
       }

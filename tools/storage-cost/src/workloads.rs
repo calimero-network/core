@@ -18,10 +18,18 @@
 //! curve is required to be flat or is a known-linear cost being held under
 //! observation.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use calimero_storage::action::Action;
 use calimero_storage::collections::{
     LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet, Vector,
 };
-use calimero_storage::store::MainStorage;
+use calimero_storage::delta::{clear_pending_delta, StorageDelta};
+use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
+use calimero_storage::interface::{ApplyContext, Interface};
+use calimero_storage::store::{Key, MainStorage};
 
 use crate::reset_counters;
 
@@ -264,6 +272,209 @@ fn rga_insert_per_char(n: usize) {
     }
 }
 
+/// Insert `n` characters one at a time at the MIDDLE of the document.
+///
+/// `rga_insert_per_char` inserts at `i` — i.e. always at the END, because at
+/// the top of iteration `i` the document is exactly `i` characters long. It is
+/// an append benchmark wearing a typing benchmark's name, and an append is the
+/// one position an ordered structure can answer without searching: a seek to
+/// the last key. This workload inserts at `i / 2` instead — the middle — which
+/// is the position no end-anchored fast path can serve.
+///
+/// # What it measures TODAY, and why it is here anyway
+///
+/// Today it measures exactly what `rga_insert_per_char` measures, to the row:
+/// `63.5`, `147.7`, `547.1`, `2_047.0` reads/entry at [`QUADRATIC_SIZES`],
+/// identical at every size. That is not a redundancy, it is the finding —
+/// `insert` re-derives its left-neighbour by linearising the WHOLE document
+/// (`get_ordered_chars`, see `rga.rs`) before it looks at `pos` at all, so
+/// today the position is free and the linearisation is the whole cost.
+///
+/// It earns its place as the control on the fix, not on the status quo. A
+/// change that makes appends cheap by remembering the tail — the obvious first
+/// move, and one that would make `rga_insert_per_char` go flat — leaves this
+/// workload untouched, so the pair separates "ordered insertion got cheaper"
+/// from "the append case got a special case".
+fn rga_insert_middle(n: usize) {
+    let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
+    for i in 0..n {
+        rga.insert(i / 2, 'a').expect("insert should succeed");
+    }
+}
+
+/// Build a document of `n` characters, HALF of them authored locally and half
+/// arriving from a remote replica, strictly alternating.
+///
+/// # The blind spot this exists to remove
+///
+/// Every other RGA workload in this registry is single-replica: one writer,
+/// no sync, nothing ever arrives from outside. A design that pays to
+/// re-derive some ordering structure on every REMOTE write is therefore
+/// structurally invisible to all of them — they would stay flat while
+/// production regressed under exactly the workload a CRDT text collection
+/// exists for. This workload is the one that can see it.
+///
+/// The remote half does NOT go through [`ReplicatedGrowableArray::insert`].
+/// Calling `insert` again would be a second LOCAL write wearing a remote
+/// label, and would measure the same code path twice. It goes through
+/// [`Interface::apply_action`] — the real receive path, the one
+/// `crates/node/primitives/src/sync/storage_bridge.rs` drives when a delta
+/// lands off the wire. See [`land_remote_char`] for how those actions are
+/// authored, and [`remote_char_actions`] for the one piece of thread-local
+/// hygiene that path needs.
+///
+/// # Why it re-fetches the root every iteration
+///
+/// A `Root` handle caches its children, so a handle held across the loop
+/// never observes a character that landed through the apply path — the local
+/// writer would keep linearising only its OWN half and the sync cost would
+/// be measured against a document half the size it claims. Fetch-write-commit
+/// per iteration is also what a node actually does: one host call is one
+/// fetch, one mutation, one commit (`lww_register_set` uses the same shape,
+/// for the same reason). `every_remote_character_actually_lands` below pins
+/// this: it fails if the applied characters stop showing up in the document.
+///
+/// # Why `n / 2` iterations, not `n`
+///
+/// `n` means "characters in the collection" everywhere else in this
+/// registry, and `reads/entry` divides by it. One iteration here produces
+/// TWO characters — one local, one remote — so `n / 2` iterations is what
+/// makes `n` mean the same thing it means for `rga_insert_per_char`, and
+/// makes the two curves directly comparable rather than merely adjacent.
+/// Measured `reads/entry` (`rows_read / n`) at [`QUADRATIC_SIZES`]:
+///
+/// | `n`   | reads/entry |
+/// |-------|-------------|
+/// | 10    | 148.3       |
+/// | 100   | 413.4       |
+/// | 500   | 1,504.0     |
+/// | 2,000 | 5,193.6     |
+///
+/// (the committed `storage-costs.json` row; `rows_read` moves by well under
+/// 1% run to run — see the registry entry's `tolerance_pct` note.)
+///
+/// Against `rga_insert_per_char`'s `63.5 / 147.7 / 547.1 / 2_047.0` at the
+/// same sizes: the same shape, ~2.5x the constant, and still tracking `n`.
+/// So a remote landing is not a cheap event that the local writer's own
+/// linearisation dwarfs — it is itself linear in the document, and it is
+/// paid on top of the local cost rather than instead of it. Declared
+/// [`CostShape::QuadraticBuild`] for that reason: per-call cost grows with
+/// `n`, so the whole build is `O(n^2)`.
+fn rga_insert_interleaved_sync(n: usize) {
+    let rga = Root::new(|| {
+        ReplicatedGrowableArray::<MainStorage>::new_with_field_name(INTERLEAVED_DOC_FIELD)
+    });
+    rga.commit();
+    for i in 0..n / 2 {
+        let mut rga = Root::<ReplicatedGrowableArray<MainStorage>>::fetch()
+            .expect("document root should exist");
+        rga.insert(i, 'a').expect("local insert should succeed");
+        rga.commit();
+        land_remote_char();
+    }
+}
+
+/// Field name shared by the local document and the remote replica in
+/// [`rga_insert_interleaved_sync`].
+///
+/// It has to be a FIELD NAME, not [`ReplicatedGrowableArray::new`]'s random
+/// id: the two replicas are separate `RuntimeEnv`s, and the actions authored
+/// in one only land in the other's document if both derive the SAME
+/// collection id. With random ids the remote actions would quietly build a
+/// second, parallel collection and the workload would measure two documents
+/// that never meet — green, and meaningless.
+const INTERLEAVED_DOC_FIELD: &str = "interleaved_doc";
+
+/// Apply one character to the collection the way the SYNC path does.
+///
+/// Authors the character on a SEPARATE replica — its own `RuntimeEnv` over
+/// its own backing map, so none of the authoring cost is counted — captures
+/// the delta that replica emits on commit, and replays its actions into the
+/// caller's env through [`Interface::apply_action`].
+///
+/// The decode-and-replay shape (`StorageDelta` -> actions, skip the root
+/// action, `apply_action(action, &ApplyContext::empty())`) is copied from
+/// `sorted_set_apply_invalidates_host_index_marker` in
+/// `crates/node/primitives/src/sync/storage_bridge.rs`, which drives the same
+/// path for the same reason: only the real apply path exercises what apply
+/// actually does. The root action is skipped there and here because the
+/// receiver's own root entry is not the sender's to overwrite.
+///
+/// Each call authors on a FRESH replica, so every remote character is a
+/// first-position insert with `left = CharId::root()`. The character ids
+/// still differ across calls — [`calimero_storage::env::hlc_timestamp`] is a
+/// process-thread-local clock shared by both envs, so it advances across the
+/// replica boundary and no two remote characters collide on the same map key.
+fn land_remote_char() {
+    for action in remote_char_actions() {
+        if action.id().is_root() {
+            continue;
+        }
+        Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+            .expect("remote apply_action should succeed");
+    }
+}
+
+/// The actions a remote replica emits when one character is typed into it.
+///
+/// # Why the pending-delta buffer is cleared first
+///
+/// `crate::delta`'s pending-action buffer is a THREAD-local, not a
+/// `RuntimeEnv` one: every storage write on this thread queues into it,
+/// including the local `insert` that just ran, and `commit()` drains
+/// whatever is in it. Without the clear, the remote replica's commit hands
+/// back the caller's own local actions AND the uncommitted actions of every
+/// workload that ran earlier in the same process, and the workload spends
+/// its time re-applying writes it had already done, under the name of a sync
+/// cost. That is not hypothetical: while this was being written, an
+/// otherwise identical workload measured `1_469` reads at `n=10` standalone
+/// against `59_505` when an `unordered_map_insert(1_000)` had run before it
+/// in the snapshot binary — a 40x swing decided entirely by registry order.
+/// Clearing first makes the artifact contain exactly what the remote replica
+/// authored.
+fn remote_char_actions() -> Vec<Action> {
+    clear_pending_delta();
+    let delta = with_runtime_env(uncounted_env(), || {
+        let mut rga = Root::new(|| {
+            ReplicatedGrowableArray::<MainStorage>::new_with_field_name(INTERLEAVED_DOC_FIELD)
+        });
+        rga.insert(0, 'r').expect("remote insert should succeed");
+        rga.commit();
+        take_last_artifact().expect("commit should emit a delta")
+    });
+    match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
+        StorageDelta::Actions(actions) => actions,
+        StorageDelta::CausalActions { actions, .. } => actions,
+    }
+}
+
+/// A throwaway `RuntimeEnv` over its own map, deliberately NOT wired to
+/// [`crate::measure`]'s counters.
+///
+/// The remote replica's own writes are not part of what this crate measures —
+/// what is being measured is what the RECEIVER pays. Counting the sender's
+/// work too would attribute an unrelated single-replica build to the sync
+/// path and hide the number the workload exists to publish.
+fn uncounted_env() -> RuntimeEnv {
+    let map: Rc<RefCell<BTreeMap<[u8; 32], Vec<u8>>>> = Rc::new(RefCell::new(BTreeMap::new()));
+    let read = {
+        let map = Rc::clone(&map);
+        Rc::new(move |key: &Key| map.borrow().get(&key.to_bytes()).cloned())
+    };
+    let write = {
+        let map = Rc::clone(&map);
+        Rc::new(move |key: Key, value: &[u8]| {
+            let _ignored = map.borrow_mut().insert(key.to_bytes(), value.to_vec());
+            true
+        })
+    };
+    let remove = {
+        let map = Rc::clone(&map);
+        Rc::new(move |key: &Key| map.borrow_mut().remove(&key.to_bytes()).is_some())
+    };
+    RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32])
+}
+
 fn build_rga(n: usize) -> Root<ReplicatedGrowableArray<MainStorage>> {
     let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
     let text: String = std::iter::repeat_n('a', n).collect();
@@ -500,12 +711,35 @@ pub fn all() -> Vec<Workload> {
     /// rather than a row in `REGISTRY` because `REGISTRY` is crossed with
     /// `SIZES` unconditionally below; a `QuadraticBuild` entry there would
     /// silently get measured at `n=10_000` too.
-    const QUADRATIC_REGISTRY: [Entry; 1] = [(
-        "rga_insert_per_char",
-        QuadraticBuild,
-        0,
-        rga_insert_per_char,
-    )];
+    const QUADRATIC_REGISTRY: [Entry; 3] = [
+        (
+            "rga_insert_per_char",
+            QuadraticBuild,
+            0,
+            rga_insert_per_char,
+        ),
+        // Same code path as `rga_insert_per_char` today, and the same numbers
+        // to the row — see `rga_insert_middle`'s doc comment for why that is
+        // the point rather than a duplication. Deterministic for the same
+        // reason its sibling is: nothing here depends on a random id.
+        ("rga_insert_middle", QuadraticBuild, 0, rga_insert_middle),
+        // The only workload in this registry that receives. `rows_written`
+        // and `rows_removed` reproduce exactly; `rows_read` does not, because
+        // every remote character is authored on a fresh replica whose entity
+        // gets an `Id::random()` and therefore lands in a different child-trie
+        // bucket run to run — the same source `lib.rs`'s module docs name for
+        // byte counts, surfacing on rows here because the applied entity is
+        // linked into the trie. Measured spread over seven runs is well under
+        // 1% at every size (the counts are large, so a few bucket-shaped rows
+        // barely move them); `tests/reproducible.rs` re-derives this bound and
+        // fails if 5 is either too tight or gratuitously loose.
+        (
+            "rga_insert_interleaved_sync",
+            QuadraticBuild,
+            5,
+            rga_insert_interleaved_sync,
+        ),
+    ];
 
     let mut out = Vec::with_capacity(
         REGISTRY.len() * SIZES.len() + QUADRATIC_REGISTRY.len() * QUADRATIC_SIZES.len(),
@@ -569,6 +803,42 @@ mod tests {
              reporting the build, so reset_counters() is not taking effect",
             point.rows_read,
             build.rows_read
+        );
+    }
+
+    /// The sync half of `rga_insert_interleaved_sync` must actually arrive.
+    ///
+    /// Everything about that workload's value rests on the applied characters
+    /// being IN the document: if `apply_action` stopped landing them (a
+    /// diverging collection id, a dropped action, a root-skip that skips too
+    /// much), the workload would still read plausibly and still be measured —
+    /// it would simply be a single-replica build again, i.e. the exact blind
+    /// spot it was added to remove, restored silently. `every_workload_is_
+    /// measurable_and_touches_storage` above cannot see that: the cost is
+    /// nonzero either way.
+    #[test]
+    fn every_remote_character_actually_lands() {
+        let n = 10;
+        let (text, _) = measure(|| {
+            rga_insert_interleaved_sync(n);
+            Root::<ReplicatedGrowableArray<MainStorage>>::fetch()
+                .expect("document root should exist after the workload")
+                .get_text()
+                .expect("get_text should succeed")
+        });
+
+        assert_eq!(
+            text.chars().count(),
+            n,
+            "rga_insert_interleaved_sync(n={n}) left a {}-character document ({text:?}): \
+             the remote half is not landing through apply_action, so this workload is \
+             measuring a single-replica build under a sync name",
+            text.chars().count(),
+        );
+        assert!(
+            text.contains('r') && text.contains('a'),
+            "document {text:?} is missing one side of the interleave — local chars are \
+             'a', remote chars are 'r', and both must be present"
         );
     }
 
