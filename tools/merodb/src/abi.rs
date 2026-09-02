@@ -168,7 +168,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
                                 },
-                                CrdtType::UnorderedMap { .. } => {
+                                CrdtType::UnorderedMap => {
                                     // Default to Map<String, String> - can be refined later
                                     TypeRef::Collection {
                                         collection: CollectionType::Map {
@@ -179,7 +179,7 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                CrdtType::SortedMap { .. } => {
+                                CrdtType::SortedMap => {
                                     // Same shape as UnorderedMap; the marker records that
                                     // iteration is key-ordered.
                                     TypeRef::Collection {
@@ -191,21 +191,21 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                CrdtType::UnorderedSet { .. } => TypeRef::Collection {
+                                CrdtType::UnorderedSet => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },
                                     crdt_type: Some(CrdtCollectionType::UnorderedSet),
                                     inner_type: None,
                                 },
-                                CrdtType::SortedSet { .. } => TypeRef::Collection {
+                                CrdtType::SortedSet => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },
                                     crdt_type: Some(CrdtCollectionType::SortedSet),
                                     inner_type: None,
                                 },
-                                CrdtType::Vector { .. } => TypeRef::Collection {
+                                CrdtType::Vector => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },

@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn test_tree_node_leaf() {
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 12345, [5; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 12345, [5; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
         let node = TreeNode::leaf([2; 32], [3; 32], leaf_data);
 
@@ -856,8 +856,7 @@ mod tests {
         // a leaf with a synthetic `LwwRegister { inner_type: "Opaque" }` type;
         // such a node must be structurally valid so the receiving peer does not
         // drop it as "Invalid TreeNode".
-        let metadata =
-            LeafMetadata::new(CrdtType::lww_register("Opaque"), 42, [0u8; 32]).with_created_at(7);
+        let metadata = LeafMetadata::new(CrdtType::opaque_leaf(), 42, [0u8; 32]).with_created_at(7);
         let leaf_data = TreeLeafData::new([118u8; 32], b"app-root-state".to_vec(), metadata);
         let node = TreeNode::leaf([118u8; 32], [9u8; 32], leaf_data);
 
@@ -868,7 +867,7 @@ mod tests {
 
     #[test]
     fn test_tree_node_roundtrip() {
-        let metadata = LeafMetadata::new(CrdtType::unordered_map("String", "u64"), 999, [6; 32])
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 999, [6; 32])
             .with_version(5)
             .with_parent([7; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![4, 5, 6], metadata);
@@ -971,16 +970,45 @@ mod tests {
         assert_eq!(decoded.version, 10);
     }
 
+    /// `CrdtType` sits at offset 0, so a layout change shifts every field behind
+    /// it and an older peer misreads the frame. e2e cannot see that.
+    #[test]
+    fn leaf_metadata_encoding_is_byte_frozen() {
+        let ancestor = calimero_storage::entities::ChildInfo::new(
+            calimero_storage::address::Id::new([0x33; 32]),
+            [0x44; 32],
+            calimero_storage::entities::Metadata::with_crdt_type(5, 6, CrdtType::lww_register()),
+        );
+        let md = LeafMetadata::new(CrdtType::UnorderedMap, 1, [0x11; 32])
+            .with_created_at(2)
+            .with_version(3)
+            .with_parent([0x22; 32])
+            .with_ancestors(vec![ancestor])
+            .with_authorization(calimero_storage::entities::StorageType::User {
+                owner: calimero_account::AccountId::from([0xDD; 32]),
+                signature_data: None,
+            })
+            .with_schema_bytecode_id([0x55; 32]);
+
+        let bytes = borsh::to_vec(&md).expect("serialize");
+        assert_eq!(hex::encode(&bytes), "84010000000000000002000000000000000300000000000000111111111111111111111111111111111111111111111111111111111111111101222222222222222222222222222222222222222222222222222222222222222201000000333333333333333333333333333333333333333333333333333333333333333344444444444444444444444444444444444444444444444444444444444444440500000000000000060000000000000000018000000000000000000000000101dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd00015555555555555555555555555555555555555555555555555555555555555555");
+
+        // Spelled out separately: the pin above only means anything while
+        // `crdt_type` really is the leading field.
+        let crdt_type = borsh::to_vec(&md.crdt_type).expect("serialize");
+        assert_eq!(&bytes[..crdt_type.len()], crdt_type.as_slice());
+    }
+
     #[test]
     fn test_crdt_type_variants() {
         let types = vec![
-            CrdtType::lww_register("test"),
+            CrdtType::lww_register(),
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::unordered_map("String", "u64"),
-            CrdtType::unordered_set("String"),
-            CrdtType::vector("u64"),
+            CrdtType::UnorderedMap,
+            CrdtType::UnorderedSet,
+            CrdtType::Vector,
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
             CrdtType::Custom("test".to_string()),
@@ -1075,11 +1103,11 @@ mod tests {
 
     #[test]
     fn test_compare_tree_nodes_leaf_content_differs() {
-        let local_metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let local_metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let local_leaf = TreeLeafData::new([10; 32], vec![1, 2, 3], local_metadata);
         let local = TreeNode::leaf([1; 32], [100; 32], local_leaf);
 
-        let remote_metadata = LeafMetadata::new(CrdtType::lww_register("test"), 200, [1; 32]);
+        let remote_metadata = LeafMetadata::new(CrdtType::lww_register(), 200, [1; 32]);
         let remote_leaf = TreeLeafData::new([10; 32], vec![4, 5, 6], remote_metadata);
         let remote = TreeNode::leaf([1; 32], [200; 32], remote_leaf);
 
@@ -1207,7 +1235,7 @@ mod tests {
             TreeNodeResponse::new(vec![TreeNode::internal([1; 32], [2; 32], vec![[3; 32]])]);
         assert!(valid_response.is_valid());
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], metadata);
         let leaf_response =
             TreeNodeResponse::new(vec![TreeNode::leaf([1; 32], [2; 32], leaf_data)]);
@@ -1236,7 +1264,7 @@ mod tests {
         let over_limit = TreeNode::internal([1; 32], [2; 32], over_children);
         assert!(!over_limit.is_valid());
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], metadata);
         let invalid_node = TreeNode {
             id: [1; 32],
@@ -1247,7 +1275,7 @@ mod tests {
         };
         assert!(!invalid_node.is_valid());
 
-        let valid_metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let valid_metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let valid_leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], valid_metadata);
         let valid_leaf = TreeNode::leaf([1; 32], [2; 32], valid_leaf_data);
         assert!(valid_leaf.is_valid());
@@ -1279,7 +1307,7 @@ mod tests {
 
     #[test]
     fn test_tree_leaf_data_validation() {
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
 
         let valid = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata.clone());
         assert!(valid.is_valid());
@@ -1301,14 +1329,14 @@ mod tests {
         let ancestor = || ChildInfo::new(Id::from([9u8; 32]), [0u8; 32], Metadata::new(1, 2));
 
         // A short ancestor chain (within the depth bound) is valid.
-        let ok_meta = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32])
+        let ok_meta = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32])
             .with_ancestors((0..MAX_ANCESTORS).map(|_| ancestor()).collect());
         let ok = TreeLeafData::new([1; 32], vec![1, 2, 3], ok_meta);
         assert!(ok.is_valid());
 
         // An over-long chain (each entry embeds a full Metadata) is rejected even
         // though the value itself is tiny.
-        let bad_meta = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32])
+        let bad_meta = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32])
             .with_ancestors((0..=MAX_ANCESTORS).map(|_| ancestor()).collect());
         let bad = TreeLeafData::new([1; 32], vec![1, 2, 3], bad_meta);
         assert!(!bad.is_valid());

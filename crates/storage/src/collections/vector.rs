@@ -53,7 +53,7 @@ where
             .reassign_deterministic_id_with_indexed_children_under(
                 Some(parent_id),
                 "__vector",
-                CrdtType::vector(std::any::type_name::<V>()),
+                CrdtType::Vector,
             );
     }
 }
@@ -117,7 +117,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::vector(std::any::type_name::<V>()),
+                CrdtType::Vector,
             ),
         }
     }
@@ -137,10 +137,8 @@ where
         // would leave per-node-random element ids behind and diverge when a
         // migration re-runs the population independently on each node. The
         // indexed variant re-keys each element by its append position.
-        self.inner.reassign_deterministic_id_with_indexed_children(
-            field_name,
-            CrdtType::vector(std::any::type_name::<V>()),
-        );
+        self.inner
+            .reassign_deterministic_id_with_indexed_children(field_name, CrdtType::Vector);
     }
 
     /// Add a value to the end of the vector.

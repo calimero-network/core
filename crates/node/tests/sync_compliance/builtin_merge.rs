@@ -98,7 +98,7 @@ fn test_lww_register_returns_incoming() {
     let existing = vec![1, 2, 3, 4];
     let incoming = vec![5, 6, 7, 8];
 
-    let result = merge_by_crdt_type(&CrdtType::lww_register("test"), &existing, &incoming).unwrap();
+    let result = merge_by_crdt_type(&CrdtType::lww_register(), &existing, &incoming).unwrap();
 
     assert_eq!(result, incoming, "LwwRegister should return incoming bytes");
 }
@@ -107,17 +107,12 @@ fn test_lww_register_returns_incoming() {
 #[test]
 fn test_lww_register_any_inner_type() {
     // String inner type
-    let result = merge_by_crdt_type(
-        &CrdtType::lww_register("String"),
-        b"old_value",
-        b"new_value",
-    )
-    .unwrap();
+    let result = merge_by_crdt_type(&CrdtType::lww_register(), b"old_value", b"new_value").unwrap();
     assert_eq!(result, b"new_value");
 
     // u64 inner type
     let result = merge_by_crdt_type(
-        &CrdtType::lww_register("u64"),
+        &CrdtType::lww_register(),
         &42u64.to_le_bytes(),
         &99u64.to_le_bytes(),
     )
@@ -135,12 +130,7 @@ fn test_unordered_map_returns_incoming() {
     let existing = vec![1, 2, 3];
     let incoming = vec![4, 5, 6];
 
-    let result = merge_by_crdt_type(
-        &CrdtType::unordered_map("String", "u64"),
-        &existing,
-        &incoming,
-    )
-    .unwrap();
+    let result = merge_by_crdt_type(&CrdtType::UnorderedMap, &existing, &incoming).unwrap();
 
     assert_eq!(result, incoming, "UnorderedMap should return incoming");
 }
@@ -151,8 +141,7 @@ fn test_unordered_set_returns_incoming() {
     let existing = vec![10, 20, 30];
     let incoming = vec![40, 50, 60];
 
-    let result =
-        merge_by_crdt_type(&CrdtType::unordered_set("String"), &existing, &incoming).unwrap();
+    let result = merge_by_crdt_type(&CrdtType::UnorderedSet, &existing, &incoming).unwrap();
 
     assert_eq!(result, incoming, "UnorderedSet should return incoming");
 }
@@ -163,7 +152,7 @@ fn test_vector_returns_incoming() {
     let existing = vec![100u8, 200];
     let incoming = vec![150u8, 250];
 
-    let result = merge_by_crdt_type(&CrdtType::vector("u64"), &existing, &incoming).unwrap();
+    let result = merge_by_crdt_type(&CrdtType::Vector, &existing, &incoming).unwrap();
 
     assert_eq!(result, incoming, "Vector should return incoming");
 }
@@ -297,10 +286,10 @@ fn test_all_builtin_types_classification() {
         CrdtType::GCounter,
         CrdtType::PnCounter,
         CrdtType::Rga,
-        CrdtType::lww_register("u64"),
-        CrdtType::unordered_map("String", "u64"),
-        CrdtType::unordered_set("String"),
-        CrdtType::vector("u64"),
+        CrdtType::lww_register(),
+        CrdtType::UnorderedMap,
+        CrdtType::UnorderedSet,
+        CrdtType::Vector,
         CrdtType::UserStorage,
         CrdtType::FrozenStorage,
     ];
@@ -344,10 +333,10 @@ fn test_builtin_merge_behavior_summary() {
 
     // Types that return incoming
     let return_incoming = [
-        CrdtType::lww_register("u64"),
-        CrdtType::unordered_map("String", "u64"),
-        CrdtType::unordered_set("String"),
-        CrdtType::vector("u64"),
+        CrdtType::lww_register(),
+        CrdtType::UnorderedMap,
+        CrdtType::UnorderedSet,
+        CrdtType::Vector,
         CrdtType::UserStorage,
     ];
 
