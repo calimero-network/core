@@ -137,33 +137,95 @@ impl FugueTree {
 
     /// The node with the given id, if it is attached to the tree.
     #[must_use]
-    pub fn node(&self, _id: RawId) -> Option<&FugueNode> {
-        unimplemented!("fugue: node")
+    pub fn node(&self, id: RawId) -> Option<&FugueNode> {
+        self.nodes.get(&id)
     }
 
     /// Every attached node, in id order.
     pub fn nodes(&self) -> impl Iterator<Item = &FugueNode> {
-        unimplemented!("fugue: nodes");
-        #[allow(unreachable_code)]
         self.nodes.values()
     }
 
     /// Whether the node is attached to the tree (live *or* tombstoned).
     #[must_use]
-    pub fn contains(&self, _id: RawId) -> bool {
-        unimplemented!("fugue: contains")
+    pub fn contains(&self, id: RawId) -> bool {
+        self.nodes.contains_key(&id)
+    }
+
+    /// The children of `parent` on `side`, in ascending id order.
+    fn children_of(&self, parent: NodeId, side: Side) -> impl Iterator<Item = RawId> + '_ {
+        self.children
+            .get(&(parent, side))
+            .into_iter()
+            .flat_map(|s| s.iter().copied())
+    }
+
+    /// The full depth-first in-order traversal, **including** the root and
+    /// tombstoned nodes.
+    ///
+    /// Iterative rather than recursive: a sequential append builds a right
+    /// spine of depth `n`, so recursion would blow the stack on real
+    /// documents.
+    fn traverse_all(&self) -> Vec<NodeId> {
+        enum Frame {
+            Visit(NodeId),
+            Emit(NodeId),
+        }
+
+        let mut out = Vec::with_capacity(self.nodes.len() + 1);
+        let mut stack = vec![Frame::Visit(None)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Emit(id) => out.push(id),
+                Frame::Visit(id) => {
+                    let right: Vec<RawId> = self.children_of(id, Side::R).collect();
+                    for child in right.into_iter().rev() {
+                        stack.push(Frame::Visit(Some(child)));
+                    }
+                    stack.push(Frame::Emit(id));
+                    let left: Vec<RawId> = self.children_of(id, Side::L).collect();
+                    for child in left.into_iter().rev() {
+                        stack.push(Frame::Visit(Some(child)));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The id of the `n`-th live (non-tombstoned) node in document order.
+    fn nth_live(&self, order: &[NodeId], n: usize) -> Option<RawId> {
+        let mut seen = 0;
+        for id in order {
+            let Some(raw) = *id else { continue };
+            if self
+                .nodes
+                .get(&raw)
+                .is_some_and(|node| node.value.is_some())
+            {
+                if seen == n {
+                    return Some(raw);
+                }
+                seen += 1;
+            }
+        }
+        None
     }
 
     /// The document text: the in-order traversal, tombstones skipped.
     #[must_use]
     pub fn values(&self) -> String {
-        unimplemented!("fugue: values")
+        self.traverse_all()
+            .into_iter()
+            .filter_map(|id| self.nodes.get(&id?))
+            .filter_map(|node| node.value)
+            .collect()
     }
 
     /// The number of live characters.
     #[must_use]
     pub fn len(&self) -> usize {
-        unimplemented!("fugue: len")
+        self.nodes.values().filter(|n| n.value.is_some()).count()
     }
 
     /// Whether the document is empty.
@@ -172,29 +234,118 @@ impl FugueTree {
         self.len() == 0
     }
 
-    /// Insert `value` at `index`, minting the node with `id`.
+    /// Insert `value` at `index`, minting the node with the caller-supplied
+    /// `id`.
+    ///
+    /// Returns the node that must be broadcast, so the caller can ship the
+    /// effector without re-deriving it.
     pub fn insert(
         &mut self,
-        _index: usize,
-        _value: char,
-        _id: RawId,
+        index: usize,
+        value: char,
+        id: RawId,
     ) -> Result<FugueNode, FugueError> {
-        unimplemented!("fugue: insert")
+        if self.nodes.contains_key(&id) {
+            return Err(FugueError::DuplicateId(id));
+        }
+
+        let order = self.traverse_all();
+        let left_origin: NodeId = if index == 0 {
+            None
+        } else {
+            Some(
+                self.nth_live(&order, index - 1)
+                    .ok_or(FugueError::IndexOutOfBounds {
+                        index,
+                        len: self.len(),
+                    })?,
+            )
+        };
+
+        let node = if self.children_of(left_origin, Side::R).next().is_none() {
+            FugueNode {
+                id,
+                value: Some(value),
+                parent: left_origin,
+                side: Side::R,
+            }
+        } else {
+            // `leftOrigin` has a right child, so its successor in the
+            // tombstone-inclusive traversal is the leftmost node of that right
+            // subtree and therefore always exists.
+            let pos = order
+                .iter()
+                .position(|n| *n == left_origin)
+                .expect("left origin is in the traversal");
+            let right_origin = order[pos + 1];
+            FugueNode {
+                id,
+                value: Some(value),
+                parent: right_origin,
+                side: Side::L,
+            }
+        };
+
+        self.integrate(node);
+        Ok(node)
     }
 
     /// Tombstone the character at `index`.
-    pub fn delete(&mut self, _index: usize) -> Result<RawId, FugueError> {
-        unimplemented!("fugue: delete")
+    ///
+    /// Returns the id that must be broadcast. The node stays in the tree.
+    pub fn delete(&mut self, index: usize) -> Result<RawId, FugueError> {
+        let order = self.traverse_all();
+        let id = self
+            .nth_live(&order, index)
+            .ok_or(FugueError::IndexOutOfBounds {
+                index,
+                len: self.len(),
+            })?;
+        self.tombstone(id)?;
+        Ok(id)
     }
 
     /// The delete effector: tombstone a node by id.
-    pub fn tombstone(&mut self, _id: RawId) -> Result<(), FugueError> {
-        unimplemented!("fugue: tombstone")
+    pub fn tombstone(&mut self, id: RawId) -> Result<(), FugueError> {
+        let node = self.nodes.get_mut(&id).ok_or(FugueError::UnknownNode(id))?;
+        node.value = None;
+        Ok(())
     }
 
     /// The insert effector: apply a node from a remote replica.
-    pub fn integrate(&mut self, _node: FugueNode) {
-        unimplemented!("fugue: integrate")
+    ///
+    /// Idempotent and order-independent. A node whose parent has not arrived
+    /// yet is buffered until it does. Re-delivering a node that is already
+    /// present is a no-op, except that a tombstoned copy wins over a live one
+    /// (deletes are delete-wins).
+    pub fn integrate(&mut self, node: FugueNode) {
+        let mut queue = vec![node];
+        while let Some(node) = queue.pop() {
+            if let Some(parent) = node.parent {
+                if !self.nodes.contains_key(&parent) {
+                    self.pending.entry(parent).or_default().push(node);
+                    continue;
+                }
+            }
+
+            let id = node.id;
+            if let Some(existing) = self.nodes.get_mut(&id) {
+                if node.value.is_none() {
+                    existing.value = None;
+                }
+            } else {
+                let _ignored = self
+                    .children
+                    .entry((node.parent, node.side))
+                    .or_default()
+                    .insert(id);
+                let _ignored = self.nodes.insert(id, node);
+            }
+
+            if let Some(waiting) = self.pending.remove(&id) {
+                queue.extend(waiting);
+            }
+        }
     }
 }
 

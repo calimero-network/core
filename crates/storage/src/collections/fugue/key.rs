@@ -44,13 +44,39 @@ pub const STEP_LEN: usize = 1 + 8 + 4;
 /// callers hold only attached nodes.
 #[must_use]
 pub fn path_key(tree: &FugueTree, id: NodeId) -> Vec<u8> {
-    unimplemented!("fugue: path_key")
+    // Collect the root path bottom-up, then emit it top-down.
+    let mut steps: Vec<(Side, RawId)> = Vec::new();
+    let mut cursor = id;
+    while let Some(raw) = cursor {
+        let Some(node) = tree.node(raw) else { break };
+        steps.push((node.side, raw));
+        cursor = node.parent;
+    }
+
+    let mut out = Vec::with_capacity(steps.len() * STEP_LEN + 1);
+    for (side, raw) in steps.into_iter().rev() {
+        out.push(match side {
+            Side::L => LEFT_TAG,
+            Side::R => RIGHT_TAG,
+        });
+        out.extend_from_slice(&raw.0.to_be_bytes());
+        out.extend_from_slice(&raw.1.to_be_bytes());
+    }
+    out.push(SELF_TAG);
+    out
 }
 
 /// The number of edges between `id` and the root.
 #[must_use]
 pub fn depth(tree: &FugueTree, id: NodeId) -> usize {
-    unimplemented!("fugue: depth")
+    let mut depth = 0;
+    let mut cursor = id;
+    while let Some(raw) = cursor {
+        let Some(node) = tree.node(raw) else { break };
+        depth += 1;
+        cursor = node.parent;
+    }
+    depth
 }
 
 #[cfg(test)]
@@ -101,7 +127,7 @@ mod tests {
                     seq += 1;
                 }
             }
-            assert!(tree.len() > 0);
+            assert!(!tree.is_empty());
             assert_eq!(
                 text_by_path_key(&tree),
                 tree.values(),
@@ -119,10 +145,16 @@ mod tests {
     fn report_key_depth() {
         const N: usize = 1000;
 
-        let workloads: [(&str, fn(usize, usize) -> usize); 3] = [
+        /// `(label, position(step, current_len) -> insert index)`.
+        type Workload = (&'static str, fn(usize, usize) -> usize);
+
+        let workloads: [Workload; 4] = [
             ("1000 sequential appends", |_i, len| len),
             ("1000 inserts at index 0", |_i, _len| 0),
             ("1000 inserts at midpoint", |_i, len| len / 2),
+            ("1000 inserts at random pos", |i, len| {
+                i.wrapping_mul(2_654_435_761) % (len + 1)
+            }),
         ];
 
         println!();
