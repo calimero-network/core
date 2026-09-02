@@ -92,6 +92,42 @@ pub trait Mergeable: crate::collections::rekey::RekeyTarget {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
 }
 
+/// An app-defined type whose [`Mergeable::merge`] is dispatched at merge time.
+///
+/// [`Mergeable`] alone is not enough. A collection entry is merged by matching
+/// on its `crdt_type`, so a type the storage layer cannot recognise resolves
+/// last-write-wins and the app's `merge` is never consulted. Implementing this
+/// gives the type a [`CustomTypeId`] to be stamped and dispatched on.
+///
+/// Emitted by `#[app::mergeable]`. Implementing it by hand means owning the id,
+/// which is wire format — see [`CustomTypeId`].
+///
+/// # Contract
+///
+/// Dispatch hands merge authority to app code, so `merge` must be
+/// **deterministic**, **commutative**, **associative**, **idempotent** and
+/// **total**. The last one is the trap: `Err` is not validation, it is a
+/// refusal to converge — the entity stays divergent and repair retries it
+/// indefinitely. Reject bad input on the write path, not here.
+pub trait CustomMergeable: 'static {
+    /// Stable identity for this type on the wire.
+    const TYPE_ID: CustomTypeId;
+
+    /// Register this type's merge under [`Self::TYPE_ID`].
+    ///
+    /// Returns whether this was a NEW registration, so the cascade walk
+    /// terminates on a self-referential value graph.
+    ///
+    /// The body is macro-generated, which is the point: it needs `Mergeable`
+    /// and both borsh bounds, and carrying those as SUPERTRAITS would make
+    /// merely asking "does `T` implement this?" evaluate them. The registration
+    /// walk asks that of every field type reachable from the app state,
+    /// including types whose borsh impl is itself broken — and each such
+    /// question would then re-report that break. It cost a duplicated
+    /// `Authorizer` diagnostic before the bounds moved here.
+    fn register_merge() -> bool;
+}
+
 // Feature-insensitive compile guard for the `Mergeable: RekeyTarget` supertrait.
 // This body type-checks only while the bound holds; removing it breaks the build
 // in every feature set. Complements the `testing`-gated trybuild negative case

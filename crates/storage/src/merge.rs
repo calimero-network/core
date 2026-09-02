@@ -32,6 +32,7 @@
 //! - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
 //!   entity metadata for correct dispatch.
 
+pub mod custom_registry;
 pub mod registry;
 
 // The registry is WASM-only in production. Host production binaries
@@ -49,6 +50,11 @@ pub mod registry;
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
+// Always available: both have a host fallback, so the registration walk and the
+// merge dispatch compile from any build rather than only the ones that can act
+// on them. See `custom_registry`.
+pub use custom_registry::{has_custom_merges, merge_custom, register_custom_merge};
+
 // Always-native wrapper for the in-process test harness. Unlike
 // `register_crdt_merge` it isn't gated behind the `testing` feature, so an
 // app's macro-generated `TestState` bridge compiles under `cargo test`
@@ -58,6 +64,9 @@ pub use registry::register_crdt_merge_for_test;
 
 #[cfg(any(test, feature = "testing"))]
 pub use registry::clear_merge_registry;
+
+#[cfg(any(test, feature = "testing"))]
+pub use custom_registry::clear_custom_merge_registry;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
