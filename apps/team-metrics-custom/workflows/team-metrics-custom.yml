@@ -297,6 +297,113 @@ steps:
       - "{{final_losses_alpha}} == 1"
       - "{{final_draws_alpha}} == 1"
 
+  # ---------------------------------------------------------------------------
+  # The app's OWN merge rule.
+  #
+  # Everything above exercises `Counter`, which converges structurally whether
+  # or not the app declares a rule — a counter is its own child entity and the
+  # storage layer sums it. Those steps would pass with `TeamStats::merge`
+  # deleted, so they cannot tell you the merge function ran.
+  #
+  # `badges` is a plain `u64` in the value blob. Each node awards the badge for
+  # its own device, so the two blobs genuinely diverge, and the union is a value
+  # NEITHER node ever held. Last-write-wins can only ever return one side's
+  # blob, so a two-bit answer is only reachable through a dispatched merge.
+  #
+  # This is the only assertion in the repo that proves app-defined merge runs
+  # across real nodes: the in-process test at
+  # calimero-storage/tests/custom_merge_e2e.rs proves the mechanism, and the
+  # convergence harness cannot do it at all (see tests/converge.rs).
+  # ---------------------------------------------------------------------------
+  - name: Node 1 awards its own badge
+    type: call
+    node: team-custom-node-1
+    context_id: "{{context_id}}"
+    method: award_own_badge
+    args:
+      team_id: team-alpha
+    outputs:
+      own_badge_node1: result.output
+
+  - name: Node 2 awards its own badge concurrently
+    type: call
+    node: team-custom-node-2
+    context_id: "{{context_id}}"
+    method: award_own_badge
+    args:
+      team_id: team-alpha
+    outputs:
+      own_badge_node2: result.output
+
+  # Precondition, not decoration. If both nodes picked the same bit, a merged
+  # count of 1 is CORRECT and the assertion below would fail for a reason that
+  # has nothing to do with merging. Checking it here means a failure downstream
+  # can only mean the merge did not happen.
+  - name: Assert the two nodes picked different badges
+    type: assert
+    statements:
+      - "{{own_badge_node1}} != {{own_badge_node2}}"
+
+  - name: Wait for the badge blobs to merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - team-custom-node-1
+      - team-custom-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Count badges on Node 1
+    type: call
+    node: team-custom-node-1
+    context_id: "{{context_id}}"
+    method: get_badge_count
+    args:
+      team_id: team-alpha
+    outputs:
+      badge_count_node1: result.output
+
+  - name: Count badges on Node 2
+    type: call
+    node: team-custom-node-2
+    context_id: "{{context_id}}"
+    method: get_badge_count
+    args:
+      team_id: team-alpha
+    outputs:
+      badge_count_node2: result.output
+
+  - name: Read the raw mask on both nodes
+    type: call
+    node: team-custom-node-1
+    context_id: "{{context_id}}"
+    method: get_badges
+    args:
+      team_id: team-alpha
+    outputs:
+      badges_node1: result.output
+
+  - name: Read the raw mask on Node 2
+    type: call
+    node: team-custom-node-2
+    context_id: "{{context_id}}"
+    method: get_badges
+    args:
+      team_id: team-alpha
+    outputs:
+      badges_node2: result.output
+
+  # A count of 2 is the claim. 1 on either side means the blob was resolved by
+  # last-write-wins and one node's award was discarded — exactly the data loss
+  # app-defined merge exists to prevent. The mask equality is the convergence
+  # check; on its own it would pass for a wrong-but-agreed value.
+  - name: Assert both nodes hold both badges
+    type: assert
+    statements:
+      - "{{badge_count_node1}} == 2"
+      - "{{badge_count_node2}} == 2"
+      - "{{badges_node1}} == {{badges_node2}}"
+
 stop_all_nodes: false
 restart: false
 wait_timeout: 120

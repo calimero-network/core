@@ -639,7 +639,15 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     }
 
     /// Inserts an item into the collection.
-    fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
+    ///
+    /// `crdt_type` stamps the ENTRY. Passing `None` here is what left the
+    /// `Entry`/`or_default` write-back path unstamped while the direct
+    /// `map.insert` path was stamped: the entry then carried no declaration,
+    /// took the legacy branch in `try_merge_non_root`, and resolved
+    /// last-write-wins with the app's rule never called. An app that reaches
+    /// its map only through `entry(..).or_default()` — which is the ergonomic
+    /// way, and what the reference app does — got no dispatch at all.
+    fn insert(&mut self, id: Option<Id>, item: T, crdt_type: Option<CrdtType>) -> StoreResult<T> {
         // Entries inherit this collection's own storage domain. For an ordinary
         // collection the element is `Public`, so this is the previous default;
         // when the element carries `Shared{writers}` (a guarded collection) every
@@ -648,7 +656,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // the bare `Collection::insert` (sets, vectors, RGA), so guarding a
         // collection covers those paths too — not only the direct `map.insert`.
         let inherited = self.storage.metadata.storage_type.clone();
-        self.insert_with_storage_type(id, item, inherited, None)
+        self.insert_with_storage_type(id, item, inherited, crdt_type)
             .map(|(_id, item)| item)
     }
 
