@@ -708,30 +708,39 @@ fn fugue_text_insert_per_char(n: usize) {
 /// counterpart of [`rga_insert_middle`], and the position no end-anchored fast
 /// path can serve.
 ///
-/// # This is the workload where `FugueText` is WORSE than RGA
+/// # Cost parity with RGA, after the split rule was dropped
 ///
 /// Measured `reads/entry` at [`QUADRATIC_SIZES`], against
 /// `rga_insert_middle`'s committed row:
 ///
-/// | `n`   | `fugue_text_insert_middle` | `rga_insert_middle` |
-/// |-------|----------------------------|---------------------|
-/// | 10    | 102.5                      | 63.5                |
-/// | 100   | 283.0                      | 147.7               |
-/// | 500   | 1,083.0                    | 547.1               |
-/// | 2,000 | 4,083.0                    | 2,047.0             |
+/// | `n`   | `fugue_text_insert_middle` | `rga_insert_middle` | was (splitting) |
+/// |-------|----------------------------|---------------------|-----------------|
+/// | 10    | 62.9                       | 63.5                | 102.5           |
+/// | 100   | 146.2                      | 147.7               | 283.0           |
+/// | 500   | 545.6                      | 547.1               | 1,083.0         |
+/// | 2,000 | 2,045.5                    | 2,047.0             | 4,083.0         |
 ///
-/// Roughly 2x RGA at every size, and the same shape — hence
+/// Same shape as RGA and now marginally cheaper at every size — hence
 /// [`CostShape::QuadraticBuild`], measured at [`QUADRATIC_SIZES`] for the
-/// reason that constant gives. A mid-document insert SPLITS the run it lands
-/// in, so unlike the append above the block count grows by one per call, and
-/// `load()` reads every block on the next call (`fugue_text.rs`). The result
-/// is a per-call cost linear in the number of BLOCKS, where RGA's is linear in
-/// the number of CHARACTERS — and mid-document typing makes blocks and
-/// characters the same thing, then pays two rows per block where RGA pays one.
+/// reason that constant gives. The shape is inherent: `load()` reads every
+/// block on each call, so a build that adds a block per call is quadratic. It
+/// is the CONSTANT that halved.
 ///
-/// Declaring it `QuadraticBuild` records that: run-length blocks buy cheap
-/// APPENDS (see [`fugue_text_insert_per_char`]); they do not buy cheap
-/// mid-document insertion, and it costs a factor of two there.
+/// A mid-document insert used to SPLIT the run it landed in, writing two or
+/// three entities per call and growing the block count faster than the number
+/// of insertion points. The split was a pure storage-layout no-op — the tail's
+/// stored `(parent, side)` is exactly the intra-run edge `build_tree`
+/// synthesises, so splitting and not splitting expand to the identical node set
+/// (proof in `FugueText::materialize`). It existed only to keep runs an
+/// unbroken right-chain for the ordered index, and the index was removed
+/// because it made read gas depend on node-local cache warmth. With no buyer
+/// left, the split was pure cost, and dropping it halved both rows read and
+/// rows written here.
+///
+/// Declaring it `QuadraticBuild` records what run-length blocks do and do not
+/// buy: cheap APPENDS (see [`fugue_text_insert_per_char`], which stays flat),
+/// and mid-document insertion at parity with RGA rather than better than it —
+/// each distinct insertion point is still its own block.
 fn fugue_text_insert_middle(n: usize) {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {

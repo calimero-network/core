@@ -103,23 +103,23 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 1025,
-        "rows_written": 317,
+        "rows_read": 629,
+        "rows_written": 189,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 28295,
-        "rows_written": 3197,
+        "rows_read": 14624,
+        "rows_written": 1629,
         "rows_removed": 0
       },
       "00000500": {
-        "rows_read": 541495,
-        "rows_written": 15997,
+        "rows_read": 272824,
+        "rows_written": 8029,
         "rows_removed": 0
       },
       "00002000": {
-        "rows_read": 8165995,
-        "rows_written": 63997,
+        "rows_read": 4091074,
+        "rows_written": 32029,
         "rows_removed": 0
       }
     }

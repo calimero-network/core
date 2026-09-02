@@ -95,6 +95,9 @@ pub(crate) struct BlockId {
 }
 
 impl BlockId {
+    /// Test-only constructor: production code mints ids through
+    /// [`next_counter`] and never assembles one by hand.
+    #[cfg(test)]
     const fn new(replica: u64, counter: u32) -> Self {
         Self { replica, counter }
     }
@@ -239,17 +242,6 @@ fn tomb_or(dst: &mut Vec<u8>, src: &[u8]) {
         *slot |= *byte;
     }
     tomb_trim(dst);
-}
-
-/// The `from..to` sub-range of a bitmap, rebased to offset 0.
-fn tomb_slice(bits: &[u8], from: usize, to: usize) -> Vec<u8> {
-    let mut out = Vec::new();
-    for offset in from..to {
-        if tomb_get(bits, offset) {
-            tomb_set(&mut out, offset - from);
-        }
-    }
-    out
 }
 
 /// Drop trailing zero bytes, so one tombstone set has exactly one encoding.
@@ -577,39 +569,55 @@ impl<S: StorageAdaptor> FugueText<S> {
         self.materialize(&loaded, node)
     }
 
-    /// Write the node the tree just minted into the block store, splitting or
-    /// extending an existing run as the rules below require.
+    /// Write the node the tree just minted into the block store, extending an
+    /// existing run where the new node continues it.
+    ///
+    /// # Why this does not split
+    ///
+    /// A mid-run insert lands as a LEFT child of a mid-run node, and the run's
+    /// implicit intra-run edges stay valid, so nothing has to be split. This is
+    /// provable rather than empirical, by comparing the two sides of the
+    /// expansion in [`build_tree`]:
+    ///
+    /// * `build_tree` synthesises node `k` of run `(r, c, text)` as
+    ///   `id = (r, c + k)`, `parent = (r, c + k - 1)`, `side = R` for `k > 0`.
+    /// * Splitting that run before offset `f` used to store the tail as
+    ///   `(r, c + f, text[f..])` with `parent = (r, c + f - 1)`, `side = R`, and
+    ///   `build_tree` then synthesises its node `k - f` as `id = (r, c + k)`,
+    ///   `parent = (r, c + k - 1)`, `side = R`.
+    ///
+    /// The two agree on id, parent, side and — the bitmap being rebased by the
+    /// same offset — liveness, for every node. The split was therefore a pure
+    /// storage-layout no-op: identical node set, identical tree, identical
+    /// document order. It bought the invariant "a run's nodes are an unbroken
+    /// right-chain with foreign children only at its endpoints", which the
+    /// ordered index wanted; the index is gone (it made read gas depend on
+    /// node-local cache warmth), so the invariant has no buyer and splitting was
+    /// pure cost — roughly 2x RGA's row count on mid-document typing, because
+    /// each insert wrote two or three entities instead of one and grew the block
+    /// count linearly.
+    ///
+    /// Not splitting is also strictly better for merge: a split racing a remote
+    /// copy of the unsplit run was the only way overlapping stored blocks arose
+    /// from ordinary editing.
     fn materialize(&mut self, loaded: &[LoadedBlock], node: FugueNode) -> Result<(), StoreError> {
         let id = BlockId::from_raw(node.id);
         let parent = node.parent.map(BlockId::from_raw);
 
-        if let Some(parent_id) = parent {
-            let index = find_block(loaded, parent_id)
-                .ok_or_else(|| invalid("new node's parent is not in any stored block"))?;
-            let lb = &loaded[index];
-            let offset = (parent_id.counter - lb.id.counter) as usize;
-
-            match node.side {
-                // A left child of a mid-run node makes that node a run
-                // boundary: split the run immediately BEFORE it. This is the
-                // deterministic split rule — a pure function of (block, offset).
-                Side::L => {
-                    if offset > 0 {
-                        self.write_segments(lb, &[0, offset, lb.len])?;
-                    }
-                }
-                Side::R => {
-                    if offset + 1 < lb.len {
-                        // Fugue only picks side R when the parent has no right
-                        // child, which a mid-run node always has — so this is
-                        // defensive, not a path normal editing reaches.
-                        self.write_segments(lb, &[0, offset + 1, lb.len])?;
-                    } else if coalesces_into(lb, id) {
-                        // The new node continues this very run: extend it
-                        // instead of minting a second entity. This is what
-                        // makes sequential typing cost one entity, not n. The
-                        // appended node is live, and a trailing zero bit is
-                        // implicit, so the bitmap is untouched.
+        // The new node continues an existing run of this replica: extend it
+        // instead of minting a second entity. This is what makes sequential
+        // typing cost one entity, not n. The appended node is live, and a
+        // trailing zero bit is implicit, so the bitmap is untouched.
+        //
+        // Only a RIGHT child can continue a run, and only off the run's LAST
+        // node — appending to a run re-parents the new node onto that last
+        // node, which is the edge Fugue chose only in that case.
+        if node.side == Side::R {
+            if let Some(parent_id) = parent {
+                if let Some(index) = find_block(loaded, parent_id) {
+                    let lb = &loaded[index];
+                    let offset = (parent_id.counter - lb.id.counter) as usize;
+                    if offset + 1 == lb.len && coalesces_into(lb, id) {
                         let mut block = lb.block.clone();
                         block.text.push(node.value.unwrap_or('\u{fffd}'));
                         self.put_block(BlockKey::new(lb.id), block)?;
@@ -636,11 +644,11 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// whole point: an entry element is created untagged, and an untagged
     /// entity is reconciled by last-writer-wins in
     /// `Interface::try_merge_non_root`. `TextBlock` values are MUTABLE — a run
-    /// grows in place when [`materialize`](Self::materialize) coalesces into it
-    /// and shrinks in place when [`write_segments`](Self::write_segments)
-    /// splits it — so two replicas routinely hold different values for one key,
-    /// and LWW drops the nodes only the loser defines. The tag routes that
-    /// collision to [`join_block`] instead. (`ReplicatedGrowableArray` needs no
+    /// grows in place when [`materialize`](Self::materialize) coalesces into it,
+    /// and its tombstone bitmap is rewritten by ANY replica that deletes inside
+    /// it — so two replicas routinely hold different values for one key, and LWW
+    /// drops whichever side's edit loses. The tag routes that collision to
+    /// [`join_block`] instead. (`ReplicatedGrowableArray` needs no
     /// such tag: an `RgaChar` is immutable once written, so its keys never
     /// collide on differing values.)
     fn put_block(&mut self, key: BlockKey, block: TextBlock) -> Result<(), StoreError> {
@@ -654,44 +662,6 @@ impl<S: StorageAdaptor> FugueText<S> {
             None,
             Some(CrdtType::FugueTextBlock),
         )?;
-        Ok(())
-    }
-
-    /// Rewrite `lb` as the segments delimited by `bounds` (which starts at 0 and
-    /// ends at `lb.len`).
-    ///
-    /// The first segment keeps the original key, parent and side; every later
-    /// segment starts a new entity whose parent is the last node of the segment
-    /// before it, on side R — which is exactly the implicit intra-run edge, so
-    /// the split changes the storage layout and nothing about the tree. Each
-    /// segment carries the corresponding slice of the tombstone bitmap.
-    fn write_segments(&mut self, lb: &LoadedBlock, bounds: &[usize]) -> Result<(), StoreError> {
-        for segment in bounds.windows(2) {
-            let (from, to) = (segment[0], segment[1]);
-            let id = BlockId::new(
-                lb.id.replica,
-                lb.id
-                    .counter
-                    .checked_add(u32::try_from(from).map_err(|_| invalid("run too long"))?)
-                    .ok_or_else(|| invalid("node counter overflow"))?,
-            );
-            let (parent, side) = if from == 0 {
-                (lb.block.parent, lb.block.side)
-            } else {
-                (
-                    Some(BlockId::new(lb.id.replica, id.counter - 1)),
-                    BlockSide::R,
-                )
-            };
-            let block = TextBlock {
-                start_id: id,
-                text: slice_chars(&lb.block.text, from, to).to_owned(),
-                parent,
-                side,
-                tombstones: tomb_slice(&lb.block.tombstones, from, to),
-            };
-            self.put_block(BlockKey::new(id), block)?;
-        }
         Ok(())
     }
 
@@ -810,9 +780,8 @@ impl<S: StorageAdaptor> FugueText<S> {
 /// timestamp. The `text` rule is exact rather than a heuristic: a run only ever
 /// grows at its tail, and only its own replica can grow it, so two copies of one
 /// key are always prefixes of one another and the longer one strictly contains
-/// the shorter. `parent` and `side` belong to the run's FIRST node, which both
-/// copies share by construction (a split keeps them on the first segment), so
-/// they need no join at all.
+/// the shorter. `parent` and `side` belong to the run's FIRST node, which never
+/// changes once written, so they need no join at all.
 fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
     tomb_or(&mut mine.tombstones, &incoming.tombstones);
     if incoming.len() > mine.len() {
@@ -1072,43 +1041,87 @@ mod tests {
         );
     }
 
-    /// (3) Mid-run insert splits the run by the deterministic rule.
+    /// (3) A mid-run insert does NOT split the run: it adds exactly one block,
+    /// the inserted run's own, and the document order is unchanged by that.
+    ///
+    /// Splitting here was a pure storage-layout no-op — see `materialize` for
+    /// the proof — and it cost roughly 2x RGA's rows on mid-document typing.
     #[test]
-    fn insert__mid_run_splits_deterministically() {
+    fn insert__mid_run_does_not_split_the_run() {
         env::reset_for_testing();
         let mut doc = Root::new(FugueText::new);
         doc.insert_str_with_replica(0, 7, "hello").unwrap();
+        assert_eq!(stored(&doc).len(), 1);
+
         doc.insert_str_with_replica(2, 7, "X").unwrap();
         assert_eq!(doc.get_text().unwrap(), "heXllo");
 
-        // (7,0)"hello" splits before offset 2 into (7,0)"he" and (7,2)"llo";
-        // the tail's parent is the last node of the head, side R. 'X' is a new
-        // one-character block hanging left off the tail's first node.
+        // Exactly ONE new entity: the run "hello" is untouched, and 'X' hangs
+        // off its third node as a left child, which the implicit intra-run
+        // edges already express.
         let blocks = stored(&doc);
-        assert_eq!(blocks.len(), 3, "expected head, tail and the inserted run");
+        assert_eq!(
+            blocks.len(),
+            2,
+            "a mid-run insert must add one block, not split into three"
+        );
 
-        let head = &blocks[0];
-        assert_eq!(head.0, BlockId::new(7, 0));
-        assert_eq!(head.1.text, "he");
-        assert_eq!(head.1.parent, None);
-        assert_eq!(head.1.side, BlockSide::R);
+        let run = &blocks[0];
+        assert_eq!(run.0, BlockId::new(7, 0));
+        assert_eq!(run.1.text, "hello", "the run must survive intact");
+        assert_eq!(run.1.parent, None);
+        assert_eq!(run.1.side, BlockSide::R);
 
-        let tail = &blocks[1];
-        assert_eq!(tail.0, BlockId::new(7, 2));
-        assert_eq!(tail.1.text, "llo");
-        assert_eq!(tail.1.parent, Some(BlockId::new(7, 1)));
-        assert_eq!(tail.1.side, BlockSide::R);
-
-        let inserted = &blocks[2];
+        let inserted = &blocks[1];
         assert_eq!(inserted.0, BlockId::new(7, 5));
         assert_eq!(inserted.1.text, "X");
         assert_eq!(inserted.1.parent, Some(BlockId::new(7, 2)));
         assert_eq!(inserted.1.side, BlockSide::L);
     }
 
-    /// (4) The same split on two independently built documents is byte-identical.
+    /// (3b) Repeated mid-document typing keeps the block count at one per
+    /// distinct insertion point, and the text stays right.
+    ///
+    /// This is the shape the cost snapshot measures: under the old split rule
+    /// each of these calls wrote two or three entities and the run count grew
+    /// faster than the number of insertion points.
     #[test]
-    fn insert__split_is_a_pure_function_of_block_and_offset() {
+    fn insert__repeated_mid_document_typing_adds_one_block_each() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str_with_replica(0, 7, "abcdef").unwrap();
+        assert_eq!(stored(&doc).len(), 1);
+
+        // Type five characters mid-document with an ADVANCING caret, which is
+        // what typing is. The first lands as a left child inside the run; each
+        // later one is a right child of the previous, so they all COALESCE into
+        // a single second run.
+        for offset in 0..5 {
+            doc.insert_str_with_replica(3 + offset, 7, "z").unwrap();
+        }
+        assert_eq!(doc.get_text().unwrap(), "abczzzzzdef");
+        assert_eq!(
+            stored(&doc).len(),
+            2,
+            "one untouched run plus one coalesced run of inserted text"
+        );
+
+        // A caret that does NOT advance re-inserts before the previous
+        // character, so Fugue chains those left — one run each, and no split
+        // rule could have merged them. Pinned so the distinction is explicit.
+        let mut fixed = Root::new(FugueText::new);
+        fixed.insert_str_with_replica(0, 8, "abcdef").unwrap();
+        for _ in 0..3 {
+            fixed.insert_str_with_replica(3, 8, "z").unwrap();
+        }
+        assert_eq!(fixed.get_text().unwrap(), "abczzzdef");
+        assert_eq!(stored(&fixed).len(), 4);
+    }
+
+    /// (4) A mid-run insert produces byte-identical stored state on two
+    /// independently built documents — no clock, no node-local input.
+    #[test]
+    fn insert__mid_run_stored_state_is_deterministic() {
         type A = crate::store::MockedStorage<861>;
         type B = crate::store::MockedStorage<862>;
         env::reset_for_testing();
@@ -1124,7 +1137,7 @@ mod tests {
         assert_eq!(
             borsh::to_vec(&stored(&a)).unwrap(),
             borsh::to_vec(&stored(&b)).unwrap(),
-            "split must be a pure function of (block, offset)"
+            "a mid-run insert must be a pure function of its inputs"
         );
         assert_eq!(a.get_text().unwrap(), b.get_text().unwrap());
     }
@@ -1630,7 +1643,10 @@ mod model_tests {
 /// layout, which is free to change.
 #[cfg(test)]
 mod positional_read_tests {
-    use super::{blocks_containing, build_tree, find_block, BlockId, FugueText, UnorderedMap};
+    use super::{
+        blocks_containing, build_tree, find_block, BlockId, BlockKey, BlockSide, FugueText,
+        TextBlock, UnorderedMap,
+    };
     use crate::collections::fugue::Rng;
     use crate::collections::Root;
     use crate::env;
@@ -1802,11 +1818,17 @@ mod positional_read_tests {
         }
     }
 
-    /// THE WRINKLE. A split racing a remote copy of the unsplit run leaves
-    /// overlapping stored blocks — the stored form no longer satisfies
-    /// "unbroken right-chain, foreign children only at endpoints". Ordered
-    /// reads must still be exact, and the tightest-cover ownership rule must
-    /// not double-count the nodes both copies define.
+    /// THE WRINKLE. Overlapping stored copies of one run — two blocks that both
+    /// define the same nodes — must still read exactly, and the tightest-cover
+    /// ownership rule must not double-count them.
+    ///
+    /// Local editing can no longer produce this: nothing splits a run any more,
+    /// so a replica's blocks partition its own node space. It remains reachable
+    /// from a PEER (a differently-blocked copy of the same nodes off the wire,
+    /// including one written by an older or divergent implementation), which is
+    /// exactly why `blocks_containing` and `find_block`'s tightest-cover rule
+    /// are still load-bearing. So the overlap here is injected directly into the
+    /// block map rather than staged through the insert path.
     #[test]
     fn overlapping_blocks__ordered_reads_stay_exact() {
         type A = MockedStorage<884>;
@@ -1819,7 +1841,7 @@ mod positional_read_tests {
         let mut b = doc_in::<B>("ov");
         b.insert_str_with_replica(0, 2, "abcd").unwrap();
 
-        // B coalesces onto the run; A splits it in two places.
+        // B coalesces onto the run; A edits inside it twice.
         b.insert_str_with_replica(4, 2, "ef").unwrap();
         a.insert_str_with_replica(1, 1, "Q").unwrap();
         a.insert_str_with_replica(4, 1, "R").unwrap();
@@ -1827,6 +1849,24 @@ mod positional_read_tests {
         let mut merged = doc_in::<M>("ov-m");
         merged.merge_blocks_from(&a).unwrap();
         merged.merge_blocks_from(&b).unwrap();
+        let text = merged.get_text().unwrap();
+        assert_eq!(text, "aQbcRdef");
+
+        // Inject a second, differently-blocked copy of the SAME nodes: the tail
+        // of run (2,0) restated as its own block, with exactly the edges
+        // `build_tree` synthesises for those nodes.
+        merged
+            .put_block(
+                BlockKey::new(BlockId::new(2, 2)),
+                TextBlock {
+                    start_id: BlockId::new(2, 2),
+                    text: "cdef".to_owned(),
+                    parent: Some(BlockId::new(2, 1)),
+                    side: BlockSide::R,
+                    tombstones: Vec::new(),
+                },
+            )
+            .unwrap();
 
         // Overlap really is present in the STORED form.
         let loaded = merged.load().unwrap();
@@ -1841,6 +1881,7 @@ mod positional_read_tests {
             "this scenario is supposed to produce overlapping stored blocks"
         );
 
+        // ... and changes nothing about what the document says.
         let text = merged.get_text().unwrap();
         assert_eq!(text, "aQbcRdef");
         assert_eq!(merged.text_range(0, merged.len().unwrap()).unwrap(), text);
@@ -1867,6 +1908,11 @@ mod positional_read_tests {
             tree.nodes().count(),
             "overlap must not double-count"
         );
+
+        // A delete must reach EVERY covering copy, or the join would resurrect
+        // the node from the copy that still calls it live.
+        merged.delete(3).unwrap();
+        assert_eq!(merged.get_text().unwrap(), "aQbRdef");
     }
 
     /// `len` and `is_empty` agree with `get_text`.
@@ -1903,9 +1949,9 @@ mod positional_read_tests {
 /// RGA is immune because an `RgaChar` is immutable once written, so two
 /// replicas can never hold different values for one key. `FugueText` mutates
 /// existing keys — `materialize` grows a run in place when it coalesces, and
-/// `write_segments` shrinks it in place when it splits — so a value collision
-/// on one key is not exotic, it is the ordinary consequence of one writer
-/// typing at the end while another edits the middle.
+/// `delete_range` rewrites its tombstone bitmap from ANY replica — so a value
+/// collision on one key is not exotic, it is the ordinary consequence of one
+/// writer typing at the end of a run while another deletes inside it.
 ///
 /// These tests drive that path.
 #[cfg(test)]
@@ -2018,24 +2064,28 @@ mod apply_path_tests {
         })
     }
 
-    /// The scenario: one writer typing at the END while another edits the
-    /// MIDDLE — the single most common collaborative pattern.
+    /// The scenario: one writer typing at the END of a run while another
+    /// DELETES inside it — the collision that remains now that nothing splits.
     ///
     /// * A holds `(A,0) = "ab"`; A types `'c'` at the end, which COALESCES,
-    ///   rewriting key `(A,0)` as `"abc"` at HLC `t1`.
-    /// * B types `'X'` between `'a'` and `'b'`. Fugue picks side L on `(A,1)`
-    ///   at offset 1 > 0, so `write_segments` SPLITS, rewriting the same key
-    ///   `(A,0)` as `"a"` (plus `(A,1) = "b"` and `(B,0) = "X"`) at `t2 > t1`.
+    ///   rewriting key `(A,0)` as `"abc"` with an empty bitmap, at HLC `t1`.
+    /// * B deletes `'b'`, which rewrites the SAME key `(A,0)` — text `"ab"`,
+    ///   tombstone bit 1 set — at `t2 > t1`.
     /// * Both replicas now hold a different value for key `(A,0)`.
     ///
-    /// The join in `merge_blocks_from` takes the longer text, so `(A,0)`
-    /// resolves to `"abc"` and the document is `"aXbc"`. The APPLY path
-    /// resolves it by LWW, so `(A,0)` becomes `"a"` on both replicas: node
-    /// `(A,2) = 'c'` is in no block and is silently, permanently gone
-    /// everywhere. Note that both replicas still AGREE — this is not caught by
-    /// a convergence check, only by checking the merged VALUE.
+    /// [`join_block`] ORs the bitmaps and takes the longer text, giving
+    /// `"abc"` with bit 1 set, i.e. `"ac"`. The APPLY path without a leaf tag
+    /// resolves it by LWW instead, and whichever side loses is erased: B's
+    /// write wins and node `(A,2) = 'c'` is gone, or A's wins and the delete of
+    /// `'b'` is gone. Both replicas still AGREE either way — this is not caught
+    /// by a convergence check, only by checking the merged VALUE.
+    ///
+    /// (Until mid-run inserts stopped splitting, this scenario was staged as
+    /// typing-at-the-end versus inserting-in-the-middle, because the split
+    /// rewrote the same key. Nothing splits now, so the collision has to come
+    /// from the tombstone bitmap, which ANY replica may rewrite.)
     #[test]
-    fn coalesce_meeting_a_split_on_the_apply_path_keeps_every_node() {
+    fn coalesce_meeting_a_delete_on_the_apply_path_keeps_every_node() {
         // Deliberately NOT `env::reset_environment()`: these replicas own their
         // own `Store`s, and the reset clears PROCESS-global mocked state that
         // other tests in this binary are using concurrently.
@@ -2059,9 +2109,9 @@ mod apply_path_tests {
         let delta_a = edit(&store_a, dev_a, |doc| {
             doc.insert(2, 'c').expect("append should succeed");
         });
-        // B inserts 'X' at 1 -> splits key (A,0), which becomes "a".
+        // B deletes 'b' -> rewrites key (A,0)'s tombstone bitmap.
         let delta_b = edit(&store_b, dev_b, |doc| {
-            doc.insert(1, 'X').expect("middle insert should succeed");
+            doc.delete(1).expect("delete should succeed");
         });
 
         land(&store_a, dev_a, &delta_b);
@@ -2070,16 +2120,16 @@ mod apply_path_tests {
         let after_a = text_in(&store_a, dev_a);
         let after_b = text_in(&store_b, dev_b);
         assert_eq!(
-            after_a, "aXbc",
-            "replica A lost a node: the coalesced run's tail was overwritten by the \
-             remote SPLIT copy of the same block key through the LWW branch of \
-             `try_merge_non_root`, instead of joining with it"
+            after_a, "ac",
+            "replica A lost an edit: the remote delete's copy of block (A,0) \
+             overwrote the coalesced run through the LWW branch of \
+             try_merge_non_root instead of being joined"
         );
         assert_eq!(
-            after_b, "aXbc",
-            "replica B lost a node: the split copy of the block key was kept over the \
-             remote COALESCED copy through the LWW branch of `try_merge_non_root`, \
-             instead of joining with it"
+            after_b, "ac",
+            "replica B lost an edit: the remote coalesced copy of block (A,0) \
+             overwrote the tombstone through the LWW branch of \
+             try_merge_non_root instead of being joined"
         );
     }
 
