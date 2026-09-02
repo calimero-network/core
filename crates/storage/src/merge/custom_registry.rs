@@ -12,6 +12,7 @@
 
 #[cfg(test)]
 use core::cell::RefCell;
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 use std::collections::HashMap;
 #[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 use std::sync::{LazyLock, RwLock};
@@ -22,6 +23,7 @@ use crate::collections::crdt_meta::{CustomMergeable, CustomTypeId, MergeError};
 ///
 /// Timestamps are deliberately absent: dispatch means the app's rule decides,
 /// and a rule that consults wall-clock ordering is not commutative.
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 type CustomMergeFn = fn(&[u8], &[u8]) -> Result<Vec<u8>, MergeError>;
 
 /// Production registry — process-global, shared across async workers.
@@ -106,7 +108,8 @@ pub fn register_custom_merge<T: CustomMergeable>() -> bool {
 ///
 /// `Err(WasmRequired)` means nothing claimed the id — the entry was stamped by
 /// a build whose app registered this type and is being merged by one that does
-/// not, which is an app-upgrade skew rather than a merge failure.
+/// not, which is app-upgrade skew rather than a merge failure.
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub fn merge_custom(
     type_id: CustomTypeId,
     existing: &[u8],
@@ -119,10 +122,31 @@ pub fn merge_custom(
     })
 }
 
+/// Host build: there is no registry, because a production host has no WASM
+/// instance in scope at `save_internal`. Reaching app code from here needs a
+/// callback into the guest, which is a separate path — so this reports the id
+/// it could not dispatch rather than pretending to resolve it.
+#[cfg(not(any(target_arch = "wasm32", test, feature = "testing")))]
+pub const fn merge_custom(
+    type_id: CustomTypeId,
+    _existing: &[u8],
+    _incoming: &[u8],
+) -> Result<Vec<u8>, MergeError> {
+    Err(MergeError::WasmRequired { type_id })
+}
+
 /// Whether any app-defined merge is registered in this instance.
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 #[must_use]
 pub fn has_custom_merges() -> bool {
     with_registry(|registry| !registry.is_empty())
+}
+
+/// Host build: no registry, so never.
+#[cfg(not(any(target_arch = "wasm32", test, feature = "testing")))]
+#[must_use]
+pub const fn has_custom_merges() -> bool {
+    false
 }
 
 /// Drop every registration. Tests only — see the thread-local note above.
