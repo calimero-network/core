@@ -202,7 +202,11 @@ where
         let order_key = S::index_supported().then(|| value.as_ref().to_vec());
         let index_was_current = order_key.is_some() && self.index_marker_current();
 
-        let _ignored = self.inner.insert(Some(id), value)?;
+        let _ignored = self.inner.insert(
+            Some(id),
+            value,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         if let Some(order_key) = order_key {
             // Only stamp the validity marker if the index was consistent before

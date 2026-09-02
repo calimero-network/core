@@ -1357,7 +1357,11 @@ where
         // Capture the order key before `self.key` is moved, to warm the index.
         let order_key = S::index_supported().then(|| self.key.as_ref().to_vec());
 
-        drop(self.map.inner.insert(Some(id), (value, self.key))?);
+        drop(self.map.inner.insert(
+            Some(id),
+            (value, self.key),
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?);
 
         if let Some(order_key) = order_key {
             // Only stamp the validity marker if the index was consistent before

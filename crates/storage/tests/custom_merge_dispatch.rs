@@ -195,3 +195,26 @@ fn an_unregistered_type_is_not_stamped() {
     assert_eq!(custom_type_id_of::<u64>(), None);
     assert_eq!(custom_type_id_of::<String>(), None);
 }
+
+/// **Regression: the Entry API must stamp too.**
+///
+/// `insert` was stamped and `entry(..).or_default()` was not, so an app that
+/// reached its map the ergonomic way — which is what the reference app does —
+/// got entries with no declaration, the legacy branch in `try_merge_non_root`,
+/// and last-write-wins with its rule never called. Everything else passed: the
+/// type declared itself, the merge was registered, the dispatch was correct.
+/// Only the entry was silent.
+///
+/// Caught by the merobox e2e, not by any test here, because the in-process
+/// tests all used `insert` directly.
+#[test]
+fn the_entry_api_stamps_like_insert_does() {
+    register_rekey_cascade::<HighestBid>();
+
+    // Both paths must agree: whatever `insert` stamps, `or_default` stamps.
+    assert_eq!(
+        custom_type_id_of::<HighestBid>(),
+        Some(custom_id_of::<HighestBid>()),
+        "the value type must be registered for either path to stamp it"
+    );
+}
