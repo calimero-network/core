@@ -4295,7 +4295,16 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     }
 
     // Verify the content-addressing via byte-slicing.
-    // The data blob is: [key_hash (32 bytes)] + [value_bytes (N bytes)] + [element_id (32 bytes)]
+    //
+    // A `FrozenStorage<T>` is an `UnorderedMap<Hash, FrozenValue<T>>`, and a map
+    // entry is stored VALUE-FIRST — `(V, K)`, so the value sits at offset 0
+    // whatever the key type. The blob is therefore:
+    //
+    //   [value_bytes (N)] + [key_hash (32)] + [element_id (32)]
+    //
+    // Both trailing fields are fixed 32-byte arrays, which is what makes this
+    // sliceable at all. If the entry layout moves again, this moves with it —
+    // `tests/map_entry_layout.rs` pins the bytes for exactly that reason.
     const KEY_HASH_SIZE: usize = 32;
     const ELEMENT_ID_SIZE: usize = 32;
     const MIN_LEN: usize = KEY_HASH_SIZE + ELEMENT_ID_SIZE;
@@ -4307,10 +4316,8 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     }
 
     // Extract the three components
-    let key_from_entry = &data[..KEY_HASH_SIZE];
-    // We don't need the `Element::Id` from the end, but we know it's there and
-    // we need to remove it from the value_bytes.
-    let value_bytes = &data[KEY_HASH_SIZE..data.len() - ELEMENT_ID_SIZE];
+    let value_bytes = &data[..data.len() - MIN_LEN];
+    let key_from_entry = &data[data.len() - MIN_LEN..data.len() - ELEMENT_ID_SIZE];
 
     // Re-calculate the hash of the `value bytes`
     let calculated_hash: [u8; 32] = Sha256::digest(value_bytes).into();

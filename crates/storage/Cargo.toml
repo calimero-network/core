@@ -69,5 +69,9 @@ name = "rekey_record"
 required-features = ["testing"]
 
 [[test]]
+name = "map_entry_layout"
+required-features = ["testing"]
+
+[[test]]
 name = "custom_merge_dispatch"
 required-features = ["testing"]
