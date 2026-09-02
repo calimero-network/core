@@ -35,18 +35,31 @@ steps:
       member_public_key: memberPublicKey
 
   # ============================================
-  # Settle node 2's context state before the concurrent phase.
-  #
-  # create_mesh only joins node 2 to the namespace; its context state is not
-  # yet initialized, so an immediate write from node 2 is rejected with
-  # "context state not initialized, awaiting state sync". Wait for sync and
-  # then prove node 2's state is genuinely live (not just hope the wait was
-  # long enough) before the four concurrent edits below. This settle step
-  # sits BEFORE all four edits; no wait or sync goes between them, or they
-  # stop being concurrent.
+  # Seed the document, matching paper Figure 2 (which starts from a document
+  # containing "existing text..." above both users' sections - not an empty
+  # document). This is also the working precondition for node 2 to write at
+  # all: create_mesh alone leaves node 2's context with zero delta-log
+  # entries, and a node bootstrapping against a zero-delta context never
+  # completes snapshot sync (confirmed: contextStateHash stays at the null
+  # sentinel and writes are rejected with "Uninitialized" - see round-2 notes
+  # in the task report). collaborative-editor.yml never hits this because
+  # node 2's first write (step 63) always happens long after node 1's first
+  # edit ("Hello") has synced - node 2 never writes into an empty context.
+  # Seeding here reproduces that same working precondition AND the paper's
+  # setup in one step. This settle step sits BEFORE all four concurrent
+  # edits; no wait or sync goes between them, or they stop being concurrent.
   # ============================================
 
-  - name: Wait for Node 2 to settle after mesh creation
+  - name: Seed the document from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "existing text. "
+
+  - name: Wait for seed to propagate to Node 2
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -55,27 +68,31 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  - name: Get Initial Text (Node 2)
+  - name: Get Seeded Text (Node 2)
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
     method: get_text
     outputs:
-      initial_text_node2: result
+      seeded_text_node2: result
 
-  - name: Assert Node 2 document is initially empty
+  - name: Assert Node 2 genuinely has the seeded text
     type: json_assert
     statements:
-      - 'json_equal({{initial_text_node2}}, {"output": ""})'
+      - 'json_equal({{seeded_text_node2}}, {"output": "existing text. "})'
 
   # ============================================
   # Scenario: backward-insertion interleaving (paper Figure 2)
   #
-  # This scenario is the acceptance test for the Fugue rework. Each node
-  # inserts a "passage", then moves back to the document start and inserts a
-  # "heading" (also at position 0, so it lands immediately before its own
-  # passage), with NO propagation wait between Node 1's pair of edits and
-  # Node 2's pair - the merge is genuinely concurrent.
+  # This scenario is the acceptance test for the Fugue rework. Starting from
+  # the 15-character seeded document ("existing text. "), each node appends
+  # its own "passage" at the end (position 15, the seeded length), then
+  # moves back to the start of its own passage (also position 15 - each
+  # node's own prior insert there shifts nothing else) and inserts a
+  # "heading" immediately before it, with NO propagation wait between Node
+  # 1's pair of edits and Node 2's pair - the merge is genuinely concurrent.
+  # This matches Figure 2 of "The Art of the Fugue", which starts from an
+  # existing document rather than an empty one.
   #
   # It is EXPECTED TO FAIL under today's RGA: RGA is proven to interleave
   # concurrent backward insertions from different users (Weidner, Gentle,
@@ -97,7 +114,7 @@ steps:
     context_id: "{{context_id}}"
     method: insert_text
     args:
-      position: 0
+      position: 15
       text: "PASSAGE1"
 
   - name: Node 1 goes back and types heading
@@ -106,7 +123,7 @@ steps:
     context_id: "{{context_id}}"
     method: insert_text
     args:
-      position: 0
+      position: 15
       text: "HEAD1"
 
   - name: Node 2 types passage
@@ -115,7 +132,7 @@ steps:
     context_id: "{{context_id}}"
     method: insert_text
     args:
-      position: 0
+      position: 15
       text: "PASSAGE2"
 
   - name: Node 2 goes back and types heading
@@ -124,7 +141,7 @@ steps:
     context_id: "{{context_id}}"
     method: insert_text
     args:
-      position: 0
+      position: 15
       text: "HEAD2"
 
   - name: Wait for interleaving edits to propagate
