@@ -1383,3 +1383,309 @@ mod model_tests {
         assert_eq!(doc.get_text().unwrap(), "k");
     }
 }
+
+/// The ordered index and the positional read API.
+///
+/// These tests are deliberately written against the *observable* contract —
+/// `text_range` / `char_at` agree with `get_text`, and a damaged index never
+/// misroutes a positional WRITE — rather than against the key encoding, which
+/// is an implementation detail free to change.
+#[cfg(test)]
+mod index_tests {
+    use super::{blocks_containing, build_tree, BlockId, FugueText, UnorderedMap};
+    use crate::collections::fugue::Rng;
+    use crate::collections::Root;
+    use crate::entities::Data;
+    use crate::env;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
+        FugueText {
+            blocks: UnorderedMap::new_with_field_name_and_crdt_type(
+                None,
+                field_name,
+                crate::collections::CrdtType::FugueText,
+            ),
+        }
+    }
+
+    /// Build a pseudo-random document: appends (which coalesce), mid-document
+    /// inserts (which split) and deletes (which tombstone), so the resulting
+    /// block set exercises every storage shape the index must describe.
+    fn random_doc<S: StorageAdaptor>(doc: &mut FugueText<S>, rng: &mut Rng, ops: usize) {
+        const WORDS: [&str; 5] = ["a", "bc", "déf", "ghij", "日本"];
+        for _ in 0..ops {
+            let len = doc.len().unwrap();
+            if rng.below(4) == 0 && len > 0 {
+                let start = rng.below(len);
+                doc.delete_range(start, start + 1 + rng.below(3)).unwrap();
+            } else {
+                let pos = rng.below(len + 1);
+                let replica = 1 + rng.below(3) as u64;
+                doc.insert_str_with_replica(pos, replica, WORDS[rng.below(WORDS.len())])
+                    .unwrap();
+            }
+        }
+    }
+
+    /// `text_range` is exactly the corresponding slice of `get_text`, over
+    /// random documents and random ranges.
+    #[test]
+    fn text_range__equals_the_get_text_slice_over_random_documents() {
+        env::reset_for_testing();
+        type S = MockedStorage<880>;
+        let mut rng = Rng::new(0x_1d_ec_0d_e5);
+
+        for seed in 0..25_usize {
+            let mut doc = doc_in::<S>(&format!("tr{seed}"));
+            random_doc(&mut doc, &mut rng, 8);
+            let text = doc.get_text().unwrap();
+            let chars: Vec<char> = text.chars().collect();
+
+            for _ in 0..12 {
+                let a = rng.below(chars.len() + 3);
+                let b = a + rng.below(chars.len() + 3);
+                let expected: String = chars
+                    .iter()
+                    .skip(a.min(chars.len()))
+                    .take(b.min(chars.len()).saturating_sub(a.min(chars.len())))
+                    .collect();
+                assert_eq!(
+                    doc.text_range(a, b).unwrap(),
+                    expected,
+                    "seed {seed}: text_range({a}, {b}) over {text:?}"
+                );
+            }
+        }
+    }
+
+    /// `char_at(i)` is `get_text().chars().nth(i)` for every `i`, including
+    /// past the end.
+    #[test]
+    fn char_at__equals_chars_nth_including_out_of_bounds() {
+        env::reset_for_testing();
+        type S = MockedStorage<881>;
+        let mut rng = Rng::new(0x_c4_a2_a7_11);
+
+        for seed in 0..25_usize {
+            let mut doc = doc_in::<S>(&format!("ca{seed}"));
+            random_doc(&mut doc, &mut rng, 8);
+            let text = doc.get_text().unwrap();
+
+            for index in 0..text.chars().count() + 3 {
+                assert_eq!(
+                    doc.char_at(index).unwrap(),
+                    text.chars().nth(index),
+                    "seed {seed}: char_at({index}) over {text:?}"
+                );
+            }
+        }
+    }
+
+    /// The full range is the whole document, and a range past the end clamps
+    /// instead of erroring — a reader that errored when a concurrent remote
+    /// delete shrank the document would be a guaranteed production bug.
+    #[test]
+    fn text_range__full_range_equals_get_text_and_clamps_past_the_end() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str(0, "hello").unwrap();
+        doc.insert_str(2, "XY").unwrap();
+        doc.delete(0).unwrap();
+
+        let text = doc.get_text().unwrap();
+        let len = doc.len().unwrap();
+        assert_eq!(doc.text_range(0, len).unwrap(), text);
+        assert_eq!(doc.text_range(0, len + 100).unwrap(), text);
+        assert_eq!(doc.text_range(len, len + 100).unwrap(), "");
+        assert_eq!(doc.text_range(len + 5, len + 100).unwrap(), "");
+        assert_eq!(doc.text_range(3, 3).unwrap(), "");
+        assert!(doc.text_range(3, 2).is_err(), "start > end must error");
+    }
+
+    /// Positions are `char` indices — Unicode scalar values, not bytes.
+    #[test]
+    fn text_range__counts_chars_not_bytes() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str(0, "héllo wörld").unwrap();
+        assert_eq!(doc.text_range(0, 5).unwrap().chars().count(), 5);
+        assert_eq!(doc.text_range(0, 5).unwrap(), "héllo");
+        assert_eq!(doc.char_at(1).unwrap(), Some('é'));
+
+        let mut cjk = Root::new(FugueText::new_with_field_name("cjk"));
+        cjk.insert_str(0, "日本語のテキストです").unwrap();
+        assert_eq!(cjk.text_range(0, 5).unwrap().chars().count(), 5);
+        assert_eq!(cjk.text_range(0, 5).unwrap(), "日本語のテ");
+        assert_eq!(cjk.char_at(2).unwrap(), Some('語'));
+        assert_eq!(cjk.len().unwrap(), 10);
+    }
+
+    /// The index describes exactly the authoritative node set: every stored
+    /// node is covered exactly once, and the covered live count is `len()`.
+    #[test]
+    fn index__cardinality_agrees_with_the_authoritative_node_set() {
+        env::reset_for_testing();
+        type S = MockedStorage<882>;
+        let mut rng = Rng::new(0x_ca_2d_11_0a);
+
+        for seed in 0..15_usize {
+            let mut doc = doc_in::<S>(&format!("card{seed}"));
+            random_doc(&mut doc, &mut rng, 8);
+
+            let loaded = doc.load().unwrap();
+            let tree = build_tree(&loaded).unwrap();
+            let (nodes, live) = doc.index_cardinality().expect("index must be populated");
+            assert_eq!(
+                nodes,
+                tree.nodes().count(),
+                "seed {seed}: index must cover every authoritative node exactly once"
+            );
+            assert_eq!(live, doc.len().unwrap(), "seed {seed}: live count");
+        }
+    }
+
+    /// CONSTRAINT 1. A dropped index entry must never make a positional WRITE
+    /// target the wrong node: `parent`/`side` are SYNCED, so a wrong causal edge
+    /// ships in the delta and diverges every replica permanently. The write path
+    /// therefore resolves positions against the authoritative block set and
+    /// never through the index.
+    #[test]
+    fn corrupt_index__never_misroutes_a_positional_write() {
+        env::reset_for_testing();
+        type S = MockedStorage<883>;
+
+        for damage in 0..3_usize {
+            let mut doc = doc_in::<S>(&format!("dmg{damage}"));
+            doc.insert_str_with_replica(0, 1, "hello").unwrap();
+            doc.insert_str_with_replica(2, 2, "XY").unwrap();
+            doc.insert_str_with_replica(0, 3, "Z").unwrap();
+            assert_eq!(doc.get_text().unwrap(), "ZheXYllo");
+
+            let collection = doc.blocks.element().id();
+            let keys: Vec<Vec<u8>> = S::index_range(
+                collection,
+                core::ops::Bound::Unbounded,
+                core::ops::Bound::Unbounded,
+                0,
+                None,
+            )
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+            assert!(!keys.is_empty(), "the index must be populated to damage it");
+
+            match damage {
+                // Drop one entry: positions computed from the index would shift.
+                0 => {
+                    let _ = S::index_remove(collection, &keys[0]);
+                }
+                // Corrupt an entry's payload without changing its cardinality.
+                1 => {
+                    let mut bogus = keys[keys.len() - 1].clone();
+                    if let Some(last) = bogus.last_mut() {
+                        *last ^= 0xff;
+                    }
+                    let _ = S::index_remove(collection, &keys[keys.len() - 1]);
+                    let _ = S::index_put(collection, &bogus, collection);
+                }
+                // Wipe it entirely.
+                _ => {
+                    let _ = S::index_clear(collection);
+                }
+            }
+
+            // The write must land on the character the AUTHORITATIVE order says
+            // is at position 3 ('X'), whatever the index claims.
+            doc.delete(3).unwrap();
+            assert_eq!(
+                doc.get_text().unwrap(),
+                "ZheYllo",
+                "damage {damage}: a damaged index misrouted a positional write"
+            );
+
+            // And the insert origin must be authoritative too.
+            doc.insert_str_with_replica(1, 4, "Q").unwrap();
+            assert_eq!(doc.get_text().unwrap(), "ZQheYllo", "damage {damage}");
+
+            // Reads must be correct as well — either from a repaired index or
+            // from the authoritative fallback, never from the damaged one.
+            assert_eq!(doc.text_range(0, 4).unwrap(), "ZQhe");
+            assert_eq!(doc.char_at(2).unwrap(), Some('h'));
+        }
+    }
+
+    /// THE WRINKLE. A split racing a remote copy of the unsplit run leaves
+    /// overlapping stored blocks — the stored form no longer satisfies
+    /// "unbroken right-chain, foreign children only at endpoints". Ordered
+    /// reads must still be exact, and the index must not double-count the
+    /// nodes both copies define.
+    #[test]
+    fn overlapping_blocks__ordered_reads_stay_exact() {
+        type A = MockedStorage<884>;
+        type B = MockedStorage<885>;
+        type M = MockedStorage<886>;
+        env::reset_for_testing();
+
+        let mut a = doc_in::<A>("ov");
+        a.insert_str_with_replica(0, 2, "abcd").unwrap();
+        let mut b = doc_in::<B>("ov");
+        b.insert_str_with_replica(0, 2, "abcd").unwrap();
+
+        // B coalesces onto the run; A splits it in two places.
+        b.insert_str_with_replica(4, 2, "ef").unwrap();
+        a.insert_str_with_replica(1, 1, "Q").unwrap();
+        a.insert_str_with_replica(4, 1, "R").unwrap();
+
+        let mut merged = doc_in::<M>("ov-m");
+        merged.merge_blocks_from(&a).unwrap();
+        merged.merge_blocks_from(&b).unwrap();
+
+        // Overlap really is present in the STORED form.
+        let loaded = merged.load().unwrap();
+        let overlapping = loaded
+            .iter()
+            .filter(|lb| {
+                blocks_containing(&loaded, BlockId::new(lb.id.replica, lb.id.counter)).len() > 1
+            })
+            .count();
+        assert!(
+            overlapping > 0,
+            "this scenario is supposed to produce overlapping stored blocks"
+        );
+
+        let text = merged.get_text().unwrap();
+        assert_eq!(text, "aQbcRdef");
+        assert_eq!(merged.text_range(0, merged.len().unwrap()).unwrap(), text);
+        for index in 0..text.chars().count() + 2 {
+            assert_eq!(merged.char_at(index).unwrap(), text.chars().nth(index));
+        }
+        for start in 0..text.chars().count() {
+            for end in start..text.chars().count() + 2 {
+                let expected: String = text.chars().skip(start).take(end - start).collect();
+                assert_eq!(merged.text_range(start, end).unwrap(), expected);
+            }
+        }
+
+        let tree = build_tree(&loaded).unwrap();
+        let (nodes, live) = merged.index_cardinality().expect("index populated");
+        assert_eq!(nodes, tree.nodes().count(), "overlap must not double-count");
+        assert_eq!(live, merged.len().unwrap());
+    }
+
+    /// `len` and `is_empty` agree with `get_text` on an indexed document.
+    #[test]
+    fn len__agrees_with_get_text_on_an_indexed_document() {
+        env::reset_for_testing();
+        type S = MockedStorage<887>;
+        let mut rng = Rng::new(0x_5e_11_00_02);
+
+        for seed in 0..15_usize {
+            let mut doc = doc_in::<S>(&format!("len{seed}"));
+            random_doc(&mut doc, &mut rng, 8);
+            let text = doc.get_text().unwrap();
+            assert_eq!(doc.len().unwrap(), text.chars().count());
+            assert_eq!(doc.is_empty().unwrap(), text.is_empty());
+        }
+    }
+}
