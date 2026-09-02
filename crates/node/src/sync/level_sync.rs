@@ -475,11 +475,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // `apply_leaf_with_crdt_merge` which LWW-writes
                     // them directly (no Mergeable to dispatch).
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    let is_opaque = matches!(
-                        &leaf_data.metadata.crdt_type,
-                        calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
-                            if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME
-                    );
+                    let is_opaque = leaf_data.metadata.crdt_type.is_opaque_leaf();
                     if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
                         stats.deferred_root_merges.push((
                             leaf_data.key,

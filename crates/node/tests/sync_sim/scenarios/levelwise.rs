@@ -133,14 +133,14 @@ fn test_crdt_merge_at_leaves() {
     alice.insert_entity_with_metadata(
         shared_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     // Bob has version at timestamp 200 (newer)
     bob.insert_entity_with_metadata(
         shared_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 200),
+        EntityMetadata::new(CrdtType::lww_register(), 200),
     );
 
     // Both have the same entity ID
@@ -233,7 +233,7 @@ fn test_only_differing_subtrees() {
     for i in 1..=10 {
         let id = EntityId::from_u64(i);
         let data = format!("shared-{i}").into_bytes();
-        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
+        let metadata = EntityMetadata::new(CrdtType::lww_register(), i * 100);
 
         alice.insert_entity_with_metadata(id, data.clone(), metadata.clone());
         bob.insert_entity_with_metadata(id, data, metadata);
@@ -245,7 +245,7 @@ fn test_only_differing_subtrees() {
         alice.insert_entity_with_metadata(
             id,
             format!("alice-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
+            EntityMetadata::new(CrdtType::lww_register(), i * 100),
         );
     }
 
@@ -254,7 +254,7 @@ fn test_only_differing_subtrees() {
         bob.insert_entity_with_metadata(
             id,
             format!("bob-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
+            EntityMetadata::new(CrdtType::lww_register(), i * 100),
         );
     }
 
@@ -312,7 +312,7 @@ fn test_thousand_children_level() {
     for i in 0..1000 {
         let id = EntityId::from_u64(i);
         let data = format!("entity-{i}").into_bytes();
-        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 10);
+        let metadata = EntityMetadata::new(CrdtType::lww_register(), i * 10);
 
         alice.insert_entity_with_metadata(id, data.clone(), metadata.clone());
         // Bob has slightly different set (900 shared, 100 different)
@@ -325,7 +325,7 @@ fn test_thousand_children_level() {
     for i in 1000..1100 {
         let id = EntityId::from_u64(i);
         let data = format!("bob-unique-{i}").into_bytes();
-        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 10);
+        let metadata = EntityMetadata::new(CrdtType::lww_register(), i * 10);
         bob.insert_entity_with_metadata(id, data, metadata);
     }
 
@@ -350,7 +350,7 @@ fn test_empty_tree_handling() {
     bob.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"data".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     // Alice should be able to receive all of Bob's data
@@ -385,13 +385,13 @@ fn test_single_entity_tree() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"alice".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     bob.insert_entity_with_metadata(
         EntityId::from_u64(2),
         b"bob".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 200),
+        EntityMetadata::new(CrdtType::lww_register(), 200),
     );
 
     // Force LevelWise
@@ -438,12 +438,12 @@ mod protocol_selection_tests {
         alice.insert_entity_with_metadata(
             EntityId::from_u64(1),
             b"data".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 100),
+            EntityMetadata::new(CrdtType::lww_register(), 100),
         );
         bob.insert_entity_with_metadata(
             EntityId::from_u64(2),
             b"data".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 200),
+            EntityMetadata::new(CrdtType::lww_register(), 200),
         );
 
         // Initially, no forced protocol

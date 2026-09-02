@@ -724,7 +724,7 @@ mod tests {
             [10u8; 32],
             vec![1, 2, 3],
             LeafMetadata::new(
-                crate::sync::hash_comparison::CrdtType::lww_register("test"),
+                crate::sync::hash_comparison::CrdtType::lww_register(),
                 100,
                 [0u8; 32],
             ),
@@ -864,7 +864,7 @@ mod tests {
         use crate::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
         use crate::sync::levelwise::LevelNode;
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         let leaf_data = TreeLeafData::new([5u8; 32], vec![1, 2, 3, 4], metadata);
 
         let nodes = vec![
@@ -936,7 +936,7 @@ mod tests {
     fn test_init_payload_entity_push_roundtrip() {
         use crate::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         let leaf = TreeLeafData::new([10u8; 32], vec![1, 2, 3, 4], metadata);
 
         let request = InitPayload::EntityPush {
