@@ -480,6 +480,139 @@ fn check_converged(seed: u64, hashes: &[Option<[u8; 32]>]) -> Result<(), String>
     ))
 }
 
+// ============================================================================
+// Merge-law conformance
+// ============================================================================
+
+/// Assert that `T`'s `Mergeable::merge` obeys the laws it is required to.
+///
+/// [`converge`] answers "do replicas agree?"; this answers "is the rule they
+/// agree by actually a merge?". Those are different questions, and the second
+/// has been documented on [`Mergeable`](crate::collections::Mergeable),
+/// `#[app::mergeable]` and the reference app's README while being checked
+/// nowhere.
+///
+/// The gap is not theoretical. A merge that ran in only one direction shipped
+/// in this crate: an incoming write older than the stored one was
+/// short-circuited before dispatch, so whichever replica wrote second merged
+/// and the other silently kept its own value. Concurrent bids of 900 and 100
+/// under a "highest wins" rule settled on 900 on one node and 100 on the other.
+/// It was found by a two-replica end-to-end test that happened to look, not by
+/// anything asserting commutativity.
+///
+/// Checked over every ordered pair and triple of `samples`, comparing borsh
+/// encodings rather than `PartialEq` — the stored bytes are what the Merkle
+/// hash sees, so two values that compare equal but encode differently are still
+/// a divergence.
+///
+/// # Choosing samples
+///
+/// Include values that DIFFER in the fields the rule reads. Identical samples
+/// satisfy every law trivially and prove nothing — the same way a `Counter`
+/// test cannot tell you whether a custom rule ran.
+///
+/// # Not for types that embed collections
+///
+/// A `Counter`, `UnorderedMap` or any other collection field is a HANDLE:
+/// storage identity, not value. Built outside a storage env each one gets a
+/// random id, so two merges of the same pair encode differently no matter what
+/// the rule does, and this helper would report a commutativity violation that
+/// is entirely an artifact of the handles.
+///
+/// That is not a coverage gap. Collection fields converge structurally — as
+/// their own child entities, under the storage layer's own rules — whatever
+/// `merge` does with them. The part of a custom rule that can actually be wrong
+/// is the part deciding PLAIN data, which is also the only reason to reach for
+/// `#[app::mergeable]` at all. Point this at that part; use
+/// [`converge`] for the whole type.
+///
+/// # Panics
+///
+/// On the first violated law, naming which one and the two encodings.
+///
+/// ```ignore
+/// assert_merge_laws(&[
+///     Stats { badges: 0b001, ..Default::default() },
+///     Stats { badges: 0b010, ..Default::default() },
+///     Stats { badges: 0b100, ..Default::default() },
+/// ]);
+/// ```
+pub fn assert_merge_laws<T>(samples: &[T])
+where
+    T: crate::collections::Mergeable + BorshSerialize + BorshDeserialize,
+{
+    assert!(
+        samples.len() >= 2,
+        "assert_merge_laws needs at least two DIFFERENT samples; one value \
+         satisfies every law trivially and proves nothing"
+    );
+
+    let enc = |v: &T| borsh::to_vec(v).expect("sample must serialize");
+
+    // Copies come from a borsh round-trip rather than `Clone`, and not only to
+    // avoid the bound — an app type holding a `Counter` or a collection cannot
+    // be `Clone`, which would have made this helper unusable on exactly the
+    // types it is for. It is also the more faithful copy: the laws are about
+    // the value as STORED, and stored is what borsh produces.
+    let copy = |v: &T| T::try_from_slice(&enc(v)).expect("sample must round-trip through borsh");
+
+    // Merge mode is what production uses, and it suppresses timestamp
+    // generation. Without it a rule that touches a nested CRDT stamps a fresh
+    // wall clock on each call, so even a correct merge encodes differently
+    // every time and every law below fails for the wrong reason.
+    let merged = |a: &T, b: &T| -> Vec<u8> {
+        let mut out = copy(a);
+        crate::env::with_merge_mode(|| out.merge(b)).expect(
+            "merge must be TOTAL: returning Err refuses to converge, leaving the entity \
+                     divergent while repair retries it forever. Reject bad input on the write \
+                     path instead.",
+        );
+        enc(&out)
+    };
+
+    for (i, a) in samples.iter().enumerate() {
+        // Idempotent: merging a value with itself must not move it.
+        assert_eq!(
+            merged(a, a),
+            enc(a),
+            "merge is not IDEMPOTENT for sample {i}: merge(a, a) != a. Re-delivery of the \
+             same state is normal in sync, so a rule that drifts on it never settles."
+        );
+
+        for (j, b) in samples.iter().enumerate() {
+            // Commutative: the answer cannot depend on which side arrived first.
+            assert_eq!(
+                merged(a, b),
+                merged(b, a),
+                "merge is not COMMUTATIVE for samples {i} and {j}: merge(a, b) != merge(b, a). \
+                 Two replicas seeing the same pair in different orders will settle on different \
+                 values and never converge."
+            );
+
+            for (k, c) in samples.iter().enumerate() {
+                // Associative: grouping cannot matter either, since replicas
+                // batch arrivals differently.
+                let left = {
+                    let mut ab = copy(a);
+                    crate::env::with_merge_mode(|| ab.merge(b)).expect("merge must be total");
+                    merged(&ab, c)
+                };
+                let right = {
+                    let mut bc = copy(b);
+                    crate::env::with_merge_mode(|| bc.merge(c)).expect("merge must be total");
+                    merged(a, &bc)
+                };
+                assert_eq!(
+                    left, right,
+                    "merge is not ASSOCIATIVE for samples {i}, {j}, {k}: \
+                     merge(merge(a, b), c) != merge(a, merge(b, c)). Replicas batch incoming \
+                     state differently, so grouping must not change the result."
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::check_converged;

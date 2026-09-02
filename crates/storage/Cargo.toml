@@ -73,6 +73,10 @@ name = "map_entry_layout"
 required-features = ["testing"]
 
 [[test]]
+name = "merge_laws"
+required-features = ["testing"]
+
+[[test]]
 name = "custom_merge_dispatch"
 required-features = ["testing"]
 
