@@ -24,7 +24,8 @@ use std::rc::Rc;
 
 use calimero_storage::action::Action;
 use calimero_storage::collections::{
-    LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet, Vector,
+    FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap,
+    UnorderedSet, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -503,6 +504,22 @@ const REMOTE_CHAR_ACTIONS: usize = 6;
 /// work too would attribute an unrelated single-replica build to the sync
 /// path and hide the number the workload exists to publish.
 fn uncounted_env() -> RuntimeEnv {
+    uncounted_env_with_device([2; 32])
+}
+
+/// [`uncounted_env`] with an explicit device id.
+///
+/// The device id is not decoration for every collection. `FugueText` mints its
+/// node ids as `(replica, counter)` with `replica` derived from the DEVICE id
+/// (`local_replica`, see `fugue_text.rs`) and `counter` derived from the blocks
+/// that replica already holds in THIS store — so a remote replica sharing the
+/// measurement env's device id would mint the very ids the local writer is
+/// minting, from a store that does not contain them. The two halves would
+/// collide instead of interleaving. `ReplicatedGrowableArray` has no such
+/// hazard (its ids carry an HLC timestamp from a clock both envs share), which
+/// is why [`uncounted_env`] keeps its original device id and only the Fugue
+/// side asks for a distinct one.
+fn uncounted_env_with_device(device_id: [u8; 32]) -> RuntimeEnv {
     let map: Rc<RefCell<BTreeMap<[u8; 32], Vec<u8>>>> = Rc::new(RefCell::new(BTreeMap::new()));
     let read = {
         let map = Rc::clone(&map);
@@ -519,7 +536,7 @@ fn uncounted_env() -> RuntimeEnv {
         let map = Rc::clone(&map);
         Rc::new(move |key: &Key| map.borrow_mut().remove(&key.to_bytes()).is_some())
     };
-    RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32])
+    RuntimeEnv::new(read, write, remove, [1; 32], device_id, [3; 32])
 }
 
 fn build_rga(n: usize) -> Root<ReplicatedGrowableArray<MainStorage>> {
@@ -527,6 +544,350 @@ fn build_rga(n: usize) -> Root<ReplicatedGrowableArray<MainStorage>> {
     let text: String = std::iter::repeat_n('a', n).collect();
     rga.insert_str(0, &text).expect("insert_str should succeed");
     rga
+}
+
+/// Bulk-insert `n` characters into an empty `FugueText` as a single
+/// `insert_str` call — the `fugue_text` counterpart of [`rga_insert`], and the
+/// "paste one string" pattern.
+///
+/// Measured `reads/entry` at [`SIZES`], against `rga_insert`'s committed row:
+///
+/// | `n`    | `fugue_text_insert` | `rga_insert` |
+/// |--------|---------------------|--------------|
+/// | 10     | 46.7                | 54.5         |
+/// | 100    | 39.8                | 48.7         |
+/// | 1,000  | 39.1                | 48.1         |
+/// | 10,000 | 39.0                | 48.0         |
+///
+/// Flat, and flat slightly lower than RGA's — [`CostShape::FlatPerEntry`],
+/// same as its counterpart.
+fn fugue_text_insert(n: usize) {
+    let _ignored = build_fugue_text(n);
+}
+
+/// Read the whole `FugueText` document after building `n` characters — the
+/// counterpart of [`rga_get_nth`].
+///
+/// # Measured, and what the row counter can and cannot see
+///
+/// Exactly `3` rows read at every size in [`SIZES`], against `rga_get_nth`'s
+/// `2n` (`20 / 200 / 2_000 / 20_000`). Declared
+/// [`CostShape::ConstantPerCall`], not `KnownLinearInN`, because that is what
+/// was measured — the shape is asserted from the number, not the other way
+/// round.
+///
+/// Two things make that `3` honest but narrow, and both are stated here rather
+/// than left for a reader to discover:
+///
+/// 1. **Rows are not bytes.** `insert_str` appends into ONE run-length block,
+///    so a document of any size built this way is a single storage entity: the
+///    read count stops growing while the entity's LENGTH does not. Measured
+///    `bytes_read` for this workload is `1_390` at `n=1_000` and `10_390` at
+///    `n=10_000` — linear in `n`, as a whole-document read must be. The
+///    snapshot deliberately gates rows and not bytes (entity ids are random,
+///    so byte counts flake — see `lib.rs`'s module docs), so the linear part
+///    of this cost is real, measured, and NOT gated.
+/// 2. **The ordered index is invisible here.** `FugueText`'s reads are served
+///    from the ordered index (`S::index_range`, see `fugue_text.rs`), and in
+///    this harness those calls fall through to the process thread-local mock
+///    in `crates/storage/src/env.rs`, which never reaches this crate's
+///    counting callbacks — the same blind spot the `all()` doc comment
+///    records for `SortedMap`. So index maintenance and index scans cost
+///    ZERO in every `fugue_text_*` row count here. Wiring the eight
+///    `IndexCallbacks` through the counting store is the separate piece of
+///    work that would close it.
+///
+/// Named `get_text` rather than `get_nth` for a third reason: unlike
+/// `ReplicatedGrowableArray`, `FugueText` DOES have positional reads
+/// ([`fugue_text_char_at`], [`fugue_text_text_range`]); a whole-document read
+/// is one of its reads, not its only one.
+fn fugue_text_get_text(n: usize) {
+    let text = build_fugue_text(n);
+    reset_counters();
+    let _ignored = text.get_text().expect("get_text should succeed");
+}
+
+/// Cost of ONE `char_at` against a document of `n` characters — the capability
+/// `ReplicatedGrowableArray` never had at all (see [`rga_get_nth`]'s doc
+/// comment: its only read materialises the entire document).
+///
+/// The middle position is read, not the first, so a hypothetical fast path for
+/// position 0 could not make the measurement lie — the same discipline
+/// [`vector_get_nth`] applies.
+///
+/// Measured: exactly `3` rows read at every size in [`SIZES`], hence
+/// [`CostShape::ConstantPerCall`]. There is no RGA counterpart to compare it
+/// against — that is the point of the workload — and the nearest thing,
+/// `vector_get_nth`, is `KnownLinearInN` at `13_279` rows at `n=10_000`.
+///
+/// The two caveats on [`fugue_text_get_text`] apply here too, and matter LESS:
+/// `bytes_read` is `1_390` at `n=1_000` and `10_390` at `n=10_000`, i.e. this
+/// call still drags the whole run-length block through borsh to return one
+/// character. The row count is genuinely constant; the byte cost is not, and
+/// is not gated.
+fn fugue_text_char_at(n: usize) {
+    let text = build_fugue_text(n);
+    reset_counters();
+    let _ignored = text.char_at(n / 2).expect("char_at should succeed");
+}
+
+/// Characters read by [`fugue_text_text_range`] — a screenful, not the
+/// document.
+///
+/// Fixed rather than a fraction of `n` on purpose: a range whose LENGTH grew
+/// with the document would be linear in `n` by construction, and the question
+/// here is whether the cost of reading a bounded window depends on how much
+/// text sits around it.
+const RANGE_READ_CHARS: usize = 100;
+
+/// Cost of ONE short [`FugueText::text_range`] read against a document of `n`.
+///
+/// Read from the MIDDLE for the same reason [`fugue_text_char_at`] is. At
+/// `n = 10` the window is longer than the document and clamps (`text_range`
+/// clamps in `end` by contract) — the call is still a real, measured range
+/// read, and the smallest size is the baseline the growth ratio is taken
+/// against, so clamping there cannot flatter the curve.
+///
+/// Measured: exactly `3` rows read at every size in [`SIZES`], hence
+/// [`CostShape::ConstantPerCall`]; identical to [`fugue_text_char_at`],
+/// because both are served by the same indexed block load. The same
+/// rows-are-not-bytes caveat applies — see [`fugue_text_get_text`].
+fn fugue_text_text_range(n: usize) {
+    let text = build_fugue_text(n);
+    reset_counters();
+    let start = n / 2;
+    let _ignored = text
+        .text_range(start, start + RANGE_READ_CHARS)
+        .expect("text_range should succeed");
+}
+
+/// Insert `n` characters into a `FugueText` ONE AT A TIME, each appended at the
+/// current end — the counterpart of [`rga_insert_per_char`], and the "someone
+/// is typing" access pattern.
+///
+/// # Why this is `FlatPerEntry` where its RGA counterpart is `QuadraticBuild`
+///
+/// Measured `reads/entry` at [`SIZES`], against `rga_insert_per_char`'s
+/// committed row at [`QUADRATIC_SIZES`] (the sizes differ because that
+/// workload cannot be measured at `10_000` in reasonable time — which is
+/// itself the difference):
+///
+/// | `n`    | `fugue_text_insert_per_char` | `rga_insert_per_char` |
+/// |--------|------------------------------|-----------------------|
+/// | 10     | 49.4                         | 63.5                  |
+/// | 100    | 42.7                         | 147.7                 |
+/// | 500    | —                            | 547.1                 |
+/// | 1,000  | 42.1                         | —                     |
+/// | 2,000  | —                            | 2,047.0               |
+/// | 10,000 | 42.0                         | —                     |
+///
+/// An append extends the tail run in place, so the block COUNT does not grow
+/// and the number of rows one insert touches does not either.
+///
+/// # The part the row counter does not see
+///
+/// The single block it extends does grow, and every insert re-reads and
+/// re-writes the whole of it: measured `bytes_read` is `6_738_532` at
+/// `n=1_000` and `247_335_532` at `n=10_000` — 36.7x for 10x the characters,
+/// i.e. still quadratic in BYTES. Rows are flat; bytes are not. The snapshot
+/// gates rows only (see `lib.rs`'s module docs on why byte counts flake), so
+/// `FlatPerEntry` here asserts a real property and NOT "typing is now free".
+/// `crates/runtime/tests/fugue_wall.rs` is where that byte cost is visible as
+/// a number a user feels, because gas charges the decode.
+fn fugue_text_insert_per_char(n: usize) {
+    let mut text = Root::new(FugueText::<MainStorage>::new);
+    for i in 0..n {
+        text.insert(i, 'a').expect("insert should succeed");
+    }
+}
+
+/// Insert `n` characters one at a time at the MIDDLE of the document — the
+/// counterpart of [`rga_insert_middle`], and the position no end-anchored fast
+/// path can serve.
+///
+/// # This is the workload where `FugueText` is WORSE than RGA
+///
+/// Measured `reads/entry` at [`QUADRATIC_SIZES`], against
+/// `rga_insert_middle`'s committed row:
+///
+/// | `n`   | `fugue_text_insert_middle` | `rga_insert_middle` |
+/// |-------|----------------------------|---------------------|
+/// | 10    | 103.5                      | 63.5                |
+/// | 100   | 284.0                      | 147.7               |
+/// | 500   | 1,084.0                    | 547.1               |
+/// | 2,000 | 4,084.0                    | 2,047.0             |
+///
+/// Roughly 2x RGA at every size, and the same shape — hence
+/// [`CostShape::QuadraticBuild`], measured at [`QUADRATIC_SIZES`] for the
+/// reason that constant gives. A mid-document insert SPLITS the run it lands
+/// in, so unlike the append above the block count grows by one per call, and
+/// `load()` reads every block on the next call (`fugue_text.rs`). The result
+/// is a per-call cost linear in the number of BLOCKS, where RGA's is linear in
+/// the number of CHARACTERS — and mid-document typing makes blocks and
+/// characters the same thing, then pays two rows per block where RGA pays one.
+///
+/// Declaring it `QuadraticBuild` records that: the ordered index bought
+/// positional READS (see [`fugue_text_char_at`]) and cheap APPENDS (see
+/// [`fugue_text_insert_per_char`]); it did not buy cheap mid-document
+/// insertion, and it cost a factor of two there.
+fn fugue_text_insert_middle(n: usize) {
+    let mut text = Root::new(FugueText::<MainStorage>::new);
+    for i in 0..n {
+        text.insert(i / 2, 'a').expect("insert should succeed");
+    }
+}
+
+/// Build a `FugueText` document of `n` characters, HALF authored locally and
+/// half arriving from a remote replica, strictly alternating — the counterpart
+/// of [`rga_insert_interleaved_sync`], and the only `FugueText` workload here
+/// that receives.
+///
+/// Everything structural about it is that workload's: the remote half goes
+/// through [`Interface::apply_action`] (the real receive path, NOT a second
+/// local insert), the root is re-fetched every iteration so the local writer
+/// sees what landed, and `n / 2` iterations produce `n` characters so `n` means
+/// what it means everywhere else in this registry. See
+/// [`rga_insert_interleaved_sync`] for the full reasoning on each; only the
+/// collection differs.
+///
+/// # Measured, and it is NOT the win the other Fugue workloads are
+///
+/// `reads/entry` at [`QUADRATIC_SIZES`], against
+/// `rga_insert_interleaved_sync`'s committed row at the same sizes:
+///
+/// | `n`   | `fugue_text_insert_interleaved_sync` | `rga_insert_interleaved_sync` |
+/// |-------|--------------------------------------|-------------------------------|
+/// | 10    | 155.9                                | 147.4                         |
+/// | 100   | 373.8                                | 413.8                         |
+/// | 500   | 1,283.5                              | 1,503.6                       |
+/// | 2,000 | 4,371.4                              | 5,180.7                       |
+///
+/// Still [`CostShape::QuadraticBuild`], exactly like its RGA counterpart, and
+/// WORSE than it at `n=10` (155.9 against 147.4) before pulling ahead by a
+/// constant 0.84x-0.90x at the larger sizes. Receiving is the one access
+/// pattern the ordered index did not fix: each remote character arrives from a
+/// different replica anchored at position 0, which splits the run it lands in,
+/// so the block count grows with the document and `load()` reads every block
+/// on the next call — the same mechanism that makes
+/// [`fugue_text_insert_middle`] quadratic, arriving over the wire instead of
+/// from a keyboard.
+///
+/// Tolerance `0`, unlike `rga_insert_interleaved_sync`'s `5`: that workload
+/// mints an `Id::random()` per remote replica entity, so its applied entity
+/// lands in a different child-trie bucket run to run. Here the remote replica
+/// is created with a field name and its blocks are keyed by `BlockKey`, so
+/// every id is derived, not drawn — measured byte-identical across repeated
+/// fresh-process runs of the release binary.
+fn fugue_text_insert_interleaved_sync(n: usize) {
+    let text = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FUGUE_INTERLEAVED_FIELD));
+    text.commit();
+    for i in 0..n / 2 {
+        let mut text = Root::<FugueText<MainStorage>>::fetch().expect("document root should exist");
+        text.insert(i, 'a').expect("local insert should succeed");
+        text.commit();
+        land_remote_fugue_char(i);
+    }
+}
+
+/// Field name shared by the local document and the remote replica in
+/// [`fugue_text_insert_interleaved_sync`] — see [`INTERLEAVED_DOC_FIELD`] for
+/// why a field name and not a random id.
+const FUGUE_INTERLEAVED_FIELD: &str = "interleaved_fugue_doc";
+
+/// The device id the `index`-th remote `FugueText` character is authored under.
+///
+/// Two constraints, both load-bearing, both learned from a guard firing rather
+/// than reasoned about in advance:
+///
+/// 1. It must differ from the measurement env's `[2; 32]` — see
+///    [`uncounted_env_with_device`].
+/// 2. It must differ per CHARACTER. A `FugueText` node id is
+///    `(replica, counter)`, and the counter is derived from the blocks that
+///    replica already holds IN THE AUTHORING STORE. Every remote character is
+///    authored on a fresh replica store (see [`remote_fugue_char_actions`]), so
+///    a fixed device id would mint `(same replica, 0)` every single time: the
+///    second remote character would carry the first one's id, and the receiver
+///    would treat it as a duplicate rather than as new text.
+///    `every_remote_fugue_character_actually_lands` caught exactly that — a
+///    10-character workload left a 6-character document. `land_remote_char`'s
+///    RGA equivalent has no such hazard: its ids carry an HLC timestamp from a
+///    process-wide clock that advances across the replica boundary.
+///
+/// The consequence is that each remote character arrives from a DIFFERENT
+/// replica, which is the same simplification `rga_insert_interleaved_sync`
+/// makes (every remote character there is a first-position insert from a fresh
+/// replica). It bounds remote cost from one side; it is not a model of two
+/// long-lived writers.
+fn remote_fugue_device(index: usize) -> [u8; 32] {
+    let mut device = [9_u8; 32];
+    // `local_replica` reads the first 8 bytes big-endian, so this makes the
+    // replica id `index + 1` — small, distinct per character, and nowhere near
+    // the measurement env's `0x0202020202020202`.
+    device[..8].copy_from_slice(&(index as u64 + 1).to_be_bytes());
+    device
+}
+
+/// Apply one character to the `FugueText` document the way the SYNC path does —
+/// [`land_remote_char`]'s counterpart, same decode-and-replay shape.
+fn land_remote_fugue_char(index: usize) {
+    for action in remote_fugue_char_actions(index) {
+        if action.id().is_root() {
+            continue;
+        }
+        Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+            .expect("remote apply_action should succeed");
+    }
+}
+
+/// The actions a remote `FugueText` replica emits when one character is typed.
+///
+/// The thread-local pending-delta hazard, and the fixed-count guard against it,
+/// are exactly [`remote_char_actions`]'s — read that doc comment; only the
+/// collection and the replica's device id differ here.
+fn remote_fugue_char_actions(index: usize) -> Vec<Action> {
+    clear_pending_delta();
+    let delta = with_runtime_env(
+        uncounted_env_with_device(remote_fugue_device(index)),
+        || {
+            let mut text = Root::new(|| {
+                FugueText::<MainStorage>::new_with_field_name(FUGUE_INTERLEAVED_FIELD)
+            });
+            text.insert(0, 'r').expect("remote insert should succeed");
+            text.commit();
+            take_last_artifact().expect("commit should emit a delta")
+        },
+    );
+    let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
+        StorageDelta::Actions(actions) => actions,
+        StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    assert_eq!(
+        actions.len(),
+        REMOTE_FUGUE_CHAR_ACTIONS,
+        "the remote replica's delta carried {} actions, not the \
+         {REMOTE_FUGUE_CHAR_ACTIONS} that typing ONE character into a FugueText emits. \
+         Either the thread-local pending-delta buffer leaked into it (check that \
+         `clear_pending_delta()` above still runs, so this workload is not about to \
+         re-apply writes that were already done and report the cost as sync), or a \
+         change to FugueText altered what one character insert emits — in which case \
+         move REMOTE_FUGUE_CHAR_ACTIONS deliberately per its doc comment and regenerate \
+         the snapshot, because the applied cost changed too.",
+        actions.len()
+    );
+    actions
+}
+
+/// Actions in the delta a remote replica emits for exactly one `FugueText`
+/// character. Measured, and stable across runs; see [`REMOTE_CHAR_ACTIONS`] for
+/// why this is a fixed COUNT rather than an id filter.
+const REMOTE_FUGUE_CHAR_ACTIONS: usize = 6;
+
+fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
+    let mut text = Root::new(FugueText::<MainStorage>::new);
+    let content: String = std::iter::repeat_n('a', n).collect();
+    text.insert_str(0, &content)
+        .expect("insert_str should succeed");
+    text
 }
 
 /// `n` separate set-then-commit transactions against the SAME `LwwRegister`.
@@ -693,7 +1054,7 @@ pub fn all() -> Vec<Workload> {
     /// `all()` crosses it with [`SIZES`].
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 11] = [
+    const REGISTRY: [Entry; 16] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -750,6 +1111,30 @@ pub fn all() -> Vec<Workload> {
         // Fixing the parent id removed the last variable.
         ("nested_map_insert", FlatPerEntry, 0, nested_map_insert),
         ("nested_map_get", ConstantPerCall, 0, nested_map_get),
+        (
+            "fugue_text_insert_per_char",
+            FlatPerEntry,
+            0,
+            fugue_text_insert_per_char,
+        ),
+        ("fugue_text_insert", FlatPerEntry, 0, fugue_text_insert),
+        // Measured `3` rows at every size, so ConstantPerCall — see the
+        // workload's doc comment for the two caveats that number carries
+        // (run-length blocks make rows blind to a linear BYTE cost, and the
+        // ordered index is not routed through this crate's counting store).
+        (
+            "fugue_text_get_text",
+            ConstantPerCall,
+            0,
+            fugue_text_get_text,
+        ),
+        ("fugue_text_char_at", ConstantPerCall, 0, fugue_text_char_at),
+        (
+            "fugue_text_text_range",
+            ConstantPerCall,
+            0,
+            fugue_text_text_range,
+        ),
     ];
 
     /// [`CostShape::QuadraticBuild`] workloads, measured at
@@ -758,7 +1143,7 @@ pub fn all() -> Vec<Workload> {
     /// rather than a row in `REGISTRY` because `REGISTRY` is crossed with
     /// `SIZES` unconditionally below; a `QuadraticBuild` entry there would
     /// silently get measured at `n=10_000` too.
-    const QUADRATIC_REGISTRY: [Entry; 3] = [
+    const QUADRATIC_REGISTRY: [Entry; 5] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
@@ -791,6 +1176,18 @@ pub fn all() -> Vec<Workload> {
             QuadraticBuild,
             5,
             rga_insert_interleaved_sync,
+        ),
+        (
+            "fugue_text_insert_middle",
+            QuadraticBuild,
+            0,
+            fugue_text_insert_middle,
+        ),
+        (
+            "fugue_text_insert_interleaved_sync",
+            QuadraticBuild,
+            0,
+            fugue_text_insert_interleaved_sync,
         ),
     ];
 
@@ -956,6 +1353,82 @@ mod tests {
             text.contains('r') && text.contains('a'),
             "document {text:?} is missing one side of the interleave — local chars are \
              'a', remote chars are 'r', and both must be present"
+        );
+    }
+
+    /// The sync half of `fugue_text_insert_interleaved_sync` must actually
+    /// arrive — `every_remote_character_actually_lands`'s counterpart, and for
+    /// the same reason: if `apply_action` stopped landing the remote
+    /// characters, the workload would silently become a single-replica build
+    /// wearing a sync name, and nothing else in this crate could see it.
+    ///
+    /// `FugueText` has one failure mode RGA does not, which this also covers:
+    /// its node ids are `(replica, counter)` with the replica derived from the
+    /// DEVICE id, so a remote replica sharing the measurement env's device id
+    /// would mint colliding ids rather than interleaving. That shows up here
+    /// as a short document.
+    #[test]
+    fn every_remote_fugue_character_actually_lands() {
+        let n = 10;
+        let (text, _) = measure(|| {
+            fugue_text_insert_interleaved_sync(n);
+            Root::<FugueText<MainStorage>>::fetch()
+                .expect("document root should exist after the workload")
+                .get_text()
+                .expect("get_text should succeed")
+        });
+
+        assert_eq!(
+            text.chars().count(),
+            n,
+            "fugue_text_insert_interleaved_sync(n={n}) left a {}-character document \
+             ({text:?}): either the remote half is not landing through apply_action, or \
+             the two replicas are minting colliding node ids — both make this workload \
+             a single-replica build under a sync name",
+            text.chars().count(),
+        );
+        assert!(
+            text.contains('r') && text.contains('a'),
+            "document {text:?} is missing one side of the interleave — local chars are \
+             'a', remote chars are 'r', and both must be present"
+        );
+    }
+
+    /// `fugue_text_char_at` and `fugue_text_text_range` read `3` rows at every
+    /// size, which is the finding — and would be exactly as cheap if they
+    /// returned NOTHING. A `char_at` past the end costs one indexed lookup and
+    /// no block, so a document that failed to build, or a position that fell
+    /// off it, would publish the same flat curve and mean nothing.
+    ///
+    /// So the two point reads are asserted to return the characters they claim
+    /// to, at the same position and size the workloads use.
+    #[test]
+    fn positional_reads_return_real_characters() {
+        let n = 1_000;
+        let (found, _) = measure(|| {
+            let text = build_fugue_text(n);
+            let one = text.char_at(n / 2).expect("char_at should succeed");
+            let start = n / 2;
+            let range = text
+                .text_range(start, start + RANGE_READ_CHARS)
+                .expect("text_range should succeed");
+            (one, range)
+        });
+
+        let (one, range) = found;
+        assert_eq!(
+            one,
+            Some('a'),
+            "char_at({}) returned {one:?} against a {n}-character document — the \
+             workload's flat cost curve is measuring a read that finds nothing",
+            n / 2
+        );
+        assert_eq!(
+            range.chars().count(),
+            RANGE_READ_CHARS,
+            "text_range returned {} characters, not {RANGE_READ_CHARS} — the workload's \
+             flat cost curve is measuring a shorter read than it reports",
+            range.chars().count()
         );
     }
 
