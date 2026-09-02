@@ -170,6 +170,97 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
+  # The same declarative merobox workflow as `auth-seam` above, on Windows.
+  #
+  # Everything Windows-related here has so far been build-time, or a single node
+  # started and stopped by `windows-node-smoke`. This is the first time a real
+  # multi-step workflow runs there: node lifecycle, a root login, and the client
+  # token seam asserted over real HTTP against a live merod.
+  #
+  # Two things differ from the Linux job, both forced:
+  #   - merod is built here rather than extracted from the Docker image. There is
+  #     no Docker on this runner, and a Linux container would test Linux.
+  #   - merobox comes from pip, not `setup-merobox`. That action installs the
+  #     release binary, which is published for darwin and linux only.
+  #
+  # Not gated on `build-image`, unlike auth-seam: it shares nothing with it.
+  windows-auth-seam:
+    name: Windows e2e (auth seam, binary mode)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: windows-e2e
+
+      # librocksdb-sys is pulled with `bindgen-runtime`, and aws-lc-sys
+      # assembles its x86_64 primitives with NASM. Same pair the release build
+      # and `windows-node-smoke` need.
+      - name: Point bindgen at the image's LLVM
+        shell: bash
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Build merod
+        run: cargo build -p merod
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Pinned exactly, like `setup-merobox` does: a floor would let a later
+      # release change what this gate means without anyone choosing it.
+      #
+      # 0.6.74 is the first release that can drive a node here at all — 0.6.73
+      # brought native Windows process management, and 0.6.74 stopped script
+      # steps from being run with a literal `/bin/sh`, which is a path Windows
+      # does not have.
+      - name: Install merobox
+        run: pip install merobox==0.6.74
+
+      - name: Run auth-seam e2e (merobox, embedded auth)
+        shell: bash
+        env:
+          # merobox prints emoji, and Python on Windows defaults stdout to
+          # cp1252, which cannot encode them — it dies on its own banner with
+          # `UnicodeEncodeError: '\U0001f680'` before starting a single node.
+          # Belongs in merobox, which should not depend on every caller
+          # remembering; this unblocks the lane until it lands there.
+          PYTHONIOENCODING: utf-8
+          # Same values and same reasoning as the Linux job above: the admin
+          # root key is minted at `merod init` from these, and the script step
+          # inherits them to log in with. CI-only values for an ephemeral
+          # localhost node.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
+        run: |
+          merobox bootstrap run workflows/auth-seam.yml \
+            --no-docker --binary-path target/debug/merod.exe --auth-mode embedded
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: cat data/auth-seam-1/logs/*.log || true
+
+      - name: Stop nodes
+        if: always()
+        shell: bash
+        run: merobox stop --no-docker --all || true
+
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
     name: Build Apps
