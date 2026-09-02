@@ -112,6 +112,15 @@ fn join_target_group(
     }
 }
 
+/// How many distinct admitter machines a joiner will dial before opening its
+/// join stream.
+///
+/// Deliberately far below what an invitation may carry. The address list sits
+/// outside the inviter's signature, so anyone relaying an invitation may rewrite
+/// it, and dialing is an action taken on a stranger's say-so. A real invitation
+/// names a handful of admitters.
+const MAX_ADMITTER_MACHINES_DIALED: usize = 8;
+
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
     /// identity we don't yet recognize as a context member.
@@ -1135,6 +1144,48 @@ impl SyncManager {
     /// Best-effort and possibly empty: the field is unsigned and optional, an
     /// address may be stale, and a malformed one is skipped rather than failing the
     /// join. An empty result simply leaves peer selection as it was.
+    /// Dial the machines an invitation names, best-effort.
+    ///
+    /// Budgeted per machine rather than per address: the several addresses a
+    /// peer has are alternative routes to it — a direct one, a relay circuit,
+    /// whatever it had before it last moved — so if that machine is off they all
+    /// fail and this has learned one fact. Charging each against the budget
+    /// would spend it inside a single unreachable node and never reach the next
+    /// admitter, which may be up. Dialing a machine stops at the first route
+    /// that connects; the rest are alternatives, not additions.
+    ///
+    /// Nothing here is trusted. The address list is outside the inviter's
+    /// signature, so anyone relaying an invitation may rewrite it — but libp2p
+    /// authenticates the peer id on connect, and admission is decided by the
+    /// signed `admitters` list at apply on every peer. A wrong address costs a
+    /// failed dial.
+    async fn dial_admitters(&self, invitation_bytes: &[u8]) {
+        let Ok(invitation) = borsh::from_slice::<
+            calimero_context_config::types::SignedGroupOpenInvitation,
+        >(invitation_bytes) else {
+            return;
+        };
+
+        let by_machine = super::namespace_join::group_admitter_routes(
+            &invitation.admitter_addrs,
+            MAX_ADMITTER_MACHINES_DIALED,
+        );
+
+        for (peer, routes) in by_machine {
+            for addr in routes {
+                match self.network_client.dial(addr.clone()).await {
+                    Ok(()) => {
+                        debug!(%peer, %addr, "dialed an admitter named by the invitation");
+                        break;
+                    }
+                    Err(err) => {
+                        debug!(%peer, %addr, %err, "admitter address did not dial")
+                    }
+                }
+            }
+        }
+    }
+
     fn admitter_peer_ids(invitation_bytes: &[u8]) -> Vec<PeerId> {
         let Ok(invitation) = borsh::from_slice::<
             calimero_context_config::types::SignedGroupOpenInvitation,
@@ -1208,6 +1259,21 @@ impl SyncManager {
         // preference so much as the difference between a round trip that can
         // succeed and one that can only be refused.
         let admitter_peers = Self::admitter_peer_ids(&params.invitation_bytes);
+
+        // Reach those admitters before asking discovery about them.
+        //
+        // `open_namespace_join_stream` prefers them, but preference only helps
+        // among peers it can open a stream to, and `subscribed_peers` reports
+        // who is on the topic mesh — which is exactly what has not converged in
+        // the case this join path exists for. Dialing first is what turns an
+        // address the invitation carries into a peer the loop below can use.
+        //
+        // Best-effort and before the retry loop, not inside it: one pass over
+        // the invitation's addresses, then the loop's own budget governs the
+        // stream attempts. Failures are ordinary — an address is a snapshot
+        // from mint time — and none of them should fail a join that gossip may
+        // still complete.
+        self.dial_admitters(&params.invitation_bytes).await;
 
         for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
             let (mut stream, peer) = match super::namespace_join::open_namespace_join_stream(
