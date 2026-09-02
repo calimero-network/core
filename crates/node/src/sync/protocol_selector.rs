@@ -1,10 +1,19 @@
 //! Protocol-dispatch for the initiator side of a sync session.
 //!
-//! `SyncManager::handle_dag_sync` calls [`select_protocol`] against
-//! local + remote handshakes to choose a sync protocol, then forwards
-//! the resulting `ProtocolSelection` into this module's
-//! [`ProtocolSelector::execute`], which runs the chosen protocol and
-//! walks the fallback chain when one fails:
+//! `SyncManager::handle_dag_sync` decides a `ProtocolSelection` and forwards it
+//! into this module's [`ProtocolSelector::execute`], which runs the chosen
+//! protocol and walks the fallback chain when one fails:
+//!
+//! The choice is made in `SyncManager::handle_dag_sync`, which does call
+//! `select_protocol` — this module only executes the result.
+//!
+//! `select_protocol` used to begin with a version-compatibility check that
+//! could never fail. `build_remote_handshake` fabricates the peer's handshake
+//! LOCALLY from the only two things that cross the wire (its root hash and dag
+//! heads), so the peer's `version` field was filled from this node's own
+//! `SYNC_PROTOCOL_VERSION`. The comparison was a constant against itself, run
+//! on every sync. The constant is gone; #3810 tracks building the negotiation
+//! CIP §2.3 actually specifies.
 //!
 //! - `None` → no-op, sync converged on root-hash match.
 //! - `Snapshot { .. }` → `fallback_to_snapshot_sync`.
@@ -23,8 +32,6 @@
 //! `request_dag_heads_and_sync`) stay on `SyncManager` and are
 //! exposed through the [`ProtocolDispatch`] trait, mirroring the
 //! per-call-injection pattern used by [`crate::sync::reconciler`].
-//!
-//! [`select_protocol`]: calimero_node_primitives::sync::select_protocol
 
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;

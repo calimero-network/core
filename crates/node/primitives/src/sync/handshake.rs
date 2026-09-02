@@ -10,11 +10,6 @@ use super::protocol::{SyncProtocol, SyncProtocolKind};
 // Constants
 // =============================================================================
 
-/// Wire protocol version for sync handshake.
-///
-/// Increment on breaking changes to ensure nodes can detect incompatibility.
-pub const SYNC_PROTOCOL_VERSION: u32 = 1;
-
 // =============================================================================
 // Capabilities
 // =============================================================================
@@ -59,8 +54,6 @@ impl Default for SyncCapabilities {
 /// See CIP §2.1 - Handshake Message.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct SyncHandshake {
-    /// Protocol version for compatibility checking.
-    pub version: u32,
     /// Current Merkle root hash.
     pub root_hash: [u8; 32],
     /// Number of entities in the tree.
@@ -86,7 +79,6 @@ impl SyncHandshake {
     ) -> Self {
         let has_state = root_hash != [0; 32];
         Self {
-            version: SYNC_PROTOCOL_VERSION,
             root_hash,
             entity_count,
             max_depth,
@@ -94,12 +86,6 @@ impl SyncHandshake {
             has_state,
             supported_protocols: SyncCapabilities::default().supported_protocols,
         }
-    }
-
-    /// Check if the remote handshake has a compatible protocol version.
-    #[must_use]
-    pub fn is_version_compatible(&self, other: &Self) -> bool {
-        self.version == other.version
     }
 
     /// Check if root hashes match (already in sync).
@@ -184,7 +170,6 @@ mod tests {
         let decoded: SyncHandshake = borsh::from_slice(&encoded).expect("deserialize");
 
         assert_eq!(handshake, decoded);
-        assert_eq!(decoded.version, SYNC_PROTOCOL_VERSION);
         assert!(decoded.has_state); // non-zero root_hash
     }
 
@@ -200,19 +185,6 @@ mod tests {
         let decoded: SyncHandshakeResponse = borsh::from_slice(&encoded).expect("deserialize");
 
         assert_eq!(response, decoded);
-    }
-
-    #[test]
-    fn test_sync_handshake_version_compatibility() {
-        let local = SyncHandshake::new([1; 32], 10, 2, vec![]);
-        let compatible = SyncHandshake::new([2; 32], 20, 3, vec![]);
-        let incompatible = SyncHandshake {
-            version: SYNC_PROTOCOL_VERSION + 1,
-            ..SyncHandshake::default()
-        };
-
-        assert!(local.is_version_compatible(&compatible));
-        assert!(!local.is_version_compatible(&incompatible));
     }
 
     #[test]
