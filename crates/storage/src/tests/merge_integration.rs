@@ -6,6 +6,7 @@
 //!
 //! Each test's local `impl Mergeable` carries a sibling `impl RekeyTarget`
 //! (the supertrait): re-key each nested collection field, leaf fields no-op.
+use crate::collections::MergeStrategy;
 
 use crate::collections::{
     Counter, LwwRegister, Mergeable, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet,
@@ -21,6 +22,12 @@ use serial_test::serial;
 struct TestApp {
     counter: Counter,
     metadata: UnorderedMap<String, LwwRegister<String>>,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for TestApp {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for TestApp {
@@ -210,6 +217,12 @@ fn test_merge_with_nested_map() {
         documents: UnorderedMap<String, UnorderedMap<String, LwwRegister<String>>>,
     }
 
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for AppWithNestedMap {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for AppWithNestedMap {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.documents.merge(&other.documents)?;
@@ -337,6 +350,12 @@ fn test_root_cold_join_with_registered_merger_accepts_remote_contents() {
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct App {
         kv: UnorderedMap<String, LwwRegister<String>>,
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for App {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for App {
@@ -468,6 +487,12 @@ fn test_root_cold_join_bootstrap_signal_with_registered_merger_uses_merger() {
         kv: UnorderedMap<String, LwwRegister<String>>,
     }
 
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for App {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for App {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.kv.merge(&other.kv)?;
@@ -555,6 +580,12 @@ fn test_root_cold_join_bootstrap_signal_with_merger_preserves_local_fields() {
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct App {
         kv: UnorderedMap<String, LwwRegister<String>>,
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for App {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for App {
@@ -694,6 +725,12 @@ fn test_merge_map_of_counters() {
         scores: UnorderedMap<String, Counter>,
     }
 
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for AppWithCounters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for AppWithCounters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.scores.merge(&other.scores)?;
@@ -781,6 +818,12 @@ fn test_merge_map_of_lww_registers() {
         settings: UnorderedMap<String, LwwRegister<String>>,
     }
 
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for AppWithRegisters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for AppWithRegisters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.settings.merge(&other.settings)?;
@@ -858,6 +901,12 @@ fn test_merge_vector_of_counters() {
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct AppWithVectorCounters {
         metrics: Vector<Counter>,
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for AppWithVectorCounters {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for AppWithVectorCounters {
@@ -944,6 +993,12 @@ fn test_merge_map_of_sets() {
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct AppWithSetTags {
         user_tags: UnorderedMap<String, UnorderedSet<String>>,
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for AppWithSetTags {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for AppWithSetTags {
@@ -1047,6 +1102,12 @@ fn test_merge_nested_document_with_rga() {
         metadata: UnorderedMap<String, LwwRegister<String>>,
     }
 
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for Document {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for Document {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)?;
@@ -1076,6 +1137,12 @@ fn test_merge_nested_document_with_rga() {
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct CollabEditor {
         documents: UnorderedMap<String, Document>,
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for CollabEditor {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for CollabEditor {
@@ -1231,6 +1298,12 @@ fn test_merge_determinism_reproduces_e2e_issue() {
         file_owner: LwwRegister<String>,
         handler_counter: Counter, // GCounter
         items: UnorderedMap<String, LwwRegister<String>>,
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for E2eKvStoreSimulation {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for E2eKvStoreSimulation {
@@ -1428,6 +1501,12 @@ fn test_counter_serialization_architecture() {
     #[derive(BorshSerialize, BorshDeserialize)]
     struct HandlerApp {
         handler_counter: Counter, // GCounter using MainStorage
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for HandlerApp {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for HandlerApp {
@@ -2278,6 +2357,12 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
     struct NestedCounters {
         counters: UnorderedMap<String, Counter>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for NestedCounters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for NestedCounters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -2432,6 +2517,12 @@ fn test_nested_counter_first_touch_concurrent_converges() {
     struct NestedCounters {
         counters: UnorderedMap<String, Counter>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for NestedCounters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for NestedCounters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -2582,6 +2673,12 @@ fn test_nested_counter_first_touch_via_entry_api_converges() {
     struct NestedCounters {
         counters: UnorderedMap<String, Counter>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for NestedCounters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for NestedCounters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -2725,6 +2822,12 @@ fn test_nested_map_first_touch_via_or_default_converges() {
     struct NestedMaps {
         outer: UnorderedMap<String, UnorderedMap<String, Counter>>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for NestedMaps {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for NestedMaps {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.outer.merge(&other.outer)
@@ -2873,6 +2976,12 @@ fn test_nested_counter_first_touch_via_or_default_converges() {
     struct NestedCounters {
         counters: UnorderedMap<String, Counter>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for NestedCounters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for NestedCounters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -3013,6 +3122,12 @@ fn test_nested_counter_first_touch_via_extend_converges() {
     struct NestedCounters {
         counters: UnorderedMap<String, Counter>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for NestedCounters {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for NestedCounters {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -3149,6 +3264,12 @@ fn test_nested_set_first_touch_concurrent_converges() {
     struct Tags {
         tags: UnorderedMap<String, UnorderedSet<String>>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for Tags {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for Tags {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.tags.merge(&other.tags)
@@ -3303,6 +3424,12 @@ fn test_nested_pncounter_single_writer_converges() {
     struct PnDoc {
         counters: UnorderedMap<String, Counter<true>>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for PnDoc {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for PnDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -3434,6 +3561,12 @@ fn test_nested_pncounter_concurrent_writers_converge() {
     struct PnDoc {
         counters: UnorderedMap<String, Counter<true>>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for PnDoc {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for PnDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
@@ -3603,6 +3736,12 @@ fn test_kv_map_bidirectional_distinct_key_inserts_converge() {
     struct KvApp {
         kv: UnorderedMap<String, LwwRegister<String>>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for KvApp {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for KvApp {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.kv.merge(&other.kv)
@@ -3741,6 +3880,12 @@ fn test_kv_map_same_key_concurrent_writes_converge() {
     struct KvApp {
         kv: UnorderedMap<String, LwwRegister<String>>,
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for KvApp {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for KvApp {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.kv.merge(&other.kv)

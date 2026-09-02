@@ -8,8 +8,12 @@
 //! - SortedMap
 //! - UnorderedSet
 //! - Vector
+//!
+//! Every built-in here declares `MergeStrategy` with `DISPATCHED = false`: the
+//! storage layer merges it by matching on its `crdt_type` variant, so none of
+//! them needs an app rule dispatched.
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
     Counter, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
     UnorderedSet, ValueRef, Vector,
@@ -1175,4 +1179,64 @@ mod mapset_tombstone_merge_tests {
             "merge dropped a genuinely new value"
         );
     }
+}
+
+// ============================================================================
+// MergeStrategy — every built-in converges structurally
+// ============================================================================
+//
+// `DISPATCHED = false` for all of them: the storage layer merges each by
+// matching on its `crdt_type` variant, so there is no app rule to reach. These
+// exist so the bound at the collection-value position can distinguish a type
+// that declared how it merges from one that has a `Mergeable` impl nothing will
+// ever call.
+
+#[diagnostic::do_not_recommend]
+impl<T: Mergeable + Clone> MergeStrategy for Option<T> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T: Mergeable> MergeStrategy for Box<T> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T: Clone + borsh::BorshSerialize + 'static> MergeStrategy for LwwRegister<T> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> MergeStrategy for Counter<ALLOW_DECREMENT, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for ReplicatedGrowableArray {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<K, V, S: StorageAdaptor> MergeStrategy for UnorderedMap<K, V, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<K, V, S: StorageAdaptor> MergeStrategy for SortedMap<K, V, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T, S: StorageAdaptor> MergeStrategy for UnorderedSet<T, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T, S: StorageAdaptor> MergeStrategy for SortedSet<T, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T, S: StorageAdaptor> MergeStrategy for Vector<T, S> {
+    const DISPATCHED: bool = false;
 }

@@ -21,7 +21,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::rekey::{field_child_id, RekeyTarget};
-use calimero_storage::collections::{Counter, Mergeable, Root, UnorderedMap};
+use calimero_storage::collections::{Counter, MergeStrategy, Mergeable, Root, UnorderedMap};
 use calimero_storage::env::{self, RuntimeEnv};
 use calimero_storage::interface::ApplyContext;
 use calimero_storage::store::Key;
@@ -36,6 +36,12 @@ use serial_test::serial;
 #[borsh(crate = "calimero_sdk::borsh")]
 struct FixedStats {
     wins: Counter,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for FixedStats {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for FixedStats {
@@ -59,6 +65,12 @@ impl RekeyTarget for FixedStats {
 #[borsh(crate = "calimero_sdk::borsh")]
 struct UnfixedStats {
     wins: Counter,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for UnfixedStats {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for UnfixedStats {
@@ -85,6 +97,10 @@ macro_rules! team_app {
         #[borsh(crate = "calimero_sdk::borsh")]
         struct $app {
             teams: UnorderedMap<String, $val>,
+        }
+        #[diagnostic::do_not_recommend]
+        impl MergeStrategy for $app {
+            const DISPATCHED: bool = false;
         }
         impl Mergeable for $app {
             fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
@@ -292,6 +308,12 @@ struct InnerManual {
     score: Counter,
 }
 
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for InnerManual {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for InnerManual {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.score.merge(&other.score)
@@ -311,6 +333,12 @@ struct OuterManual {
     inner: UnorderedMap<String, InnerManual>,
 }
 
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for OuterManual {
+    const DISPATCHED: bool = false;
+}
+
 impl Mergeable for OuterManual {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.inner.merge(&other.inner)
@@ -328,6 +356,12 @@ impl RekeyTarget for OuterManual {
 #[borsh(crate = "calimero_sdk::borsh")]
 struct DeepAppManual {
     groups: UnorderedMap<String, OuterManual>,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for DeepAppManual {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for DeepAppManual {

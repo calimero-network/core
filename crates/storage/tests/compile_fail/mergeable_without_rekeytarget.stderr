@@ -1,3 +1,22 @@
+error[E0277]: (calimero)> `BadStruct` implements `Mergeable` but never declared how it merges
+  --> tests/compile_fail/mergeable_without_rekeytarget.rs:19:20
+   |
+19 | impl Mergeable for BadStruct {
+   |                    ^^^^^^^^^ needs `#[app::mergeable]` or `#[derive(Mergeable)]`
+   |
+help: the trait `MergeStrategy` is not implemented for `BadStruct`
+  --> tests/compile_fail/mergeable_without_rekeytarget.rs:12:1
+   |
+12 | struct BadStruct {
+   | ^^^^^^^^^^^^^^^^
+   = note: Stored as a COLLECTION VALUE, a type that declares nothing resolves last-write-wins and its `merge` is never called — it compiles and silently decides nothing. Root state has its own merge path and is unaffected, but the declaration is still required so the distinction is recorded rather than assumed.
+   = note: Add `#[app::mergeable]` to have the merge dispatched, or `#[derive(Mergeable)]` if plain field-by-field delegation is what you want (the storage layer reaches that answer anyway, with no wasm call).
+note: required by a bound in `Mergeable`
+  --> src/collections/crdt_meta.rs
+   |
+   | pub trait Mergeable: crate::collections::rekey::RekeyTarget + MergeStrategy {
+   |                                                               ^^^^^^^^^^^^^ required by this bound in `Mergeable`
+
 error[E0277]: the trait bound `BadStruct: calimero_storage::collections::rekey::RekeyTarget` is not satisfied
   --> tests/compile_fail/mergeable_without_rekeytarget.rs:19:20
    |
@@ -22,5 +41,5 @@ help: the trait `calimero_storage::collections::rekey::RekeyTarget` is not imple
 note: required by a bound in `Mergeable`
   --> src/collections/crdt_meta.rs
    |
-   | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+   | pub trait Mergeable: crate::collections::rekey::RekeyTarget + MergeStrategy {
    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Mergeable`

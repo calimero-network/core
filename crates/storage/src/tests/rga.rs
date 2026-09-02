@@ -1,3 +1,4 @@
+use crate::collections::MergeStrategy;
 use crate::collections::ReplicatedGrowableArray;
 use crate::env;
 
@@ -630,6 +631,12 @@ fn test_rga_delete_after_merge_delta_sync_converges() {
             );
         }
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for RgaDoc {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)
@@ -806,6 +813,12 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
             );
         }
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for RgaDoc {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)
@@ -1092,6 +1105,12 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
             );
         }
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for RgaDoc {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)
@@ -1242,6 +1261,12 @@ fn test_rga_real_interleave_merge_converges() {
             );
         }
     }
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for RgaDoc {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)

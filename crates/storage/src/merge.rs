@@ -709,6 +709,12 @@ mod typed_dispatch_tests {
         }
     }
 
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl crate::collections::MergeStrategy for DispatchTestApp {
+        const DISPATCHED: bool = false;
+    }
+
     impl Mergeable for DispatchTestApp {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counter.merge(&other.counter)

@@ -142,6 +142,15 @@ pub fn expand(args: &Args, input: DeriveInput) -> TokenStream {
             }
         }
 
+        // Declares HOW this type merges: dispatched. The entry is stamped with
+        // `TYPE_ID` and the merge point calls the rule above, rather than
+        // resolving the entry last-write-wins.
+        impl #impl_generics ::calimero_storage::collections::MergeStrategy
+            for #ident #ty_generics #where_clause
+        {
+            const DISPATCHED: bool = true;
+        }
+
         // Same re-keying the derive generates. A hand-written `Mergeable` has
         // to supply this by hand today, and forgetting it silently loses the
         // nested collections' concurrent writes — so the attribute emits it

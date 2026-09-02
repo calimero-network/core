@@ -28,7 +28,7 @@
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
-use calimero_storage::collections::{Counter, Mergeable};
+use calimero_storage::collections::{Counter, MergeStrategy, Mergeable};
 use calimero_storage::testing::converge;
 use calimero_storage::{env, rekey_field_if_supported};
 use serial_test::serial;
@@ -39,6 +39,12 @@ const REPLICAS: usize = 4;
 #[borsh(crate = "calimero_sdk::borsh")]
 struct Edits {
     count: Counter,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for Edits {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for Edits {

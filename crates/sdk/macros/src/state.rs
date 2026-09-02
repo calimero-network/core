@@ -682,6 +682,17 @@ fn generate_mergeable_impl(
         // (the forbidden-type lint guarantees each field is Mergeable); recursive
         // per subtree. Invoked only on a remote root-state conflict, never on
         // local ops.
+        // Root state has its own merge path — `merge_root_state`, not the
+        // entry-level dispatch — so it declares `false`. The declaration is
+        // still required: `Mergeable` demands one so the distinction between
+        // "merges structurally" and "merges by an app rule the merge point
+        // calls" is recorded on every type rather than assumed.
+        impl #impl_generics ::calimero_storage::collections::MergeStrategy
+            for #ident #ty_generics #where_clause
+        {
+            const DISPATCHED: bool = false;
+        }
+
         impl #impl_generics ::calimero_storage::collections::Mergeable for #ident #ty_generics #where_clause {
             fn merge(&mut self, other: &Self)
                 -> ::core::result::Result<(), ::calimero_storage::collections::crdt_meta::MergeError>
