@@ -51,7 +51,7 @@ fn victim_node(id: &str) -> SimNode {
         node.insert_entity(
             EntityId::from_u64(i),
             format!("victim-{i}").into_bytes(),
-            CrdtType::lww_register("seed"),
+            CrdtType::lww_register(),
         );
     }
     node
@@ -128,7 +128,7 @@ async fn byzantine_root_hash_not_adopted_only_recomputed_root_stored() {
         source.insert_entity(
             EntityId::from_u64(i),
             format!("victim-{i}").into_bytes(),
-            CrdtType::lww_register("seed"),
+            CrdtType::lww_register(),
         );
     }
     // Entities 1..=3 must be byte-identical to the victim's so the merge
@@ -201,7 +201,7 @@ async fn byzantine_root_hash_not_adopted_only_recomputed_root_stored() {
         oracle.insert_entity(
             EntityId::from_u64(i),
             format!("victim-{i}").into_bytes(),
-            CrdtType::lww_register("seed"),
+            CrdtType::lww_register(),
         );
     }
     assert_eq!(

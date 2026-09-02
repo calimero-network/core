@@ -97,7 +97,7 @@ fn gate_and_apply(
     // real handler this is the decrypt + DAG-insert tail; here a single
     // entity insert stands in for "state was mutated", which is all the
     // invariant needs to observe (root_hash advances only on a real apply).
-    node.insert_entity(apply_entity, apply_data, CrdtType::lww_register("byz"));
+    node.insert_entity(apply_entity, apply_data, CrdtType::lww_register());
     true
 }
 
@@ -127,7 +127,7 @@ fn initialized_node() -> SimNode {
     node.insert_entity(
         EntityId::from_u64(1),
         b"genesis".to_vec(),
-        CrdtType::lww_register("seed"),
+        CrdtType::lww_register(),
     );
     node
 }
@@ -309,7 +309,7 @@ fn content_gate_and_apply(
         return false;
     }
 
-    node.insert_entity(apply_entity, apply_data, CrdtType::lww_register("byz"));
+    node.insert_entity(apply_entity, apply_data, CrdtType::lww_register());
     true
 }
 
