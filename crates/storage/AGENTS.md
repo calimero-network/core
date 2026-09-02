@@ -32,6 +32,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
 | `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
+| `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Blob       |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -116,6 +117,7 @@ function is registered, it returns an error rather than silently falling back to
 | `GCounter`     | `merge_g_counter()`   | Counter::merge() - max per executor   |
 | `PnCounter`    | `merge_pn_counter()`  | Counter::merge() - max per executor   |
 | `Rga`          | `merge_rga()`         | RGA::merge() - union characters       |
+| `FugueText`    | `merge_fugue_text()`  | FugueText::merge() - union blocks     |
 | `LwwRegister`  | Returns incoming      | Timestamp comparison done by caller   |
 | `UnorderedMap` | Returns incoming      | Entries are separate entities*        |
 | `UnorderedSet` | Returns incoming      | Entries are separate entities*        |
@@ -166,6 +168,8 @@ src/
 │   ├── unordered_set.rs      # Unordered set
 │   ├── vector.rs             # Vector CRDT
 │   ├── rga.rs                # RGA (replicated growable array)
+│   ├── fugue.rs              # Pure Tree-Fugue algorithm (no storage)
+│   ├── fugue_text.rs         # Storage-backed Fugue text, run-length blocks
 │   ├── root.rs               # Root collection
 │   ├── nested.rs             # Nested CRDTs
 │   ├── nested_map.rs         # Nested map
