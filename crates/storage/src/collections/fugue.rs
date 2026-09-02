@@ -40,8 +40,6 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub mod key;
-
 /// Replica identifier.
 pub type ReplicaId = u64;
 
@@ -50,8 +48,7 @@ pub type SeqNo = u32;
 
 /// A non-root node identifier, `(replicaID, counter)`.
 ///
-/// Ordering is lexicographic on the tuple, which is exactly the ordering of
-/// the big-endian byte concatenation used by [`key::path_key`].
+/// Ordering is lexicographic on the tuple.
 pub type RawId = (ReplicaId, SeqNo);
 
 /// A node identifier. `None` is the root — the paper's `null`.

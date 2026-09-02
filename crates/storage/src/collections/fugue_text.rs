@@ -37,7 +37,7 @@
 //! assert_eq!(doc.get_text().unwrap(), "heXllo");
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -156,12 +156,73 @@ pub(crate) struct TextBlock {
     parent: Option<BlockId>,
     /// Which side of `parent` the run's first node hangs off.
     side: BlockSide,
-    /// Whether every node in this run is tombstoned.
+    /// Tombstones, **one bit per node of the run**, LSB-first, trailing zero
+    /// bytes trimmed so the encoding of a given tombstone set is unique.
     ///
     /// Fugue nodes must survive deletion — a tombstone can still be the parent
-    /// of live nodes — so a delete cannot drop the entity. It splits the run so
-    /// the deleted region is exactly one block and flags that block.
-    deleted: bool,
+    /// of live nodes — so a delete can never drop the entity, and
+    /// `UnorderedMap::remove` (RGA's mechanism) is unusable here.
+    ///
+    /// The bitmap is per **node**, not per run, and that is load-bearing rather
+    /// than an optimisation. A run's `text` GROWS after the fact through
+    /// coalescing, so a whole-run flag cannot say which nodes it covered: a
+    /// short tombstoned copy merged with a longer live copy would tombstone
+    /// nodes the deleter never saw. Bit-for-bit elementwise OR is the correct
+    /// join, and it is what makes merge a monotone lattice operation.
+    tombstones: Vec<u8>,
+}
+
+impl TextBlock {
+    /// The number of nodes in this run.
+    fn len(&self) -> usize {
+        self.text.chars().count()
+    }
+}
+
+/// Whether node `offset` of a run is tombstoned.
+fn tomb_get(bits: &[u8], offset: usize) -> bool {
+    bits.get(offset / 8)
+        .is_some_and(|byte| byte & (1_u8 << (offset % 8)) != 0)
+}
+
+/// Tombstone node `offset`, growing the bitmap as needed.
+fn tomb_set(bits: &mut Vec<u8>, offset: usize) {
+    let byte = offset / 8;
+    if bits.len() <= byte {
+        bits.resize(byte + 1, 0);
+    }
+    if let Some(slot) = bits.get_mut(byte) {
+        *slot |= 1_u8 << (offset % 8);
+    }
+}
+
+/// Elementwise OR — the merge join for two copies of one run.
+fn tomb_or(dst: &mut Vec<u8>, src: &[u8]) {
+    if dst.len() < src.len() {
+        dst.resize(src.len(), 0);
+    }
+    for (slot, byte) in dst.iter_mut().zip(src) {
+        *slot |= *byte;
+    }
+    tomb_trim(dst);
+}
+
+/// The `from..to` sub-range of a bitmap, rebased to offset 0.
+fn tomb_slice(bits: &[u8], from: usize, to: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for offset in from..to {
+        if tomb_get(bits, offset) {
+            tomb_set(&mut out, offset - from);
+        }
+    }
+    out
+}
+
+/// Drop trailing zero bytes, so one tombstone set has exactly one encoding.
+fn tomb_trim(bits: &mut Vec<u8>) {
+    while bits.last() == Some(&0) {
+        let _ignored = bits.pop();
+    }
 }
 
 /// A storage-backed collaborative text collection with Tree-Fugue ordering.
@@ -332,6 +393,10 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// Idempotent in `end`: a range past the end of the document deletes up to
     /// the end rather than erroring, so a delete replayed out of order is safe.
     ///
+    /// Deleting does **not** split. Tombstones are per node, so a run is
+    /// tombstoned in place — `delete_range(0, n)` over a typed run leaves that
+    /// one entity, where a per-run flag would have had to shatter it.
+    ///
     /// # Errors
     /// Returns an error if `start > end` or storage fails.
     pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
@@ -358,32 +423,32 @@ impl<S: StorageAdaptor> FugueText<S> {
             return Ok(());
         }
 
-        // Group the doomed nodes by the block that holds them, as offsets
-        // within that block.
-        let mut by_block: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        // Overlapping copies of one run can both define a node (a split that
+        // raced a remote unsplit copy). Set the bit in EVERY copy: a tombstone
+        // recorded in only one of them would be dropped by a later merge with a
+        // peer that holds the other.
+        let mut touched: BTreeMap<usize, TextBlock> = BTreeMap::new();
         for raw in targets {
             let id = BlockId::from_raw(raw);
-            let index =
-                find_block(&loaded, id).ok_or_else(|| invalid("deleted node has no block"))?;
-            let offset = (id.counter - loaded[index].id.counter) as usize;
-            let _ignored = by_block.entry(index).or_default().insert(offset);
+            let mut covered = false;
+            for index in blocks_containing(&loaded, id) {
+                covered = true;
+                let block = touched
+                    .entry(index)
+                    .or_insert_with(|| loaded[index].block.clone());
+                tomb_set(
+                    &mut block.tombstones,
+                    (id.counter - loaded[index].id.counter) as usize,
+                );
+            }
+            if !covered {
+                return Err(invalid("deleted node has no block"));
+            }
         }
 
-        for (index, offsets) in by_block {
-            let lb = &loaded[index];
-            // Cut at every deletion boundary, so each resulting segment is
-            // wholly deleted or wholly live.
-            let mut cuts: BTreeSet<usize> = BTreeSet::new();
-            for offset in &offsets {
-                let _ignored = cuts.insert(*offset);
-                let _ignored = cuts.insert(offset + 1);
-            }
-            let bounds = bounds_from_cuts(lb.len, &cuts);
-            let flags: Vec<bool> = bounds
-                .windows(2)
-                .map(|w| lb.block.deleted || offsets.contains(&w[0]))
-                .collect();
-            self.write_segments(lb, &bounds, &flags)?;
+        for (index, mut block) in touched {
+            tomb_trim(&mut block.tombstones);
+            let _ignored = self.blocks.insert(BlockKey::new(loaded[index].id), block)?;
         }
 
         Ok(())
@@ -446,9 +511,7 @@ impl<S: StorageAdaptor> FugueText<S> {
                 // deterministic split rule — a pure function of (block, offset).
                 Side::L => {
                     if offset > 0 {
-                        let bounds = [0, offset, lb.len];
-                        let flags = [lb.block.deleted, lb.block.deleted];
-                        self.write_segments(lb, &bounds, &flags)?;
+                        self.write_segments(lb, &[0, offset, lb.len])?;
                     }
                 }
                 Side::R => {
@@ -456,13 +519,13 @@ impl<S: StorageAdaptor> FugueText<S> {
                         // Fugue only picks side R when the parent has no right
                         // child, which a mid-run node always has — so this is
                         // defensive, not a path normal editing reaches.
-                        let bounds = [0, offset + 1, lb.len];
-                        let flags = [lb.block.deleted, lb.block.deleted];
-                        self.write_segments(lb, &bounds, &flags)?;
+                        self.write_segments(lb, &[0, offset + 1, lb.len])?;
                     } else if coalesces_into(lb, id) {
                         // The new node continues this very run: extend it
                         // instead of minting a second entity. This is what
-                        // makes sequential typing cost one entity, not n.
+                        // makes sequential typing cost one entity, not n. The
+                        // appended node is live, and a trailing zero bit is
+                        // implicit, so the bitmap is untouched.
                         let mut block = lb.block.clone();
                         block.text.push(node.value.unwrap_or('\u{fffd}'));
                         let _ignored = self.blocks.insert(BlockKey::new(lb.id), block)?;
@@ -477,26 +540,22 @@ impl<S: StorageAdaptor> FugueText<S> {
             text: node.value.unwrap_or('\u{fffd}').to_string(),
             parent,
             side: node.side.into(),
-            deleted: false,
+            tombstones: Vec::new(),
         };
         let _ignored = self.blocks.insert(BlockKey::new(id), block)?;
         Ok(())
     }
 
     /// Rewrite `lb` as the segments delimited by `bounds` (which starts at 0 and
-    /// ends at `lb.len`), each flagged live or deleted by `flags`.
+    /// ends at `lb.len`).
     ///
     /// The first segment keeps the original key, parent and side; every later
     /// segment starts a new entity whose parent is the last node of the segment
     /// before it, on side R — which is exactly the implicit intra-run edge, so
-    /// the split changes the storage layout and nothing about the tree.
-    fn write_segments(
-        &mut self,
-        lb: &LoadedBlock,
-        bounds: &[usize],
-        flags: &[bool],
-    ) -> Result<(), StoreError> {
-        for (segment, flag) in bounds.windows(2).zip(flags) {
+    /// the split changes the storage layout and nothing about the tree. Each
+    /// segment carries the corresponding slice of the tombstone bitmap.
+    fn write_segments(&mut self, lb: &LoadedBlock, bounds: &[usize]) -> Result<(), StoreError> {
+        for segment in bounds.windows(2) {
             let (from, to) = (segment[0], segment[1]);
             let id = BlockId::new(
                 lb.id.replica,
@@ -518,53 +577,36 @@ impl<S: StorageAdaptor> FugueText<S> {
                 text: slice_chars(&lb.block.text, from, to).to_owned(),
                 parent,
                 side,
-                deleted: *flag,
+                tombstones: tomb_slice(&lb.block.tombstones, from, to),
             };
             let _ignored = self.blocks.insert(BlockKey::new(id), block)?;
         }
         Ok(())
     }
 
-    /// Every stored block, ascending by id, with its effective length.
+    /// Every stored block, ascending by id, with its node count.
     fn load(&self) -> Result<Vec<LoadedBlock>, StoreError> {
-        let mut raw: Vec<(BlockId, TextBlock)> = self
+        let mut loaded: Vec<LoadedBlock> = self
             .blocks
             .entries()?
-            .map(|(key, block)| (key.id(), block))
+            .map(|(key, block)| LoadedBlock {
+                id: key.id(),
+                len: block.len(),
+                block,
+            })
             .collect();
-        raw.sort_by_key(|(id, _)| *id);
-
-        let mut loaded: Vec<LoadedBlock> = Vec::with_capacity(raw.len());
-        for (position, (id, block)) in raw.iter().enumerate() {
-            let stored_len = block.text.chars().count();
-            // Two blocks of one replica can overlap when a split raced a remote
-            // copy of the unsplit run. Truncating a run at the start of the next
-            // run of the same replica is a pure function of the block set, so
-            // both replicas resolve the overlap identically.
-            let mut len = stored_len;
-            if let Some((next_id, _)) = raw.get(position + 1) {
-                if next_id.replica == id.replica {
-                    let gap = (next_id.counter - id.counter) as usize;
-                    len = len.min(gap);
-                }
-            }
-            loaded.push(LoadedBlock {
-                id: *id,
-                block: block.clone(),
-                len,
-                stored_len,
-            });
-        }
+        loaded.sort_by_key(|lb| lb.id);
         Ok(loaded)
     }
 
     /// Copy every block from `other` that `self` neither holds nor tombstoned.
     ///
-    /// Add-wins for unseen blocks, delete-wins for the per-block tombstone flag
-    /// and for a block `self` removed at the storage layer. Where both hold the
-    /// same key with different lengths (one side split the run, the other did
-    /// not), the longer text is kept: `load` truncates the overlap on read, so
-    /// keeping the longer copy can never lose a character.
+    /// The per-key join is a genuine lattice meet-free join, not an LWW
+    /// heuristic: tombstone bitmaps are ORed elementwise, and the longer `text`
+    /// wins. A run only ever grows at its tail, and only its own replica can
+    /// grow it, so two copies of one key are always prefixes of one another —
+    /// the longer one therefore contains the shorter, and taking it can never
+    /// lose a node. A block `self` removed at the storage layer stays removed.
     ///
     /// Generic over `S2` so the cross-store merge is testable.
     pub(crate) fn merge_blocks_from<S2: StorageAdaptor>(
@@ -577,8 +619,8 @@ impl<S: StorageAdaptor> FugueText<S> {
             if let Some(mine) = self.blocks.get(&key)? {
                 let mine = mine.into_inner();
                 let mut merged = mine.clone();
-                merged.deleted = mine.deleted || incoming.deleted;
-                if incoming.text.chars().count() > merged.text.chars().count() {
+                tomb_or(&mut merged.tombstones, &incoming.tombstones);
+                if incoming.len() > merged.len() {
                     merged.text = incoming.text;
                 }
                 if merged != mine {
@@ -604,45 +646,57 @@ struct LoadedBlock {
     id: BlockId,
     /// The stored entity.
     block: TextBlock,
-    /// The run's effective length: `stored_len`, truncated where a later run of
-    /// the same replica starts inside it.
+    /// The run's node count.
     len: usize,
-    /// The run's stored length in characters.
-    stored_len: usize,
 }
 
 /// Whether the run `lb` can absorb a new node `id` as one more character.
 ///
-/// Requires the node to continue the run's own id sequence, on the same replica,
-/// in a live and untruncated run.
+/// Requires the node to continue the run's own id sequence, on the same replica.
+/// `next_counter` mints strictly past every node the replica has defined, so the
+/// absorbed id can never collide with an existing one.
 fn coalesces_into(lb: &LoadedBlock, id: BlockId) -> bool {
-    !lb.block.deleted
-        && lb.len == lb.stored_len
-        && lb.id.replica == id.replica
-        && u64::from(lb.id.counter) + lb.len as u64 == u64::from(id.counter)
+    lb.id.replica == id.replica && u64::from(lb.id.counter) + lb.len as u64 == u64::from(id.counter)
 }
 
-/// The index of the block whose run covers `id`, if any.
+/// Every block whose run covers `id`, ascending by block id.
+///
+/// More than one can: a split that raced a remote copy of the unsplit run
+/// leaves overlapping definitions of the same nodes. They agree on value,
+/// parent and side by construction, so overlap is harmless for reads — but a
+/// tombstone must be written to all of them.
+fn blocks_containing(loaded: &[LoadedBlock], id: BlockId) -> Vec<usize> {
+    loaded
+        .iter()
+        .enumerate()
+        .filter(|(_, lb)| {
+            lb.id.replica == id.replica
+                && lb.id.counter <= id.counter
+                && u64::from(id.counter) < u64::from(lb.id.counter) + lb.len as u64
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The tightest block covering `id` — the one with the largest start id, i.e.
+/// the most finely split definition. Deterministic, so two replicas that hold
+/// the same block set make the same split and coalescing decisions.
 fn find_block(loaded: &[LoadedBlock], id: BlockId) -> Option<usize> {
-    // `loaded` is sorted by id, so the candidate is the last block that starts
-    // at or before `id`.
-    let position = loaded.partition_point(|lb| lb.id <= id).checked_sub(1)?;
-    let lb = &loaded[position];
-    (lb.id.replica == id.replica
-        && u64::from(id.counter) < u64::from(lb.id.counter) + lb.len as u64)
-        .then_some(position)
+    blocks_containing(loaded, id).into_iter().next_back()
 }
 
 /// The next unused counter for `replica`, one past the highest node it minted.
 ///
-/// Derived from the stored set rather than from node-local state: deleted runs
-/// stay in the map (Fugue tombstones in place), so the high-water mark survives
-/// every deletion and a counter is never reused.
+/// Derived from the stored set rather than from node-local state: runs are
+/// tombstoned in place and never removed (Fugue nodes must survive deletion),
+/// so the high-water mark survives every deletion and a counter is never
+/// reused. Any future garbage collection of tombstoned blocks would break that
+/// and must carry the high-water mark some other way.
 fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError> {
     let mut next: u64 = 0;
     for lb in loaded {
         if lb.id.replica == replica {
-            next = next.max(u64::from(lb.id.counter) + lb.stored_len as u64);
+            next = next.max(u64::from(lb.id.counter) + lb.len as u64);
         }
     }
     u32::try_from(next).map_err(|_| invalid("replica counter space exhausted"))
@@ -652,17 +706,25 @@ fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError>
 ///
 /// Node `i` of a run is `(replica, counter + i)`; the first hangs off the
 /// stored `(parent, side)`, every later one is the right child of its
-/// predecessor. A deleted run contributes tombstoned nodes, which still take
-/// part in the traversal and can still parent live nodes.
+/// predecessor. Tombstoned nodes are still emitted: they take part in the
+/// traversal and can still parent live nodes.
+///
+/// Every block is expanded at its **full** length and duplicate node ids are
+/// folded together by [`FugueTree::integrate`] — which is order-independent and
+/// keeps the tombstone when a node is defined both live and dead. Overlapping
+/// definitions of one node agree on value, parent and side by construction, so
+/// this join is exact. (An earlier version truncated a run where the next run of
+/// the same replica began, which silently dropped nodes whenever the shorter
+/// run did not cover the whole remainder — coalescing makes that routine.)
 fn build_tree(loaded: &[LoadedBlock]) -> Result<FugueTree, StoreError> {
     let mut tree = FugueTree::new();
     for lb in loaded {
-        for (offset, content) in lb.block.text.chars().take(lb.len).enumerate() {
-            let offset = u32::try_from(offset).map_err(|_| invalid("run too long"))?;
+        for (offset, content) in lb.block.text.chars().enumerate() {
+            let offset_u32 = u32::try_from(offset).map_err(|_| invalid("run too long"))?;
             let counter = lb
                 .id
                 .counter
-                .checked_add(offset)
+                .checked_add(offset_u32)
                 .ok_or_else(|| invalid("node counter overflow"))?;
             let (parent, side) = if offset == 0 {
                 (lb.block.parent.map(BlockId::raw), lb.block.side.into())
@@ -671,22 +733,13 @@ fn build_tree(loaded: &[LoadedBlock]) -> Result<FugueTree, StoreError> {
             };
             tree.integrate(FugueNode {
                 id: (lb.id.replica, counter),
-                value: (!lb.block.deleted).then_some(content),
+                value: (!tomb_get(&lb.block.tombstones, offset)).then_some(content),
                 parent,
                 side,
             });
         }
     }
     Ok(tree)
-}
-
-/// `[0, ..cuts.., len]` with cuts outside `(0, len)` dropped.
-fn bounds_from_cuts(len: usize, cuts: &BTreeSet<usize>) -> Vec<usize> {
-    let mut bounds = Vec::with_capacity(cuts.len() + 2);
-    bounds.push(0);
-    bounds.extend(cuts.iter().copied().filter(|cut| *cut > 0 && *cut < len));
-    bounds.push(len);
-    bounds
 }
 
 /// The `from..to` character range of `text` (character indices, not bytes).
@@ -720,7 +773,7 @@ fn out_of_bounds(pos: usize) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockId, BlockKey, BlockSide, FugueText, TextBlock};
+    use super::{BlockId, BlockSide, FugueText, TextBlock};
     use crate::collections::{Root, UnorderedMap};
     use crate::env;
     use crate::store::StorageAdaptor;
@@ -838,9 +891,10 @@ mod tests {
         assert_eq!(a.get_text().unwrap(), b.get_text().unwrap());
     }
 
-    /// (5) A delete inside a run splits and tombstones; text and len agree.
+    /// (5) A delete inside a run tombstones the node in place; text and len
+    /// agree, and the run is NOT shattered.
     #[test]
-    fn delete__inside_a_run_splits_and_tombstones() {
+    fn delete__inside_a_run_tombstones_without_splitting() {
         env::reset_for_testing();
         let mut doc = Root::new(FugueText::new);
         doc.insert_str_with_replica(0, 7, "hello").unwrap();
@@ -851,18 +905,95 @@ mod tests {
         assert_eq!(doc.len().unwrap(), doc.get_text().unwrap().chars().count());
 
         let blocks = stored(&doc);
-        assert_eq!(blocks.len(), 3, "the deleted region becomes its own block");
-        assert_eq!(blocks[0].1.text, "he");
-        assert!(!blocks[0].1.deleted);
-        assert_eq!(blocks[1].0, BlockId::new(7, 2));
-        assert_eq!(blocks[1].1.text, "l");
-        assert!(
-            blocks[1].1.deleted,
-            "the deleted node must survive as a parent"
+        assert_eq!(
+            blocks.len(),
+            1,
+            "per-node tombstones must not shatter the run"
         );
-        assert_eq!(blocks[2].0, BlockId::new(7, 3));
-        assert_eq!(blocks[2].1.text, "lo");
-        assert!(!blocks[2].1.deleted);
+        assert_eq!(blocks[0].1.text, "hello", "the node survives as a parent");
+        assert_eq!(blocks[0].1.tombstones, vec![0b0000_0100]);
+    }
+
+    /// (5b) Deleting a whole run leaves ONE tombstoned entity, not `n`.
+    #[test]
+    fn delete_range__whole_run_stays_one_block() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str_with_replica(0, 7, "hello").unwrap();
+        doc.delete_range(0, 5).unwrap();
+
+        assert_eq!(doc.get_text().unwrap(), "");
+        assert!(doc.is_empty().unwrap());
+        let blocks = stored(&doc);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].1.tombstones, vec![0b0001_1111]);
+    }
+
+    /// (5c) C1: a run that GREW by coalescing, merged with a shorter copy the
+    /// peer tombstoned, must tombstone only the nodes the deleter actually saw.
+    /// A per-run flag gets this wrong and silently eats the appended node.
+    #[test]
+    fn merge__tombstone_of_a_short_copy_does_not_eat_a_coalesced_node() {
+        type A = crate::store::MockedStorage<869>;
+        type B = crate::store::MockedStorage<870>;
+        env::reset_for_testing();
+
+        // Shared history: replica 2 typed "P".
+        let mut a = doc_in::<A>("c1");
+        a.insert_str_with_replica(0, 2, "P").unwrap();
+        let mut b = doc_in::<B>("c1");
+        b.insert_str_with_replica(0, 2, "P").unwrap();
+
+        // B types on, coalescing "M" into the SAME entity; A deletes "P".
+        b.insert_str_with_replica(1, 2, "M").unwrap();
+        a.delete(0).unwrap();
+        assert_eq!(b.get_text().unwrap(), "PM");
+        assert_eq!(a.get_text().unwrap(), "");
+
+        let mut a_then_b = doc_in::<A>("c1-ab");
+        a_then_b.merge_blocks_from(&a).unwrap();
+        a_then_b.merge_blocks_from(&b).unwrap();
+        let mut b_then_a = doc_in::<B>("c1-ba");
+        b_then_a.merge_blocks_from(&b).unwrap();
+        b_then_a.merge_blocks_from(&a).unwrap();
+
+        assert_eq!(a_then_b.get_text().unwrap(), "M");
+        assert_eq!(b_then_a.get_text().unwrap(), "M");
+    }
+
+    /// (5d) C2: a run that one replica SPLIT and the other COALESCED must, when
+    /// merged, leave no node uncovered. The old rule truncated a run where the
+    /// next run of the same replica began, which assumed the two copies form an
+    /// exact partition — coalescing breaks that, and the appended node vanished
+    /// from every replica.
+    #[test]
+    fn merge__coalesced_run_meeting_a_split_copy_loses_no_node() {
+        type A = crate::store::MockedStorage<871>;
+        type B = crate::store::MockedStorage<872>;
+        env::reset_for_testing();
+
+        let mut a = doc_in::<A>("c2");
+        a.insert_str_with_replica(0, 2, "ab").unwrap();
+        let mut b = doc_in::<B>("c2");
+        b.insert_str_with_replica(0, 2, "ab").unwrap();
+
+        // B appends, coalescing (2,0) into "abc". A inserts mid-run, splitting
+        // (2,0) into "a" + (2,1)"b". The merged set therefore holds (2,0)"abc"
+        // overlapping (2,1)"b".
+        b.insert_str_with_replica(2, 2, "c").unwrap();
+        a.insert_str_with_replica(1, 1, "Q").unwrap();
+        assert_eq!(b.get_text().unwrap(), "abc");
+        assert_eq!(a.get_text().unwrap(), "aQb");
+
+        let mut a_then_b = doc_in::<A>("c2-ab");
+        a_then_b.merge_blocks_from(&a).unwrap();
+        a_then_b.merge_blocks_from(&b).unwrap();
+        let mut b_then_a = doc_in::<B>("c2-ba");
+        b_then_a.merge_blocks_from(&b).unwrap();
+        b_then_a.merge_blocks_from(&a).unwrap();
+
+        assert_eq!(a_then_b.get_text().unwrap(), "aQbc");
+        assert_eq!(b_then_a.get_text().unwrap(), "aQbc");
     }
 
     /// A replica seeded with the shared `S`, which appends `passage` and then
@@ -893,10 +1024,15 @@ mod tests {
         assert_eq!(alice.get_text().unwrap(), "SAaaa");
         assert_eq!(bob.get_text().unwrap(), "SBbbb");
 
-        let mut alice_then_bob = alice;
+        // Commutativity, not idempotence: each order merges the two PRISTINE
+        // replicas into a fresh document. Merging the already-merged copy would
+        // only have asserted idempotence.
+        let mut alice_then_bob = doc_in::<A>("doc-ab");
+        alice_then_bob.merge_blocks_from(&alice).unwrap();
         alice_then_bob.merge_blocks_from(&bob).unwrap();
-        let mut bob_then_alice = bob;
-        bob_then_alice.merge_blocks_from(&alice_then_bob).unwrap();
+        let mut bob_then_alice = doc_in::<B>("doc-ba");
+        bob_then_alice.merge_blocks_from(&bob).unwrap();
+        bob_then_alice.merge_blocks_from(&alice).unwrap();
 
         let merged = alice_then_bob.get_text().unwrap();
         assert_eq!(merged, bob_then_alice.get_text().unwrap());
@@ -905,35 +1041,43 @@ mod tests {
         assert_eq!(merged, "SAaaaBbbb");
     }
 
-    /// (7) Convergence: the same block set applied in any order reads the same.
+    /// (7) Convergence: three concurrent replicas merged in all six orders read
+    /// the same.
+    ///
+    /// The order permuted is the **merge** order. Permuting `blocks.insert`
+    /// calls would prove nothing: `load` sorts by id, so it discards any
+    /// insertion order and the test could not fail.
     #[test]
-    fn merge__converges_under_every_application_order() {
+    fn merge__converges_under_every_merge_order() {
         type A = crate::store::MockedStorage<865>;
-        type P = crate::store::MockedStorage<866>;
+        type B = crate::store::MockedStorage<866>;
+        type C = crate::store::MockedStorage<867>;
+        type P = crate::store::MockedStorage<868>;
         env::reset_for_testing();
 
         let alice = backward_insertion_doc::<A>("conv", 1, "A", "aaa");
-        let mut all = stored(&alice);
-        // Two more concurrent replicas over the same seed.
-        let bob = backward_insertion_doc::<crate::store::MockedStorage<867>>("conv", 2, "B", "bbb");
-        let carol =
-            backward_insertion_doc::<crate::store::MockedStorage<868>>("conv", 3, "C", "cc");
-        all.extend(stored(&bob));
-        all.extend(stored(&carol));
-        all.sort_by_key(|(id, _)| *id);
-        all.dedup_by_key(|(id, _)| *id);
+        let bob = backward_insertion_doc::<B>("conv", 2, "B", "bbb");
+        let carol = backward_insertion_doc::<C>("conv", 3, "C", "cc");
 
         let mut reference: Option<String> = None;
-        for round in 0..6_usize {
-            let mut order = all.clone();
-            match round {
-                0 => {}
-                1 => order.reverse(),
-                n => order.rotate_left(n),
-            }
+        for (round, order) in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut doc = doc_in::<P>(&format!("perm{round}"));
-            for (id, block) in order {
-                let _ = doc.blocks.insert(BlockKey::new(id), block).unwrap();
+            for which in order {
+                match which {
+                    0 => doc.merge_blocks_from(&alice).unwrap(),
+                    1 => doc.merge_blocks_from(&bob).unwrap(),
+                    _ => doc.merge_blocks_from(&carol).unwrap(),
+                }
             }
             let text = doc.get_text().unwrap();
             match &reference {
@@ -988,5 +1132,254 @@ mod tests {
             doc.insert_str_with_replica(0, 7, "H").unwrap();
         });
         assert_eq!(doc.len().unwrap(), 1);
+    }
+}
+
+/// Differential and exhaustive verification against `fugue.rs` as the model.
+///
+/// `fugue.rs` already *is* Algorithm 1 of the paper, unaware of storage, blocks,
+/// splitting, coalescing or merging. Running the same op script through both and
+/// comparing text is therefore a genuine differential test of everything this
+/// module adds, not a restatement of it.
+///
+/// Every script mixes the three interactions that matter, because it is their
+/// COMBINATION — coalescing against splitting against deleting — that hid the
+/// two data-loss bugs the first implementation shipped.
+#[cfg(test)]
+mod model_tests {
+    use std::collections::BTreeMap;
+
+    use super::{FugueText, TextBlock, UnorderedMap};
+    use crate::collections::fugue::{FugueNode, FugueTree, Rng};
+    use crate::env;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    /// The oracle: Algorithm 1, with the same id allocation `FugueText` uses.
+    ///
+    /// A replica's counter is simply the number of nodes it has minted, which is
+    /// exactly what `next_counter` derives from the block set — runs of one
+    /// replica always cover `0..N` contiguously, whether split, coalesced or
+    /// tombstoned.
+    #[derive(Clone, Debug, Default)]
+    struct Model {
+        tree: FugueTree,
+        next: BTreeMap<u64, u32>,
+    }
+
+    impl Model {
+        fn insert_str(&mut self, pos: usize, replica: u64, s: &str) {
+            for (offset, content) in s.chars().enumerate() {
+                let counter = self.next.entry(replica).or_default();
+                let id = (replica, *counter);
+                *counter += 1;
+                let _ignored = self.tree.insert(pos + offset, content, id).unwrap();
+            }
+        }
+
+        fn delete_range(&mut self, start: usize, end: usize) {
+            let count = end.min(self.tree.len()).saturating_sub(start);
+            for _ in 0..count {
+                if self.tree.delete(start).is_err() {
+                    break;
+                }
+            }
+        }
+
+        fn text(&self) -> String {
+            self.tree.values()
+        }
+
+        fn nodes(&self) -> Vec<FugueNode> {
+            self.tree.nodes().copied().collect()
+        }
+
+        /// The union of several models: every node, delete-wins per node, read
+        /// through a fresh tree. `integrate` is order-independent and keeps a
+        /// tombstone over a live copy, so this is exactly the CRDT join.
+        fn union(models: &[&Self]) -> String {
+            let mut tree = FugueTree::new();
+            for model in models {
+                for node in model.nodes() {
+                    tree.integrate(node);
+                }
+            }
+            for model in models {
+                for node in model.nodes() {
+                    if node.value.is_none() {
+                        tree.integrate(node);
+                    }
+                }
+            }
+            tree.values()
+        }
+    }
+
+    /// One edit. `Ins` appends when `pos` lands at the end, which is what makes
+    /// runs coalesce; a `pos` in the middle is what makes them split.
+    #[derive(Clone, Debug)]
+    enum Op {
+        Ins(usize, &'static str),
+        Del(usize, usize),
+    }
+
+    fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
+        FugueText {
+            blocks: UnorderedMap::new_with_field_name_and_crdt_type(
+                None,
+                field_name,
+                crate::collections::CrdtType::FugueText,
+            ),
+        }
+    }
+
+    /// Apply one op to the document and to the oracle, asserting they agree.
+    fn apply<S: StorageAdaptor>(doc: &mut FugueText<S>, model: &mut Model, replica: u64, op: &Op) {
+        let len = model.text().chars().count();
+        match *op {
+            Op::Ins(pos, text) => {
+                let pos = pos % (len + 1);
+                doc.insert_str_with_replica(pos, replica, text).unwrap();
+                model.insert_str(pos, replica, text);
+            }
+            Op::Del(start, span) => {
+                let start = start % (len + 1);
+                let end = start + span;
+                doc.delete_range(start, end).unwrap();
+                model.delete_range(start, end);
+            }
+        }
+        assert_eq!(
+            doc.get_text().unwrap(),
+            model.text(),
+            "local state diverged from the model after {op:?}"
+        );
+    }
+
+    /// Seed both replicas with an identical, already-synchronised history.
+    fn seed<S: StorageAdaptor>(doc: &mut FugueText<S>, model: &mut Model) {
+        doc.insert_str_with_replica(0, 0, "seed").unwrap();
+        model.insert_str(0, 0, "seed");
+    }
+
+    /// Run one two-replica scenario: edit concurrently, then merge in BOTH
+    /// orders from the pristine states, and check every result against the
+    /// model.
+    fn scenario(tag: &str, left: &[Op], right: &[Op]) {
+        type S = MockedStorage<873>;
+
+        let mut a = doc_in::<S>(&format!("{tag}-a"));
+        let mut b = doc_in::<S>(&format!("{tag}-b"));
+        let (mut ma, mut mb) = (Model::default(), Model::default());
+        seed(&mut a, &mut ma);
+        seed(&mut b, &mut mb);
+
+        for op in left {
+            apply(&mut a, &mut ma, 1, op);
+        }
+        for op in right {
+            apply(&mut b, &mut mb, 2, op);
+        }
+
+        let expected = Model::union(&[&ma, &mb]);
+
+        let mut ab = doc_in::<S>(&format!("{tag}-ab"));
+        ab.merge_blocks_from(&a).unwrap();
+        ab.merge_blocks_from(&b).unwrap();
+        let mut ba = doc_in::<S>(&format!("{tag}-ba"));
+        ba.merge_blocks_from(&b).unwrap();
+        ba.merge_blocks_from(&a).unwrap();
+
+        assert_eq!(
+            ab.get_text().unwrap(),
+            expected,
+            "{tag}: A-then-B disagrees with the model (left={left:?} right={right:?})"
+        );
+        assert_eq!(
+            ba.get_text().unwrap(),
+            expected,
+            "{tag}: B-then-A disagrees with the model (left={left:?} right={right:?})"
+        );
+    }
+
+    /// The op alphabet used by the exhaustive sweep: one appending insert (which
+    /// coalesces), two mid-document inserts (which split), and two deletes (one
+    /// single, one spanning).
+    const ALPHABET: [Op; 5] = [
+        Op::Ins(usize::MAX, "x"),
+        Op::Ins(1, "y"),
+        Op::Ins(2, "zz"),
+        Op::Del(1, 1),
+        Op::Del(0, 3),
+    ];
+
+    /// EXHAUSTIVE, not sampled: every pair of ops on each of two replicas —
+    /// 5^2 x 5^2 = 625 scripts, each merged in both orders and checked against
+    /// the model. This is the bounded-interleaving proof for k = 2, n = 2.
+    #[test]
+    fn exhaustive__all_two_op_interleavings_across_two_replicas() {
+        env::reset_for_testing();
+        let mut checked = 0_usize;
+        for (a0, first_left) in ALPHABET.iter().enumerate() {
+            for (a1, second_left) in ALPHABET.iter().enumerate() {
+                for (b0, first_right) in ALPHABET.iter().enumerate() {
+                    for (b1, second_right) in ALPHABET.iter().enumerate() {
+                        let left = [first_left.clone(), second_left.clone()];
+                        let right = [first_right.clone(), second_right.clone()];
+                        scenario(&format!("ex{a0}{a1}{b0}{b1}"), &left, &right);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 625, "the sweep must be exhaustive, not sampled");
+    }
+
+    /// 200-seed differential fuzz against the model, with random multi-op
+    /// scripts on two replicas and both merge orders per seed.
+    #[test]
+    fn fuzz__two_hundred_seeds_match_the_model() {
+        env::reset_for_testing();
+        const WORDS: [&str; 4] = ["a", "bc", "d", "ef"];
+
+        let mut rng = Rng::new(0x_f0_5e_ed_01);
+        for seed in 0..200_usize {
+            let script = |rng: &mut Rng| -> Vec<Op> {
+                let count = 1 + rng.below(4);
+                (0..count)
+                    .map(|_| {
+                        if rng.below(3) == 0 {
+                            Op::Del(rng.below(8), 1 + rng.below(3))
+                        } else {
+                            Op::Ins(rng.below(8), WORDS[rng.below(WORDS.len())])
+                        }
+                    })
+                    .collect()
+            };
+            let left = script(&mut rng);
+            let right = script(&mut rng);
+            scenario(&format!("fz{seed}"), &left, &right);
+        }
+    }
+
+    /// The bitmap encoding is canonical: one tombstone set, one byte string.
+    /// Merge relies on it — `merged != mine` decides whether to write.
+    #[test]
+    fn tombstone_encoding_is_canonical() {
+        env::reset_for_testing();
+        type S = MockedStorage<874>;
+        let mut doc = doc_in::<S>("canon");
+        doc.insert_str_with_replica(0, 1, "abcdefghij").unwrap();
+        doc.delete_range(0, 10).unwrap();
+        doc.insert_str_with_replica(0, 1, "k").unwrap();
+
+        let blocks: Vec<TextBlock> = doc.blocks.entries().unwrap().map(|(_, v)| v).collect();
+        for block in &blocks {
+            assert_ne!(
+                block.tombstones.last(),
+                Some(&0),
+                "trailing zero bytes must be trimmed"
+            );
+        }
+        assert_eq!(doc.get_text().unwrap(), "k");
     }
 }
