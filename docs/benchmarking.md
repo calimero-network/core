@@ -53,8 +53,15 @@ comparison actually needs in order to produce a table rather than a message.
 ## Tier 3 — macro
 
 `.github/workflows/fuzzy-load-test.yml` (CPU/memory flamegraphs, nightly soak)
-and `crates/runtime/tests/chat_wall.rs` (the gas wall against the mero-chat
-sibling, `#[ignore]`d by design).
+and the document-ceiling probes, all `#[ignore]`d by design:
+`crates/runtime/tests/chat_wall.rs` (the gas wall against the mero-chat
+sibling), `crates/runtime/tests/rga_wall.rs` (where a
+`ReplicatedGrowableArray` document stops being writable and readable, driven
+through `apps/collaborative-editor`) and `crates/runtime/tests/fugue_wall.rs`
+(the same two questions for `FugueText`, plus its positional reads, driven
+through `apps/fugue-editor`). The wall probes answer "how big can one document
+get", which Tier 1's row counts cannot: rows are blind to the BYTE cost of a
+run-length block, and gas charges the decode.
 
 `crates/node/tests/sync_sim/benchmarks.rs`'s `benchmark_all_scenarios` and
 `benchmark_scaling` are not sync-cost coverage today. They print round-trip,

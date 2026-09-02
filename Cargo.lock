@@ -3541,6 +3541,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fugue-editor"
+version = "0.0.0"
+dependencies = [
+ "bs58",
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
