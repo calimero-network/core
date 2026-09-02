@@ -7,7 +7,7 @@ name: Fleet bump
 # about GitHub and is runnable by hand against a local checkout:
 #
 #   .github/scripts/bump-fleet.sh --surface cargo --version 0.11.0-rc.26 \
-#       --dir ../mero-design --no-lock --dry-run
+#       --dir ../apps --no-lock --dry-run
 #
 # This file is only the plumbing around it: mint a token, check the consumer
 # out, run the script, push a branch, open the pull request.
@@ -146,6 +146,13 @@ jobs:
           VERSION: ${{ inputs.version }}
           SURFACE: ${{ matrix.surface }}
           CHANGED_FILES_OUT: ${{ runner.temp }}/changed.txt
+          # Pins the script recognised and deliberately did NOT move, with the
+          # reason for each. Surfaced in the run summary and in the pull request
+          # body rather than only in the log, because the whole class of bug
+          # this automation exists to kill is the one where the pins something
+          # checks moved, the ones nothing checks did not, and no line anywhere
+          # said so.
+          UNCLAIMED_OUT: ${{ runner.temp }}/unclaimed.txt
         run: |
           set +e
           producer/.github/scripts/bump-fleet.sh \
@@ -164,6 +171,18 @@ jobs:
         if: steps.bump.outputs.code == '0'
         working-directory: consumer
         run: git --no-pager diff
+
+      - name: Report the pins that did not move
+        if: always() && hashFiles(format('{0}/unclaimed.txt', runner.temp)) != ''
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${{ matrix.repo }}: pins this bump did not move"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/unclaimed.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Identify the app
         if: steps.bump.outputs.code == '0' && inputs.dry_run != true
@@ -246,6 +265,43 @@ jobs:
           [calimero-network/core](https://github.com/calimero-network/core) when
           \`$VERSION\` was released.
           PR_BODY
+          elif [ -f Cargo.toml ] && [ ! -f logic/Cargo.toml ]; then
+          # The monorepo. One pull request stands in for what used to be
+          # fifteen, so it is worth saying out loud what merging it does.
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Moves every Calimero pin in this repository to \`$VERSION\`.
+
+          Rewritten automatically by \`fleet-bump\` in
+          [calimero-network/core](https://github.com/calimero-network/core) when that
+          release was cut. This is one pull request in place of the fifteen that used
+          to be opened against fifteen separate app repositories, which is the whole
+          reason those were merged into this one.
+
+          What moved:
+
+          - the three \`calimero-*\` git tags in \`[workspace.dependencies]\` — the
+            single pin the whole fleet builds against
+          - \`min-runtime-version\` in \`[workspace.metadata.mero-apps]\` **and** its
+            copy in every \`apps/*/logic/Cargo.toml\`, because
+            \`[package.metadata]\` is not on cargo's inheritable list and
+            \`scripts/check-app-metadata.sh\` asserts the copies agree
+          - \`merod-image\`, and the image every merobox scenario starts its node
+            from — including the ones under \`workflows/probes/\`, which the metadata
+            check globs one level and never sees
+          - the cargo-mero pin in \`.github/actions/install-cargo-mero\` and in the
+            per-app dev scripts and Makefiles. Nothing checks those, and they had
+            drifted up to four releases behind by the time this was automated
+          - \`Cargo.lock\`, resolved once for the workspace
+
+          **Merging this publishes all sixteen apps.** \`release.yml\` fans out on any
+          \`main\` push touching \`Cargo.toml\` or \`Cargo.lock\` — deliberately, since
+          an SDK bump changes every contract's bytes — and the registry publish is
+          **not idempotent**: each run mints another version of the same content. So
+          batch this with anything else pending rather than merging bumps in a row.
+
+          Before merging, check that every contract still builds and that each
+          committed ABI still matches the rebuilt one.
+          PR_BODY
           else
           cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
           Moves this repository's Calimero SDK pins to \`$VERSION\`.
@@ -271,6 +327,18 @@ jobs:
           Before merging, check that the contract still builds and that the ABI
           committed here still matches the rebuilt one.
           PR_BODY
+          fi
+
+          # What the script recognised as a core pin and deliberately left
+          # alone, with the reason. In the body rather than only in the log, so
+          # reviewing the pull request is enough to see the blind spots.
+          if [ -s "$RUNNER_TEMP/unclaimed.txt" ]; then
+            {
+              printf '\n<details><summary>Pins this bump did <b>not</b> move</summary>\n\n'
+              printf '```\n'
+              cat "$RUNNER_TEMP/unclaimed.txt"
+              printf '```\n\n</details>\n'
+            } >> "$RUNNER_TEMP/pr-body.md"
           fi
 
           gh pr create \

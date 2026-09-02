@@ -351,15 +351,12 @@ pub(crate) fn select_attributable_peer_identity(
 /// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
 /// whose stored metadata has no `crdt_type` (typically the `Root<T>`
 /// entry for apps that don't use `#[app::state]`, plus test fixtures).
-/// The sender wraps these in `CrdtType::LwwRegister { inner_type:
-/// OPAQUE_LEAF_CRDT_TYPE_NAME }` so the wire never carries an absent
+/// The sender wraps these in `CrdtType::opaque_leaf()` so the wire never carries an absent
 /// type; the receiver uses this helper to recognise them and route to a
 /// direct LWW write rather than expecting WASM-side merge dispatch
 /// (which doesn't exist for entities without a `Mergeable` impl).
 fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool {
-    use calimero_primitives::crdt::CrdtType;
-    matches!(crdt_type, CrdtType::LwwRegister { inner_type }
-        if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME)
+    crdt_type.is_opaque_leaf()
 }
 
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
@@ -963,7 +960,7 @@ fn apply_entity_push_batch(
             // `crdt_type` and go through the proper deferred dispatch.
             // Root entities with a real `crdt_type` get deferred for
             // WASM dispatch; opaque root entities (synthetic LWW marker
-            // tagged with `OPAQUE_LEAF_CRDT_TYPE_NAME`) are handled
+            // tagged `LwwKind::Opaque`) are handled
             // internally by `apply_leaf_with_crdt_merge` via direct LWW
             // write — see the comment there.
             let entity_id = Id::new(leaf.key);
@@ -1377,7 +1374,7 @@ mod tests {
     fn opaque_leaf_with_schema(key: [u8; 32], schema: Option<[u8; 32]>) -> TreeLeafData {
         // An opaque (non-root) LWW leaf — the simplest leaf the apply path
         // stores directly without WASM dispatch.
-        let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let mut md = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         if let Some(k) = schema {
             md = md.with_schema_bytecode_id(k);
         }

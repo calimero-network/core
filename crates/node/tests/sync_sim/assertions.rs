@@ -184,8 +184,8 @@ mod tests {
 
         // Add same entity to both
         let id = EntityId::from_u64(1);
-        a.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
-        b.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
+        a.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register());
+        b.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register());
 
         assert!(nodes_converged(&mut a, &mut b));
 
@@ -193,7 +193,7 @@ mod tests {
         a.insert_entity(
             EntityId::from_u64(2),
             vec![4, 5, 6],
-            CrdtType::lww_register("test"),
+            CrdtType::lww_register(),
         );
 
         assert!(!nodes_converged(&mut a, &mut b));
@@ -209,17 +209,13 @@ mod tests {
         // Add same entity to all
         let id = EntityId::from_u64(1);
         for node in &mut nodes {
-            node.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
+            node.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register());
         }
 
         assert!(all_converged(&mut nodes));
 
         // Modify one
-        nodes[1].insert_entity(
-            EntityId::from_u64(2),
-            vec![4],
-            CrdtType::lww_register("test"),
-        );
+        nodes[1].insert_entity(EntityId::from_u64(2), vec![4], CrdtType::lww_register());
 
         assert!(!all_converged(&mut nodes));
     }
@@ -234,17 +230,13 @@ mod tests {
 
         // Same entities
         let id = EntityId::from_u64(1);
-        a.insert_entity(id, vec![1], CrdtType::lww_register("test"));
-        b.insert_entity(id, vec![1], CrdtType::lww_register("test"));
+        a.insert_entity(id, vec![1], CrdtType::lww_register());
+        b.insert_entity(id, vec![1], CrdtType::lww_register());
 
         assert_eq!(divergence_percentage(&a, &b), 0.0);
 
         // Add unique entity to A
-        a.insert_entity(
-            EntityId::from_u64(2),
-            vec![2],
-            CrdtType::lww_register("test"),
-        );
+        a.insert_entity(EntityId::from_u64(2), vec![2], CrdtType::lww_register());
 
         // 1 shared, 1 unique = 2 total, 1 different = 50%
         let div = divergence_percentage(&a, &b);
@@ -258,8 +250,8 @@ mod tests {
 
         // Same ID but different content should be considered divergent
         let id = EntityId::from_u64(1);
-        a.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
-        b.insert_entity(id, vec![4, 5, 6], CrdtType::lww_register("test")); // Different data!
+        a.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register());
+        b.insert_entity(id, vec![4, 5, 6], CrdtType::lww_register()); // Different data!
 
         // Both have 1 entity, but they conflict
         // total = 1 + 1 - 0 (shared) = 2, different = 2
@@ -281,8 +273,8 @@ mod tests {
 
         // Add same entity
         let id = EntityId::from_u64(1);
-        a.insert_entity(id, vec![1], CrdtType::lww_register("test"));
-        b.insert_entity(id, vec![1], CrdtType::lww_register("test"));
+        a.insert_entity(id, vec![1], CrdtType::lww_register());
+        b.insert_entity(id, vec![1], CrdtType::lww_register());
 
         assert_converged!(a, b);
     }
@@ -293,11 +285,7 @@ mod tests {
         let mut a = SimNode::new("a");
         let mut b = SimNode::new("b");
 
-        a.insert_entity(
-            EntityId::from_u64(1),
-            vec![1],
-            CrdtType::lww_register("test"),
-        );
+        a.insert_entity(EntityId::from_u64(1), vec![1], CrdtType::lww_register());
 
         assert_converged!(a, b);
     }
@@ -307,11 +295,7 @@ mod tests {
         let mut a = SimNode::new("a");
         let mut b = SimNode::new("b");
 
-        a.insert_entity(
-            EntityId::from_u64(1),
-            vec![1],
-            CrdtType::lww_register("test"),
-        );
+        a.insert_entity(EntityId::from_u64(1), vec![1], CrdtType::lww_register());
 
         assert_not_converged!(a, b);
     }
@@ -321,11 +305,7 @@ mod tests {
         let mut a = SimNode::new("a");
         assert_entity_count!(a, 0);
 
-        a.insert_entity(
-            EntityId::from_u64(1),
-            vec![1],
-            CrdtType::lww_register("test"),
-        );
+        a.insert_entity(EntityId::from_u64(1), vec![1], CrdtType::lww_register());
         assert_entity_count!(a, 1);
     }
 
@@ -334,7 +314,7 @@ mod tests {
         let mut a = SimNode::new("a");
         let id = EntityId::from_u64(1);
 
-        a.insert_entity(id, vec![1], CrdtType::lww_register("test"));
+        a.insert_entity(id, vec![1], CrdtType::lww_register());
         assert_has_entity!(a, id);
     }
 

@@ -67,15 +67,37 @@ const MAX_PEERS_PER_ROUND: usize = 4;
 /// `discovery_wait` elapses / the retry budget exhausts. The `peer_id`
 /// lets the caller record a rejection and pass the peer back via
 /// `excluded_peers` on the next call.
+/// How long the connect loop may spend, and how hard it may try.
+///
+/// Grouped because they are one decision, and because four bare `Duration` and
+/// `u32` arguments in a row are transposable at the call site in a way the
+/// compiler cannot catch — swapping the per-peer timeout with the retry delay
+/// type-checks perfectly and changes the behaviour.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ConnectBudget {
+    /// Per-peer stream-open timeout.
+    pub(super) open_timeout: std::time::Duration,
+    /// Rounds to spend once candidates exist and keep failing.
+    pub(super) mesh_retries: u32,
+    /// Pause between rounds, and the poll cadence while waiting for discovery.
+    pub(super) mesh_retry_delay: std::time::Duration,
+    /// Overall deadline for the whole connect loop.
+    pub(super) discovery_wait: std::time::Duration,
+}
+
 pub(super) async fn open_namespace_join_stream(
     sync_network: &dyn SyncNetwork,
     namespace_id: [u8; 32],
-    open_timeout: std::time::Duration,
-    mesh_retries: u32,
-    mesh_retry_delay: std::time::Duration,
-    discovery_wait: std::time::Duration,
+    budget: ConnectBudget,
     excluded_peers: &HashSet<PeerId>,
+    preferred_peers: &[PeerId],
 ) -> eyre::Result<(Stream, PeerId)> {
+    let ConnectBudget {
+        open_timeout,
+        mesh_retries,
+        mesh_retry_delay,
+        discovery_wait,
+    } = budget;
     // Degenerate budgets are a misconfiguration, not a runtime condition:
     // a zero `discovery_wait` makes the first deadline check fire
     // immediately, and a zero `mesh_retries` makes `failed_attempts >=
@@ -118,8 +140,34 @@ pub(super) async fn open_namespace_join_stream(
         }
 
         let discovered = sync_network.subscribed_peers(topic.clone()).await;
-        let discovered_any = !discovered.is_empty();
-        let mut peers = discovered;
+
+        // Peers the invitation named as admitters come first, and are tried
+        // even when discovery has surfaced nobody.
+        //
+        // Both halves matter. Ordering, because only an admitter can complete
+        // this join — a shuffled subscriber that is not one costs a round trip
+        // to be told no. And presence-regardless-of-discovery, because
+        // `subscribed_peers` answers "who is on the topic mesh", which is
+        // exactly what has not converged yet in the case this join path exists
+        // for. The joiner dialed these addresses moments ago, so the transport
+        // may well be up while the mesh is not.
+        let mut peers: Vec<PeerId> = preferred_peers
+            .iter()
+            .copied()
+            .filter(|p| !excluded_peers.contains(p))
+            .collect();
+        // Preferred peers are candidates in their own right, so a round that
+        // has them is not a cold start even with an empty subscriber set —
+        // otherwise the loop would sleep out the discovery budget while
+        // holding an address it could have tried.
+        let discovered_any = !discovered.is_empty() || !peers.is_empty();
+        let preferred_count = peers.len();
+        let already: HashSet<PeerId> = peers.iter().copied().collect();
+        peers.extend(
+            discovered
+                .into_iter()
+                .filter(|p| !already.contains(p) && !excluded_peers.contains(p)),
+        );
         // Filter excluded peers before shuffling so an excluded peer
         // doesn't get picked first and then `continue`'d — that would
         // burn a slot in the shuffle order. Filtering up-front also
@@ -171,7 +219,12 @@ pub(super) async fn open_namespace_join_stream(
         // shuffling so one round can't burn the whole budget on a large
         // all-hanging mesh; the shuffle keeps successive rounds sampling
         // different peers.
-        peers.shuffle(&mut rand::thread_rng());
+        // Shuffle within each band rather than across them: the preferred
+        // prefix keeps its priority while successive rounds still sample
+        // different peers inside it, which is what the shuffle was for.
+        let (preferred, rest) = peers.split_at_mut(preferred_count);
+        preferred.shuffle(&mut rand::thread_rng());
+        rest.shuffle(&mut rand::thread_rng());
         peers.truncate(MAX_PEERS_PER_ROUND);
 
         for peer in &peers {
@@ -248,18 +301,17 @@ mod tests {
     /// the loop iterates the full retry budget when peers all fail,
     /// so individual values stay small.
     ///
-    /// `discovery_wait` is sized well above `mesh_retries` worth of
+    /// `budget.discovery_wait` is sized well above `mesh_retries` worth of
     /// failed rounds so the peer-present tests bind on the retry count
     /// (their historical behaviour); the cold-start tests bind on this
     /// budget instead.
-    fn defaults() -> (Duration, u32, Duration, Duration) {
-        // open_timeout, mesh_retries, mesh_retry_delay, discovery_wait
-        (
-            Duration::from_millis(100),
-            3,
-            Duration::from_millis(50),
-            Duration::from_millis(1_350),
-        )
+    fn defaults() -> ConnectBudget {
+        ConnectBudget {
+            open_timeout: Duration::from_millis(100),
+            mesh_retries: 3,
+            mesh_retry_delay: Duration::from_millis(50),
+            discovery_wait: Duration::from_millis(1_350),
+        }
     }
 
     /// Default-empty exclusion set for tests that don't need to
@@ -268,9 +320,86 @@ mod tests {
         HashSet::new()
     }
 
+    /// An admitter named by the invitation is tried before a peer that
+    /// merely happens to be subscribed.
+    ///
+    /// Only an admitter can complete the join, so picking a subscriber first
+    /// costs a round trip whose only possible outcome is a refusal.
+    #[tokio::test(start_paused = true)]
+    async fn a_named_admitter_is_tried_before_a_mere_subscriber() {
+        let mock = MockSyncNetwork::default();
+        let subscriber = PeerId::random();
+        let admitter = PeerId::random();
+        mock.push_subscribed_peers(vec![subscriber]);
+        let budget = defaults();
+        // Exactly one success: whoever is tried first takes it.
+        mock.push_open_stream_ok();
+
+        let (_stream, peer) =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[admitter])
+                .await
+                .expect("a reachable admitter opens");
+
+        assert_eq!(
+            peer, admitter,
+            "the invitation's admitter must be tried before an unrelated subscriber"
+        );
+    }
+
+    /// A named admitter is tried even when discovery has surfaced nobody.
+    ///
+    /// This is the case the whole path exists for: `subscribed_peers` answers
+    /// "who is on the topic mesh", and the mesh is exactly what has not
+    /// converged yet. The joiner dialed this address moments earlier, so the
+    /// transport can be up while the mesh is empty — waiting out the discovery
+    /// budget would be waiting for something it does not need.
+    #[tokio::test(start_paused = true)]
+    async fn a_named_admitter_is_tried_with_no_discovered_peers() {
+        let mock = MockSyncNetwork::default();
+        let admitter = PeerId::random();
+        // Discovery surfaces nothing at all.
+        mock.push_subscribed_peers(vec![]);
+        let budget = defaults();
+        mock.push_open_stream_ok();
+
+        let (_stream, peer) =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[admitter])
+                .await
+                .expect("an admitter is reachable even with an empty subscriber set");
+
+        assert_eq!(peer, admitter);
+    }
+
+    /// An excluded admitter is not retried just for being named.
+    ///
+    /// `excluded_peers` carries the peers that already refused this join;
+    /// preferring the invitation's list must not resurrect one of them.
+    #[tokio::test(start_paused = true)]
+    async fn a_named_admitter_that_already_refused_is_not_retried() {
+        let mock = MockSyncNetwork::default();
+        let admitter = PeerId::random();
+        let subscriber = PeerId::random();
+        mock.push_subscribed_peers(vec![subscriber]);
+        let budget = defaults();
+        mock.push_open_stream_ok();
+
+        let mut excluded = HashSet::new();
+        let _ = excluded.insert(admitter);
+
+        let (_stream, peer) =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &excluded, &[admitter])
+                .await
+                .expect("falls through to the subscriber");
+
+        assert_eq!(
+            peer, subscriber,
+            "an admitter that already refused must stay excluded"
+        );
+    }
+
     /// All peers in every round return Err → function returns Err
     /// with the deadline+elapsed signature. We seed exactly the
-    /// expected error count (retries × peers = 6) and assert
+    /// expected error count (budget.mesh_retries × peers = 6) and assert
     /// `assert_all_consumed` so an early-exit regression — which
     /// would leave unconsumed entries — fails this test loudly.
     #[tokio::test(start_paused = true)]
@@ -280,24 +409,16 @@ mod tests {
         let p2 = PeerId::random();
         // Sticky-last on mesh_peers means every round sees this pair.
         mock.push_subscribed_peers(vec![p1, p2]);
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+        let budget = defaults();
         // Each round tries every peer (3 × 2 = 6 attempts) and the
         // retry budget exhausts before any extra inner-loop attempt.
-        let expected_open_calls = (retries as usize) * 2;
+        let expected_open_calls = (budget.mesh_retries as usize) * 2;
         for i in 0..expected_open_calls {
             mock.push_open_stream_err(format!("err-{i}"));
         }
 
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
 
         let err = result.unwrap_err().to_string();
         assert!(
@@ -316,7 +437,7 @@ mod tests {
         mock.assert_all_consumed();
     }
 
-    /// Peer hangs past `open_timeout` → `tokio::time::timeout` fires
+    /// Peer hangs past `budget.open_timeout` → `tokio::time::timeout` fires
     /// and the loop continues with the next peer. With all peers
     /// hanging, eventually the deadline is hit and Err is returned.
     /// Under `start_paused` the test completes in virtual-time
@@ -325,43 +446,36 @@ mod tests {
     async fn hanging_peers_are_interrupted_by_per_peer_timeout() {
         let mock = MockSyncNetwork::default();
         mock.push_subscribed_peers(vec![PeerId::random(), PeerId::random()]);
-        // Every peer hangs far longer than open_timeout; tokio's
+        // Every peer hangs far longer than budget.open_timeout; tokio's
         // timeout should fire each time and we move on.
         for i in 0..20 {
             mock.push_open_stream_hang(Duration::from_secs(10), format!("hang-{i}"));
         }
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+        let budget = defaults();
         let start = time::Instant::now();
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "expected Err from hanging peers, got Ok");
         // Peers are present every round, so the loop binds on the
-        // retry budget: `retries` rounds, each spending one
-        // `open_timeout` per hanging peer plus an inter-round sleep.
+        // retry budget: `budget.mesh_retries` rounds, each spending one
+        // `budget.open_timeout` per hanging peer plus an inter-round sleep.
         // Bound generously by the whole discovery budget plus one
-        // extra open_timeout slot (the per-peer check may bail an
+        // extra budget.open_timeout slot (the per-peer check may bail an
         // in-flight attempt up to one timeout late).
-        let upper_bound = discovery_wait.saturating_add(open_timeout);
+        let upper_bound = budget.discovery_wait.saturating_add(budget.open_timeout);
         assert!(
             elapsed <= upper_bound,
-            "loop took {elapsed:?}, expected ≤ {upper_bound:?} (discovery_wait {discovery_wait:?} \
-             + one open_timeout slot)"
+            "loop took {elapsed:?}, expected ≤ {upper_bound:?} (discovery_wait {:?} \
+             + one open_timeout slot)",
+            budget.discovery_wait
         );
     }
 
     /// Empty mesh in every round → no peers ever tried → Err once the
-    /// `discovery_wait` budget elapses (cold-start polling path).
+    /// `budget.discovery_wait` budget elapses (cold-start polling path).
     #[tokio::test(start_paused = true)]
     async fn empty_mesh_every_round_returns_err() {
         let mock = MockSyncNetwork::default();
@@ -369,17 +483,9 @@ mod tests {
         // (the "never seeded" path; production-legitimate when the
         // mesh hasn't formed yet).
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let budget = defaults();
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
 
         assert!(
             result.is_err(),
@@ -401,43 +507,38 @@ mod tests {
             mock.push_open_stream_hang(Duration::from_secs(60), format!("h-{i}"));
         }
 
-        let open_timeout = Duration::from_millis(200);
-        let mesh_retries: u32 = 10; // high enough not to bind first
-        let mesh_retry_delay = Duration::from_millis(10);
-        // Tight budget so the per-peer check inside the peer loop is
-        // what bounds the run.
-        let discovery_wait = Duration::from_millis(500);
+        // Tight discovery budget so the per-peer check inside the peer loop is
+        // what bounds the run; retries high enough not to bind first.
+        let budget = ConnectBudget {
+            open_timeout: Duration::from_millis(200),
+            mesh_retries: 10,
+            mesh_retry_delay: Duration::from_millis(10),
+            discovery_wait: Duration::from_millis(500),
+        };
 
         let start = time::Instant::now();
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            mesh_retries,
-            mesh_retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err());
-        // Bail no later than the budget plus one in-flight open_timeout
+        // Bail no later than the budget plus one in-flight budget.open_timeout
         // slot (the per-peer check may interrupt an attempt up to one
         // timeout late).
-        let upper_bound = discovery_wait.saturating_add(open_timeout);
+        let upper_bound = budget.discovery_wait.saturating_add(budget.open_timeout);
         assert!(
             elapsed <= upper_bound,
-            "loop took {elapsed:?}, expected ≤ {upper_bound:?} (budget {discovery_wait:?} + \
-             one open_timeout slot)"
+            "loop took {elapsed:?}, expected ≤ {upper_bound:?} (discovery_wait {:?} + \
+             one open_timeout slot)",
+            budget.discovery_wait
         );
     }
 
     /// A single round tries at most `MAX_PEERS_PER_ROUND` peers, even on
     /// a larger mesh — so one round can't monopolise the budget. Proven
     /// by timing: with a one-round budget and every peer hanging for
-    /// `open_timeout`, the round costs `MAX_PEERS_PER_ROUND × open_timeout`,
-    /// not `mesh_size × open_timeout`.
+    /// `budget.open_timeout`, the round costs `MAX_PEERS_PER_ROUND × budget.open_timeout`,
+    /// not `mesh_size × budget.open_timeout`.
     #[tokio::test(start_paused = true)]
     async fn round_fan_out_is_capped() {
         let mock = MockSyncNetwork::default();
@@ -449,34 +550,30 @@ mod tests {
             mock.push_open_stream_hang(Duration::from_secs(60), format!("h-{i}"));
         }
 
-        let open_timeout = Duration::from_millis(100);
-        let mesh_retries: u32 = 1; // one round, then give up
-        let mesh_retry_delay = Duration::from_millis(10);
-        // Large enough that the budget never bounds the single round.
-        let discovery_wait = Duration::from_secs(10);
+        // One round then give up, with a discovery budget large enough that it
+        // never bounds that round.
+        let budget = ConnectBudget {
+            open_timeout: Duration::from_millis(100),
+            mesh_retries: 1,
+            mesh_retry_delay: Duration::from_millis(10),
+            discovery_wait: Duration::from_secs(10),
+        };
 
         let start = time::Instant::now();
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            mesh_retries,
-            mesh_retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err());
         // Exactly the cap's worth of per-peer timeouts, not the whole
-        // mesh: ≥ cap × open_timeout, and < (cap + 1) × open_timeout.
+        // mesh: ≥ cap × budget.open_timeout, and < (cap + 1) × budget.open_timeout.
         let cap = MAX_PEERS_PER_ROUND as u32;
         assert!(
-            elapsed >= open_timeout.saturating_mul(cap)
-                && elapsed < open_timeout.saturating_mul(cap + 1),
-            "round tried peers for {elapsed:?}, expected ≈ {cap} × {open_timeout:?} \
-             (cap), not the whole {mesh_size}-peer mesh"
+            elapsed >= budget.open_timeout.saturating_mul(cap)
+                && elapsed < budget.open_timeout.saturating_mul(cap + 1),
+            "round tried peers for {elapsed:?}, expected ≈ {cap} × {:?} \
+             (cap), not the whole {mesh_size}-peer mesh",
+            budget.open_timeout
         );
     }
 
@@ -488,17 +585,9 @@ mod tests {
     async fn accepts_arc_dyn_sync_network() {
         let mock: Arc<dyn SyncNetwork> = Arc::new(MockSyncNetwork::default());
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
-        let result = open_namespace_join_stream(
-            &*mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let budget = defaults();
+        let result =
+            open_namespace_join_stream(&*mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
         // Empty mesh → Err is expected; we're just checking the
         // type coercion compiles and runs.
         assert!(result.is_err());
@@ -519,7 +608,7 @@ mod tests {
         excluded.insert(p1);
         excluded.insert(p2);
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+        let budget = defaults();
         // Crucially: NO `push_open_stream_*` calls. If the connect
         // loop tries to open_stream against an excluded peer, the
         // mock's "no queued response" Err surfaces — but that would
@@ -527,16 +616,7 @@ mod tests {
         // discovered peer is excluded, which counts as a failed round
         // (not a cold-start wait), so the Err returns after the retry
         // budget without consuming the open_stream queue.
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &excluded,
-        )
-        .await;
+        let result = open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &excluded, &[]).await;
 
         let err = result.unwrap_err().to_string();
         assert!(
@@ -565,7 +645,7 @@ mod tests {
         let blocked = PeerId::random();
         // `mesh_peers` is sticky-last in the mock (see module doc): a
         // single `push_subscribed_peers` call seeds the same list for every
-        // round. The test budget below (`retries` open_stream Errs)
+        // round. The test budget below (`budget.mesh_retries` open_stream Errs)
         // depends on that — if sticky-last ever changes to return an
         // empty list after the first read, the assertion below would
         // pass vacuously instead of guarding the filter behaviour.
@@ -574,26 +654,17 @@ mod tests {
         excluded.insert(blocked);
 
         // Per-round one peer remains → one open_stream attempt per
-        // round → `retries` attempts total. Seed exactly that many
+        // round → `budget.mesh_retries` attempts total. Seed exactly that many
         // errors and assert_all_consumed below catches both
         // "filter let the blocked peer through" (would consume more
         // than seeded → error on exhaust) and "filter blocked the
         // kept peer too" (would consume fewer → unconsumed Errs).
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
-        for i in 0..(retries as usize) {
+        let budget = defaults();
+        for i in 0..(budget.mesh_retries as usize) {
             mock.push_open_stream_err(format!("kept-err-{i}"));
         }
 
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &excluded,
-        )
-        .await;
+        let result = open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &excluded, &[]).await;
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("excluded 1"),
@@ -620,17 +691,9 @@ mod tests {
             .push_open_stream_err("peer rejected")
             .push_open_stream_ok();
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let budget = defaults();
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
 
         assert!(
             result.is_ok(),
@@ -651,7 +714,7 @@ mod tests {
     async fn cold_start_peer_appearing_after_retry_budget_is_found() {
         let mock = MockSyncNetwork::default();
         let peer = PeerId::random();
-        // Empty for `retries` (3) rounds, then the peer shows up
+        // Empty for `budget.mesh_retries` (3) rounds, then the peer shows up
         // (sticky-last keeps returning it thereafter).
         mock.push_subscribed_peers(vec![])
             .push_subscribed_peers(vec![])
@@ -659,21 +722,13 @@ mod tests {
             .push_subscribed_peers(vec![peer]);
         mock.push_open_stream_ok();
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+        let budget = defaults();
         assert_eq!(
-            retries, 3,
-            "test assumes the peer appears after exactly `retries` empty rounds"
+            budget.mesh_retries, 3,
+            "test assumes the peer appears after exactly `budget.mesh_retries` empty rounds"
         );
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
 
         assert!(
             result.is_ok(),
@@ -684,7 +739,7 @@ mod tests {
     }
 
     /// The cold-start (nothing-discovered-yet) wait spans the whole
-    /// `discovery_wait` budget, not the much shorter
+    /// `budget.discovery_wait` budget, not the much shorter
     /// `mesh_retries × mesh_retry_delay` floor that bounded the prior
     /// round-counted loop. Empty mesh forever → Err only after ~the
     /// full budget elapses.
@@ -693,33 +748,30 @@ mod tests {
         let mock = MockSyncNetwork::default();
         // Never seeded → `subscribed_peers` always empty (cold start).
 
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+        let budget = defaults();
         let start = time::Instant::now();
-        let result = open_namespace_join_stream(
-            &mock,
-            NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            discovery_wait,
-            &no_excluded(),
-        )
-        .await;
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[]).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "empty mesh forever should still error");
-        // Must wait well past the old `retries × retry_delay` floor
+        // Must wait well past the old `budget.mesh_retries × budget.mesh_retry_delay` floor
         // (3 × 50ms = 150ms) — that floor giving up early was the bug.
-        let old_round_floor = retry_delay.saturating_mul(retries);
+        let old_round_floor = budget.mesh_retry_delay.saturating_mul(budget.mesh_retries);
         assert!(
             elapsed > old_round_floor,
             "cold-start gave up after {elapsed:?}, at/under the old round floor \
-             {old_round_floor:?} — it should wait the discovery budget {discovery_wait:?}"
+             {old_round_floor:?} — it should wait the discovery budget {:?}",
+            budget.discovery_wait
         );
         // And must not overrun the budget by more than one poll cadence.
         assert!(
-            elapsed <= discovery_wait.saturating_add(retry_delay),
-            "cold-start waited {elapsed:?}, expected ≤ budget {discovery_wait:?} + one poll"
+            elapsed
+                <= budget
+                    .discovery_wait
+                    .saturating_add(budget.mesh_retry_delay),
+            "cold-start waited {elapsed:?}, expected ≤ budget {:?} + one poll",
+            budget.discovery_wait
         );
     }
 
@@ -730,16 +782,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn degenerate_budgets_return_err_not_panic() {
         let mock = MockSyncNetwork::default();
-        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+        let budget = defaults();
 
         let zero_wait = open_namespace_join_stream(
             &mock,
             NAMESPACE_ID,
-            open_timeout,
-            retries,
-            retry_delay,
-            Duration::ZERO,
+            ConnectBudget {
+                discovery_wait: Duration::ZERO,
+                ..budget
+            },
             &no_excluded(),
+            &[],
         )
         .await;
         let err = zero_wait.unwrap_err().to_string();
@@ -751,11 +804,12 @@ mod tests {
         let zero_retries = open_namespace_join_stream(
             &mock,
             NAMESPACE_ID,
-            open_timeout,
-            0,
-            retry_delay,
-            discovery_wait,
+            ConnectBudget {
+                mesh_retries: 0,
+                ..budget
+            },
             &no_excluded(),
+            &[],
         )
         .await;
         let err = zero_retries.unwrap_err().to_string();
