@@ -274,8 +274,14 @@ jobs:
       # Shape first, constants second. The shape tests catch a complexity
       # regression even when the snapshot was regenerated to absorb it, which is
       # precisely how a reviewer gets fooled otherwise.
+      # `--include-ignored` is load-bearing: `tests/reproducible.rs` is
+      # `#[ignore]`d so the workspace-wide DEBUG `cargo test` above does not
+      # spend twenty-plus minutes re-deriving tolerances on every PR. This
+      # release job is the only place it runs, so dropping the flag drops the
+      # check that every declared `tolerance_pct` still bounds the spread it
+      # claims to.
       - name: Assert cost curves keep their declared shape
-        run: cargo test -p storage-cost --release
+        run: cargo test -p storage-cost --release -- --include-ignored
 
       - name: Check storage costs against the committed snapshot
         run: ./scripts/check-storage-cost.sh

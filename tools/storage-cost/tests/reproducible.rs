@@ -24,6 +24,23 @@ const RUNS: usize = 7;
 /// order of magnitude — and that job belongs to `flat_curve.rs`.
 const MAX_DECLARED_TOLERANCE_PCT: u32 = 25;
 
+/// `#[ignore]`d by default, and NOT because it is optional.
+///
+/// It measures every workload `RUNS` times at every size, which includes the
+/// `CostShape::QuadraticBuild` set — `rga_insert_per_char`,
+/// `rga_insert_middle` and `rga_insert_interleaved_sync` at `n=2_000`, tens of
+/// millions of storage rows each. In release that is ~3 minutes; in the debug
+/// profile it runs for over twenty. `.github/workflows/ci-checks.yml`'s
+/// workspace-wide `cargo test` is a DEBUG build and would pay that on every
+/// PR, on the critical path, for a property that does not change between
+/// profiles.
+///
+/// So it is excluded from the default run and re-included explicitly by the
+/// dedicated `storage-cost` job, which already builds this crate in release:
+/// `cargo test -p storage-cost --release -- --include-ignored`. Removing the
+/// `--include-ignored` there deletes this coverage silently, which is why it
+/// is named in that step's own comment too.
+#[ignore = "minutes of work; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn declared_tolerances_bound_the_observed_spread() {
     let mut failures = Vec::new();

@@ -417,21 +417,31 @@ fn land_remote_char() {
 
 /// The actions a remote replica emits when one character is typed into it.
 ///
-/// # Why the pending-delta buffer is cleared first
+/// # The thread-local hazard, and the two things standing against it
 ///
-/// `crate::delta`'s pending-action buffer is a THREAD-local, not a
-/// `RuntimeEnv` one: every storage write on this thread queues into it,
-/// including the local `insert` that just ran, and `commit()` drains
-/// whatever is in it. Without the clear, the remote replica's commit hands
-/// back the caller's own local actions AND the uncommitted actions of every
-/// workload that ran earlier in the same process, and the workload spends
-/// its time re-applying writes it had already done, under the name of a sync
-/// cost. That is not hypothetical: while this was being written, an
-/// otherwise identical workload measured `1_469` reads at `n=10` standalone
-/// against `59_505` when an `unordered_map_insert(1_000)` had run before it
-/// in the snapshot binary — a 40x swing decided entirely by registry order.
-/// Clearing first makes the artifact contain exactly what the remote replica
-/// authored.
+/// `calimero_storage::delta`'s pending-action buffer is a THREAD-local, not a
+/// `RuntimeEnv` one: every storage write on this thread queues into it, and
+/// any `commit()` — including the remote replica's, three lines down — drains
+/// whatever is in it into the artifact. If actions that are not this
+/// character's ride along, they get applied into the caller's env and the
+/// workload reports the cost of re-applying already-done writes as a sync
+/// cost. An earlier revision of `rga_insert_interleaved_sync` (one held
+/// `Root`, no per-iteration commit) did exactly that: `1_469` reads at
+/// `n=10` standalone against `59_505` with an `unordered_map_insert(1_000)`
+/// ahead of it in the registry.
+///
+/// As the workload stands, its own commits already drain the buffer before
+/// this function is ever reached — the leading `commit()` clears whatever
+/// earlier workloads left, and the per-iteration `commit()` clears the local
+/// insert. So `clear_pending_delta()` below is NOT currently load-bearing;
+/// measured with it removed, every size reproduces inside the declared
+/// tolerance. It is kept because it makes the isolation a property of THIS
+/// function rather than an accident of where the caller happens to commit,
+/// and the caller's commit structure is not fixed — the whole point of this
+/// registry is that workloads get rewritten.
+///
+/// The assertion is the part that actually detects a leak, and it detects one
+/// however it arrives: see [`REMOTE_CHAR_ACTIONS`].
 fn remote_char_actions() -> Vec<Action> {
     clear_pending_delta();
     let delta = with_runtime_env(uncounted_env(), || {
@@ -442,11 +452,46 @@ fn remote_char_actions() -> Vec<Action> {
         rga.commit();
         take_last_artifact().expect("commit should emit a delta")
     });
-    match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
+    let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
         StorageDelta::Actions(actions) => actions,
         StorageDelta::CausalActions { actions, .. } => actions,
-    }
+    };
+    assert_eq!(
+        actions.len(),
+        REMOTE_CHAR_ACTIONS,
+        "the remote replica's delta carried {} actions, not the {REMOTE_CHAR_ACTIONS} that \
+         typing ONE character emits — the thread-local pending-delta buffer leaked into it, \
+         so this workload is about to re-apply writes that were already done and report the \
+         cost as sync. Check that `clear_pending_delta()` above still runs.",
+        actions.len()
+    );
+    actions
 }
+
+/// Actions in the delta a remote replica emits for exactly one character.
+///
+/// Measured, and stable across runs: the root entry (twice — opened and
+/// closed), the char map's collection entry, its index entry (twice), and the
+/// character itself. The exact composition matters less than the COUNT being
+/// fixed: one character is one bounded, unchanging set of actions, so any
+/// other number means something that is not this character is riding along.
+///
+/// # Why a count, and not "every action targets the RGA's collection id"
+///
+/// The id check was considered and rejected: it cannot see the dominant
+/// pollution. The actions most likely to leak into this delta are the
+/// CALLER'S OWN local `insert`s into the very same document — same collection
+/// id, same entity shape — so an id filter would wave them straight through
+/// while the measurement silently became a re-application benchmark. A fixed
+/// count catches those, catches earlier workloads' uncommitted actions, and
+/// catches anything else that ever starts sharing the buffer, without knowing
+/// what any of it looks like.
+///
+/// If a legitimate change to the storage layer alters what one character
+/// emits, this constant is what has to move — deliberately, with the new
+/// number read off a clean run, and with the snapshot regenerated because the
+/// applied cost changed too.
+const REMOTE_CHAR_ACTIONS: usize = 6;
 
 /// A throwaway `RuntimeEnv` over its own map, deliberately NOT wired to
 /// [`crate::measure`]'s counters.
@@ -665,7 +710,7 @@ pub fn all() -> Vec<Workload> {
         // Walks the whole trie, so its node count follows the random id
         // distribution. Measured worst-case spread over seven runs, across
         // six separate measurement rounds: 5.0%-10.5% at n=10 (the current
-        // committed snapshot's n=10 rows_read is 41 — see
+        // committed snapshot's n=10 rows_read is 42 — see
         // `storage-costs.json` — a fresh draw from that same distribution,
         // not a change to the workload), under 3% at every larger size. 18%
         // is `tests/reproducible.rs`'s `declared_tolerances_bound_the_
@@ -731,8 +776,14 @@ pub fn all() -> Vec<Workload> {
         // byte counts, surfacing on rows here because the applied entity is
         // linked into the trie. Measured spread over seven runs is well under
         // 1% at every size (the counts are large, so a few bucket-shaped rows
-        // barely move them); `tests/reproducible.rs` re-derives this bound and
-        // fails if 5 is either too tight or gratuitously loose.
+        // barely move them). `tests/reproducible.rs` re-derives the spread
+        // over seven runs and fails if 5 is too TIGHT — i.e. if the real
+        // spread ever exceeds it. It does not police 5 in the other
+        // direction: its too-loose rule is `declared > worst_spread * 3 + 8`,
+        // and the flat `+ 8` means no declaration of 5 can ever trip it. So
+        // the too-loose half of that test is not evidence for this number;
+        // the evidence is the measured sub-1% spread above, and 5 is the
+        // headroom chosen over it by hand.
         (
             "rga_insert_interleaved_sync",
             QuadraticBuild,
@@ -816,6 +867,54 @@ mod tests {
     /// spot it was added to remove, restored silently. `every_workload_is_
     /// measurable_and_touches_storage` above cannot see that: the cost is
     /// nonzero either way.
+    /// What `rga_insert_interleaved_sync` measures must not depend on which
+    /// workloads ran before it.
+    ///
+    /// The pending-delta buffer is thread-local and shared by every workload
+    /// in the registry, and most of them never commit — their actions sit in
+    /// it. Any `commit()` on that thread drains whatever is queued into the
+    /// artifact, so if the remote replica's commit ever picks those up, this
+    /// workload starts re-applying other people's writes and reporting the
+    /// cost as sync. That is not theoretical: an earlier revision of this
+    /// workload (one held `Root`, no per-iteration commit) measured `1_469`
+    /// reads at `n=10` standalone against `59_505` with an
+    /// `unordered_map_insert(1_000)` ahead of it — a 40x swing decided by
+    /// registry order.
+    ///
+    /// Nothing else in this crate can see that.
+    /// `every_remote_character_actually_lands` passes either way (the
+    /// polluted delta still carries the character),
+    /// `every_workload_is_measurable_and_touches_storage` passes either way
+    /// (the cost is nonzero either way),
+    /// `declared_tolerances_bound_the_observed_spread` compares the workload
+    /// only against itself, and an inflation of this size still clears
+    /// `flat_curve.rs`'s quadratic ceiling. So this asserts the property
+    /// directly, on COST rather than on content: same workload, once clean
+    /// and once behind an uncommitted build, must cost the same.
+    #[test]
+    fn cost_does_not_depend_on_what_ran_before() {
+        let n = 100;
+        let (_, clean) = measure(|| rga_insert_interleaved_sync(n));
+
+        // `build_map` never commits, so its actions stay queued — exactly what
+        // `unordered_map_insert` leaves behind for every workload after it.
+        let (_, _) = measure(|| {
+            let _ignored = build_map(1_000);
+        });
+        let (_, after) = measure(|| rga_insert_interleaved_sync(n));
+
+        let drift_pct = (after.rows_read as f64 - clean.rows_read as f64).abs() * 100.0
+            / clean.rows_read as f64;
+        assert!(
+            drift_pct < 5.0,
+            "rga_insert_interleaved_sync read {} rows on a clean thread and {} rows behind \
+             an uncommitted build ({drift_pct:.1}% apart): its cost now depends on registry \
+             order, so it is measuring someone else's writes as sync cost",
+            clean.rows_read,
+            after.rows_read
+        );
+    }
+
     #[test]
     fn every_remote_character_actually_lands() {
         let n = 10;
