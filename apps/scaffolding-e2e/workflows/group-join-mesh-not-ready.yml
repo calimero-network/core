@@ -129,14 +129,24 @@ steps:
     expected_failure: true
 
   # THE fail-closed signal. A join that could not be endorsed must leave no
-  # membership behind — not a local row, not a pending one. Asserted from
-  # node-1 because it is the node that can list: if node-2 had recorded itself
+  # membership behind — not a local row, not a pending one. Read from node-1
+  # because it is the node that can list: if node-2 had recorded itself
   # locally it would answer this list too, and the point is that it has not.
-  - name: Assert the unendorsed join recorded no membership
-    type: assert_not_member
+  #
+  # `list_group_members` rather than `assert_not_member`: the latter issues its
+  # own unauthenticated request and gets HTTP 401 under `auth_mode: embedded`,
+  # so it cannot express this assertion in a logged-in workflow.
+  - name: List members on node-1 while the join is unendorsed
+    type: list_group_members
     node: notready-node-1
     group_id: '{{namespace_id}}'
-    account: '{{account_node2}}'
+    outputs:
+      members_during_partition: members
+
+  - name: Assert the unendorsed join recorded no membership
+    type: assert
+    statements:
+      - "not_contains({{members_during_partition}}, {{account_node2}})"
 
   # ── Recovery: heal the partition, then a re-join must succeed ─────────
 

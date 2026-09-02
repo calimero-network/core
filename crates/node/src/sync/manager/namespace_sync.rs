@@ -1300,12 +1300,30 @@ impl SyncManager {
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
         let mut last_connect_err: Option<String> = None;
-        // Cap on protocol-level retries. The connect loop already
-        // handles transport failure across peers; this cap bounds the
-        // total post-open exchanges so a small mesh full of stale
-        // peers can't deadlock the join indefinitely. Sized to cover
-        // typical 1–3 mesh peers plus headroom.
-        const MAX_PROTOCOL_RETRIES: usize = 5;
+        // Cap on protocol-level retries, bounding the total post-open
+        // exchanges so a mesh full of stale peers cannot deadlock the join.
+        //
+        // This used to be 5, "sized to cover typical 1–3 mesh peers plus
+        // headroom", and that was the right size for the job it had: absorbing
+        // transport flakiness across a couple of peers. The endorsement gave
+        // the loop a different job — find an ADMITTER, not merely a peer that
+        // answers — and a specific peer among N members is not found in a
+        // constant number of tries. An 8-node mesh with one admitter left
+        // node-7 asking six peers with five attempts, which is a coin flip
+        // rather than a bug in any one of them.
+        //
+        // Larger is close to free, because attempts are monotonic: every
+        // refusal excludes the peer that caused it, so the candidate set only
+        // shrinks, and once it is empty `open_namespace_join_stream` returns
+        // immediately without opening anything. Wall clock stays bounded by
+        // that loop's own per-peer timeout and deadline, not by this number.
+        //
+        // Still a constant rather than "until candidates run out", because a
+        // node with `admitter_addrs` to work from reaches an admitter in the
+        // first attempt or two — the search only degrades to scanning members
+        // when the invitation carried no addresses, which is the case a mint
+        // with no confirmed external address produces.
+        const MAX_PROTOCOL_RETRIES: usize = 32;
 
         // The admitter machines the invitation named. Derived here rather than
         // passed in because the invitation is already in `params` — the
