@@ -418,9 +418,7 @@ pub fn merge_by_crdt_type(
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
         // App-defined types
-        CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
-            type_name: type_name.clone(),
-        }),
+        CrdtType::Custom(type_id) => Err(MergeError::WasmRequired { type_id: *type_id }),
     }
 }
 
@@ -448,7 +446,8 @@ pub fn merge_by_crdt_type(
 ///
 /// assert!(is_builtin_crdt(&CrdtType::GCounter));
 /// assert!(is_builtin_crdt(&CrdtType::UserStorage));
-/// assert!(!is_builtin_crdt(&CrdtType::Custom("MyType".into())));
+/// # use calimero_primitives::crdt::CustomTypeId;
+/// assert!(!is_builtin_crdt(&CrdtType::Custom(CustomTypeId::of("MyType"))));
 /// ```
 pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
     !matches!(crdt_type, CrdtType::Custom(_))

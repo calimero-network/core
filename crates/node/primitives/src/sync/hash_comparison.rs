@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 // Re-export the unified CrdtType from primitives (consolidated per issue #1912)
-pub use calimero_primitives::crdt::CrdtType;
+pub use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 
 // =============================================================================
 // Constants
@@ -1011,7 +1011,7 @@ mod tests {
             CrdtType::Vector,
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
-            CrdtType::Custom("test".to_string()),
+            CrdtType::Custom(CustomTypeId::of("test")),
         ];
 
         for crdt_type in types {

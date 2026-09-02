@@ -13,7 +13,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 // Re-export the unified CrdtType from primitives
-pub use calimero_primitives::crdt::CrdtType;
+pub use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 
 /// Storage strategy for a CRDT type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,8 +141,11 @@ pub enum MergeError {
     /// The storage layer cannot merge this type without knowing the concrete type.
     /// Examples: `Custom` types, collections with nested generics, `UserStorage<T>`.
     WasmRequired {
-        /// The type name that requires WASM callback
-        type_name: String,
+        /// The app-defined type that requires a WASM callback.
+        ///
+        /// A digest rather than a name: the id is what the entry carries, and
+        /// resolving it back to a spelling is the guest's job.
+        type_id: CustomTypeId,
     },
     /// Serialization/deserialization error during merge.
     SerializationError(String),
@@ -161,8 +164,12 @@ impl std::fmt::Display for MergeError {
             MergeError::IncompatibleStates => write!(f, "Incompatible CRDT states"),
             MergeError::StorageError(msg) => write!(f, "Storage error: {msg}"),
             MergeError::TypeMismatch => write!(f, "Cannot merge different CRDT types"),
-            MergeError::WasmRequired { type_name } => {
-                write!(f, "WASM callback required for type: {type_name}")
+            MergeError::WasmRequired { type_id } => {
+                write!(
+                    f,
+                    "WASM callback required for type id {:#018x}",
+                    type_id.get()
+                )
             }
             MergeError::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             MergeError::NoMergeFunctionRegistered => {
