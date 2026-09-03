@@ -310,10 +310,12 @@ impl VMHostFunctions<'_> {
     /// Announces a blob to a specific context's availability nodes, so they
     /// prefetch it.
     ///
-    /// Best-effort: an announcement that reaches nobody (a context with no
-    /// availability node, or one whose availability nodes are offline) still
-    /// returns `1`. The blob remains discoverable by probing this node, which
-    /// holds it; the announcement only buys a second, always-on holder.
+    /// Best-effort and non-blocking: the notices are sent detached, so this
+    /// returns `1` once they are scheduled, not once they are delivered. An
+    /// announcement that reaches nobody (a context with no availability node,
+    /// or one whose availability nodes are offline) returns `1` just the same.
+    /// The blob remains discoverable by probing this node, which holds it; the
+    /// announcement only buys a second, always-on holder.
     ///
     /// # Arguments
     ///

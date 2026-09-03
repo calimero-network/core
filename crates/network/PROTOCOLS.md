@@ -158,6 +158,8 @@ Protocol ID: /calimero/blob-announce/1.0.0
 
 **Receiver policy**: prefetch only if this node is a `ReadOnlyTee` member of that context (decided from local governance state, never from the announcement), does not already hold the blob, and `size` is within the 500 MiB transfer cap. At most 2 prefetches run at once; announcements arriving while both slots are busy are dropped, not queued.
 
+**Producer side**: the notices are sent detached — the producing write returns once they are scheduled, not once they are delivered, so an unreachable availability node cannot delay an upload.
+
 **Known gap**: an availability node offline at announce time misses that blob and has no catch-up path. The blob stays findable by probing its original holder, so this costs availability, not correctness.
 
 ### CALIMERO_KAD_PROTO_NAME
