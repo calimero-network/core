@@ -149,6 +149,7 @@ src/
 │   │   ├── announce_blob.rs  # Announce blob availability (DHT)
 │   │   ├── query_blob.rs     # Query blob providers (DHT)
 │   │   ├── probe_blob.rs     # Ask one peer if it holds a blob (no transfer)
+│   │   ├── send_blob_announcement.rs # Tell one availability node we hold a blob
 │   │   └── request_blob.rs   # Request blob from peer
 │   ├── stream.rs             # Stream handler exports
 │   └── stream/
@@ -233,6 +234,7 @@ impl NetworkClient {
     pub async fn announce_blob(&self, blob_id, context_id, size) -> eyre::Result<()>;
     pub async fn query_blob(&self, blob_id, context_id) -> eyre::Result<Vec<PeerId>>;
     pub async fn probe_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<bool>;
+    pub async fn announce_blob_to_peer(&self, peer_id, blob_id, context_id, size) -> eyre::Result<()>;
     pub async fn request_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<Option<Vec<u8>>>;
 }
 ```

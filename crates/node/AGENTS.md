@@ -38,6 +38,7 @@ src/
 │   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, store_setup.rs, verify.rs)
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
+│   ├── blob_announce.rs      # Availability prefetch on an inbound blob announcement
 │   └── get_blob_bytes.rs     # Get blob bytes handler
 ├── readiness.rs              # ReadinessTier FSM + ReadinessCache + ReadinessManager actor
 ├── readiness/

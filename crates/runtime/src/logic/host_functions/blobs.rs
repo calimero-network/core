@@ -307,7 +307,13 @@ impl VMHostFunctions<'_> {
         Ok(1)
     }
 
-    /// Announces a blob to a specific context for network discovery.
+    /// Announces a blob to a specific context's availability nodes, so they
+    /// prefetch it.
+    ///
+    /// Best-effort: an announcement that reaches nobody (a context with no
+    /// availability node, or one whose availability nodes are offline) still
+    /// returns `1`. The blob remains discoverable by probing this node, which
+    /// holds it; the announcement only buys a second, always-on holder.
     ///
     /// # Arguments
     ///
