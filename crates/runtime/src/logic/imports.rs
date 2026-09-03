@@ -300,6 +300,7 @@ impl VMLogic<'_> {
             fn blob_open(blob_id_ptr: u64) -> u64;
             fn blob_read(fd: u64, data_ptr: u64) -> u64;
             fn blob_announce_to_context(blob_id_ptr: u64, context_id_ptr: u64) -> u32;
+            fn blob_open_in_context(blob_id_ptr: u64, context_id_ptr: u64) -> u64;
         }
     }
 }

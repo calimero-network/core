@@ -1213,6 +1213,26 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
     host::blob_open(blob_id)
 }
 
+/// Open a blob for reading, fetching it from the context's peers if this node
+/// does not already hold it.
+///
+/// Returns 0 if the blob is available neither locally nor from any peer.
+/// Safe to call from a `#[app::view]` method — this is a read, not a write.
+pub fn blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::blob_open_in_context(
+                Ref::new(&Buffer::from(&blob_id[..])),
+                Ref::new(&Buffer::from(&context_id[..])),
+            )
+        }
+        .as_usize() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_open_in_context(blob_id, context_id)
+}
+
 /// Read data from a blob handle opened with blob_open().
 /// Reads into the provided buffer and returns the number of bytes read.
 /// Returns 0 when end of blob is reached.

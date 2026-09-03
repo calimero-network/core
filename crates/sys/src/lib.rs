@@ -85,6 +85,9 @@ wasm_imports! {
         // --
         // Network blob functions
         fn blob_announce_to_context(blob_id: Ref<Buffer<'_>>, context_id: Ref<Buffer<'_>>) -> Bool;
+        // Like `blob_open`, but consults the context's peers when the blob is
+        // not held locally.
+        fn blob_open_in_context(blob_id: Ref<Buffer<'_>>, context_id: Ref<Buffer<'_>>) -> PtrSizedInt;
         // --
     }
 }
