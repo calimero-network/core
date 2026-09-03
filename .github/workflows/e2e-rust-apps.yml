@@ -257,6 +257,122 @@ jobs:
         shell: bash
         run: merobox stop --no-docker --all || true
 
+  # A real node workflow on Windows: three nodes, two invitations, two joins,
+  # a `wait_for_sync`, then a call whose result must have propagated. Where
+  # `windows-auth-seam` proves one node serves HTTP, this proves several of them
+  # find each other and agree — the part with no unix result to borrow from,
+  # since discovery and sync are exactly where the platform differs.
+  #
+  # The bundle comes from `build-apps` rather than being built here. A `.mpk` is
+  # wasm and architecture-independent, so building it once on Linux costs
+  # nothing and avoids asking whether `cargo mero`'s wasm-opt compiles on
+  # windows-msvc — a question this lane does not need to answer.
+  windows-node-workflow:
+    name: Windows e2e (3-node sync, binary mode)
+    needs: [build-apps]
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: windows-e2e
+
+      - name: Point bindgen at the image's LLVM
+        shell: bash
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Build merod
+        run: cargo build -p merod
+
+      - name: Download the app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-app-bundles
+          path: dist/
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install merobox
+        run: pip install merobox==0.6.75
+
+      # `cd` into the app first, exactly as the Linux matrix above does. The
+      # scenario's `path: ../../dist/...` is resolved against the CWD, not
+      # against the YAML's own location, so running it from the repo root
+      # climbs two levels OUT of the checkout. The binary is passed absolute
+      # for the same reason.
+      #
+      # The joining nodes install no bundle of their own: they learn a bytecode
+      # id from the context and must fetch it. Without a configured source that
+      # fetch fails and the first execute after a join dies on "bytecode blob
+      # not found in blobstore" — so this lane needs the same fixture registry
+      # the Linux lanes get from `e2e-fixture-registry.sh`. Only the staging
+      # half of that script is reused here (`STAGE_ONLY`); its serving half
+      # runs nginx in Docker and addresses it by the docker0 gateway, neither
+      # of which exists in binary mode. These nodes are processes on this
+      # runner, so plain loopback reaches them and `python -m http.server`
+      # is enough. merod reads the two env vars directly (cli/run.rs), and
+      # merobox hands its own environment to each node it spawns, which is
+      # what makes the Docker image-retagging step unnecessary here.
+      #
+      # Server and workflow share one step deliberately: a background process
+      # started in an earlier step is not guaranteed to outlive it.
+      - name: Run the 3-node workflow (merobox, binary mode)
+        shell: bash
+        run: |
+          ls -la dist/
+          FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
+
+          python -m http.server 8080 --bind 127.0.0.1 \
+            --directory fixture-registry >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+
+          # Fail here, loudly, rather than let every node fall back to a
+          # bytecode-not-found error that reads like a sync bug.
+          for _ in $(seq 1 30); do
+            curl -sfo /dev/null http://127.0.0.1:8080/ && break
+            sleep 1
+          done
+          curl -sfo /dev/null http://127.0.0.1:8080/ \
+            || { echo "fixture registry never came up" >&2; exit 1; }
+
+          export CALIMERO_REGISTRY_MODE=http
+          export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
+
+          MEROD="$GITHUB_WORKSPACE/target/debug/merod.exe"
+          cd apps/kv-store
+          merobox bootstrap run workflows/workflow-example.yml \
+            --no-docker --binary-path "$MEROD"
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for d in apps/kv-store/data/*/logs; do
+            echo "=== $d ==="
+            cat "$d"/*.log || true
+          done
+
+      - name: Stop nodes
+        if: always()
+        shell: bash
+        run: merobox stop --no-docker --all || true
+
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
     name: Build Apps
