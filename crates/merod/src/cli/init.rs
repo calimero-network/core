@@ -218,6 +218,20 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
+    /// Run this node as a delegated-execution relay: serve
+    /// `GET`/`POST /admin-api/contexts/:context_id/intents` without a node
+    /// credential.
+    ///
+    /// Off by default. Pass it only for a node whose job is to write on behalf
+    /// of keyholders that have no relationship with it — a hosted TEE relay.
+    /// The two routes are self-authenticating: the warrant is the credential,
+    /// and a request is refused before anything executes unless the warrant is
+    /// this member's, covers this exact intent, has not expired, has an unspent
+    /// nonce, and this node holds `CAN_AUTHOR_ON_BEHALF` on the owning group.
+    /// Nothing else on the admin API is opened.
+    #[clap(long, default_value_t = false)]
+    pub public_intents: bool,
+
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
     /// terminals on one laptop and a tenancy question anywhere else — on a
@@ -534,7 +548,7 @@ impl InitCommand {
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                 .collect(),
-            Some(AdminConfig::new(true)),
+            Some(AdminConfig::new(true, self.public_intents)),
             Some(JsonRpcConfig::new(true)),
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),

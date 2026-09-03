@@ -303,6 +303,15 @@ else in the flow works without one — the account, the certificate, and the op 
 all produced offline — but the last hop is not yet answered for a node the
 keyholder has no relationship with.
 
+The same gap on the *write* path is answered:
+[`POST .../intents`](/protocol/delegated-authorship/#reaching-a-relay-you-have-no-account-on)
+can be served without a node credential, because a warrant is one — it commits to a
+single context, method and argument set, is single-use, and is refused before
+execution unless the relay holds `CAN_AUTHOR_ON_BEHALF`. A join op is a comparable
+self-contained credential, so the same treatment should extend to `/admit`;
+that is not done yet, and until it is, joining somebody else's node is the step
+that still needs an out-of-band arrangement while writing through it does not.
+
 The same guard covers the TEE-admission-policy lookup a client would use to decide
 where to present a claim, so both are unblocked by one piece of work rather than
 two.

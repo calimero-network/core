@@ -88,6 +88,54 @@ A self-authored envelope signs under `calimero/delta/2` instead. The two domains
 
 Authoring for others is a capability of its own, `CAN_AUTHOR_ON_BEHALF`, and it is granted like any other — see [capability inheritance](/protocol/capability-inheritance/). It is not implied by membership, and not implied by admin. A relay that has not been granted it gets a clean refusal at the API, before anything is executed or published, which matters: a delta peers would reject is worse than a request that never happened.
 
+An admin grants it with:
+
+```bash
+meroctl --node node1 group members set-capabilities <GROUP_ID> <RELAY_ACCOUNT> \
+  --can-author-on-behalf
+```
+
+The mask is **replaced**, not merged, so re-pass any other flag the member already holds. `meroctl group members check-access <GROUP_ID> <ACCOUNT>` prints the decoded set, `CAN_AUTHOR_ON_BEHALF` included.
+
+Note the subject: an **account**, not a key. That is what lets the relay rotate the key one of its processes signs with without the grant — or any warrant already issued against it — having to be reissued.
+
+## Discovery: what the author has to be told first
+
+Every input to a warrant is something the author already holds, with one exception. `executor` names the *relay's* account, which is a content address the client cannot derive, and whether that relay may act in this context is a row in the owning group's capabilities the client cannot read. So the relay answers both, on the path the intent will be presented to:
+
+```http
+GET /admin-api/contexts/:context_id/intents
+→ { "data": { "executorAccount": "…", "canAuthorOnBehalf": true, "groupId": "…" } }
+```
+
+`canAuthorOnBehalf: false` is not an error and not permanent — it is the state of every context no admin has opened yet, so it has to come back as an *answer*. A client reads it to tell "ask an admin of `groupId`" from "retry later", and reads `executorAccount` to know whom that admin must grant it to.
+
+Asking before signing is not politeness. A nonce is spent from a monotonic per-device sequence to mint a warrant, and one naming the wrong executor is unspendable: the number is gone and the write never happened.
+
+## Reaching a relay you have no account on
+
+`POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.
+
+So a node may be run as a relay, with `merod init --public-intents` (or `server.admin.public_intents = true` in `config.toml`). It opens exactly the two routes above and nothing else, because they are the two that carry their own credential:
+
+- the warrant is signed by the author's device key and commits to this context, this method and these exact arguments;
+- it is refused unless unexpired, its nonce unspent, and the relay holds `CAN_AUTHOR_ON_BEHALF` — all before anything is executed or published;
+- the delta is attributed to the author, and every peer re-checks both signature layers and re-authorizes at the cut.
+
+A node token proves none of that, and none of that needs one. What is left is signature verification on an unauthenticated request — cheap, and refused before execution; rate-limiting that hop belongs to the deployment's reverse proxy, as it does for the other public routes.
+
+Off by default: a self-hosted node's operator did not ask for an unauthenticated surface, and the routes are useless to them anyway, since a member with a node authors its own writes.
+
+### It is the gate only under embedded auth
+
+Worth being exact about, because the two auth modes differ and the difference is where the mistakes live.
+
+Under `--auth-mode embedded` this setting *is* the gate: the guard wraps the protected router only, so moving the two routes across genuinely removes the credential requirement.
+
+Under `--auth-mode proxy` — the default, and what every hosted node runs — **the node installs no guard on either router**. A reverse proxy enforces auth and is the only thing that does. So setting this alone changes nothing a caller can observe, and leaving it unset does not close the path: whatever the proxy exempts is open regardless.
+
+That asymmetry is the trap. A proxy deployment has to set this **and** exempt exactly this path at its ingress, from one source of truth, or the two drift — and the drift is silent in the unsafe direction, because the ingress exemption is the half that actually opens the door. The [fleet sidecar docs](https://calimero-network.github.io/mero-tee/understand/fleet-sidecar/#delegated-execution-the-node-as-a-relay) describe how the hosted node image drives both from a single variable for exactly this reason.
+
 ## Replay, and why the ledger is a window
 
 A warrant's signature stays valid forever — that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device)` ledger and spends the nonce as part of admitting the delta.
