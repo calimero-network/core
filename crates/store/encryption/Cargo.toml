@@ -19,3 +19,6 @@ zeroize = { workspace = true, features = ["zeroize_derive"] }
 
 # Internal
 calimero-store.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
