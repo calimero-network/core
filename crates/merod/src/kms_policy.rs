@@ -305,10 +305,13 @@ async fn verify_policy_signature(
 
     let verifier = SigstoreBundleVerifier::new(Default::default(), trust_root)
         .map_err(|e| eyre::eyre!("Failed to create Sigstore verifier: {}", e))?;
-    let mut hasher = Sha256::new();
-    hasher.update(policy_body.as_bytes());
     verifier
-        .verify_digest(hasher, policy_bundle, &workflow_policy, true)
+        .verify(
+            policy_body.as_bytes(),
+            policy_bundle,
+            &workflow_policy,
+            true,
+        )
         .await
         .map_err(|e| eyre::eyre!("Sigstore bundle verification failed: {}", e))?;
 

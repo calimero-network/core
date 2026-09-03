@@ -975,7 +975,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -990,7 +990,7 @@ dependencies = [
  "eyre",
  "reqwest 0.12.28",
  "rustc_version",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "toml",
  "zip",
@@ -1010,7 +1010,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1101,7 +1101,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -1132,7 +1132,7 @@ dependencies = [
  "libp2p",
  "rand 0.10.2",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -1218,7 +1218,7 @@ dependencies = [
  "rand 0.10.2",
  "serde_json",
  "serial_test",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -1239,7 +1239,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "rand 0.10.2",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
 ]
 
@@ -1344,7 +1344,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tar",
  "tempfile",
  "thiserror 2.0.20",
@@ -1393,7 +1393,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tar",
  "tempfile",
  "tokio",
@@ -1411,7 +1411,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1435,7 +1435,7 @@ dependencies = [
  "borsh",
  "calimero-primitives",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1453,7 +1453,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "url",
  "zeroize",
@@ -1469,7 +1469,7 @@ dependencies = [
  "calimero-op",
  "calimero-primitives",
  "calimero-storage",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1521,7 +1521,7 @@ dependencies = [
  "calimero-wasm-abi",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tracing",
  "tracing-subscriber",
  "trybuild",
@@ -1534,7 +1534,7 @@ dependencies = [
  "prettyplease 0.3.0",
  "proc-macro2",
  "quote",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "syn 3.0.4",
  "thiserror 2.0.20",
 ]
@@ -1577,7 +1577,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -1627,7 +1627,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serial_test",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tracing",
  "trybuild",
@@ -1669,9 +1669,9 @@ dependencies = [
  "calimero-store",
  "eyre",
  "hex",
- "hkdf",
+ "hkdf 0.13.0",
  "rand 0.10.2",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "zeroize",
 ]
 
@@ -1773,7 +1773,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tar",
  "tempfile",
  "toml",
@@ -3219,7 +3219,7 @@ dependencies = [
  "ff",
  "generic-array 0.14.7",
  "group",
- "hkdf",
+ "hkdf 0.12.4",
  "pem-rfc7468 0.7.0",
  "pkcs8",
  "rand_core 0.6.4",
@@ -4082,6 +4082,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
 dependencies = [
  "hmac 0.12.1",
+]
+
+[[package]]
+name = "hkdf"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
+dependencies = [
+ "hmac 0.13.0",
 ]
 
 [[package]]
@@ -5196,7 +5205,7 @@ checksum = "f0c7892c221730ba55f7196e98b0b8ba5e04b4155651736036628e9f73ed6fc3"
 dependencies = [
  "bs58",
  "ed25519-dalek 2.2.0",
- "hkdf",
+ "hkdf 0.12.4",
  "multihash",
  "quick-protobuf",
  "rand 0.8.5",
@@ -5774,7 +5783,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "subtle",
  "tempfile",
  "thiserror 2.0.20",
@@ -5887,7 +5896,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "sigstore",
  "subtle",
  "tempfile",
@@ -5921,7 +5930,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tower-http 0.7.1",
@@ -7194,7 +7203,7 @@ dependencies = [
  "calimero-sdk",
  "calimero-storage",
  "hex",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
 ]
 
@@ -8264,7 +8273,7 @@ dependencies = [
  "calimero-sdk",
  "calimero-storage",
  "hex",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tracing",
 ]
