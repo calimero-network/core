@@ -1,0 +1,331 @@
+description: >
+  Three writers editing one FugueText document with GENUINE concurrency, forced
+  by stopping the other two nodes while each one writes.
+
+  This exists because the naive version does not work. Issuing the six calls
+  back-to-back with no `wait_for_sync` between them does NOT produce concurrent
+  edits: gossip on loopback propagates in milliseconds while merobox's HTTP
+  round-trips take tens of milliseconds, so every node sees its predecessors'
+  edits before it writes and the whole thing degenerates into sequential
+  editing. The proof is that the identical scenario run against
+  `ReplicatedGrowableArray` produced a byte-identical merge — and RGA is proven
+  to interleave, so a scenario RGA passes is a scenario that never posed the
+  question. Omitting the wait does not prevent syncing.
+
+  Here each writer makes BOTH of its edits while the other two nodes are down,
+  against a state containing only the seed. Only then does everything come back
+  up and merge. That is the multi-replica backward-insertion case of Table 1 in
+  "The Art of the Fugue" — the row where RGA interleaves and Fugue is proven not
+  to. The RGA control beside this file must FAIL on the contiguity assertions.
+name: Fugue Collab 3-Node Isolated Concurrent
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: calimero-node
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: res/fugue_collab.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: calimero-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - calimero-node-2
+      - calimero-node-3
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Seed the document from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "existing text. "
+
+  - name: Wait for the seed to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+      - calimero-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read the seed back on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      seeded_node2: result
+
+  - name: Read the seed back on Node 3
+    type: call
+    node: calimero-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      seeded_node3: result
+
+  - name: Assert every node genuinely holds the seed
+    type: json_assert
+    statements:
+      - 'json_equal({{seeded_node2}}, {"output": "existing text. "})'
+      - 'json_equal({{seeded_node3}}, {"output": "existing text. "})'
+
+  # ==========================================================================
+  # Writer 1, alone. Nodes 2 and 3 are down, so nothing it writes can reach
+  # them and nothing of theirs can reach it.
+  # ==========================================================================
+
+  - name: Stop Node 2
+    type: stop_node
+    nodes:
+      - calimero-node-2
+
+  - name: Let the stop take effect
+    type: wait
+    seconds: 6
+
+  - name: Stop Node 3
+    type: stop_node
+    nodes:
+      - calimero-node-3
+
+  - name: Let the stop take effect
+    type: wait
+    seconds: 6
+
+  - name: Node 1 types its passage
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE1"
+
+  - name: Node 1 goes back and types its heading
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD1"
+
+  # ==========================================================================
+  # Writer 2, alone. Node 1 goes down BEFORE node 2 comes up, so node 2 never
+  # learns of writer 1's passage — its view is still just the seed.
+  # ==========================================================================
+
+  - name: Stop Node 1
+    type: stop_node
+    nodes:
+      - calimero-node-1
+
+  - name: Let the stop take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 2
+    type: start_node
+    nodes:
+      - calimero-node-2
+
+  - name: Let Node 2 finish starting
+    type: wait
+    seconds: 5
+
+  - name: Assert Node 2 still sees only the seed
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      isolated_node2: result
+
+  - name: Node 2's view must be unchanged, or it is not isolated
+    type: json_assert
+    statements:
+      - 'json_equal({{isolated_node2}}, {"output": "existing text. "})'
+
+  - name: Node 2 types its passage
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE2"
+
+  - name: Node 2 goes back and types its heading
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD2"
+
+  # ==========================================================================
+  # Writer 3, alone.
+  # ==========================================================================
+
+  - name: Stop Node 2
+    type: stop_node
+    nodes:
+      - calimero-node-2
+
+  - name: Let the stop take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 3
+    type: start_node
+    nodes:
+      - calimero-node-3
+
+  - name: Let Node 3 finish starting
+    type: wait
+    seconds: 5
+
+  - name: Assert Node 3 still sees only the seed
+    type: call
+    node: calimero-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      isolated_node3: result
+
+  - name: Node 3's view must be unchanged, or it is not isolated
+    type: json_assert
+    statements:
+      - 'json_equal({{isolated_node3}}, {"output": "existing text. "})'
+
+  - name: Node 3 types its passage
+    type: call
+    node: calimero-node-3
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE3"
+
+  - name: Node 3 goes back and types its heading
+    type: call
+    node: calimero-node-3
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD3"
+
+  # ==========================================================================
+  # Heal. Three divergent histories meet for the first time.
+  # ==========================================================================
+
+  - name: Start Node 1
+    type: start_node
+    nodes:
+      - calimero-node-1
+
+  - name: Start Node 2
+    type: start_node
+    nodes:
+      - calimero-node-2
+
+  - name: Let the mesh re-form
+    type: wait
+    seconds: 15
+
+  - name: Wait for the three histories to converge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+      - calimero-node-3
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read the merged document on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node1: result
+
+  - name: Read the merged document on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node2: result
+
+  - name: Read the merged document on Node 3
+    type: call
+    node: calimero-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node3: result
+
+  - name: Assert all three replicas converged
+    type: json_assert
+    statements:
+      - 'json_equal({{merged_node1}}, {{merged_node2}})'
+      - 'json_equal({{merged_node2}}, {{merged_node3}})'
+
+  - name: Read the merged length on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: get_length
+    outputs:
+      len_node1: result
+
+  - name: Assert nothing was lost or duplicated
+    type: json_assert
+    statements:
+      - 'json_equal({{len_node1}}, {"output": 54})'
+
+  # The acceptance criterion. RGA is expected to FAIL these.
+  - name: Assert every writer's block is contiguous on Node 1
+    type: assert
+    statements:
+      - "contains({{merged_node1}}, 'HEAD1PASSAGE1')"
+      - "contains({{merged_node1}}, 'HEAD2PASSAGE2')"
+      - "contains({{merged_node1}}, 'HEAD3PASSAGE3')"
+
+  - name: Assert every writer's block is contiguous on Node 2
+    type: assert
+    statements:
+      - "contains({{merged_node2}}, 'HEAD1PASSAGE1')"
+      - "contains({{merged_node2}}, 'HEAD2PASSAGE2')"
+      - "contains({{merged_node2}}, 'HEAD3PASSAGE3')"
+
+  - name: Assert every writer's block is contiguous on Node 3
+    type: assert
+    statements:
+      - "contains({{merged_node3}}, 'HEAD1PASSAGE1')"
+      - "contains({{merged_node3}}, 'HEAD2PASSAGE2')"
+      - "contains({{merged_node3}}, 'HEAD3PASSAGE3')"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
