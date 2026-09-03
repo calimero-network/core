@@ -112,6 +112,8 @@ GET /admin-api/contexts/:context_id/intents
 
 Asking before signing is not politeness. A nonce is spent from a monotonic per-device sequence to mint a warrant, and one naming the wrong executor is unspendable: the number is gone and the write never happened.
 
+`meroctl context intent` makes this read itself, before it signs anything: it takes `executor` from the answer rather than from `/admin-api/identity`, and refuses outright when `canAuthorOnBehalf` is false — naming the group and the account so the message is the grant command to ask an admin for. So the nonce is only ever spent on a warrant the relay can actually run.
+
 ## Reaching a relay you have no account on
 
 `POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.

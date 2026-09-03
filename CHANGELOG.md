@@ -20,6 +20,15 @@
   everywhere, but no CLI could grant it, so delegated execution could not be
   turned on at all. Note the mask is replaced, not merged.
 
+- **`Client::get_intent_relay`** in `calimero-client`, and `meroctl context
+  intent` now uses it. The command previously took `executor` from
+  `GET admin-api/identity`, which needs a credential on the relay — so on the
+  relay the feature exists for, the credential-free one, it could not read it at
+  all — and which does not report the grant, so it signed and spent `--nonce`
+  before learning the write would be refused. It now reads both from the
+  descriptor and refuses beforehand when the grant is missing, naming the group
+  and the account in the `set-capabilities` command to ask an admin for.
+
 - **`server.admin.public_intents`** (and `merod init --public-intents`): serve
   the two delegated-execution routes above without a node credential. **Off by
   default.** It opens exactly those two and nothing else, because they carry
