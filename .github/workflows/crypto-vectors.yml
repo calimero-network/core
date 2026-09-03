@@ -1,0 +1,52 @@
+name: Crypto Vectors
+
+# Fast, Docker-free canary: the crypto known-answer vectors must still produce
+# the same hashed, derived and sealed bytes. Fixtures live in
+# crates/*/fixtures/known_answers.txt - this workflow only runs them.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/crypto/**"
+      - "crates/primitives/**"
+      - "crates/store/encryption/**"
+      - ".github/workflows/crypto-vectors.yml"
+  push:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  crypto-vectors:
+    name: Crypto Vectors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust toolchain
+        # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Known-answer vectors
+        run: cargo test -p calimero-store-encryption -p calimero-crypto -p calimero-primitives --all-features
