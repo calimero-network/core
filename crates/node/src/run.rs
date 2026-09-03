@@ -30,7 +30,7 @@ use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::arbiter_pool::ArbiterPool;
 use crate::dag_compactor::DagCompactor;
@@ -312,6 +312,19 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     // Share the one registry the context manager feeds, so the node side reads
     // the same projection at the data-write decision.
     node_state.scope_projections = std::sync::Arc::clone(&scope_projections);
+
+    // Fill the blob client's availability-node seam. `NodeClient` is built
+    // above (before this state exists) and already cloned into the context
+    // stack, so the lookup is installed into a shared write-once slot that
+    // every one of those clones reads.
+    if !node_client.install_member_roles(std::sync::Arc::new(
+        crate::availability_peers::GovernanceAvailabilityPeers::new(
+            datastore.clone(),
+            node_state.clone(),
+        ),
+    )) {
+        warn!("availability-node lookup was already installed; keeping the first one");
+    }
 
     // Periodic gauge-snapshot tick — once per `METRICS_TICK_INTERVAL`,
     // reads NodeState DashMap sizes and process resource counters and

@@ -34,8 +34,10 @@ mod alias;
 pub use alias::AliasExists;
 mod application;
 mod blob;
+mod provider_order;
 
 pub use blob::BlobManager;
+pub use provider_order::{order_candidates, MemberRoles, MemberRolesSlot};
 
 /// Parameters for a direct namespace join request.
 #[derive(Debug)]
@@ -219,6 +221,11 @@ pub struct NodeClient {
     /// (NodeManager event handler) and readers (concurrent publishers)
     /// see the same map without an actor mailbox round-trip.
     known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
+    /// Availability-node lookup used to order blob-probe candidates and to
+    /// address blob announcements. Filled in by `calimero-node` after the node
+    /// state that backs it exists (see [`MemberRolesSlot`]); shared by every
+    /// clone of this client, so installing it once reaches all of them.
+    member_roles: MemberRolesSlot,
 }
 
 impl NodeClient {
@@ -247,7 +254,16 @@ impl NodeClient {
             sync_client,
             local_delta_tx,
             known_subscribers: Arc::new(DashMap::new()),
+            member_roles: MemberRolesSlot::default(),
         }
+    }
+
+    /// Install the availability-node lookup. Returns `false` if one was already
+    /// installed. Until it is installed, blob probes keep the candidate order
+    /// the network layer returned and blob announcements go nowhere — both are
+    /// degradations, never failures.
+    pub fn install_member_roles(&self, roles: Arc<dyn MemberRoles>) -> bool {
+        self.member_roles.install(roles)
     }
 
     /// Record that `peer_id` subscribed to `topic`. Called from the

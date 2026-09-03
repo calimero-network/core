@@ -21,6 +21,7 @@ use libp2p::PeerId;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, trace};
 
+use super::provider_order::order_candidates;
 use super::NodeClient;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
 use crate::messages::NodeMessage::GetBlobBytes;
@@ -385,9 +386,21 @@ impl NodeClient {
 
             let fetched = discover_and_fetch_blob(
                 || async {
-                    self.network_client
+                    let candidates = self
+                        .network_client
                         .subscribed_peers(TopicHash::from_raw(*context_id))
-                        .await
+                        .await;
+                    // Ordering runs BEFORE batching, so on a context with more
+                    // than `PROBE_BATCH * MAX_PROBE_BATCHES` subscribers it
+                    // decides which candidates are probed at all, not just in
+                    // what order: a holder past the cap is never asked. Putting
+                    // availability nodes first is therefore what keeps a large
+                    // context findable, on top of turning the common case into
+                    // a single round trip.
+                    order_candidates(
+                        candidates,
+                        &self.member_roles.anchors_for_context(context_id),
+                    )
                 },
                 |peer_id| async move {
                     self.network_client
