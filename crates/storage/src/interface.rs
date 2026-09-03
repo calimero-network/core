@@ -3281,12 +3281,16 @@ impl<S: StorageAdaptor> Interface<S> {
                 // must absorb on one replica, and older than it on the other —
                 // so the branch has to be bypassed on both, not just one.
                 //
-                // APPLIED ONLY. A LOCAL write is not a merge: its bytes already
-                // descend from the stored bytes, so incoming-wins is both correct
-                // and required — `FugueText::write_segments` SHRINKS a run in
-                // place when a mid-run insertion splits it, and joining that
-                // against the pre-split copy would keep the long version forever,
-                // so a run could never be split on the node that split it.
+                // APPLIED ONLY. A LOCAL write is not a merge: its bytes descend
+                // from the stored bytes, and a local mutation only ever GROWS a
+                // run (coalescing appends to `text`; nothing shortens it) or
+                // ACCUMULATES tombstone bits. So the incoming copy is already a
+                // lattice-superset of the stored one on both components, the
+                // join would return it unchanged, and skipping the join saves a
+                // decode on the hot path. Pinned by
+                // `fugue_text::tests::local_writes__are_lattice_supersets_of_what_they_overwrite`
+                // — if a local write ever shrinks a run, that test fails and this
+                // arm must widen to every origin.
                 //
                 // P3 (core#2716) per-`delta_id` rotation-log child. Merge
                 // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below

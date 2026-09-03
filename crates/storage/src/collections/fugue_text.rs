@@ -830,21 +830,22 @@ fn find_block(loaded: &[LoadedBlock], id: BlockId) -> Option<usize> {
 /// # Why the union of all DEFINITIONS, not just the block spans
 ///
 /// The block spans alone are a high-water mark only while no block is ever
-/// shortened. A block IS shortened — `write_segments` splits a run in place —
-/// and if a shortened copy ever wins over a longer one, the nodes past the new
-/// end vanish from the span set and the replica re-mints ids it has already
-/// used. Re-minting is worse than losing a node: `FugueTree::integrate` keeps
-/// the FIRST definition of an id, so a peer still holding the long copy resolves
-/// the id to the old character while the minter resolves it to the new one, and
-/// the two never converge. That is divergence, not loss.
+/// shortened, and today none is: a mid-run insert no longer splits the run it
+/// lands in, `delete_range` only sets tombstone bits, and the leaf join
+/// (`CrdtType::FugueTextBlock`) keeps the longer text, so a run only grows.
+/// Spans alone would therefore be correct as the code stands.
 ///
-/// The leaf join (`CrdtType::FugueTextBlock`) is what makes the shortening
-/// impossible — a block can only grow at merge — but the counter must not depend
-/// on that being true. So the mark is taken over every *reference* to a node of
-/// `replica` the stored state carries: the runs that define nodes, AND the
-/// `parent` edges that point at them. A parent edge survives a split of the
-/// block that defined its target (the split's own tail points back into the
-/// head), so it keeps the mark up even for a node no surviving run spells out.
+/// The mark is taken over every *reference* anyway — the runs that define nodes
+/// of `replica`, AND the `parent` edges that point at them — because the cost of
+/// being wrong here is not proportionate to the saving. If any future change
+/// shortens a run and a shortened copy wins over a longer one, the nodes past
+/// the new end vanish from the span set and the replica re-mints ids it has
+/// already used. Re-minting is worse than losing a node: `FugueTree::integrate`
+/// keeps the FIRST definition of an id, so a peer still holding the long copy
+/// resolves it to the old character while the minter resolves it to the new one,
+/// and the two never converge. That is divergence, not loss. A `parent` edge
+/// outlives the run that defined its target, so it holds the mark up even for a
+/// node no surviving run spells out.
 fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError> {
     let mut next: u64 = 0;
     for lb in loaded {
@@ -931,7 +932,7 @@ fn out_of_bounds(pos: usize) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockId, BlockSide, FugueText, TextBlock};
+    use super::{join_block, BlockId, BlockSide, FugueText, TextBlock};
     use crate::collections::{Root, UnorderedMap};
     use crate::env;
     use crate::store::StorageAdaptor;
@@ -1334,6 +1335,66 @@ mod tests {
             doc.insert_str_with_replica(0, 7, "H").unwrap();
         });
         assert_eq!(doc.len().unwrap(), 1);
+    }
+
+    /// Every LOCAL write is a lattice-superset of the block it overwrites.
+    ///
+    /// This is the premise `Interface::apply_non_root_entry` rests on when it
+    /// restricts the [`CrdtType::FugueTextBlock`] join arm to
+    /// `WriteOrigin::Applied`: a local write's bytes descend from the stored
+    /// bytes, so [`join_block`] and plain incoming-wins provably agree, and the
+    /// join can be skipped on the hot local path.
+    ///
+    /// The premise holds because a run only ever GROWS — coalescing appends to
+    /// it, nothing shortens it — and tombstone bits only ever accumulate. If a
+    /// future operation breaks either half, this test goes red and that
+    /// restriction has to be revisited BEFORE it starts silently dropping a
+    /// node, which is the failure mode the arm exists to prevent.
+    #[test]
+    fn local_writes__are_lattice_supersets_of_what_they_overwrite() {
+        /// Assert every block that survived the write absorbed its predecessor.
+        fn assert_superset(
+            before: &[(BlockId, TextBlock)],
+            after: &[(BlockId, TextBlock)],
+            what: &str,
+        ) {
+            for (id, old) in before {
+                let (_, new) = after.iter().find(|(key, _)| key == id).unwrap_or_else(|| {
+                    panic!("{what}: block {id:?} vanished — a local write must never drop one")
+                });
+                let mut joined = old.clone();
+                join_block(&mut joined, new.clone());
+                assert_eq!(
+                    &joined, new,
+                    "{what}: block {id:?} is not a lattice-superset of the copy it \
+                     overwrote, so skipping the join on WriteOrigin::Local would lose data"
+                );
+            }
+        }
+
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str(0, "hello").unwrap();
+
+        // Coalescing: grows a run's `text` in place, the case that made the
+        // LWW branch wrong for remote writes in the first place.
+        let before = stored(&doc);
+        doc.insert(5, '!').unwrap();
+        assert_superset(&before, &stored(&doc), "append coalescing");
+
+        // Mid-run insert: mints a new block and leaves the covering run alone.
+        let before = stored(&doc);
+        doc.insert(2, 'X').unwrap();
+        assert_superset(&before, &stored(&doc), "mid-run insert");
+
+        // Delete: sets tombstone bits, never shortens `text`.
+        let before = stored(&doc);
+        doc.delete(1).unwrap();
+        assert_superset(&before, &stored(&doc), "delete");
+
+        let before = stored(&doc);
+        doc.delete_range(0, 3).unwrap();
+        assert_superset(&before, &stored(&doc), "delete_range");
     }
 }
 
