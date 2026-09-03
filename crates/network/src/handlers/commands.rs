@@ -16,6 +16,7 @@ mod network_status;
 mod open_stream;
 mod peer_addrs;
 mod peer_count;
+mod probe_blob;
 mod publish;
 mod query_blob;
 mod request_blob;
@@ -84,6 +85,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::RequestBlob { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::ProbeBlob { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
         }
