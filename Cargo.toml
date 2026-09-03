@@ -264,7 +264,7 @@ proc-macro2 = "1.0"
 # pinned to the major libp2p-metrics uses; moves when libp2p does
 prometheus-client = "0.23"
 quote = "1.0.37"
-rand = "0.8.5"
+rand = "0.10.2"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 ring = "0.17.8"
 rocksdb = { version = "0.25.0", default-features = false, features = ["bindgen-runtime"] }
