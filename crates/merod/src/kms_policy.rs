@@ -359,14 +359,16 @@ fn verify_blob_signature(
 ) -> EyreResult<()> {
     let certificate = Certificate::from_pem(cert_pem.as_bytes())
         .map_err(|e| eyre::eyre!("Failed to parse policy signing certificate PEM: {}", e))?;
-    let verification_key =
-        CosignVerificationKey::try_from(&certificate.tbs_certificate.subject_public_key_info)
-            .map_err(|e| {
-                eyre::eyre!(
-                    "Failed to extract verification key from signing certificate: {}",
-                    e
-                )
-            })?;
+    let spki_der = certificate
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()?;
+    let verification_key = CosignVerificationKey::try_from_der(&spki_der).map_err(|e| {
+        eyre::eyre!(
+            "Failed to extract verification key from signing certificate: {}",
+            e
+        )
+    })?;
     verification_key
         .verify_signature(
             SigstoreSignature::Base64Encoded(signature_b64.trim().as_bytes()),
