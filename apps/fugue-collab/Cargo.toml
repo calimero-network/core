@@ -1,0 +1,19 @@
+[package]
+name = "fugue-collab"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+bs58 = "0.5"
+
+[package.metadata.workspaces]
+independent = true

@@ -3541,6 +3541,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fugue-collab"
+version = "0.0.0"
+dependencies = [
+ "bs58",
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "fugue-editor"
 version = "0.0.0"
 dependencies = [
