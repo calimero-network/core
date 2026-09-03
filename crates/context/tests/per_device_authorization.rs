@@ -99,6 +99,7 @@ fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, Context
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
 
@@ -296,6 +297,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let link_cut = signed.content_hash().unwrap();
     proj.ingest_op(&op_from_namespace_op(
@@ -389,6 +391,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let link_cut = signed.content_hash().unwrap();
     proj.ingest_op(&op_from_namespace_op(
@@ -516,19 +519,23 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
                 signed_invitation: invitation,
                 joined_at: 1,
                 account: credential,
-                admitter_endorsement: Box::new(
-                    calimero_governance_types::AdmitterEndorsement::sign(
-                        &admin_sk,
-                        &ns_bytes,
-                        &joining_member,
-                        &[0x21; 32],
-                    )
-                    .expect("the admin endorses the join"),
-                ),
             },
         ),
     )
     .expect("joiner signs its join");
+    // On the envelope, after signing: the endorsement is outside the joiner's
+    // signature, which is what lets an admitter attach one to an op it did not
+    // author.
+    let mut join = join;
+    join.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            &admin_sk,
+            &ns_bytes,
+            &joining_member,
+            &[0x21; 32],
+        )
+        .expect("the admin endorses the join"),
+    ));
     gov.apply_signed_op(&join).expect("the join applies");
 
     // Plane one: what the joiner itself writes as.

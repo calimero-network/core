@@ -13,17 +13,6 @@ use calimero_primitives::identity::PublicKey;
 use crate::payload_from_root_op;
 use crate::tests::support::{real_join_account_for, test_join_account_for};
 
-/// A well-formed endorsement, signed so no test hand-rolls signature bytes.
-fn endorsement_for(seed: [u8; 32]) -> calimero_governance_types::AdmitterEndorsement {
-    calimero_governance_types::AdmitterEndorsement::sign(
-        &calimero_primitives::identity::PrivateKey::from(seed),
-        &[0x91; 32],
-        &AccountId::from([0x63; 32]),
-        &[0x33; 32],
-    )
-    .expect("sign endorsement")
-}
-
 /// An admin-signed invitation for `group`, granting Admin (`invited_role: 0`).
 fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
     SignedGroupOpenInvitation {
@@ -145,11 +134,6 @@ fn root_op_encoder_mapping() {
             signed_invitation,
             joined_at: 42,
             account: invited_at.clone(),
-            // The projection maps membership, and an endorsement authorises a
-            // join rather than describing one — so this is deliberately just a
-            // well-formed value. Nothing here verifies it; the apply does, and
-            // that is where the fixtures have to be genuine.
-            admitter_endorsement: Box::new(endorsement_for([0x71; 32])),
         }),
         Some(OpPayload::MemberJoinedWithDevice {
             group: ContextGroupId::from(gid),

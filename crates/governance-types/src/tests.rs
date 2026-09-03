@@ -795,11 +795,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 253, 23, 36, 56, 90, 160, 199, 91, 100, 251, 120, 205, 96, 47, 161, 217, 145, 253, 235, 247,
-    107, 19, 197, 142, 215, 2, 234, 200, 53, 233, 246, 24, 34, 248, 147, 216, 134, 95, 199, 255,
-    139, 123, 113, 113, 41, 102, 216, 17, 205, 215, 186, 145, 232, 68, 250, 143, 63, 92, 68, 158,
-    220, 239, 127, 72, 115, 104, 53, 223, 2, 229, 188, 6, 206, 115, 142, 11, 180, 61, 164, 199, 54,
-    124, 48, 244, 58, 167, 129, 99, 247, 92, 198, 122, 168, 119, 65, 12,
+    0,
 ];
 
 /// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
@@ -1620,6 +1616,7 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
             policy_bytes: vec![],
         }),
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     assert!(
         matches!(
@@ -1794,6 +1791,69 @@ mod governance_op_storage_roundtrip {
     }
 
     #[test]
+    fn an_endorsed_envelope_roundtrips_and_keeps_the_op_it_was() {
+        // The property the endorsement design rests on: `content_hash` is taken
+        // over the SIGNABLE form, which does not carry the endorsement, so an
+        // admitter can attach consent to an op it did not author and every
+        // replica still agrees which op it is — and the joiner's signature
+        // still verifies over what the joiner actually signed.
+        //
+        // If the field ever reaches `to_signable`, attaching consent becomes a
+        // fork: the relaying node's copy and the author's copy would have
+        // different ids for the same op. That failure would surface far from
+        // here, as peers disagreeing about history.
+        let unendorsed = signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: calimero_account::AccountId::from(*PrivateKey::random(&mut OsRng).public_key()),
+            signed_invitation: sample_invitation(),
+            joined_at: 1_800_000_000,
+            account: sample_join_account(),
+        }));
+
+        let id_before = unendorsed.content_hash().expect("hash the unendorsed op");
+        unendorsed
+            .verify_signature()
+            .expect("the author's signature verifies");
+
+        let mut endorsed = unendorsed.clone();
+        endorsed.admitter_endorsement = Some(Box::new(deterministic_endorsement()));
+
+        assert_eq!(
+            endorsed.content_hash().expect("hash the endorsed op"),
+            id_before,
+            "attaching an endorsement must not change the op's id"
+        );
+        assert_eq!(
+            endorsed.signature, unendorsed.signature,
+            "attaching an endorsement must not disturb the author's signature"
+        );
+        endorsed
+            .verify_signature()
+            .expect("the author's signature still verifies once consent is attached");
+
+        // Non-vacuity: the endorsement really is in the encoded envelope. Without
+        // this, the id assertion above would also hold if the field were being
+        // silently dropped, and the test would pass while proving nothing.
+        let bytes_unendorsed = ::borsh::to_vec(&unendorsed).expect("encode unendorsed");
+        let bytes_endorsed = ::borsh::to_vec(&endorsed).expect("encode endorsed");
+        assert_ne!(
+            bytes_unendorsed, bytes_endorsed,
+            "the endorsement must actually be encoded, or the id assertion above \
+             is trivially true"
+        );
+        assert_eq!(
+            bytes_endorsed.len(),
+            // borsh writes `Some` as a 1-byte tag, then the 32-byte signer and
+            // the 64-byte signature.
+            bytes_unendorsed.len() + 96,
+            "an endorsed envelope is exactly the signer and signature longer"
+        );
+
+        // And it survives the store round trip, which is what carries it to
+        // every peer that has to re-check it.
+        assert_roundtrips(&endorsed);
+    }
+
+    #[test]
     fn member_joined_at_roundtrips_through_stored_signed_entry() {
         // The invitation join carries a nested `SignedGroupOpenInvitation`, the
         // largest and most field-rich op payload — the one most exposed to a
@@ -1803,7 +1863,6 @@ mod governance_op_storage_roundtrip {
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
             account: sample_join_account(),
-            admitter_endorsement: Box::new(deterministic_endorsement()),
         })));
     }
 
@@ -1854,7 +1913,6 @@ mod governance_op_storage_roundtrip {
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
                 account: sample_join_account(),
-                admitter_endorsement: Box::new(deterministic_endorsement()),
             },
         ];
         for root in ops {
@@ -1923,9 +1981,9 @@ mod governance_op_storage_roundtrip {
                 signed_invitation: invitation,
                 joined_at: 1_900_000_000,
                 account,
-                admitter_endorsement: Box::new(deterministic_endorsement()),
             }),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 
@@ -1986,6 +2044,7 @@ mod governance_op_storage_roundtrip {
                 new_admin: calimero_account::AccountId::from([1u8; 32]),
             }),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         };
         assert!(
             op.validate().is_err(),
@@ -2303,7 +2362,6 @@ fn emit_golden_root_op_vectors() {
                 signed_invitation: minimal_invitation.clone(),
                 joined_at: 0,
                 account: deterministic_credential(),
-                admitter_endorsement: Box::new(deterministic_endorsement()),
             }),
         ),
     ] {

@@ -2522,6 +2522,7 @@ mod tests {
             nonce: 0,
             op: NamespaceOp::Root(op),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 
@@ -2784,6 +2785,7 @@ mod tests {
                 },
             }),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         };
         let delivery_op = op_from_namespace_op(&key_delivery, None, [0xA1; 32], hlc(1), &[]);
         assert_eq!(
@@ -3498,6 +3500,7 @@ mod tests {
                 },
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 
@@ -3522,6 +3525,7 @@ mod tests {
                 key_rotation: None,
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 }

@@ -820,45 +820,15 @@ impl SyncManager {
         //
         // Signed over the payload the apply gate checks, so what this node
         // asserts and what every other node verifies are the same bytes.
-        let admitter_endorsement_bytes = {
-            // This node's own namespace identity — the key it signs governance
-            // with, and the one whose account the invitation's list is checked
-            // against.
-            let own = calimero_governance_store::NamespaceRepository::new(&store)
-                .resolve_identity(&namespace)
-                .ok()
-                .flatten();
-
-            let self_account = own.as_ref().and_then(|(pk, _)| {
-                calimero_governance_store::member_account_in_namespace(&store, &namespace, pk)
-                    .ok()
-                    .flatten()
-            });
-
-            match self_account {
-                Some(account) if invitation.invitation.admitters.contains(&account) => {
-                    let payload = calimero_governance_types::admitter_endorsement_payload(
-                        &namespace_id,
-                        &joiner_account,
-                        &invitation.invitation.invitation_nonce,
-                    );
-                    // `own` is Some whenever `self_account` resolved from it.
-                    let (signer, secret) = own.expect("identity resolved for the account above");
-                    match calimero_primitives::identity::PrivateKey::from(secret).sign(&payload) {
-                        Ok(signature) => {
-                            let endorsement = calimero_governance_types::AdmitterEndorsement {
-                                signer,
-                                signature: signature.to_bytes(),
-                            };
-                            borsh::to_vec(&endorsement).ok()
-                        }
-                        Err(err) => {
-                            warn!(%err, "namespace join: could not sign the admitter endorsement");
-                            None
-                        }
-                    }
-                }
-                _ => {
+        let admitter_endorsement_bytes =
+            match calimero_governance_store::NamespaceMembershipService::endorse_join(
+                &store,
+                &namespace,
+                &joiner_account,
+                &invitation,
+            ) {
+                Ok(Some(endorsement)) => borsh::to_vec(&endorsement).ok(),
+                Ok(None) => {
                     debug!(
                         namespace_id = %hex::encode(namespace_id),
                         "namespace join: this node is not an admitter for the invitation, \
@@ -866,8 +836,11 @@ impl SyncManager {
                     );
                     None
                 }
-            }
-        };
+                Err(err) => {
+                    warn!(%err, "namespace join: could not sign the admitter endorsement");
+                    None
+                }
+            };
 
         debug!(
             namespace_id = %hex::encode(namespace_id),

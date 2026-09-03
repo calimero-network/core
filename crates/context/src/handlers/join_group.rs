@@ -519,8 +519,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,
-                    admitter_endorsement,
                 });
+                // Handed in rather than embedded: the endorsement rides the
+                // envelope, outside this node's signature, so it is attached
+                // after signing and before the local apply.
                 match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
                     &datastore,
                     &node_client,
@@ -528,6 +530,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     namespace_id.into(),
                     &sk,
                     member_joined_op,
+                    Some(admitter_endorsement),
                 )
                 .await
                 {

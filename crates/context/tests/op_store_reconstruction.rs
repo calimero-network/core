@@ -115,6 +115,7 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
 
@@ -206,6 +207,7 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
                 key_rotation: None,
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         };
         op_from_namespace_op(&signed, None, [id; 32], hlc(u64::from(id)), &[])
     };
@@ -278,6 +280,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
     NamespaceOpLogService::new(&store, ns_bytes.into())
@@ -370,6 +373,7 @@ fn a_legacy_noop_row_for_an_unreadable_op_is_re_derived_as_a_hole() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
 
