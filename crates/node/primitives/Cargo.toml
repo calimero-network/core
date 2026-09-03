@@ -63,5 +63,8 @@ toml.workspace = true
 # On this crate itself, so its own tests always carry the fixtures rather than
 # depending on some other crate in the workspace happening to enable them.
 calimero-node-primitives = { path = ".", features = ["testing"] }
-tokio = { workspace = true, features = ["full"] }
+# `test-util` (NOT part of `full`) gives the blob-discovery tests
+# `#[tokio::test(start_paused = true)]`, so the retry sweep's backoff is
+# asserted on without spending its ~3s of real wall time in `cargo test`.
+tokio = { workspace = true, features = ["full", "test-util"] }
 rand.workspace = true

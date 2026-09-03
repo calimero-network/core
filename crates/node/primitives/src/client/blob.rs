@@ -116,7 +116,33 @@ impl BlobManager {
 /// and a miss only widens the search by one more batch.
 const PROBE_BATCH: usize = 8;
 
-/// Find the first peer in `candidates` that answers "yes, I hold it".
+/// How many times the whole discovery sweep is retried before giving up.
+///
+/// A sweep can come back empty because the answer is genuinely "nobody", or
+/// because this node has only just joined and the context topic's subscriber
+/// set is still filling. Those are indistinguishable from here, and widening
+/// the batch cannot tell them apart — widening an empty candidate list yields
+/// nothing. So the sweep is retried, re-resolving the candidates each time.
+const MAX_DISCOVERY_ATTEMPTS: usize = 6;
+
+/// First retry gap; each attempt doubles it up to [`MAX_RETRY_DELAY`].
+const INITIAL_RETRY_DELAY: core::time::Duration = core::time::Duration::from_millis(100);
+
+/// Ceiling on the retry gap.
+const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+
+/// 100ms, doubling per attempt, capped at [`MAX_RETRY_DELAY`]. The `.min(31)`
+/// bounds the shift so it stays well-defined if [`MAX_DISCOVERY_ATTEMPTS`] is
+/// ever raised past 32.
+fn discovery_backoff(attempt: usize) -> core::time::Duration {
+    // `saturating_sub(1)` so the shift is underflow-safe even if the loop
+    // bounds ever start at 0 (today it's 1..=MAX).
+    INITIAL_RETRY_DELAY
+        .saturating_mul(1_u32 << (attempt.saturating_sub(1) as u32).min(31))
+        .min(MAX_RETRY_DELAY)
+}
+
+/// Index of the first peer in `candidates` that answers "yes, I hold it".
 ///
 /// Probes go out `PROBE_BATCH` at a time, concurrently within a batch (so one
 /// slow peer costs the batch a single probe timeout, not one per peer) and
@@ -126,21 +152,95 @@ const PROBE_BATCH: usize = 8;
 ///
 /// `probe` must answer `false` for a peer it cannot reach — a search with other
 /// candidates left should not be aborted by one unreachable peer.
-async fn find_blob_holder<P, F>(candidates: &[PeerId], probe: P) -> Option<PeerId>
+async fn find_blob_holder<P, F>(candidates: &[PeerId], probe: P) -> Option<usize>
 where
     P: Fn(PeerId) -> F,
     F: core::future::Future<Output = bool>,
 {
-    for batch in candidates.chunks(PROBE_BATCH) {
+    for (batch_index, batch) in candidates.chunks(PROBE_BATCH).enumerate() {
         let answers = join_all(batch.iter().map(|peer_id| {
             let peer_id = *peer_id;
             let probe = &probe;
-            async move { (peer_id, probe(peer_id).await) }
+            async move { probe(peer_id).await }
         }))
         .await;
 
-        if let Some((peer_id, _)) = answers.into_iter().find(|&(_, holds)| holds) {
-            return Some(peer_id);
+        if let Some(offset) = answers.into_iter().position(|holds| holds) {
+            return Some(batch_index * PROBE_BATCH + offset);
+        }
+    }
+
+    None
+}
+
+/// Fetch the blob from the first holder in `candidates` that actually delivers.
+///
+/// A failed fetch is NOT evidence that the blob is gone: the peer may have
+/// dropped the connection, timed out, or served bytes whose recomputed id does
+/// not match. Any of those says something about that peer, not about the blob,
+/// so the search resumes at the candidate after it rather than reporting
+/// absence. `fetch` returns `None` for exactly that case, and `Some(value)` —
+/// including a failure value the caller wants propagated — to end the search.
+///
+/// Resuming re-probes the rest of the failed peer's batch, which is a handful
+/// of wasted header exchanges in an already-degraded case; the short-circuit
+/// property is untouched, since a search whose first winner delivers still
+/// probes exactly one batch.
+async fn fetch_from_first_holder<T, P, PF, D, DF>(
+    candidates: &[PeerId],
+    probe: P,
+    fetch: D,
+) -> Option<T>
+where
+    P: Fn(PeerId) -> PF,
+    PF: core::future::Future<Output = bool>,
+    D: Fn(PeerId) -> DF,
+    DF: core::future::Future<Output = Option<T>>,
+{
+    let mut searched = 0;
+
+    while searched < candidates.len() {
+        let found = find_blob_holder(&candidates[searched..], &probe).await?;
+        let peer_id = candidates[searched + found];
+
+        if let Some(value) = fetch(peer_id).await {
+            return Some(value);
+        }
+
+        searched += found + 1;
+    }
+
+    None
+}
+
+/// Discover a holder among the context's peers and fetch the blob from it,
+/// retrying the whole sweep while the candidate set may still be filling.
+///
+/// `resolve_candidates` is called afresh on every attempt: the reason to retry
+/// at all is that the subscriber set grows, so re-using a stale (often empty)
+/// list would make the retries pointless.
+async fn discover_and_fetch_blob<T, C, CF, P, PF, D, DF>(
+    resolve_candidates: C,
+    probe: P,
+    fetch: D,
+) -> Option<T>
+where
+    C: Fn() -> CF,
+    CF: core::future::Future<Output = Vec<PeerId>>,
+    P: Fn(PeerId) -> PF,
+    PF: core::future::Future<Output = bool>,
+    D: Fn(PeerId) -> DF,
+    DF: core::future::Future<Output = Option<T>>,
+{
+    for attempt in 1..=MAX_DISCOVERY_ATTEMPTS {
+        let candidates = resolve_candidates().await;
+
+        if let Some(value) = fetch_from_first_holder(&candidates, &probe, &fetch).await {
+            return Some(value);
+        }
+
+        if attempt < MAX_DISCOVERY_ATTEMPTS {
+            tokio::time::sleep(discovery_backoff(attempt)).await;
         }
     }
 
@@ -193,107 +293,113 @@ impl NodeClient {
             // `subscribed_peers` is the full connected+subscribed set, not the
             // grafted mesh, so probing all of it on every miss is exactly the
             // fan-out this design exists to avoid. Probes therefore go out in
-            // bounded batches, short-circuiting on the first holder.
-            let candidates = self
-                .network_client
-                .subscribed_peers(TopicHash::from_raw(*context_id))
-                .await;
-
-            if candidates.is_empty() {
-                tracing::info!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    "No context peers to ask for the blob"
-                );
-                return Ok(None);
-            }
-
-            // Generate authorization for the blob. The same signed proof
-            // authorizes both the probe and the fetch that follows it — a peer
-            // answers `found: false` to an unauthorized probe, so probing
+            // bounded batches, short-circuiting on the first holder, and the
+            // whole sweep is retried while the subscriber set may still be
+            // filling underneath us.
+            //
+            // Generate authorization for the blob once. The same signed proof
+            // authorizes both the probes and the fetch that follows them — a
+            // peer answers `found: false` to an unauthorized probe, so probing
             // without it would find only public blobs.
             let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
 
-            let holder = find_blob_holder(&candidates, |peer_id| async move {
-                self.network_client
-                    .probe_blob(*blob_id, *context_id, peer_id, auth)
-                    .await
-                    .unwrap_or(false)
-            })
+            let fetched = discover_and_fetch_blob(
+                || async {
+                    self.network_client
+                        .subscribed_peers(TopicHash::from_raw(*context_id))
+                        .await
+                },
+                |peer_id| async move {
+                    self.network_client
+                        .probe_blob(*blob_id, *context_id, peer_id, auth)
+                        .await
+                        .unwrap_or(false)
+                },
+                |peer_id| async move {
+                    tracing::info!(
+                        blob_id = %blob_id,
+                        context_id = %context_id,
+                        peer_id = %peer_id,
+                        "Found a peer holding the blob, downloading"
+                    );
+
+                    let data = match self
+                        .network_client
+                        .request_blob(*blob_id, *context_id, peer_id, auth)
+                        .await
+                    {
+                        Ok(Some(data)) => data,
+                        Ok(None) => {
+                            // The peer said yes to the probe and no to the
+                            // fetch: custody changed underneath us, or it
+                            // declined. That is a fact about this peer, not
+                            // about the blob — keep searching.
+                            tracing::warn!(
+                                blob_id = %blob_id,
+                                peer_id = %peer_id,
+                                "Peer answered the probe but did not serve the blob"
+                            );
+                            return None;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                blob_id = %blob_id,
+                                peer_id = %peer_id,
+                                error = %e,
+                                "Failed to download blob from peer, trying the next holder"
+                            );
+                            return None;
+                        }
+                    };
+
+                    tracing::info!(
+                        blob_id = %blob_id,
+                        peer_id = %peer_id,
+                        size = data.len(),
+                        "Successfully downloaded blob from network"
+                    );
+
+                    // Store the blob locally for future use. A failure here is
+                    // local, so it will fail identically for every other
+                    // holder: end the search and surface it.
+                    let (blob_id_stored, _size) = match self
+                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                        .await
+                    {
+                        Ok(stored) => stored,
+                        Err(e) => return Some(Err(e)),
+                    };
+
+                    // Blobs are content-addressed, so a mismatch means this
+                    // peer served different bytes than were asked for. Refuse
+                    // them and ask the next holder.
+                    if blob_id_stored != *blob_id {
+                        tracing::warn!(
+                            expected = %blob_id,
+                            actual = %blob_id_stored,
+                            peer_id = %peer_id,
+                            "Downloaded blob ID mismatch, trying the next holder"
+                        );
+                        return None;
+                    }
+
+                    // Return the newly stored blob as a stream
+                    Some(self.blob_manager.get_blob_stream(*blob_id))
+                },
+            )
             .await;
 
-            let Some(peer_id) = holder else {
+            let Some(result) = fetched else {
                 tracing::info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
-                    candidates = candidates.len(),
-                    "No context peer holds this blob"
+                    attempts = MAX_DISCOVERY_ATTEMPTS,
+                    "No context peer served this blob"
                 );
                 return Ok(None);
             };
 
-            tracing::info!(
-                blob_id = %blob_id,
-                context_id = %context_id,
-                peer_id = %peer_id,
-                "Found a peer holding the blob, downloading"
-            );
-
-            let data = match self
-                .network_client
-                .request_blob(*blob_id, *context_id, peer_id, auth)
-                .await
-            {
-                Ok(Some(data)) => data,
-                Ok(None) => {
-                    // The peer said yes to the probe and no to the fetch:
-                    // custody changed underneath us, or it declined. Either
-                    // way there is nothing to serve.
-                    tracing::warn!(
-                        blob_id = %blob_id,
-                        peer_id = %peer_id,
-                        "Peer answered the probe but did not serve the blob"
-                    );
-                    return Ok(None);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        blob_id = %blob_id,
-                        peer_id = %peer_id,
-                        error = %e,
-                        "Failed to download blob from peer"
-                    );
-                    return Ok(None);
-                }
-            };
-
-            tracing::info!(
-                blob_id = %blob_id,
-                peer_id = %peer_id,
-                size = data.len(),
-                "Successfully downloaded blob from network"
-            );
-
-            // Store the blob locally for future use
-            let (blob_id_stored, _size) = self
-                .add_blob(data.as_slice(), Some(data.len() as u64), None)
-                .await?;
-
-            // Verify we stored the correct blob. Blobs are content-addressed,
-            // so a mismatch means the peer served different bytes than asked
-            // for — refuse to pass them off as the requested blob.
-            if blob_id_stored != *blob_id {
-                tracing::warn!(
-                    expected = %blob_id,
-                    actual = %blob_id_stored,
-                    peer_id = %peer_id,
-                    "Downloaded blob ID mismatch"
-                );
-                return Ok(None);
-            }
-
-            // Return the newly stored blob as a stream
-            return self.blob_manager.get_blob_stream(*blob_id);
+            return result;
         };
 
         Ok(Some(stream))
@@ -715,11 +821,14 @@ fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
 }
 
 #[cfg(test)]
-mod find_blob_holder_tests {
+mod blob_discovery_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
-    use super::{find_blob_holder, PeerId, PROBE_BATCH};
+    use super::{
+        discover_and_fetch_blob, fetch_from_first_holder, find_blob_holder, PeerId,
+        MAX_DISCOVERY_ATTEMPTS, PROBE_BATCH,
+    };
 
     /// Records who was probed, and how many probes were ever in flight at once.
     #[derive(Default)]
@@ -794,7 +903,7 @@ mod find_blob_holder_tests {
         })
         .await;
 
-        assert_eq!(holder, Some(candidates[holder_index]));
+        assert_eq!(holder, Some(holder_index));
         // The holder is in the first batch, so the search ends there: the
         // batch it sits in is probed in full (those probes are concurrent and
         // already in flight), and not one peer beyond it.
@@ -813,7 +922,7 @@ mod find_blob_holder_tests {
         })
         .await;
 
-        assert_eq!(holder, Some(candidates[holder_index]));
+        assert_eq!(holder, Some(holder_index));
         // Two batches: the miss widened the search exactly once, and the third
         // batch was never touched.
         assert_eq!(recorder.probed(), candidates[..PROBE_BATCH * 2].to_vec());
@@ -832,7 +941,7 @@ mod find_blob_holder_tests {
         })
         .await;
 
-        assert_eq!(holder, Some(candidates[1]));
+        assert_eq!(holder, Some(1));
     }
 
     #[tokio::test]
@@ -843,5 +952,174 @@ mod find_blob_holder_tests {
 
         assert_eq!(holder, None);
         assert!(recorder.probed().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_falls_back_to_the_next_holder() {
+        // Two holders in the same batch. The first one wins the probe and then
+        // fails to deliver — which says something about that peer, not about
+        // the blob — so the second must be asked.
+        let candidates = peers(PROBE_BATCH * 2);
+        let bad = candidates[1];
+        let good = candidates[4];
+        let recorder = ProbeRecorder::default();
+        let fetched_from = Mutex::new(Vec::new());
+
+        let result: Option<&str> = fetch_from_first_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == bad || peer_id == good;
+                recorder.probe(peer_id, answer)
+            },
+            |peer_id| {
+                let fetched_from = &fetched_from;
+                async move {
+                    fetched_from
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(peer_id);
+                    (peer_id == good).then_some("bytes")
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        // Both were asked, in candidate order: the bad one first, then the
+        // fallback. A single-holder implementation stops after the bad one.
+        assert_eq!(
+            *fetched_from
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![bad, good]
+        );
+        // The bound still holds while falling back.
+        assert_eq!(recorder.peak_in_flight.load(Ordering::SeqCst), PROBE_BATCH);
+    }
+
+    #[tokio::test]
+    async fn every_holder_failing_is_not_a_holder_found() {
+        let candidates = peers(3);
+        let recorder = ProbeRecorder::default();
+        let fetches = AtomicUsize::new(0);
+
+        let result: Option<&str> = fetch_from_first_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, true),
+            |_peer_id| async {
+                let _ignored = fetches.fetch_add(1, Ordering::SeqCst);
+                None
+            },
+        )
+        .await;
+
+        assert_eq!(result, None);
+        // Every candidate was fetched from before giving up: the fallback
+        // walks the list rather than stopping at the first disappointment.
+        assert_eq!(fetches.load(Ordering::SeqCst), candidates.len());
+        // Resuming re-probes the remainder of the failed peer's batch, so all
+        // three answer, then two, then one. That waste is the documented cost
+        // of the fallback, and it is bounded by the batch, not by the list.
+        assert_eq!(recorder.probed().len(), 3 + 2 + 1);
+    }
+
+    #[tokio::test]
+    async fn a_successful_first_winner_still_probes_only_one_batch() {
+        // The fallback must not have cost the short-circuit: the happy path is
+        // still exactly one batch of probes and one fetch.
+        let candidates = peers(PROBE_BATCH * 3);
+        let recorder = ProbeRecorder::default();
+
+        let result: Option<&str> = fetch_from_first_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == candidates[0];
+                recorder.probe(peer_id, answer)
+            },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH].to_vec());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_the_sweep_while_the_subscriber_set_fills() {
+        // The regression this guards: a node that has just joined has no
+        // subscribed peers yet. "No candidates" is not "nobody has it", and
+        // widening an empty list yields nothing — only retrying can find the
+        // holder that shows up on attempt 3.
+        let late_holder = PeerId::random();
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let sweep = sweeps.fetch_add(1, Ordering::SeqCst) + 1;
+                if sweep < 3 {
+                    Vec::new()
+                } else {
+                    vec![late_holder]
+                }
+            },
+            |_peer_id| async { true },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        assert_eq!(sweeps.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_once_the_attempt_budget_is_spent() {
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            },
+            |_peer_id| async { true },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, None);
+        assert_eq!(sweeps.load(Ordering::SeqCst), MAX_DISCOVERY_ATTEMPTS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sweep_that_finds_a_holder_does_not_retry() {
+        let holder = PeerId::random();
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
+                vec![holder]
+            },
+            |_peer_id| async { true },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        assert_eq!(sweeps.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        use super::{discovery_backoff, INITIAL_RETRY_DELAY, MAX_RETRY_DELAY};
+
+        assert_eq!(discovery_backoff(1), INITIAL_RETRY_DELAY);
+        assert_eq!(discovery_backoff(2), INITIAL_RETRY_DELAY * 2);
+        assert_eq!(discovery_backoff(3), INITIAL_RETRY_DELAY * 4);
+        assert_eq!(discovery_backoff(5), INITIAL_RETRY_DELAY * 16);
+        // 100ms * 32 would be 3.2s, so attempt 6 is where the cap bites.
+        assert_eq!(discovery_backoff(6), MAX_RETRY_DELAY);
+        // Underflow- and overflow-safe at both ends of the range.
+        assert_eq!(discovery_backoff(0), INITIAL_RETRY_DELAY);
+        assert_eq!(discovery_backoff(usize::MAX), MAX_RETRY_DELAY);
     }
 }
