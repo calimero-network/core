@@ -315,10 +315,45 @@ jobs:
       # against the YAML's own location, so running it from the repo root
       # climbs two levels OUT of the checkout. The binary is passed absolute
       # for the same reason.
+      #
+      # The joining nodes install no bundle of their own: they learn a bytecode
+      # id from the context and must fetch it. Without a configured source that
+      # fetch fails and the first execute after a join dies on "bytecode blob
+      # not found in blobstore" — so this lane needs the same fixture registry
+      # the Linux lanes get from `e2e-fixture-registry.sh`. Only the staging
+      # half of that script is reused here (`STAGE_ONLY`); its serving half
+      # runs nginx in Docker and addresses it by the docker0 gateway, neither
+      # of which exists in binary mode. These nodes are processes on this
+      # runner, so plain loopback reaches them and `python -m http.server`
+      # is enough. merod reads the two env vars directly (cli/run.rs), and
+      # merobox hands its own environment to each node it spawns, which is
+      # what makes the Docker image-retagging step unnecessary here.
+      #
+      # Server and workflow share one step deliberately: a background process
+      # started in an earlier step is not guaranteed to outlive it.
       - name: Run the 3-node workflow (merobox, binary mode)
         shell: bash
         run: |
           ls -la dist/
+          FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
+
+          python -m http.server 8080 --bind 127.0.0.1 \
+            --directory fixture-registry >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+
+          # Fail here, loudly, rather than let every node fall back to a
+          # bytecode-not-found error that reads like a sync bug.
+          for _ in $(seq 1 30); do
+            curl -sfo /dev/null http://127.0.0.1:8080/ && break
+            sleep 1
+          done
+          curl -sfo /dev/null http://127.0.0.1:8080/ \
+            || { echo "fixture registry never came up" >&2; exit 1; }
+
+          export CALIMERO_REGISTRY_MODE=http
+          export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
+
           MEROD="$GITHUB_WORKSPACE/target/debug/merod.exe"
           cd apps/kv-store
           merobox bootstrap run workflows/workflow-example.yml \
