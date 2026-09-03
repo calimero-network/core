@@ -183,17 +183,31 @@ peer answers `found` without transferring anything.
 
 Probes go out in **batches of 8**, concurrently within a batch and sequentially
 between batches, stopping at the first peer that answers `found: true`. The
-bound is the point: the candidate list is a topic's whole subscriber set, and
-fanning out to all of it on every local miss is what this design avoids. The
 winner is then asked for the bytes over the transfer protocol below.
+
+The search is bounded three ways, and all three are load-bearing:
+
+| Bound | Value | What it stops |
+| --- | --- | --- |
+| Width | 8 probes outstanding | Fanning a miss out to the whole subscriber set at once |
+| Volume | 4 batches = 32 peers per sweep | Walking all 1024 possible subscribers one batch at a time |
+| Duration | 30 s over the whole path | A search outliving the HTTP request that asked for it |
+
+The volume cap is a **deliberate incompleteness**: on a context large enough
+that the only holder sits beyond the first 32 candidates, the blob reads as
+absent. That is the escalation trigger for this design — a context that big
+needs real provider state (an anchor, a rendezvous, a sharded index), not a
+longer linear scan.
 
 A winner that then fails to deliver — a dropped connection, a timeout, or bytes
 whose recomputed id does not match — is not evidence that the blob is gone, so
 the search resumes at the next candidate instead of reporting absence. And an
 empty candidate list is not evidence either: a node that has just joined may
-simply not have been grafted onto the context topic yet. The whole sweep is
+simply not have been grafted onto the context topic yet. An **empty** sweep is
 therefore retried up to **6 times**, re-resolving the subscriber set each time,
-with the gap starting at **100 ms** and doubling to a **2 s** cap.
+with the gap starting at **100 ms** and doubling to a **2 s** cap. A sweep that
+had candidates and still found nothing is not repeated — re-asking peers that
+already said no is repeating work, not making progress.
 
 Asking is authoritative in a way a record is not: custody is a property of a
 peer's own blob store, so the answer cannot be stale, cannot expire, and is not
@@ -203,8 +217,9 @@ holder that restarts stays discoverable. A probe deliberately does not
 distinguish "not authorised" from "not held": both answer `found: false`, which
 costs a wasted candidate and never a wrong fetch.
 
-The DHT announce above still runs, and `query_blob` remains for application
-bundles, which are fetched outside a context's sync stream.
+The DHT announce above still runs, but **nothing reads it any more** — the
+provider record is write-only. The announce is kept because it is where provider
+state will be republished as an anchor; the lookup goes with it.
 
 :::note
 Global (context-less) blob queries are not supported — discovery always names a
