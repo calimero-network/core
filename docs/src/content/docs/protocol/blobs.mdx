@@ -185,9 +185,15 @@ Probes go out in **batches of 8**, concurrently within a batch and sequentially
 between batches, stopping at the first peer that answers `found: true`. The
 bound is the point: the candidate list is a topic's whole subscriber set, and
 fanning out to all of it on every local miss is what this design avoids. The
-winner is then asked for the bytes over the transfer protocol below, and a blob
-whose recomputed id does not match the one requested is rejected rather than
-stored.
+winner is then asked for the bytes over the transfer protocol below.
+
+A winner that then fails to deliver — a dropped connection, a timeout, or bytes
+whose recomputed id does not match — is not evidence that the blob is gone, so
+the search resumes at the next candidate instead of reporting absence. And an
+empty candidate list is not evidence either: a node that has just joined may
+simply not have been grafted onto the context topic yet. The whole sweep is
+therefore retried up to **6 times**, re-resolving the subscriber set each time,
+with the gap starting at **100 ms** and doubling to a **2 s** cap.
 
 Asking is authoritative in a way a record is not: custody is a property of a
 peer's own blob store, so the answer cannot be stale, cannot expire, and is not
