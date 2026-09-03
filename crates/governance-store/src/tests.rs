@@ -10452,6 +10452,70 @@ mod account_plane_apply {
         );
     }
 
+    /// A device bound after the group's contexts were registered saw those
+    /// registrations while it was still nobody; the link is what must start the
+    /// catch-up sweep, as a new member row does.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_recorded_link_starts_the_context_sweep_for_its_account() {
+        use crate::op_events::{self, OpEvent};
+
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.provision_account_root().unwrap();
+        let account = root.account();
+        let device = DeviceId::mint(account, [8u8; 16]);
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            account,
+            device,
+            &key(6).public_key(),
+            &KemPublicKey::from([6u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .unwrap();
+        let mut rx = op_events::subscribe();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: root.genesis(),
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(OpEvent::AutoFollowSet {
+                    group_id,
+                    member,
+                    contexts,
+                    ..
+                })) if group_id == gid.to_bytes() && member == account => {
+                    assert!(contexts, "the sweep is for contexts");
+                    return;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        panic!("linking a device must start the context sweep for its account");
+    }
+
     /// And only for this node's own account: a stranger's device is somebody
     /// else's to extend, and this node holds no root that could certify it.
     #[test]
@@ -11555,6 +11619,92 @@ mod target_application_row_seeding {
                 .map(|c| (c.package.to_owned(), c.version.to_owned())),
             Some(("com.acme.app".to_owned(), "2.0.0".to_owned())),
             "an inherited target the subgroup cannot address is unfetchable"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// A target that does not move is not a migration.
+// -----------------------------------------------------------------------
+
+/// Creation publishes `TargetApplicationSet`; announcing on it would tell every
+/// member their new namespace is migrating.
+mod target_application_set_announcement {
+    use super::*;
+    use crate::op_events::OpEvent;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use calimero_context_config::types::BytecodeId;
+    use calimero_governance_types::GroupOp;
+    use calimero_primitives::application::ZERO_APPLICATION_ID;
+
+    fn group_with_target(
+        application_id: ApplicationId,
+        bytecode_id: [u8; 32],
+    ) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let mut meta = test_meta();
+        meta.target.application_id = application_id;
+        meta.target.bytecode_id = bytecode_id;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        (store, gid)
+    }
+
+    fn set(application_id: ApplicationId, bytecode_id: [u8; 32]) -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(bytecode_id),
+            target_application_id: application_id,
+            package: "com.example.app".to_owned(),
+            version: "1.0.0".to_owned(),
+        }
+    }
+
+    fn announces(store: &Store, gid: &ContextGroupId, op: &GroupOp) -> bool {
+        let signer = PublicKey::from([0x11; 32]);
+        let (handled, _divergence, events) =
+            apply_group_op_mutations(store, gid, &signer, op, &CUT, &FixedAuthorizer(true))
+                .expect("apply must succeed");
+        assert!(handled, "the dispatcher must handle the op");
+        events
+            .iter()
+            .any(|event| matches!(event, OpEvent::MigrationStarted { .. }))
+    }
+
+    #[test]
+    fn restating_the_current_target_announces_nothing() {
+        let app = ApplicationId::from([0xCC; 32]);
+        let (store, gid) = group_with_target(app, [0xBB; 32]);
+
+        assert!(
+            !announces(&store, &gid, &set(app, [0xBB; 32])),
+            "the group is already on this target; nothing moved"
+        );
+    }
+
+    #[test]
+    fn the_first_target_a_group_ever_gets_announces_nothing() {
+        // The row a node that learned the namespace by backfill holds: a target
+        // nobody ever filled in.
+        let (store, gid) = group_with_target(ZERO_APPLICATION_ID, [0_u8; 32]);
+
+        assert!(
+            !announces(
+                &store,
+                &gid,
+                &set(ApplicationId::from([0xCC; 32]), [0xBB; 32])
+            ),
+            "a group with no prior target is being told what it is, not migrated"
+        );
+    }
+
+    #[test]
+    fn a_code_only_upgrade_still_announces() {
+        let app = ApplicationId::from([0xCC; 32]);
+        let (store, gid) = group_with_target(app, [0xBB; 32]);
+
+        assert!(
+            announces(&store, &gid, &set(app, [0x88; 32])),
+            "same application, new bytecode: the code still swaps under every member"
         );
     }
 }

@@ -1,0 +1,190 @@
+name: E2E Account - Pairing Survives A Missed Publish
+description: >
+  A device that is unreachable when the holder runs pair-complete misses the
+  one-shot publish of its link and scope key. It used to stay empty until a
+  restart; now the readiness-beacon handler pulls the namespace for a
+  participant that holds no governance state, and the namespace carries its
+  target application as a governance op, so the device also learns which
+  application it serves.
+
+  node-1 holds the account, node-2 is a member whose subscription keeps the
+  holder's publish alive, node-3 is the device. node-3 is partitioned from both
+  (libp2p only, RPC stays up), paired, healed, and must converge with no
+  restart step.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: pair-miss-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: pair-miss-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: pair-miss-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: pair-miss-node-3
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: pair-miss-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: pair-miss-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+
+  - name: Node-1 creates the namespace, targeting the app
+    type: create_namespace
+    node: pair-miss-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: pair-miss-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: pair-miss-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  # Registered before the device exists, so the device can only learn it by
+  # backfill, and it must follow it without holding the bytecode first.
+  - name: Node-1 registers a context in the namespace
+    type: create_context
+    node: pair-miss-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    service_name: store-a
+    outputs:
+      context_id: contextId
+
+  - name: Settle the join and the registration across the members
+    type: wait_for_sync
+    nodes:
+      - pair-miss-node-1
+      - pair-miss-node-2
+    group_id: '{{namespace_id}}'
+    timeout: 120
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: pair-miss-node-1
+    outputs:
+      holder_root: accountRootPublicKey
+
+  - name: Partition node-3 from both other peers (libp2p only; RPC reachable)
+    type: partition_peers
+    node: pair-miss-node-3
+    peers:
+      - pair-miss-node-1
+      - pair-miss-node-2
+
+  - name: Pair node-3 onto the holder's account while partitioned
+    type: account_pair
+    node: pair-miss-node-3
+    holder: pair-miss-node-1
+    root_key: '{{holder_root}}'
+    namespaces:
+      - '{{namespace_id}}'
+    applications:
+      - '{{app_id}}'
+    outputs:
+      key_delivered: keyDelivered
+      paired_device: deviceId
+
+  # keyDelivered is the holder's local outcome, resolved against node-2's live
+  # subscription, not against whether node-3 heard it.
+  - name: The holder's publish succeeded, even though node-3 never heard it
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+
+  - name: Node-3's account/devices is empty while it cannot hear the publish
+    type: assert_api_response
+    node: pair-miss-node-3
+    path: /admin-api/account/devices
+    absent:
+      - devices.0
+    retries: 5
+    interval: 2
+
+  - name: Heal the partition
+    type: heal_peers
+    node: pair-miss-node-3
+    peers:
+      - pair-miss-node-1
+      - pair-miss-node-2
+
+  - name: Node-3 sees its own paired device once the partition heals
+    type: assert_api_response
+    node: pair-miss-node-3
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: true
+      revoked: false
+    retries: 45
+    interval: 2
+
+  - name: Node-3's namespace list now carries the target application
+    type: assert_api_response
+    node: pair-miss-node-3
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{namespace_id}}'
+    match:
+      targetApplicationId: '{{app_id}}'
+    retries: 45
+    interval: 2
+
+  - name: Node-3's account applications name the namespace it now speaks in
+    type: account_applications
+    node: pair-miss-node-3
+    where:
+      applicationId: '{{app_id}}'
+    contains:
+      namespaces:
+        - '{{namespace_id}}'
+    retries: 45
+    interval: 2
+
+  - name: Node-3 follows the context that existed before it was paired
+    type: assert_api_response
+    node: pair-miss-node-3
+    path: /admin-api/contexts
+    where:
+      id: '{{context_id}}'
+    match:
+      applicationId: '{{app_id}}'
+    retries: 45
+    interval: 2
+
+stop_all_nodes: true

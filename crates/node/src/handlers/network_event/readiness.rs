@@ -20,8 +20,11 @@ use std::time::{Duration, Instant};
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::verify_readiness_beacon;
-use calimero_governance_store::now_millis;
+use calimero_governance_store::{now_millis, MetaRepository, NamespaceRepository};
+use calimero_store::Store;
+use eyre::Result as EyreResult;
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
@@ -101,6 +104,34 @@ fn beacon_ts_within_drift(ts_millis: u64, now_ms: u64) -> bool {
     ts_millis.abs_diff(now_ms) <= MAX_BEACON_CLOCK_DRIFT_MS
 }
 
+/// At least one non-zero head in the `NamespaceGovHead` row; nothing applied otherwise.
+fn namespace_has_governance_state(store: &Store, namespace_id: [u8; 32]) -> EyreResult<bool> {
+    Ok(
+        match store
+            .handle()
+            .get(&calimero_store::key::NamespaceGovHead::new(namespace_id))?
+        {
+            Some(head) => head.dag_heads.iter().any(|h| *h != [0u8; 32]),
+            None => false,
+        },
+    )
+}
+
+/// A participant with no metadata row and no applied op: a paired device that
+/// missed its publish. A joiner seeds a metadata row first, so it never matches.
+fn participant_without_governance_state(store: &Store, namespace_id: [u8; 32]) -> bool {
+    let group_id = ContextGroupId::from(namespace_id);
+    let knows_nothing = || -> EyreResult<bool> {
+        Ok(NamespaceRepository::new(store).participates_in(&group_id)?
+            && MetaRepository::new(store).load(&group_id)?.is_none()
+            && !namespace_has_governance_state(store, namespace_id)?)
+    };
+    knows_nothing().unwrap_or_else(|err| {
+        warn!(?err, namespace_id = %hex::encode(namespace_id), "participant state read failed");
+        false
+    })
+}
+
 pub(super) fn handle_readiness_beacon(
     manager: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -133,6 +164,9 @@ pub(super) fn handle_readiness_beacon(
         // than its comment describes — relaxing it regressed a batch of
         // app-migration scenarios. So this arm does its own narrow pull and
         // leaves the guard alone.
+        //
+        // A paired device that missed its link and key ops is the same condition:
+        // nothing else ever pulls the namespace for it, so the beacon is its cue.
         let stranded_ns = beacon.namespace_id.to_bytes();
         let stranded = matches!(
             calimero_governance_store::namespace_groups_member_but_keyless(
@@ -140,7 +174,7 @@ pub(super) fn handle_readiness_beacon(
                 stranded_ns.into(),
             ),
             Ok(ref groups) if !groups.is_empty()
-        );
+        ) || participant_without_governance_state(&manager.datastore, stranded_ns);
         if stranded && beacon_ts_within_drift(beacon.ts_millis, now_millis()) {
             let allowed = {
                 let mut guard = manager
@@ -236,30 +270,21 @@ fn spawn_beacon_divergence_sync(
     let debounce = manager.ns_beacon_sync_debounce.clone();
     let _ignored = ctx.spawn(
         async move {
-            let handle = datastore.handle();
-            // Local namespace governance state — at least one non-zero
-            // DAG head. An empty/absent head (or only the `[0u8; 32]`
-            // sentinel) means we are still bootstrapping or mid-join —
-            // skip (see `beacon_indicates_divergence`): the join flow owns
-            // the initial sync, and firing here races the join handshake.
-            let local_has_state =
-                match handle.get(&calimero_store::key::NamespaceGovHead::new(namespace_id)) {
-                    Ok(Some(head)) => head.dag_heads.iter().any(|h| *h != [0u8; 32]),
-                    Ok(None) => false,
-                    Err(err) => {
-                        // A failed read is datastore-level and unexpected.
-                        warn!(
-                            ?err,
-                            namespace_id = %hex::encode(namespace_id),
-                            "beacon-divergence: namespace head read failed; skipping sync"
-                        );
-                        return;
-                    }
-                };
+            // No local state means mid-join, and the join flow owns that first
+            // sync (see `beacon_indicates_divergence`).
+            let Ok(local_has_state) = namespace_has_governance_state(&datastore, namespace_id)
+                .inspect_err(|err| {
+                    warn!(?err, namespace_id = %hex::encode(namespace_id),
+                          "beacon-divergence: namespace head read failed; skipping sync");
+                })
+            else {
+                return;
+            };
             // `dag_head` is the beacon peer's namespace governance DAG
             // head — an op `delta_id`, which is exactly the second
             // component of the `NamespaceGovOp` store key. A point `get`
             // therefore tests whether we have applied that op locally.
+            let handle = datastore.handle();
             let head_op_present = match handle.get(&calimero_store::key::NamespaceGovOp::new(
                 namespace_id,
                 dag_head,
@@ -283,13 +308,10 @@ fn spawn_beacon_divergence_sync(
             // governance state exists. So it is exactly the signal that
             // separates "joined, but stranded with nothing" from "not our
             // namespace", which must still be ignored.
-            let is_namespace_member =
-                calimero_governance_store::NamespaceRepository::new(&datastore)
-                    .identity_record(&calimero_context_config::types::ContextGroupId::from(
-                        namespace_id,
-                    ))
-                    .map(|record| record.is_some())
-                    .unwrap_or(false);
+            let is_namespace_member = NamespaceRepository::new(&datastore)
+                .identity_record(&ContextGroupId::from(namespace_id))
+                .map(|record| record.is_some())
+                .unwrap_or(false);
             if !beacon_indicates_divergence(
                 local_has_state,
                 is_namespace_member,
@@ -373,7 +395,29 @@ pub(super) fn handle_readiness_probe(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{NamespaceGovHead, NamespaceGovHeadValue};
+
     use super::*;
+
+    fn test_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn put_gov_head(store: &Store, namespace_id: [u8; 32], dag_heads: Vec<[u8; 32]>) {
+        store
+            .handle()
+            .put(
+                &NamespaceGovHead::new(namespace_id),
+                &NamespaceGovHeadValue {
+                    sequence: 1,
+                    dag_heads,
+                },
+            )
+            .expect("write namespace gov head");
+    }
 
     #[test]
     fn divergence_true_when_head_op_absent() {
@@ -468,5 +512,74 @@ mod tests {
         assert!(debounce_allows_sync(&mut d, [1u8; 32], t0));
         // Different namespace — independent budget, still allowed.
         assert!(debounce_allows_sync(&mut d, [2u8; 32], t0));
+    }
+
+    #[test]
+    fn participant_with_no_governance_state_is_stranded() {
+        // A paired device that missed the gossip publish: it took part in the
+        // namespace but never applied an op.
+        let store = test_store();
+        let ns = [0xB1; 32];
+        NamespaceRepository::new(&store)
+            .note_participation(&ContextGroupId::from(ns))
+            .expect("note participation");
+        assert!(participant_without_governance_state(&store, ns));
+    }
+
+    #[test]
+    fn participant_with_a_real_head_is_not_stranded() {
+        let store = test_store();
+        let ns = [0xB2; 32];
+        NamespaceRepository::new(&store)
+            .note_participation(&ContextGroupId::from(ns))
+            .expect("note participation");
+        put_gov_head(&store, ns, vec![[0x44; 32]]);
+        assert!(!participant_without_governance_state(&store, ns));
+    }
+
+    #[test]
+    fn participant_with_only_the_zero_head_sentinel_is_stranded() {
+        // The row exists but names no op: still nothing applied.
+        let store = test_store();
+        let ns = [0xB3; 32];
+        NamespaceRepository::new(&store)
+            .note_participation(&ContextGroupId::from(ns))
+            .expect("note participation");
+        put_gov_head(&store, ns, vec![[0u8; 32]]);
+        assert!(participant_without_governance_state(&store, ns));
+    }
+
+    #[test]
+    fn a_stranger_namespace_is_never_stranded() {
+        // No participation row: someone else's namespace, never pull it.
+        let store = test_store();
+        assert!(!participant_without_governance_state(&store, [0xB4; 32]));
+    }
+
+    #[test]
+    fn a_joiner_mid_handshake_is_not_stranded() {
+        // A joiner seeds a placeholder metadata row before it syncs, and the
+        // join flow owns that first sync; a paired device never has the row.
+        let store = test_store();
+        let ns = [0xB5; 32];
+        let gid = ContextGroupId::from(ns);
+        NamespaceRepository::new(&store)
+            .note_participation(&gid)
+            .expect("note participation");
+        let admin = calimero_governance_store::placeholder_admin_identity();
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(
+                &gid,
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget::default(),
+                    created_at: 0,
+                    admin_identity: admin,
+                    owner_identity: admin,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("seed the placeholder metadata");
+        assert!(!participant_without_governance_state(&store, ns));
     }
 }
