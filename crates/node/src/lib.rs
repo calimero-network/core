@@ -14,6 +14,7 @@
 )]
 
 mod arbiter_pool;
+pub(crate) mod availability_peers;
 mod constants;
 pub mod dag_compactor;
 mod delta_store;

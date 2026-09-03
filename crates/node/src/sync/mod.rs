@@ -51,6 +51,57 @@ pub(crate) fn anchor_device_keys(
     else {
         return std::collections::BTreeSet::new();
     };
+    device_keys_for_accounts(store, group_id, &anchors)
+}
+
+/// The signing keys of a group's `ReadOnlyTee` members — its availability
+/// nodes.
+///
+/// A strict subset of [`anchor_device_keys`], and a deliberately different
+/// question. The anchor set answers "who is authoritative here" (Owner ∪ Admins
+/// ∪ ReadOnlyTee), which is what sync peer selection wants. Blob discovery
+/// wants "who is always on and holds the bytes", and only a `ReadOnlyTee`
+/// answers that: an admin is an ordinary laptop that may hold nothing.
+///
+/// Same account→device expansion as the anchor set, for the same reason.
+/// Returns an empty set on any store failure — callers then fall back to
+/// unordered candidates, which costs a round trip and never correctness.
+pub(crate) fn availability_device_keys(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+    let Ok(members) =
+        calimero_governance_store::MembershipRepository::new(store).list(group_id, 0, usize::MAX)
+    else {
+        return std::collections::BTreeSet::new();
+    };
+    let tee_accounts: std::collections::BTreeSet<_> = members
+        .into_iter()
+        .filter_map(|(account, role)| {
+            matches!(
+                role,
+                calimero_primitives::context::GroupMemberRole::ReadOnlyTee
+            )
+            .then_some(account)
+        })
+        .collect();
+    device_keys_for_accounts(store, group_id, &tee_accounts)
+}
+
+/// Expand governance ACCOUNTS to the live DEVICE signing keys that speak for
+/// them, within the namespace owning `group_id`.
+///
+/// Shared by [`anchor_device_keys`] and [`availability_device_keys`]: the two
+/// differ only in which accounts they select, never in how an account is
+/// resolved to the keys a peer actually presents.
+fn device_keys_for_accounts(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    accounts: &std::collections::BTreeSet<calimero_account::AccountId>,
+) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+    if accounts.is_empty() {
+        return std::collections::BTreeSet::new();
+    }
     let Ok(namespace) =
         calimero_governance_store::NamespaceRepository::new(store).resolve(group_id)
     else {
@@ -63,7 +114,7 @@ pub(crate) fn anchor_device_keys(
     };
     bindings
         .iter()
-        .filter(|binding| anchors.contains(&binding.account))
+        .filter(|binding| accounts.contains(&binding.account))
         .map(|binding| binding.sign_pk)
         .collect()
 }
