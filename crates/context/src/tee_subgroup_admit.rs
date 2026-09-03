@@ -480,11 +480,12 @@ mod dispatch_tests {
     use calimero_governance_store::op_events::OpEvent;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     #[test]
     fn maps_only_subgroup_created_and_tee_admitted() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let member = PrivateKey::random(&mut rng).public_key();
 
         assert_eq!(

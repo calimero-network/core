@@ -349,9 +349,14 @@ impl SignCertCommand {
         let mut generated_secret = None;
         let (device, sign_pk, kem_pk) = if self.generate {
             let mut nonce = [0u8; 16];
-            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-            let sign_sk = PrivateKey::random(&mut rand::rngs::OsRng);
-            let kem_sk = calimero_crypto::X25519SecretKey::random(&mut rand::rngs::OsRng);
+            rand::Rng::fill_bytes(
+                &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+                &mut nonce,
+            );
+            let sign_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+            let kem_sk = calimero_crypto::X25519SecretKey::random(&mut rand::rand_core::UnwrapErr(
+                rand::rngs::SysRng,
+            ));
             let sign = *AsRef::<[u8; 32]>::as_ref(&sign_sk.public_key());
             let kem = *kem_sk.public_key().as_bytes();
             generated_secret = Some(hex::encode(sign_sk.as_bytes()));

@@ -9,7 +9,7 @@ use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
-use rand::Rng;
+use rand::RngExt;
 use tracing::{info, warn};
 
 use crate::ContextManager;
@@ -35,7 +35,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let group_id = group_id.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::thread_rng().gen();
+            let bytes: [u8; 32] = rand::rng().random();
             bytes.into()
         });
 
@@ -271,7 +271,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     )?;
 
                     // Generate and store the group encryption key.
-                    let group_key: [u8; 32] = rand::thread_rng().gen();
+                    let group_key: [u8; 32] = rand::rng().random();
                     let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     group_key_id = Some(key_id);
                     tracing::debug!(

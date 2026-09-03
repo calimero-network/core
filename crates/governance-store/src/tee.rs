@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn record_returns_stored_verdict_for_admitted_member() {
         let store = test_store();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let namespace_id = [0xAA; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
         let tee_pk = AccountId::from([0x42; 32]);
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn records_returns_all_verdicts_in_one_scan() {
         let store = test_store();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let ns_gid = ContextGroupId::from([0xAA; 32]);
         let tee_a = AccountId::from([0x42; 32]);
         let tee_b = AccountId::from([0x44; 32]);
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn record_returns_latest_verdict_after_readmit() {
         let store = test_store();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let ns_gid = ContextGroupId::from([0xAB; 32]);
         let tee_pk = AccountId::from([0x42; 32]);
         let signer_sk = PrivateKey::random(&mut rng);

@@ -129,8 +129,8 @@ fn only_published_msg(node: &TestNode) -> NamespaceTopicMsg {
 #[serial(boot_test_node)]
 async fn a_queued_join_reaches_the_wire_through_the_node_client() {
     let node = boot_test_node().await;
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let inviter_sk = PrivateKey::random(&mut rand::thread_rng());
+    let joiner_sk = PrivateKey::random(&mut rand::rng());
+    let inviter_sk = PrivateKey::random(&mut rand::rng());
     let op = queued_join_op(
         &joiner_sk,
         signed_invitation(&inviter_sk, ContextGroupId::from(NS)),

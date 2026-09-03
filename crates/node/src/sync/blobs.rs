@@ -7,7 +7,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::{AsyncReadExt, TryStreamExt};
-use rand::{thread_rng, Rng};
+use rand::RngExt;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -31,7 +31,7 @@ impl SyncManager {
             "Initiating blob share",
         );
 
-        let our_nonce = thread_rng().gen::<Nonce>();
+        let our_nonce = rand::rng().random::<Nonce>();
 
         self.send(
             stream,
@@ -221,7 +221,7 @@ impl SyncManager {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity)?;
-        let mut our_nonce = thread_rng().gen::<Nonce>();
+        let mut our_nonce = rand::rng().random::<Nonce>();
 
         self.send(
             stream,
@@ -241,7 +241,7 @@ impl SyncManager {
         let mut sequencer = Sequencer::default();
 
         while let Some(chunk) = blob.try_next().await? {
-            let our_new_nonce = thread_rng().gen::<Nonce>();
+            let our_new_nonce = rand::rng().random::<Nonce>();
             self.send(
                 stream,
                 &StreamMessage::Message {

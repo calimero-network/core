@@ -60,7 +60,7 @@ impl Clone for MockPeer {
 
 impl MockPeer {
     fn new(peer_id: &str, latency_ms: u64) -> Self {
-        let private_key = PrivateKey::random(&mut rand::thread_rng());
+        let private_key = PrivateKey::random(&mut rand::rng());
         let public_key = private_key.public_key();
 
         Self {

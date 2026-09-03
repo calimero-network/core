@@ -7,8 +7,9 @@ use calimero_tee_attestation::{
 use calimero_tee_attestation::{generate_mock_attestation, verify_mock_attestation};
 use clap::{Parser, Subcommand};
 use eyre::{bail, eyre, Result as EyreResult, WrapErr};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::Rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 #[cfg(feature = "mock-attestation")]
@@ -141,7 +142,7 @@ impl TeeProbeCommand {
         let app_hash: [u8; 32] = Sha256::digest(peer_id.as_bytes()).into();
 
         let mut nonce = [0u8; 32];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
 
         // Generate a fresh quote via the SAME code path as `/tee/attest`:
         // real TDX hardware unless `--mock-tee` explicitly opts into a mock quote.

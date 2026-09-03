@@ -184,15 +184,16 @@ fn require_group_admin_rejects_non_admin() {
 fn membership_policy_guards_last_admin_and_tee_paths() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
-    let admin = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
-    let admin2 = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
-    let member = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
-    let outsider = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let admin = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+    let admin2 = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+    let member = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+    let outsider = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -229,8 +230,8 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     // sole Admin row is demotable/removable when a different genesis founder exists
     let founder_store = test_store();
     let founder_gid = test_group_id();
-    let lone_admin = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
-    let founder = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let lone_admin = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+    let founder = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
     MembershipRepository::new(&founder_store)
         .add_member(&founder_gid, &lone_admin, GroupMemberRole::Admin)
         .unwrap();
@@ -251,7 +252,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     // the guard still fires
     let sole_store = test_store();
     let sole_gid = test_group_id();
-    let sole_admin = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let sole_admin = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
     MembershipRepository::new(&sole_store)
         .add_member(&sole_gid, &sole_admin, GroupMemberRole::Admin)
         .unwrap();
@@ -328,7 +329,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         )
         .is_err());
 
-    let tee_joined = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let tee_joined = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
     assert!(!MembershipRepository::new(&store)
         .is_member(&gid, &tee_joined)
         .unwrap());
@@ -2463,10 +2464,11 @@ fn subgroup_visible_to_restricted_child_visible_to_its_member() {
 fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     use calimero_context_client::local_governance::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
     let owner = AccountId::from([0x01; 32]);
@@ -2769,7 +2771,8 @@ mod owner_guard_prevents_a_memberless_group {
     use super::*;
     use calimero_governance_types::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     fn sign_leave(
         signer_sk: &PrivateKey,
@@ -2802,7 +2805,7 @@ mod owner_guard_prevents_a_memberless_group {
         // A SECOND admin, so the last-admin guard cannot be what rejects the leave.
         // Without this the test would pass even if the owner guard were deleted, and
         // it would be pinning the wrong invariant.
-        let other_sk = PrivateKey::random(&mut OsRng);
+        let other_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let other = crate::test_fixtures::enrol_member(&store, &ns_gid, &other_sk.public_key());
         MembershipRepository::new(&store)
             .add_member(&ns_gid, &other, GroupMemberRole::Admin)
@@ -2850,7 +2853,7 @@ mod owner_guard_prevents_a_memberless_group {
         let (_root_admin, root_owner) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = crate::test_fixtures::enrol_member(&store, &ns_gid, &leaver_sk.public_key());
         MembershipRepository::new(&store)
             .add_member(&ns_gid, &leaver, GroupMemberRole::Admin)
@@ -2912,7 +2915,7 @@ mod owner_guard_prevents_a_memberless_group {
         let ((owner_sk, _owner_pk), owner) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
-        let successor_sk = PrivateKey::random(&mut OsRng);
+        let successor_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let successor =
             crate::test_fixtures::enrol_member(&store, &ns_gid, &successor_sk.public_key());
         MembershipRepository::new(&store)

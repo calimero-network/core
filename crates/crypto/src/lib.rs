@@ -91,7 +91,7 @@ impl From<[u8; 32]> for X25519SecretKey {
 
 impl X25519SecretKey {
     /// Generate a fresh agreement secret.
-    pub fn random<R: rand::CryptoRng + rand::RngCore>(csprng: &mut R) -> Self {
+    pub fn random<R: rand::CryptoRng + rand::Rng>(csprng: &mut R) -> Self {
         let mut bytes = [0u8; 32];
         csprng.fill_bytes(&mut bytes);
         let key = Self(bytes);
@@ -164,7 +164,7 @@ impl SharedKey {
         }
 
         let signing_key = SigningKey::from_bytes(sk.as_bytes());
-        // curve25519-dalek 4.x Scalar implements Zeroize, so Zeroizing<Scalar>
+        // curve25519-dalek 5.x Scalar implements Zeroize, so Zeroizing<Scalar>
         // clears the private scalar bytes when it is dropped here.
         let scalar = Zeroizing::new(signing_key.to_scalar());
         // A raw curve point is not a uniform 256-bit key (NIST SP 800-56C), so
@@ -275,7 +275,6 @@ impl SharedKey {
 #[cfg(test)]
 mod tests {
     use eyre::OptionExt;
-    use rand::thread_rng;
 
     use super::*;
 
@@ -290,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt() -> eyre::Result<()> {
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
 
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
@@ -316,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_decrypt_with_invalid_key() -> eyre::Result<()> {
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
 
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
@@ -343,7 +342,7 @@ mod tests {
         // AES-GCM appends a 16-byte authentication tag after the ciphertext.
         // Flipping a bit in that tag must make `open_in_place` reject the
         // message, so `decrypt` returns `None` rather than garbage plaintext.
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
         let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
@@ -369,7 +368,7 @@ mod tests {
     fn test_decrypt_with_tampered_ciphertext() -> eyre::Result<()> {
         // Mutating the ciphertext body (not the tag) must also fail
         // authentication — the tag covers the whole ciphertext.
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
         let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
@@ -394,7 +393,7 @@ mod tests {
     fn test_decrypt_with_mismatched_nonce() -> eyre::Result<()> {
         // AES-GCM binds the nonce into tag verification. A ciphertext sealed
         // under nonce A must not open under nonce B, even with the right key.
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
         let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
@@ -428,7 +427,7 @@ mod tests {
     fn test_encrypt_with_nonce_roundtrip() -> eyre::Result<()> {
         // The sync stream ratchet seals with a caller-chosen nonce and the
         // receiver decrypts with that same nonce; a different nonce must fail.
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
         let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
@@ -462,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_new_with_invalid_public_key() {
-        let mut csprng = thread_rng();
+        let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
 
         // Create an invalid public key. Not all 32-byte sequences represent valid
@@ -493,7 +492,7 @@ mod tests {
             .expect("identity point decompresses");
         assert!(point.is_small_order());
 
-        let signer = PrivateKey::random(&mut thread_rng());
+        let signer = PrivateKey::random(&mut rand::rng());
         let small_order_pk = PublicKey::from(small_order_bytes);
 
         let result = SharedKey::new(&signer, &small_order_pk);
@@ -637,8 +636,8 @@ mod x25519_tests {
 
     #[test]
     fn random_secrets_are_distinct() {
-        let a = X25519SecretKey::random(&mut rand::thread_rng());
-        let b = X25519SecretKey::random(&mut rand::thread_rng());
+        let a = X25519SecretKey::random(&mut rand::rng());
+        let b = X25519SecretKey::random(&mut rand::rng());
         assert_ne!(a.public_key(), b.public_key());
     }
 }

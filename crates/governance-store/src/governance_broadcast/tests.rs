@@ -19,7 +19,7 @@ use super::*;
 fn dummy_ack(op_hash: [u8; 32]) -> SignedAck {
     SignedAck {
         op_hash,
-        signer_pubkey: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+        signer_pubkey: PrivateKey::random(&mut rand::rng()).public_key(),
         signature: [0u8; 64],
     }
 }
@@ -47,7 +47,7 @@ fn signed_ack(sk: &PrivateKey, op_hash: [u8; 32]) -> SignedAck {
 #[tokio::test]
 async fn verify_ack_rejects_wrong_op_hash() {
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ack = signed_ack(&sk, [1u8; 32]);
     // Caller is waiting on a different op_hash than the ack carries.
     assert!(!verify_ack(&store, [42u8; 32].into(), [9u8; 32], &ack));
@@ -66,7 +66,7 @@ async fn verify_ack_rejects_invalid_signature() {
 async fn verify_ack_rejects_non_member_signer() {
     let store = empty_store();
     // Properly-signed ack, but `store` has no namespace members at all.
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ack = signed_ack(&sk, [7u8; 32]);
     assert!(!verify_ack(&store, [42u8; 32].into(), [7u8; 32], &ack));
 }
@@ -115,7 +115,7 @@ fn assert_transport_ready_passes_when_mesh_exceeds_required() {
 fn timeout_classifier_assigns_per_op_kind() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
 
     // Cheap class: single-row writes, no inheritance walk.
     assert_eq!(
@@ -227,7 +227,7 @@ async fn publish_and_await_ack_times_out_with_empty_acked_by() {
     let router = AckRouter::default();
     let transport = StubTransport;
     let topic = TopicHash::from_raw("ns/test");
-    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signer = PrivateKey::random(&mut rand::rng());
     let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let report = publish_and_await_ack_namespace(
@@ -259,8 +259,8 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
 
     // The op signer publishes; alice (a different identity) is the
     // namespace member that acks.
-    let publisher = PrivateKey::random(&mut rand::thread_rng());
-    let alice = PrivateKey::random(&mut rand::thread_rng());
+    let publisher = PrivateKey::random(&mut rand::rng());
+    let alice = PrivateKey::random(&mut rand::rng());
     plant_namespace_member(&store, namespace_id.into(), &publisher.public_key());
     plant_namespace_member(&store, namespace_id.into(), &alice.public_key());
 
@@ -319,9 +319,9 @@ async fn publish_and_await_ack_returns_ok_on_min_acks_satisfied() {
     let topic = TopicHash::from_raw("ns/test-happy");
     let namespace_id = [42u8; 32];
 
-    let publisher = PrivateKey::random(&mut rand::thread_rng());
-    let alice = PrivateKey::random(&mut rand::thread_rng());
-    let bob = PrivateKey::random(&mut rand::thread_rng());
+    let publisher = PrivateKey::random(&mut rand::rng());
+    let alice = PrivateKey::random(&mut rand::rng());
+    let bob = PrivateKey::random(&mut rand::rng());
     plant_namespace_member(&store, namespace_id.into(), &publisher.public_key());
     plant_namespace_member(&store, namespace_id.into(), &alice.public_key());
     plant_namespace_member(&store, namespace_id.into(), &bob.public_key());
@@ -384,7 +384,7 @@ async fn publish_and_await_ack_returns_ok_immediately_when_min_acks_is_zero() {
     let router = AckRouter::default();
     let transport = StubTransport;
     let topic = TopicHash::from_raw("ns/min-acks-zero");
-    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signer = PrivateKey::random(&mut rand::rng());
     let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let started = std::time::Instant::now();
@@ -418,7 +418,7 @@ async fn verify_ack_rejects_signature_without_domain_prefix() {
     // signature from another protocol surface that happens to sign a
     // 32-byte hash.
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let op_hash = [11u8; 32];
     let signature = sk.sign(&op_hash).expect("sign").to_bytes(); // no domain prefix
     let ack = SignedAck {
@@ -455,7 +455,7 @@ async fn no_peers_with_min_acks_zero_returns_ok_empty() {
     let router = AckRouter::default();
     let transport = NoPeersTransport;
     let topic = TopicHash::from_raw("ns/test-solo");
-    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signer = PrivateKey::random(&mut rand::rng());
     let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let report = publish_and_await_ack_namespace(
@@ -497,7 +497,7 @@ async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
     let router = AckRouter::default();
     let transport = NoPeersTransport;
     let topic = TopicHash::from_raw("ns/test-multi");
-    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signer = PrivateKey::random(&mut rand::rng());
     let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let res = publish_and_await_ack_namespace(
@@ -552,7 +552,7 @@ fn signed_beacon(
 #[tokio::test]
 async fn verify_readiness_beacon_accepts_signed_member_beacon() {
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
@@ -569,7 +569,7 @@ async fn verify_readiness_beacon_rejects_non_member_signer() {
     // the namespace — must be dropped to prevent unverified peers from
     // populating other nodes' ReadinessCache.
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [42u8; 32];
     // No plant_namespace_member call.
     let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
@@ -584,7 +584,7 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
     // verifies that `verify_readiness_beacon` short-circuits on
     // `verify_signature` failure before consulting membership.
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
@@ -624,7 +624,7 @@ fn signed_heartbeat(
 #[tokio::test]
 async fn verify_migration_heartbeat_accepts_signed_member_heartbeat() {
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
@@ -641,7 +641,7 @@ async fn verify_migration_heartbeat_rejects_non_member_signer() {
     // the namespace — must be dropped so unverified peers never populate
     // another node's MigrationStatusCache (and thus never enter a rollup).
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [42u8; 32];
     // No plant_namespace_member call.
     let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
@@ -654,7 +654,7 @@ async fn verify_migration_heartbeat_rejects_bad_signature() {
     // tampered heartbeat (e.g. residue_auto zeroed to fake completion)
     // must never be cached even from a known member.
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
@@ -729,7 +729,7 @@ fn classify_publish_readiness_not_ready_without_acks() {
 #[tokio::test]
 async fn an_unresolvable_signer_is_not_yet_known_rather_than_refused() {
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [43u8; 32];
 
     // Nothing planted: no binding, no member row — the state a peer is in
@@ -753,7 +753,7 @@ async fn an_unresolvable_signer_is_not_yet_known_rather_than_refused() {
 #[tokio::test]
 async fn a_resolvable_non_member_is_refused_not_deferred() {
     let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let sk = PrivateKey::random(&mut rand::rng());
     let ns_id = [44u8; 32];
     let gid = ContextGroupId::from(ns_id);
 

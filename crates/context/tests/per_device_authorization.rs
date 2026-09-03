@@ -31,7 +31,8 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use core::num::NonZeroU128;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -64,7 +65,7 @@ fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 /// projection. Returns the projection, the cut, and the store.
 fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, ContextGroupId, [u8; 32]) {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let ns = ContextGroupId::from([0x11; 32]);
     let ns_bytes = ns.to_bytes();
 
@@ -156,13 +157,13 @@ fn link_device(
 
 #[test]
 fn a_paired_device_may_author_for_the_account_that_certified_it() {
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
 
     // The device signs with its own namespace identity, minted on its own node.
     // It is a member of nothing.
-    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+    let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     assert_eq!(
         proj.member_at_cut(&store, ns, &member, &heads),
@@ -189,10 +190,10 @@ fn revoking_a_device_withdraws_its_right_to_author() {
     // Revocation has to cut authorship, not only key delivery. A revoked device's
     // node still holds the member key and is still in the namespace, so if the
     // resolver kept granting on the binding the device would keep writing.
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
-    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+    let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let device = link_device(&store, ns, &member, &device_sign_pk);
     assert_eq!(
@@ -218,12 +219,12 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
     // account's entitlement is resolved at the cut — so a vouch from someone who
     // is not a member at that cut grants nothing, and a device cannot be smuggled
     // in by endorsing its account with an unrelated key.
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
-    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+    let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
-    let stranger = PrivateKey::random(&mut OsRng).public_key();
+    let stranger = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let _device = link_device(&store, ns, &stranger, &device_sign_pk);
 
     assert_eq!(
@@ -244,7 +245,7 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
 /// ancestry includes a `DeviceLinked` op still resolve an ordinary member?
 #[test]
 fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
-    let member_sk = PrivateKey::random(&mut OsRng);
+    let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let member = member_sk.public_key();
     let (store, mut proj, ns, member_cut) = namespace_with_member(member);
 
@@ -340,7 +341,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 /// an override for a key that is a member in its own right.
 #[test]
 fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
-    let member_sk = PrivateKey::random(&mut OsRng);
+    let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let member = member_sk.public_key();
     let (store, mut proj, ns, member_cut) = namespace_with_member(member);
 
@@ -429,7 +430,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
     use calimero_governance_store::{NamespaceGovernance, NamespaceRepository};
 
     let store = store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin = admin_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);

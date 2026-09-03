@@ -31,7 +31,8 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use core::num::NonZeroU128;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 
 /// A joiner credential. Note this test asserts the projection's fold matches the
@@ -211,9 +212,9 @@ fn ns_group_envelope(
 #[test]
 fn projection_matches_live_across_inherited_join_and_root_removal() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x11; 32]);
@@ -395,9 +396,9 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
 #[test]
 fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x31; 32]);
@@ -603,9 +604,9 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
 #[test]
 fn projection_defers_when_cut_ancestry_incomplete() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x41; 32]);
@@ -734,9 +735,9 @@ fn projection_defers_when_cut_ancestry_incomplete() {
 #[test]
 fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x51; 32]);
@@ -865,7 +866,7 @@ fn real_join_account_for(
     sign_pk: &PublicKey,
     device: [u8; 32],
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-    let root_sk = PrivateKey::random(&mut OsRng);
+    let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let cert = calimero_account::DeviceCert::sign(
         &root_sk,
@@ -897,9 +898,9 @@ fn real_join_account_for(
 #[test]
 fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x31; 32]);
@@ -1080,7 +1081,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 #[test]
 fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
     let store = store();
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
     let ns = ContextGroupId::from(*founder_key);
 
@@ -1162,7 +1163,7 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
 #[test]
 fn both_planes_resolve_the_founder_identically_at_every_cut() {
     let store = store();
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
     let ns = ContextGroupId::from(*founder_key);
 
@@ -1254,7 +1255,7 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
 #[test]
 fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     let store = store();
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
     let ns = ContextGroupId::from(*founder_key);
 
@@ -1344,7 +1345,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
 /// assertion could pass for the wrong reason.
 #[test]
 fn a_join_is_attributed_to_the_account_its_certificate_names() {
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
     let ns = ContextGroupId::from([0x21; 32]);
     let group = ContextGroupId::from([0x22; 32]);
@@ -1521,9 +1522,9 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
 #[test]
 fn a_late_applied_add_after_a_promotion_is_not_a_divergence() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let member_sk = PrivateKey::random(&mut OsRng);
+    let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let member = member_sk.public_key();
 
     let ns = ContextGroupId::from([0x31; 32]);
@@ -1652,9 +1653,9 @@ fn a_late_applied_add_after_a_promotion_is_not_a_divergence() {
 #[test]
 fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x61; 32]);

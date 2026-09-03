@@ -22,7 +22,8 @@ use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
 use libp2p::PeerId;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -200,7 +201,7 @@ pub fn create_test_bundle(
     abi_content: Option<&[u8]>,
     migrations: Vec<(&str, &[u8])>,
 ) -> Utf8PathBuf {
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let manifest = BundleManifest {
         version: "1.0".to_owned(),
@@ -258,7 +259,7 @@ pub fn signed_bundle_bytes(
 ) -> (Vec<u8>, ApplicationId) {
     let dir = TempDir::new().expect("temp dir");
 
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
     let application_id =
         ApplicationId::for_bundle(package, &signer_id).expect("derive application id");

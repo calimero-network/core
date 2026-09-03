@@ -8,7 +8,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
-use rand::{rngs::OsRng, Rng};
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::RngExt;
 
 use super::namespace::classify_report_readiness;
 use super::{sign_apply_local_group_op_borsh, NamespaceGovernance};
@@ -419,7 +421,7 @@ impl<'a> GroupGovernancePublisher<'a> {
                         self.group_id
                     );
                 }
-                let new_group_key: [u8; 32] = OsRng.gen();
+                let new_group_key: [u8; 32] = UnwrapErr(SysRng).random();
                 // Stamp the new key with the DAG sequence this op will occupy.
                 // `next_nonce` is strictly greater than the sequence of any
                 // already-applied op — including the one that introduced the key

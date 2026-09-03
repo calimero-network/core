@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use eyre::{bail, eyre, Result};
 use hkdf::Hkdf;
+use rand::Rng;
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -152,7 +152,7 @@ impl KeyManager {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Bind the version and nonce as additional authenticated data so the

@@ -61,7 +61,8 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::adopt_pulled_group_key;
 
@@ -131,7 +132,7 @@ mod tests {
     #[test]
     fn a_pulled_key_unwedges_another_members_open_subgroup_join() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         let owner_sk = PrivateKey::random(&mut rng);
         let owner = owner_sk.public_key();

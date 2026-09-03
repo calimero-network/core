@@ -405,8 +405,8 @@ fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadi
 #[test]
 fn pick_sync_partner_prefers_strong_over_locally_ready() {
     let cache = ReadinessCache::default();
-    let weak_pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
-    let strong_pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let weak_pk = PrivateKey::random(&mut rand::rng()).public_key();
+    let strong_pk = PrivateKey::random(&mut rand::rng()).public_key();
     cache.insert(&make_beacon(weak_pk, 100, false));
     cache.insert(&make_beacon(strong_pk, 50, true));
     let pick = cache
@@ -421,8 +421,8 @@ fn pick_sync_partner_prefers_strong_over_locally_ready() {
 #[test]
 fn pick_sync_partner_among_strong_picks_highest_applied_through() {
     let cache = ReadinessCache::default();
-    let pk_a = PrivateKey::random(&mut rand::thread_rng()).public_key();
-    let pk_b = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk_a = PrivateKey::random(&mut rand::rng()).public_key();
+    let pk_b = PrivateKey::random(&mut rand::rng()).public_key();
     cache.insert(&make_beacon(pk_a, 5, true));
     cache.insert(&make_beacon(pk_b, 10, true));
     let pick = cache
@@ -434,7 +434,7 @@ fn pick_sync_partner_among_strong_picks_highest_applied_through() {
 #[test]
 fn pick_sync_partner_excludes_stale_entries() {
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     cache.insert(&make_beacon(pk, 5, true));
     // Wait beyond TTL by setting a very small TTL on the query.
     std::thread::sleep(Duration::from_millis(10));
@@ -456,7 +456,7 @@ fn insert_drops_stale_beacon_from_same_peer() {
     // a fresher entry. The fresher beacon's `applied_through` and
     // `ts_millis` should remain after the older beacon arrives second.
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     let mut fresh = make_beacon(pk, 100, true);
     fresh.ts_millis = 2000;
     let mut stale = make_beacon(pk, 50, true);
@@ -474,7 +474,7 @@ fn insert_drops_stale_beacon_from_same_peer() {
 #[test]
 fn insert_accepts_newer_beacon_from_same_peer() {
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     let mut older = make_beacon(pk, 50, true);
     older.ts_millis = 1000;
     let mut newer = make_beacon(pk, 100, true);
@@ -492,7 +492,7 @@ fn insert_rejects_far_future_ts_millis() {
     // beacon would be rejected as "older". MAX_BEACON_CLOCK_DRIFT_MS (60s)
     // bounds the damage.
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -517,7 +517,7 @@ fn insert_rejects_far_future_ts_millis() {
 fn insert_accepts_ts_millis_within_clock_drift_window() {
     // 30s ahead is within the 60s drift window — should be accepted.
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -534,7 +534,7 @@ fn insert_uses_applied_through_to_break_ts_millis_ties() {
     // Same wall-clock millis (rare but possible across reboots / clock
     // skew): the higher applied_through wins.
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     let mut a = make_beacon(pk, 10, true);
     a.ts_millis = 1000;
     let mut b = make_beacon(pk, 20, true);
@@ -550,7 +550,7 @@ fn peer_summary_atomic_when_fresh_peer_present() {
     // Snapshot must always have heard_recent_beacon == true ⇒
     // max_applied_through.is_some().
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     cache.insert(&make_beacon(pk, 7, true));
     let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
     assert!(s.heard_recent_beacon);
@@ -568,7 +568,7 @@ fn peer_summary_no_fresh_peers_returns_none_and_false() {
 #[test]
 fn peer_summary_excludes_stale_and_returns_none_after_ttl() {
     let cache = ReadinessCache::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     cache.insert(&make_beacon(pk, 9, false));
     std::thread::sleep(Duration::from_millis(10));
     let s = cache.peer_summary([42u8; 32], Duration::from_millis(5));
@@ -580,7 +580,7 @@ fn peer_summary_excludes_stale_and_returns_none_after_ttl() {
 async fn await_first_fresh_beacon_resolves_immediately_when_cached() {
     let cache = ReadinessCache::default();
     let notify = ReadinessCacheNotify::default();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     cache.insert(&make_beacon(pk, 5, true));
     let got = cache
         .await_first_fresh_beacon(
@@ -604,7 +604,7 @@ async fn await_first_fresh_beacon_resolves_on_late_arrival() {
     let notify = std::sync::Arc::new(ReadinessCacheNotify::default());
     let cache_w = cache.clone();
     let notify_w = notify.clone();
-    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk = PrivateKey::random(&mut rand::rng()).public_key();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         cache_w.insert(&make_beacon(pk, 7, true));

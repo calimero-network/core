@@ -77,11 +77,12 @@ fn seal_for_test(
 #[test]
 fn a_genesis_whose_founder_credential_can_never_bind_is_refused() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let namespace_id = [0xF3u8; 32];
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
     let (genesis, founder) = namespace_genesis_for(&founder_sk);
     // Corrupt the certificate's signature: inadmissible by its own bytes, which
@@ -113,9 +114,10 @@ fn a_genesis_whose_founder_credential_can_never_bind_is_refused() {
 fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let governance_ns = [0x71; 32];
     let op_ns = [0x72; 32];
@@ -379,9 +381,10 @@ async fn the_publish_only_path_also_feeds_the_local_apply_path() {
 /// every replica then rejects.
 #[test]
 fn an_invitation_naming_no_admitter_is_admissible_by_nobody() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let gid = test_group_id();
     let signed = test_signed_invitation(&admin_sk, gid, 1_000_000);
@@ -406,9 +409,10 @@ fn an_invitation_naming_no_admitter_is_admissible_by_nobody() {
 /// A restricted invitation names who may admit, and everyone else refuses.
 #[test]
 fn only_a_named_admitter_may_admit_a_restricted_invitation() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let gid = test_group_id();
     let named = calimero_account::AccountId::from([0x11; 32]);
@@ -434,9 +438,10 @@ fn only_a_named_admitter_may_admit_a_restricted_invitation() {
 /// attacker edits to name a node of its choosing, which would buy nothing at all.
 #[test]
 fn rewriting_the_admitters_invalidates_the_invitation() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let gid = test_group_id();
     let named = calimero_account::AccountId::from([0x11; 32]);
@@ -460,7 +465,7 @@ fn rewriting_the_admitters_invalidates_the_invitation() {
 
 #[test]
 fn default_admitters_names_admins_and_skips_everybody_else() {
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
     let store = test_store();
     let gid = test_group_id();
 
@@ -508,7 +513,7 @@ fn default_admitters_reports_an_empty_set_rather_than_inventing_one() {
 
 #[test]
 fn validate_open_invitation_rejects_expired() {
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -548,7 +553,7 @@ fn validate_open_invitation_rejects_expired() {
 
 #[test]
 fn validate_open_invitation_rejects_forged_inviter_signature() {
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -576,7 +581,7 @@ fn validate_open_invitation_rejects_forged_inviter_signature() {
 #[test]
 fn verify_open_invitation_signature_accepts_valid_rejects_forged() {
     // Store-free crypto gate used by the join trust-seed paths.
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let gid = test_group_id();
 
@@ -596,7 +601,7 @@ fn verify_open_invitation_signature_accepts_valid_rejects_forged() {
 
 #[test]
 fn validate_open_invitation_rejects_unauthorized_inviter() {
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -774,9 +779,10 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
     };
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let namespace_id = [0x77; 32];
     let group_a = ContextGroupId::from([0x78; 32]);
@@ -844,9 +850,10 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
         NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
     };
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let namespace_id = [0x70; 32];
     let group = ContextGroupId::from([0x71; 32]);
@@ -919,9 +926,10 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
 fn namespace_op_log_service_collects_group_scoped_signed_ops() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let namespace_id = [0x7A; 32];
     let group_a = ContextGroupId::from([0x7B; 32]);
@@ -987,9 +995,10 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
 fn namespace_retry_service_collects_only_retryable_group_ops() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let namespace_id = [0x81; 32];
     let group_a = ContextGroupId::from([0x82; 32]);
@@ -1073,9 +1082,10 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
     // so it must never appear as a retry candidate.
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let namespace_id = [0x84; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -1155,9 +1165,10 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     // hashes in nonce order.)
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let namespace_id = [0x84; 32];
     let group = ContextGroupId::from([0x85; 32]);
@@ -1537,12 +1548,13 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
 fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // The verifier (owner/admin of the namespace) AUTHORS both ops. On the
     // replica this is a remote signer — the node under test is NOT the author.
@@ -1713,12 +1725,13 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // The founder/verifier = the KeyDelivery signer the replica TOFU-trusts.
     let founder_sk = PrivateKey::random(&mut rng);
@@ -1909,12 +1922,13 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // SAME apply path the backfill uses (`NamespaceGovernance::apply_signed_op`).
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // The TRUE owner/founder of the namespace (in production: the node whose
     // keypair created the namespace root in `handlers/create_group.rs`).
@@ -2043,11 +2057,12 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2198,11 +2213,12 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     // admin exists yet.
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2257,11 +2273,12 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2348,11 +2365,12 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2422,11 +2440,12 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     // it).
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2484,11 +2503,12 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     // applied (which would pin a forged admin) and never silently no-op'd.
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let attacker_sk = PrivateKey::random(&mut rng);
     let victim_sk = PrivateKey::random(&mut rng);
     let victim = victim_sk.public_key();
@@ -2541,11 +2561,12 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     // `namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head`.)
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2621,11 +2642,12 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     // regression) would have advanced the head here and wedged establishment.
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2696,11 +2718,12 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     // STALL DAG processing. On an established namespace nothing can be
     // hijacked, so the structural parents check must not even be consulted.
     use calimero_context_client::local_governance::SignedNamespaceOp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2758,11 +2781,12 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     // no-op that mutates NOTHING — not the member row, not caps, not owner meta.
     // (It still returns Ok, per #591, so the DAG does not stall.)
     use calimero_context_client::local_governance::SignedNamespaceOp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let founder_account = AccountId::from(*founder_sk.public_key());
     let _founder = founder_sk.public_key();
@@ -2848,11 +2872,12 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     // re-arrival must REPAIR `owner_identity` back to the founder while
     // preserving every other meta field.
     use calimero_context_client::local_governance::SignedNamespaceOp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let founder_sk = PrivateKey::random(&mut rng);
     let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
@@ -2939,11 +2964,12 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     // a clean parentless genesis that passes the gate.
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let attacker_sk = PrivateKey::random(&mut rng);
     let real_founder_sk = PrivateKey::random(&mut rng);
     let _real_founder = real_founder_sk.public_key();
@@ -3023,12 +3049,13 @@ fn replica_op_log_dedup_survives_head_pruning() {
         NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,
     };
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
@@ -3170,12 +3197,13 @@ fn replica_op_log_dedup_survives_head_pruning() {
 fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
@@ -3267,12 +3295,13 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,
     };
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
@@ -3645,7 +3674,8 @@ fn recursive_remove_nonexistent_member_returns_empty() {
 fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in() {
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let ns = ContextGroupId::from([0x10; 32]); // namespace root
@@ -3671,7 +3701,7 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
     }
 
     // The recursive inviter is an admin of the namespace root.
-    let inviter_sk = PrivateKey::random(&mut OsRng);
+    let inviter_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let inviter_pk = inviter_sk.public_key();
     // Enrolled, not derived: issuing an invitation resolves the inviter's key to
     // an account, and an unbound key issues nothing.
@@ -3686,7 +3716,7 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
         .unwrap();
 
     // owner_priv is a different member's private DM: Restricted, inviter never added.
-    let owner_pk = PrivateKey::random(&mut OsRng).public_key();
+    let owner_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let owner_account = AccountId::from(*owner_pk);
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&owner_priv, VisibilityMode::Restricted)
@@ -3754,7 +3784,8 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
 fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let ns = ContextGroupId::from([0x20; 32]);
@@ -3771,7 +3802,7 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
         MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
     }
 
-    let inviter_sk = PrivateKey::random(&mut OsRng);
+    let inviter_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let inviter_pk = inviter_sk.public_key();
     // Enrolled, not derived: issuing an invitation resolves the inviter's key to
     // an account, and an unbound key issues nothing.
@@ -3783,7 +3814,7 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
         .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
         .unwrap();
 
-    let owner_pk = PrivateKey::random(&mut OsRng).public_key();
+    let owner_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let owner_account = AccountId::from(*owner_pk);
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&owner_priv, VisibilityMode::Restricted)
@@ -3825,13 +3856,14 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
 fn governance_group_reparented_via_signed_op() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -3929,13 +3961,14 @@ fn governance_group_reparented_via_signed_op() {
 fn governance_apply_signed_op_is_idempotent_on_replay() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -3995,13 +4028,14 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
 fn governance_rejects_non_admin_signer() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let admin_account = AccountId::from(*admin_pk);
@@ -4050,13 +4084,14 @@ fn governance_rejects_non_admin_signer() {
 fn governance_group_created_is_idempotent() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -4126,14 +4161,15 @@ fn governance_group_created_is_idempotent() {
 fn governance_group_created_rejects_cross_namespace_parent() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
     use crate::{ApplyError, GroupCreatedRejection};
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -4212,10 +4248,11 @@ fn rotation_test_setup() -> (
     [u8; 32],                                  // old_key_id
 ) {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_id = [0xA7u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -4223,7 +4260,7 @@ fn rotation_test_setup() -> (
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let local_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let local_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let local_sk = PrivateKey::from(local_sk_bytes);
     let local_pk = local_sk.public_key();
     // The local node needs the secret half too: the rotation addresses its
@@ -4423,14 +4460,15 @@ fn governance_group_created_writes_birth_visibility() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
     use crate::CapabilitiesRepository;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -4520,14 +4558,15 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
     use crate::CapabilitiesRepository;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -4628,13 +4667,14 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     // and asserts the parent edge IS written even when meta pre-exists.
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -4707,13 +4747,14 @@ fn execute_group_created_rejects_self_parent() {
     // emitting GroupCreated entirely for root creation.
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let admin_account = AccountId::from(*admin_pk);
@@ -4771,13 +4812,14 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
     // blob-id-based key; peers' copies come from this apply handler).
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
 
@@ -5369,13 +5411,14 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let member_sk = PrivateKey::random(&mut rng);
@@ -5512,13 +5555,14 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let owner_sk = PrivateKey::random(&mut rng);
@@ -5679,12 +5723,13 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
 #[test]
 fn group_created_with_no_key_skips_retry() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
@@ -5744,10 +5789,11 @@ fn group_created_with_no_key_skips_retry() {
 
 #[test]
 fn apply_received_group_key_stores_key_for_recipient() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xD0u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -5756,7 +5802,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
     let group_gid = ContextGroupId::from(group_id);
 
     // The local node's namespace identity = the ECDH recipient.
-    let recipient_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let recipient_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let recipient_sk = PrivateKey::from(recipient_sk_bytes);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &recipient_sk.public_key(), &recipient_sk_bytes)
@@ -5774,7 +5820,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
     }
 
     // A remote key-holder wraps the group key for us.
-    let sender_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let sender_sk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
     let group_key = [0x6Au8; 32];
     let envelope = GroupKeyring::wrap_for_member(
         &sender_sk,
@@ -5808,17 +5854,18 @@ fn apply_received_group_key_stores_key_for_recipient() {
 
 #[test]
 fn apply_received_group_key_ignores_envelope_for_other_recipient() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xD2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let group_id = [0xD3u8; 32];
     let group_gid = ContextGroupId::from(group_id);
 
-    let recipient_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let recipient_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let recipient_sk = PrivateKey::from(recipient_sk_bytes);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &recipient_sk.public_key(), &recipient_sk_bytes)
@@ -5834,8 +5881,8 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
     }
 
     // Envelope wrapped for somebody else entirely.
-    let sender_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
-    let other_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
+    let sender_sk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+    let other_pk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng)).public_key();
     let group_key = [0x6Bu8; 32];
     let envelope =
         GroupKeyring::wrap_for_member(&sender_sk, &other_pk, &group_id, &group_key).unwrap();
@@ -5860,11 +5907,12 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
 #[test]
 fn groups_awaiting_key_reports_then_clears() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let signer_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let mut rng = UnwrapErr(SysRng);
+    let signer_sk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
 
     let namespace_id = [0xD4u8; 32];
     let group_id = [0xD5u8; 32];
@@ -5909,16 +5957,17 @@ fn groups_awaiting_key_reports_then_clears() {
 /// is load-bearing (not just "any keyless group in the namespace").
 #[test]
 fn groups_member_but_keyless_reports_then_clears() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xE1u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
     // This node's namespace identity — the member we'd be missing a key for.
-    let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
+    let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
     let my_id = PrivateKey::from(sk_bytes).public_key();
     let my_id_account = enrol_member(&store, &ns_gid, &my_id);
     NamespaceRepository::new(&store)
@@ -5970,11 +6019,12 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     // `ContextRegistered` op never decrypts ("context does not belong to any
     // group" on join_context).
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let signer_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let mut rng = UnwrapErr(SysRng);
+    let signer_sk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
 
     let namespace_id = [0xD6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -6024,9 +6074,10 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     // (`apply_received_group_key`) — i.e. the exact bytes a `GroupKeyResponse`
     // would carry on the wire actually unlock the joiner's group.
     use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xF0u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -6036,7 +6087,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     let group_key = [0x6Cu8; 32];
 
     // Joiner identity: the ECDH recipient and the member the key is for.
-    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
     // The joiner's own store owns the device secret; the responder's store gets
@@ -6047,7 +6098,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
-    let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
     let responder_account = crate::test_fixtures::account_for(&responder_pk);
@@ -6163,9 +6214,10 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     // does for a regular member — this closes the runtime-unverified gap for
     // the `ReadOnlyTee` role at the crypto/authz layer.
     use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xF2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -6175,7 +6227,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     let group_key = [0x6Du8; 32];
 
     // Joiner identity: the ECDH recipient and the member the key is for.
-    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
     // The joiner's own store owns the device secret; the responder's store gets
@@ -6186,7 +6238,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
-    let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
     let responder_account = crate::test_fixtures::account_for(&responder_pk);
@@ -6291,19 +6343,20 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
 
 #[test]
 fn responder_refuses_delivery_to_non_member() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xF2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let subgroup_id = [0xF3u8; 32];
     let subgroup_gid = ContextGroupId::from(subgroup_id);
 
-    let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
-    let stranger_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
+    let stranger_pk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng)).public_key();
 
     let store = test_store();
     let responder_account = enrol_member(&store, &ns_gid, &responder_pk);
@@ -6540,10 +6593,11 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
 fn curative_sweep_redrives_stranded_context() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_primitives::application::ApplicationId;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // ---- Namespace root + receiver identity --------------------------------
     let ns_gid = ContextGroupId::from([0xD8u8; 32]);
@@ -6570,7 +6624,7 @@ fn curative_sweep_redrives_stranded_context() {
     // ---- The stranded subgroup: pick id + mint its key ---------------------
     let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     let subgroup_key: [u8; 32] = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut k = [0u8; 32];
         rng.fill_bytes(&mut k);
         k
@@ -6684,7 +6738,7 @@ fn curative_sweep_redrives_stranded_context() {
     // held-key filter is also the deleted-group exit).
     let nokey_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     let nokey_key: [u8; 32] = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut k = [0u8; 32];
         rng.fill_bytes(&mut k);
         k
@@ -6763,11 +6817,12 @@ fn curative_sweep_redrives_stranded_context() {
 fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_context_config::VisibilityMode;
-    use rand::rngs::OsRng;
-    use rand::RngCore;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+    use rand::Rng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // ---- Namespace root + this (receiver) node's identity ------------------
     let ns_gid = ContextGroupId::from([0xA7u8; 32]);
@@ -6883,13 +6938,14 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 #[test]
 fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::super::test_fixtures::{UnresolvableAuthorizer, TEST_CUT};
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let owner_sk = PrivateKey::random(&mut rng);
     let _owner_account = founder_account_for(&owner_sk);
@@ -6965,13 +7021,14 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
 #[test]
 fn group_created_honors_at_cut_grant_over_live_denial() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let owner_sk = PrivateKey::random(&mut rng);
     let _owner_account = founder_account_for(&owner_sk);
@@ -7042,13 +7099,14 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 #[test]
 fn group_created_honors_at_cut_denial_over_live_grant() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // The owner IS a live admin — the live resolver would wave this through.
     // At the op's cut, though, the signer had no authority, so it must be rejected.
@@ -7195,7 +7253,7 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     let namespace_id = [0xC1u8; 32];
     let subgroup_id = [0xD1u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let joiner = joiner_sk.public_key();
     namespace_with_open_subgroup(
         &store,
@@ -7233,7 +7291,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
     let namespace_id = [0xC2u8; 32];
     let subgroup_id = [0xD2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let joiner = joiner_sk.public_key();
     let joiner_account = crate::test_fixtures::account_for(&joiner);
     namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner_account);
@@ -7247,12 +7305,12 @@ fn a_refused_credential_leaves_the_membership_intact() {
     // somebody ELSE is rejected outright a step earlier (see
     // `a_credential_certified_for_another_key_is_refused`), because naming an
     // account means claiming to BE it.
-    let squatter_root = PrivateKey::random(&mut rand::rngs::OsRng);
+    let squatter_root = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let squatter_genesis = calimero_account::AccountGenesis::new(squatter_root.public_key());
     let squatter = crate::test_fixtures::join_account_for(
         &squatter_root,
         squatter_genesis,
-        &PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
+        &PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key(),
         *joiner.as_ref(),
         0,
     );
@@ -7297,7 +7355,7 @@ fn a_credential_certified_for_another_key_is_refused() {
     let namespace_id = [0xC3u8; 32];
     let subgroup_id = [0xD3u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let joiner = joiner_sk.public_key();
     namespace_with_open_subgroup(
         &store,
@@ -7309,7 +7367,8 @@ fn a_credential_certified_for_another_key_is_refused() {
     // A credential lifted from somebody else's join: perfectly valid, certified
     // for a key that is not the joiner's. These ops are cleartext, so observing
     // one costs an attacker nothing.
-    let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let victim =
+        PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
     let victim_account = stolen.statement.account;
 
@@ -7347,7 +7406,7 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     let namespace_id = [0xC4u8; 32];
     let subgroup_id = [0xD4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let joiner = joiner_sk.public_key();
     // The credential comes first: it decides which account the joiner speaks
     // for, and the anchor membership has to be seeded for THAT account. This one
@@ -7410,7 +7469,7 @@ fn a_tee_admission_binds_the_replicas_device() {
         .store_key(&group_key)
         .expect("store the group key");
 
-    let replica_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let replica_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let replica = replica_sk.public_key();
     let replica_account = enrol_member(&store, &ns_gid, &replica);
     let account = crate::test_fixtures::real_join_account(&replica);
@@ -7513,9 +7572,11 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         .store_key(&group_key)
         .expect("store the group key");
 
-    let replica = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let replica =
+        PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
     let replica_account = enrol_member(&store, &ns_gid, &replica);
-    let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let victim =
+        PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
     let victim_account = stolen.statement.account;
 
@@ -7640,7 +7701,7 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
         .set_subgroup_visibility(&sub_gid, VisibilityMode::Restricted)
         .expect("set visibility");
 
-    let member_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let member_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let member = member_sk.public_key();
     let account = crate::test_fixtures::real_join_account(&member);
     let account_id = account.statement.account;
@@ -7680,7 +7741,8 @@ fn an_unbound_member_key_resolves_to_nothing() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let (_admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
 
-    let stranger = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let stranger =
+        PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
     assert_eq!(
         crate::member_account_in_namespace(&store, &ns_gid, &stranger).expect("resolve"),
         None,
@@ -7696,7 +7758,7 @@ fn a_revoked_device_resolves_to_nothing() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let (_admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
 
-    let member_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let member_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
     let member = member_sk.public_key();
     let account = crate::test_fixtures::real_join_account(&member);
 
@@ -7940,7 +8002,8 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
     use calimero_app_downloader::registry::stored_coords;
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
     use calimero_primitives::application::ApplicationId;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
@@ -7951,7 +8014,7 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
     let register =
         |(package, version): (&str, &str), tag: u8| -> calimero_store::types::ApplicationMeta {
             let store = test_store();
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let signer_sk = PrivateKey::random(&mut rng);
             let ns_gid = ContextGroupId::from([tag; 32]);
             let signer_account = enrol_member(&store, &ns_gid, &signer_sk.public_key());

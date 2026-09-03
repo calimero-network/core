@@ -97,7 +97,7 @@ A device's KEM public key is never carried on an envelope. The unwrapping device
 Rotation is built and attached at publish time, not in the generic apply handler. When the admin publishes the removal (`sign_apply_and_publish_removal`), the group-governance publisher mints a fresh key and builds a `KeyRotation` bundle for the remaining members (`crates/governance-store/src/group_governance_publisher.rs`):
 
 ```rust
-let new_group_key: [u8; 32] = OsRng.gen();
+let new_group_key: [u8; 32] = UnwrapErr(SysRng).random();
 let _ = GroupKeyring::new(self.store, self.group_id).store_key_with_epoch(&new_group_key, epoch)?;
 // Who is entitled is decided here, where the reason for the exclusion is visible.
 let recipients: Vec<KeyRecipient> = keyring
@@ -150,7 +150,7 @@ for envelope in &rotation.envelopes {
     { label: 'Removed member', color: '#f85149' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'mint new_group_key = OsRng; store_key → new_key_id = sha256(key)' },
+    { from: 0, to: 0, label: 'mint new_group_key = UnwrapErr(SysRng); store_key → new_key_id = sha256(key)' },
     { from: 0, to: 0, label: 'current_key_recipients minus the removed member (and every device of theirs)' },
     { from: 0, to: 1, label: 'publish NamespaceOp::Group { MemberRemoved, key_rotation }', color: '#a5ff11' },
     { from: 1, to: 2, label: 'apply MemberRemoved (drop row + deny-list)' },

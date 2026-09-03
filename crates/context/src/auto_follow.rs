@@ -987,7 +987,8 @@ mod tests {
         };
         use calimero_store::types::ContextLeftMarker as ContextLeftMarkerValue;
         use calimero_store::Store;
-        use rand::rngs::OsRng;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
 
         use super::super::{
             applications_to_acquire, decide_on_auto_follow_enabled, decide_on_context_registered,
@@ -1027,7 +1028,7 @@ mod tests {
         /// keyed by account, so a test that wants to read back what it wrote has
         /// to name the same one the enrolment established.
         fn seed_self_member(
-            rng: &mut OsRng,
+            rng: &mut UnwrapErr<SysRng>,
             gid: ContextGroupId,
         ) -> (Store, PrivateKey, PublicKey, calimero_account::AccountId) {
             let store = test_store();
@@ -1107,7 +1108,7 @@ mod tests {
 
         #[test]
         fn context_registered_not_auto_following_when_flag_false() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0x33u8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             let context_id = ContextId::from([0x44u8; 32]);
@@ -1134,7 +1135,7 @@ mod tests {
 
         #[test]
         fn context_registered_previously_left_when_marker_present() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0x55u8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             MembershipRepository::new(&store)
@@ -1173,7 +1174,7 @@ mod tests {
 
         #[test]
         fn context_registered_join_on_happy_path() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0x77u8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             MembershipRepository::new(&store)
@@ -1226,7 +1227,7 @@ mod tests {
         /// root-admitted-ReadOnlyTee replication path (Fix B).
         #[test]
         fn context_registered_join_for_inherited_open_subgroup_member() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let root_gid = ContextGroupId::from([0xE1u8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
 
@@ -1272,7 +1273,7 @@ mod tests {
         /// auto-follow.
         #[test]
         fn context_registered_not_auto_following_for_inherited_member_when_anchor_flag_false() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let root_gid = ContextGroupId::from([0xE4u8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
 
@@ -1318,7 +1319,7 @@ mod tests {
         /// subgroup row) whose subgroup starts `Restricted`. Returns the store,
         /// the root gid, the subgroup gid, and self pk.
         fn seed_inherited_member_with_restricted_subgroup(
-            rng: &mut OsRng,
+            rng: &mut UnwrapErr<SysRng>,
             root_gid: ContextGroupId,
             sub_gid: ContextGroupId,
         ) -> (Store, PublicKey) {
@@ -1362,7 +1363,7 @@ mod tests {
         /// grants `CAN_JOIN_OPEN_SUBGROUPS` + `auto_follow.contexts`.
         #[test]
         fn subgroup_open_flip_no_follow_while_restricted() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let root_gid = ContextGroupId::from([0xF1u8; 32]);
             let sub_gid = ContextGroupId::from([0xF2u8; 32]);
             let (store, _pk) =
@@ -1380,7 +1381,7 @@ mod tests {
         /// signal `handle_subgroup_opened` acts on.
         #[test]
         fn subgroup_open_flip_triggers_follow_for_inherited_member() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let root_gid = ContextGroupId::from([0xF3u8; 32]);
             let sub_gid = ContextGroupId::from([0xF4u8; 32]);
             let (store, self_pk) =
@@ -1425,7 +1426,7 @@ mod tests {
         /// triggered — the flip respects the member's opt-out.
         #[test]
         fn subgroup_open_flip_no_follow_when_anchor_flag_false() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let root_gid = ContextGroupId::from([0xF6u8; 32]);
             let sub_gid = ContextGroupId::from([0xF7u8; 32]);
             let (store, pk) =
@@ -1457,7 +1458,7 @@ mod tests {
         fn auto_follow_enabled_not_member_when_no_namespace_identity() {
             let store = test_store();
             let gid_bytes = [0x99u8; 32];
-            let bogus_member = PrivateKey::random(&mut OsRng).public_key();
+            let bogus_member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
             assert_eq!(
                 decide_on_auto_follow_enabled(
@@ -1471,7 +1472,7 @@ mod tests {
 
         #[test]
         fn auto_follow_enabled_not_for_self_when_event_targets_other_member() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0xAAu8; 32]);
             let (store, _sk, _self_pk, _account) = seed_self_member(&mut rng, gid);
             let other = PrivateKey::random(&mut rng).public_key();
@@ -1488,7 +1489,7 @@ mod tests {
 
         #[test]
         fn auto_follow_enabled_nothing_to_backfill_when_group_empty() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0xBBu8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             // No contexts registered in the group yet.
@@ -1504,7 +1505,7 @@ mod tests {
 
         #[test]
         fn auto_follow_enabled_returns_backfill_with_existing_contexts() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0xCCu8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
 
@@ -1549,7 +1550,7 @@ mod tests {
         /// its backfill counterpart, so the two paths agree on a late arrival.
         #[test]
         fn auto_follow_enabled_backfills_contexts_in_an_open_subgroup() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let root_gid = ContextGroupId::from([0xF1u8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
             let account = crate::test_support::account_for(&pk);
@@ -1617,7 +1618,7 @@ mod tests {
         /// the "backfill truncated" warning at the callsite.
         #[test]
         fn auto_follow_enabled_truncates_backfill_at_limit() {
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let gid = ContextGroupId::from([0xDDu8; 32]);
             let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
 

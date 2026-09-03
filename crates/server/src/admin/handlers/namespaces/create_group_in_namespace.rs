@@ -51,8 +51,8 @@ pub async fn handler(
     );
 
     let group_id: [u8; 32] = {
-        use rand::Rng;
-        rand::thread_rng().gen()
+        use rand::RngExt;
+        rand::rng().random()
     };
 
     match NamespaceRepository::new(&state.store).parent(&namespace_id) {
@@ -106,8 +106,8 @@ pub async fn handler(
     // publish no longer silently skips key creation.
     {
         let group_key: [u8; 32] = {
-            use rand::Rng;
-            rand::thread_rng().gen()
+            use rand::RngExt;
+            rand::rng().random()
         };
         if let Err(err) = GroupKeyring::new(&state.store, group_id_cgid).store_key(&group_key) {
             error!(

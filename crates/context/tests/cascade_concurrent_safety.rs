@@ -55,7 +55,8 @@ use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
 const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
@@ -128,7 +129,7 @@ fn build_replica(admin_pk: PublicKey) -> (Store, ContextGroupId, ContextGroupId)
 
 #[tokio::test]
 async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 

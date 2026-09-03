@@ -18,7 +18,7 @@ use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{ContextCompat, WrapErr};
 use futures_util::Stream;
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
@@ -1344,8 +1344,8 @@ impl ContextClient {
         _invitation_nonce: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
         let invitation_nonce = {
-            let mut rng = rand::thread_rng();
-            rng.gen::<[u8; DIGEST_SIZE]>()
+            let mut rng = rand::rng();
+            rng.random::<[u8; DIGEST_SIZE]>()
         };
 
         let ctx_exists = self.has_context(context_id)?;

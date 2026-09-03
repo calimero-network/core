@@ -363,8 +363,8 @@ pub(super) async fn open_namespace_join_stream(
         // prefix keeps its priority while successive rounds still sample
         // different peers inside it, which is what the shuffle was for.
         let (preferred, rest) = peers.split_at_mut(preferred_count);
-        preferred.shuffle(&mut rand::thread_rng());
-        rest.shuffle(&mut rand::thread_rng());
+        preferred.shuffle(&mut rand::rng());
+        rest.shuffle(&mut rand::rng());
         peers.truncate(MAX_PEERS_PER_ROUND);
 
         for peer in &peers {

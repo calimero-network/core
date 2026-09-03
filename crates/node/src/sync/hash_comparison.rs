@@ -83,7 +83,7 @@ impl SyncManager {
             .context_client
             .get_context_members(&context_id, Some(true));
 
-        let our_identity = match crate::utils::choose_stream(identities, &mut rand::thread_rng())
+        let our_identity = match crate::utils::choose_stream(identities, &mut rand::rng())
             .await
             .transpose()?
         {

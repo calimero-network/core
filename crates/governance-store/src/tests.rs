@@ -516,9 +516,10 @@ fn context_registered_leaves_a_set_bytecode_id_alone() {
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -593,9 +594,10 @@ fn apply_local_signed_group_op_nonce_and_admin() {
 fn apply_local_signed_group_op_out_of_order_siblings_2516() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -703,9 +705,10 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
 fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -796,9 +799,10 @@ fn nonce_window_round_trips_through_single_key() {
 fn reject_read_only_tee_via_member_added() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -837,9 +841,10 @@ fn reject_read_only_tee_via_member_added() {
 fn reject_read_only_tee_via_member_role_set() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -882,9 +887,10 @@ fn reject_read_only_tee_via_member_role_set() {
 fn apply_local_member_alias_member_signer_or_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -970,9 +976,10 @@ fn apply_local_context_alias_admin_or_creator() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1064,9 +1071,10 @@ fn apply_local_context_alias_admin_or_creator() {
 fn apply_local_signed_group_op_capabilities_and_delete() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1121,9 +1129,10 @@ fn apply_local_signed_group_op_capabilities_and_delete() {
 fn apply_local_signed_group_op_rejects_last_admin_removal() {
     use calimero_context_client::local_governance::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1169,9 +1178,10 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
 fn transfer_ownership_rejects_non_owner_signer() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1237,9 +1247,10 @@ fn transfer_ownership_rejects_non_owner_signer() {
 fn transfer_ownership_rejects_new_owner_not_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1297,9 +1308,10 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
 fn transfer_ownership_rejects_new_owner_not_member() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1356,9 +1368,10 @@ fn transfer_ownership_rejects_new_owner_not_member() {
 fn transfer_ownership_moves_admin_identity_to_new_owner() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1427,9 +1440,10 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
 fn context_capability_granted_rejects_unauthorized_signer() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1492,9 +1506,10 @@ fn context_capability_granted_rejects_unauthorized_signer() {
 fn context_capability_revoked_rejects_unauthorized_signer() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1563,9 +1578,10 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
 fn context_capability_granted_rejects_context_not_in_group() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1630,9 +1646,10 @@ fn context_capability_granted_rejects_context_not_in_group() {
 fn context_capability_granted_rejects_non_member_grantee() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1692,9 +1709,10 @@ fn context_capability_granted_rejects_non_member_grantee() {
 fn context_capability_revoked_rejects_context_not_in_group() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1757,9 +1775,10 @@ fn context_capability_revoked_rejects_context_not_in_group() {
 fn cross_node_state_hash_is_order_independent() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -2766,17 +2785,18 @@ fn delete_defaults_and_member_capabilities_clears_values() {
 #[test]
 fn auto_group_node_identity_is_admin_member() {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let context_id = ContextId::from([0xDD; 32]);
     let auto_group_id = ContextGroupId::from(*context_id.as_ref());
 
     // Simulate what create_context does: use node's group identity
-    let node_sk = PrivateKey::random(&mut OsRng);
+    let node_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let node_pk = node_sk.public_key();
     let node_account = AccountId::from(*node_pk);
-    let sender_key = PrivateKey::random(&mut OsRng);
+    let sender_key = PrivateKey::random(&mut UnwrapErr(SysRng));
 
     // Save group meta (as create_context does for auto-groups)
     MetaRepository::new(&store)
@@ -2840,13 +2860,14 @@ fn auto_group_node_identity_is_admin_member() {
 #[test]
 fn auto_group_random_identity_not_found_by_node_check() {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let auto_group_id = ContextGroupId::from([0xEE; 32]);
 
     // A random creator identity was added as admin
-    let random_sk = PrivateKey::random(&mut OsRng);
+    let random_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let random_pk = random_sk.public_key();
     let random_account = AccountId::from(*random_pk);
     MembershipRepository::new(&store)
@@ -2854,7 +2875,7 @@ fn auto_group_random_identity_not_found_by_node_check() {
         .unwrap();
 
     // The node's ACTUAL group identity is different
-    let node_sk = PrivateKey::random(&mut OsRng);
+    let node_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let node_pk = node_sk.public_key();
     let node_account = AccountId::from(*node_pk);
 
@@ -2923,9 +2944,10 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     set_local_gov_nonce(&store, &gid, &member_pk, 7).unwrap();
 
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signer_sk = PrivateKey::random(&mut rng);
     let op =
         SignedGroupOp::sign(&signer_sk, gid.to_bytes().into(), vec![], 1, GroupOp::Noop).unwrap();
@@ -3017,9 +3039,10 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     let quote_b = [0xE2; 32];
 
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_1 = SignedGroupOp::sign(
         &signer_sk,
@@ -3172,12 +3195,13 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 #[test]
 fn seed_bootstrap_admin_repairs_missing_member_row() {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -3229,9 +3253,10 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
 
 fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &str) {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signer_sk = PrivateKey::random(&mut rng);
     let op = SignedGroupOp::sign(
         &signer_sk,
@@ -3315,10 +3340,11 @@ fn apply_tee_policy_op_on_subgroup_rejected() {
     // accepting the op would create dead data; rejecting it keeps state
     // aligned with the decision that policies are namespace-scoped.
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let root = ContextGroupId::from([0xB0; 32]);
     let child = ContextGroupId::from([0xB1; 32]);
     let admin_sk = PrivateKey::random(&mut rng);
@@ -3712,9 +3738,10 @@ fn restore_member_context_identities_leaves_existing_rows_untouched() {
 fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -3837,9 +3864,10 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     // remove).
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // namespace (root) ── subgroup
@@ -3957,9 +3985,10 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // Namespace + Open subgroup + context structure:
@@ -4089,10 +4118,11 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     use sha2::{Digest, Sha256};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // namespace (root) ── subgroup; the member re-joins the subgroup via
@@ -4203,9 +4233,10 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     // DAG ops as the rejoiner.
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let admin_sk = PrivateKey::random(&mut rng);
@@ -4868,10 +4899,11 @@ fn deny_list_member_added_op_clears_existing_entry() {
     // Apply-path integration: a `MemberAdded` apply must clear any
     // existing deny-list entry for that member, even if they were
     // previously removed.
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
     let (_target_pk, target_account) = enrolled(&store, &gid, 0xC1);
@@ -4925,10 +4957,11 @@ fn deny_list_member_added_op_clears_existing_entry() {
 
 #[test]
 fn deny_list_member_removed_op_marks_entry() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
     let (_target_pk, target_account) = enrolled(&store, &gid, 0xC2);
@@ -4977,9 +5010,10 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
     // half of that end to end.
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::VisibilityMode;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // namespace (root) ── Open subgroup ── context, matching the e2e.
@@ -5101,10 +5135,11 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
 
 #[test]
 fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
     let (_target_pk, target_account) = enrolled(&store, &gid, 0xC3);
@@ -5162,14 +5197,15 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
 #[test]
 fn inherited_deny_fast_drops_evicted_inherited_member_and_clears_on_readmit() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let ns_gid = ContextGroupId::from([0xF1u8; 32]);
     let subgroup = ContextGroupId::from([0xF2u8; 32]);
     let ctx = ContextId::from([0xFCu8; 32]);
 
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &ns_gid, &admin_pk);
     let member_pk = PublicKey::from([0xE7; 32]);
@@ -5503,9 +5539,10 @@ fn apply_member_joined(
 /// from quietly becoming "nobody checks".
 #[test]
 fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5513,7 +5550,7 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
 
     // This node is the admin — a peer applying someone else's join op, which is
     // the side that holds the state and therefore owes the check.
-    let node_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let node_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let node_sk = PrivateKey::from(node_sk_bytes);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes)
@@ -5551,19 +5588,20 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
 
 #[test]
 fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // The offline joiner: it holds none of the group's state — no genesis, no
     // membership rows, no bindings — so the inviter lookup can only ever fail,
     // whatever the invitation. Refusing there left the op unapplied and so never
     // published, and the join could not converge once peers were reachable.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_pk);
 
-    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
 
@@ -5596,14 +5634,15 @@ fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
 
 #[test]
 fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // The whole point of the ban: an open invitation is a bearer token that
     // anyone can present, so if a kick only invalidated the invitation the
     // kicked member USED, the admin could never keep them out of a group with a
     // live join link. A removal has to outrank every invitation, including ones
     // minted after the removal.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5647,12 +5686,13 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
 
 #[test]
 fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // The ban is not a tombstone — an admin can undo it, and `MemberAdded` is
     // the only thing that does. This is the counterpart to the test above: it
     // pins that the block is lifted by the admin-gated op and nothing else.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5708,12 +5748,13 @@ fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
 
 #[test]
 fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // Leaving is not a ban — they can come back. What they cannot do is walk
     // back in on the invitation they walked out on; that one is spent for them,
     // so re-entry has to be an explicit re-invite.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5774,13 +5815,14 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
 #[test]
 fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // Consumption is per-identity, not global. An open invitation is a bearer
     // token with no invitee field — a link in a channel that many people join
     // with — so burning it globally on first use would break the shared link for
     // everyone else. Only the identity that used it is barred from replaying it.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5821,14 +5863,15 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
 fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_from() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // Inheritance is the back door that makes a subgroup kick meaningless: an
     // Open subgroup admits any parent member holding CAN_JOIN_OPEN_SUBGROUPS
     // automatically, so the kicked member simply re-inherits. That is exactly
     // what `group-kick-and-rejoin-keyshare` exercised as the SUCCESS path, and
     // it is now a rejection.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5945,9 +5988,10 @@ fn drained_member_joined(
 #[test]
 #[serial_test::serial]
 fn member_joined_invite_emits_membership_op_event() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5977,9 +6021,10 @@ fn member_joined_invite_emits_membership_op_event() {
 fn member_joined_open_emits_membership_op_event() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -6089,9 +6134,10 @@ fn permission_checker_can_manage_metadata() {
 fn metadata_set_does_not_change_group_state_hash() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -6148,9 +6194,10 @@ fn member_metadata_self_set_allowed_others_gated() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -6556,9 +6603,10 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     // would slip through without this one.
     use calimero_context_client::local_governance::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let admin_sk = PrivateKey::random(&mut rng);
@@ -6939,7 +6987,7 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
 #[test]
 fn is_tee_admitted_identity_matches_tee_joined_member() {
     let store = test_store();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
     let tee_node = AccountId::from([0x42; 32]);
@@ -6978,13 +7026,14 @@ fn is_tee_admitted_identity_matches_tee_joined_member() {
 mod auto_follow_tests {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::*;
     use crate::apply_local_signed_group_op;
 
     fn seed(
-        rng: &mut OsRng,
+        rng: &mut UnwrapErr<SysRng>,
     ) -> (
         calimero_store::Store,
         calimero_context_config::types::ContextGroupId,
@@ -7022,7 +7071,7 @@ mod auto_follow_tests {
 
     #[test]
     fn admin_can_set_member_auto_follow() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, _member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7050,7 +7099,7 @@ mod auto_follow_tests {
 
     #[test]
     fn member_can_set_own_auto_follow() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7078,7 +7127,7 @@ mod auto_follow_tests {
 
     #[test]
     fn non_admin_cannot_set_others_auto_follow() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, _member_account) =
             seed(&mut rng);
 
@@ -7130,7 +7179,7 @@ mod auto_follow_tests {
 
     #[test]
     fn rejects_non_member_target() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, _gid, gid_bytes, admin_sk, _member_sk, _admin_account, _member_account) =
             seed(&mut rng);
         let stranger = PrivateKey::random(&mut rng).public_key();
@@ -7157,7 +7206,7 @@ mod auto_follow_tests {
 
     #[test]
     fn default_flags_match_default_impl_and_preserved_on_role_change() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7225,7 +7274,7 @@ mod auto_follow_tests {
 
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7332,7 +7381,7 @@ mod auto_follow_tests {
     async fn member_added_emits_synthesized_auto_follow_set() {
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (
             store,
             _gid,
@@ -7442,7 +7491,7 @@ mod auto_follow_tests {
     /// must be honored.
     #[test]
     fn explicit_opt_out_after_member_added_is_preserved() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, _, _admin_account, _member_account) = seed(&mut rng);
 
         let target_sk = PrivateKey::random(&mut rng);
@@ -7522,7 +7571,7 @@ mod auto_follow_tests {
 
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, _member_account) =
             seed(&mut rng);
 
@@ -7638,7 +7687,7 @@ mod auto_follow_tests {
     fn replayed_group_op_does_not_re_emit() {
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (
             store,
             _gid,
@@ -7730,7 +7779,7 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
         use crate::NamespaceOpLogService;
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let admin_sk = PrivateKey::random(&mut rng);
         let admin_sk_bytes: [u8; 32] = *admin_sk.as_bytes();
         let admin_pk = admin_sk.public_key();
@@ -7872,7 +7921,8 @@ mod auto_follow_tests {
 mod tee_member_removed_event_tests {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::*;
     use crate::apply_local_signed_group_op;
@@ -8001,7 +8051,7 @@ mod tee_member_removed_event_tests {
     fn member_removed_op_emits_tee_event_for_readonly_tee_role() {
         let store = test_store();
         let gid = test_group_id();
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &gid, &admin_pk);
         let (_tee_pk, tee_account) = enrolled(&store, &gid, 0xE1);
@@ -8052,7 +8102,7 @@ mod tee_member_removed_event_tests {
     fn member_removed_op_does_not_emit_tee_event_for_regular_member() {
         let store = test_store();
         let gid = test_group_id();
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &gid, &admin_pk);
         let (_target_pk, target_account) = enrolled(&store, &gid, 0xE2);
@@ -8115,7 +8165,7 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         let (_tee_pk, tee_account) = enrolled(&store, &ns_gid, 0xE1);
@@ -8218,7 +8268,7 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         let (tee_pk, tee_account) = enrolled(&store, &ns_gid, 0xE3);
@@ -8323,11 +8373,11 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         // The leaver signs its own MemberLeft, so it needs a real keypair.
-        let tee_sk = PrivateKey::random(&mut OsRng);
+        let tee_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let tee_pk = tee_sk.public_key();
         let tee_account = enrol_member(&store, &ns_gid, &tee_pk);
 
@@ -8429,7 +8479,7 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         let member_pk = PublicKey::from([0xE2; 32]);
@@ -8508,10 +8558,10 @@ mod tee_member_removed_event_tests {
             // Distinct admin so the leaver is not the last admin (the
             // apply path bails on `OwnerCannotSelfLeave` /
             // `LastAdminCannotLeave` otherwise).
-            let admin_sk = PrivateKey::random(&mut OsRng);
+            let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let admin_pk = admin_sk.public_key();
             let admin = enrol_member(&store, &gid, &admin_pk);
-            let tee_sk = PrivateKey::random(&mut OsRng);
+            let tee_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let tee_pk = tee_sk.public_key();
             let tee_account = enrol_member(&store, &gid, &tee_pk);
 
@@ -8556,10 +8606,10 @@ mod tee_member_removed_event_tests {
         {
             let store = test_store();
             let gid = test_group_id();
-            let admin_sk = PrivateKey::random(&mut OsRng);
+            let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let admin_pk = admin_sk.public_key();
             let admin = enrol_member(&store, &gid, &admin_pk);
-            let leaver_sk = PrivateKey::random(&mut OsRng);
+            let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let leaver_pk = leaver_sk.public_key();
             let leaver_account = enrol_member(&store, &gid, &leaver_pk);
 
@@ -8616,7 +8666,8 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
     // type actually stored. Asserting over many freshly derived accounts is the
     // testable half of it.
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let sentinel = placeholder_admin_identity();
     assert_eq!(
@@ -8625,7 +8676,7 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
         "the AccountId form of the sentinel must round-trip to the all-zeros bytes"
     );
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     for _ in 0..256 {
         let root = PrivateKey::random(&mut rng);
         let genesis = calimero_account::AccountGenesis::new(root.public_key());
@@ -8664,9 +8715,10 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use calimero_storage::logical_clock::HybridTimestamp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
@@ -8802,9 +8854,10 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use calimero_storage::logical_clock::HybridTimestamp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let root = ContextGroupId::from([0xE1; 32]);
@@ -9204,7 +9257,8 @@ mod rotation_gate_alignment {
     use crate::group_governance_publisher::ensure_rotation_is_publishable;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     /// Namespace + a subgroup nested under it. The subgroup's visibility is left at
     /// the default (Restricted), so it encrypts under its OWN key and a removal
@@ -9231,7 +9285,7 @@ mod rotation_gate_alignment {
     /// Repoint this node's namespace identity at a fresh keypair that holds no
     /// admin row anywhere — the non-admin `MANAGE_MEMBERS` holder's node.
     fn make_namespace_identity_a_non_admin(store: &Store, ns_gid: &ContextGroupId) -> PublicKey {
-        let sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+        let sk_bytes: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
         let sk = PrivateKey::from(sk_bytes);
         let pk = sk.public_key();
         NamespaceRepository::new(store)
@@ -9575,7 +9629,8 @@ mod self_leave_rotation {
     use calimero_context_config::VisibilityMode;
     use calimero_governance_types::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     /// A namespace root plus a subgroup, with `admin` in charge of both and `leaver` a
     /// plain member of both. The subgroup's visibility is left at the default
@@ -9596,7 +9651,7 @@ mod self_leave_rotation {
         let ((_admin_sk, _admin_pk), admin) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
         let leaver_account = enrol_member(&store, &ns_gid, &leaver);
 
@@ -9807,7 +9862,7 @@ mod self_leave_rotation {
         let pending = PendingRotationRepository::new(&f.store);
         apply_member_left(&f, &f.sub_gid);
 
-        let outsider_sk = PrivateKey::random(&mut OsRng);
+        let outsider_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         MembershipRepository::new(&f.store)
             .add_member(
                 &f.sub_gid,
@@ -9849,8 +9904,9 @@ mod self_leave_rotation_crypto {
     use crate::GroupKeyring;
     use calimero_governance_types::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
-    use rand::Rng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+    use rand::RngExt;
 
     #[test]
     fn the_rotation_wraps_the_new_key_for_everyone_except_the_leaver() {
@@ -9860,10 +9916,10 @@ mod self_leave_rotation_crypto {
         let ((admin_sk, admin_pk), admin) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
-        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let stayer = stayer_sk.public_key();
         let stayer_account = enrol_member(&store, &ns_gid, &stayer);
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
         let leaver_account = enrol_member(&store, &ns_gid, &leaver);
 
@@ -9874,7 +9930,7 @@ mod self_leave_rotation_crypto {
             .add_member(&ns_gid, &leaver_account, GroupMemberRole::Member)
             .unwrap();
 
-        let new_key: [u8; 32] = OsRng.gen();
+        let new_key: [u8; 32] = UnwrapErr(SysRng).random();
         let keyring = GroupKeyring::new(&store, ns_gid);
         let entitled = keyring.current_key_recipients().expect("list recipients");
 
@@ -9989,9 +10045,9 @@ mod self_leave_rotation_crypto {
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&admin_store, ns_id);
         let _ = crate::test_fixtures::bootstrap_namespace_with_admin_account(&leaver_store, ns_id);
 
-        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let stayer = stayer_sk.public_key();
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
 
         let mut leaver_account = None;
@@ -10010,7 +10066,7 @@ mod self_leave_rotation_crypto {
 
         // The key everyone holds before the departure. The leaver keeps a copy of this
         // forever — deleting it is not something the group can enforce.
-        let key_before: [u8; 32] = OsRng.gen();
+        let key_before: [u8; 32] = UnwrapErr(SysRng).random();
         GroupKeyring::new(&admin_store, ns_gid)
             .store_key_with_epoch(&key_before, 1)
             .unwrap();
@@ -10064,7 +10120,7 @@ mod self_leave_rotation_crypto {
         }
 
         // --- The remaining admin discharges it. ---
-        let key_after: [u8; 32] = OsRng.gen();
+        let key_after: [u8; 32] = UnwrapErr(SysRng).random();
         assert_ne!(key_before, key_after);
         let admin_ring = GroupKeyring::new(&admin_store, ns_gid);
         let entitled = admin_ring.current_key_recipients().expect("recipients");
@@ -10179,8 +10235,8 @@ mod self_leave_rotation_crypto {
         let gid = test_group_id();
 
         // Two rotations, minted independently, landing at different DAG sequences.
-        let key_from_admin_1: [u8; 32] = OsRng.gen();
-        let key_from_admin_2: [u8; 32] = OsRng.gen();
+        let key_from_admin_1: [u8; 32] = UnwrapErr(SysRng).random();
+        let key_from_admin_2: [u8; 32] = UnwrapErr(SysRng).random();
 
         // Replica A sees admin 1's rotation first, then admin 2's. Replica B sees them
         // in the opposite order — the whole point is that arrival order must not matter.
@@ -10222,7 +10278,7 @@ mod self_leave_rotation_crypto {
         let ns_gid = ContextGroupId::from(ns_id);
         let (_admin_sk, _admin) = bootstrap_namespace_with_admin(&store, ns_id);
 
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
         let leaver_account = enrol_member(&store, &ns_gid, &leaver);
         MembershipRepository::new(&store)
@@ -10278,14 +10334,15 @@ mod parked_op_retries_to_success {
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     #[test]
     fn an_undecidable_op_applies_cleanly_once_the_cut_becomes_resolvable() {
         let store = test_store();
         let gid = test_group_id();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin = admin_sk.public_key();
         let admin = enrol_member(&store, &gid, &admin);
         let mut meta = test_meta();

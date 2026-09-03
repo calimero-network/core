@@ -579,7 +579,7 @@ impl<'a> GroupKeyring<'a> {
         use calimero_crypto::SharedKey;
 
         // Per-envelope ephemeral keypair — the source of forward secrecy.
-        let ephemeral_sk = PrivateKey::random(&mut rand::thread_rng());
+        let ephemeral_sk = PrivateKey::random(&mut rand::rng());
         let recipient = EnvelopeRecipient::Member {
             identity: *recipient_pk,
             ephemeral_pk: ephemeral_sk.public_key(),
@@ -617,7 +617,7 @@ impl<'a> GroupKeyring<'a> {
     ) -> EyreResult<KeyEnvelope> {
         use calimero_crypto::SharedKey;
 
-        let ephemeral_sk = X25519SecretKey::random(&mut rand::thread_rng());
+        let ephemeral_sk = X25519SecretKey::random(&mut rand::rng());
         let recipient = EnvelopeRecipient::Device {
             device,
             ephemeral_pk: KemPublicKey::from(*ephemeral_sk.public_key().as_bytes()),

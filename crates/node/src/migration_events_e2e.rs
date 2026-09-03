@@ -37,7 +37,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::GroupUpgradeStatus;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use serial_test::serial;
 
 use crate::cascade_dispatch_e2e::{
@@ -156,7 +157,7 @@ fn seat_cohort(store: &Store, ns: &ContextGroupId, admin_sk: &PrivateKey, peer: 
 #[serial(boot_test_node)]
 async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let peer_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
@@ -285,7 +286,7 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
 #[serial(boot_test_node)]
 async fn a_member_sees_started_then_fleet_progress_then_completed() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     // The admin driving the upgrade from some other node.

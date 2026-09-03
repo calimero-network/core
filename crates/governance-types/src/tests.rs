@@ -1,7 +1,8 @@
 use super::*;
 
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 // ---------------------------------------------------------------------------
 // Borsh discriminant golden tests
@@ -1079,7 +1080,7 @@ fn sample_group_id() -> ContextGroupId {
 
 #[test]
 fn sign_and_verify_round_trip() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
@@ -1100,7 +1101,7 @@ fn sign_and_verify_round_trip() {
 
 #[test]
 fn wrong_key_fails() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let other = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
@@ -1125,7 +1126,7 @@ fn wrong_key_fails() {
 
 #[test]
 fn tampered_op_fails() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
@@ -1147,7 +1148,7 @@ fn tampered_op_fails() {
 
 #[test]
 fn replay_distinct_content_hash() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
@@ -1185,7 +1186,7 @@ fn replay_distinct_content_hash() {
 
 #[test]
 fn signable_bytes_deterministic() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let pk = sk.public_key();
     let s = SignableGroupOp {
@@ -1213,7 +1214,7 @@ fn sample_namespace_id() -> NamespaceId {
 
 #[test]
 fn namespace_op_sign_verify_root() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let op = SignedNamespaceOp::sign(
@@ -1236,7 +1237,7 @@ fn namespace_op_sign_verify_root() {
 
 #[test]
 fn namespace_op_sign_verify_group() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let encrypted = EncryptedGroupOp {
@@ -1264,7 +1265,7 @@ fn namespace_op_sign_verify_group() {
 
 #[test]
 fn namespace_op_tampered_fails() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let mut op = SignedNamespaceOp::sign(
@@ -1284,7 +1285,7 @@ fn namespace_op_tampered_fails() {
 
 #[test]
 fn namespace_op_content_hash_distinct() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let op1 = SignedNamespaceOp::sign(
@@ -1324,7 +1325,7 @@ fn namespace_op_content_hash_distinct() {
 
 #[test]
 fn namespace_signable_bytes_deterministic() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let pk = sk.public_key();
     let s = SignableNamespaceOp {
@@ -1357,7 +1358,7 @@ fn sample_application_id(seed: u8) -> ApplicationId {
 
 #[test]
 fn cascade_upgrade_sign_verify() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let op = SignedGroupOp::sign(
@@ -1391,7 +1392,7 @@ fn cascade_upgrade_distinct_from_single_group_target() {
     // A cascade op and a non-cascade op with the same new bytecode_id/target
     // must produce DIFFERENT content hashes -- otherwise replay/dedup
     // would conflate the two distinct governance intents.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let new_bytecode_id = [11u8; 32];
     let target = sample_application_id(0x77);
@@ -1446,7 +1447,7 @@ fn cascade_upgrade_from_bytecode_id_changes_hash() {
     // refactor that accidentally collapses `from_bytecode_id` (e.g. by
     // defaulting it or excluding it from signable bytes) would silently
     // break dedup of intent-different cascades.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let new_bytecode_id = [11u8; 32];
     let target = sample_application_id(0x77);
@@ -1580,7 +1581,7 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
 // can't re-open the window.
 #[test]
 fn pre_flag_day_group_op_version_is_rejected() {
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     // A struct-shaped op carrying the immediately-previous schema version.
     // `verify_signature` must reject on the version check alone - before
     // touching the (here bogus) signature.
@@ -1605,7 +1606,7 @@ fn pre_flag_day_group_op_version_is_rejected() {
 
 #[test]
 fn pre_flag_day_namespace_op_version_is_rejected() {
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let stale = SignedNamespaceOp {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
         namespace_id: sample_group_id().to_bytes().into(),
@@ -1650,7 +1651,7 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
         op: GroupOp,
         signature: [u8; 64],
     }
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let v7 = V7SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
         group_id: sample_group_id().to_bytes(),
@@ -1713,7 +1714,7 @@ mod governance_op_storage_roundtrip {
     /// but not cryptographically meaningful — these tests exercise the codec, and
     /// signature verification has its own coverage.
     fn sample_join_account() -> Box<JoinAccountCredential> {
-        let root = PrivateKey::random(&mut OsRng).public_key();
+        let root = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
         let genesis = calimero_account::AccountGenesis::new(root);
 
@@ -1723,7 +1724,7 @@ mod governance_op_storage_roundtrip {
 
                 device: calimero_account::DeviceId::from([0x3E; 32]),
 
-                sign_pk: PrivateKey::random(&mut OsRng).public_key(),
+                sign_pk: PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
 
                 kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
 
@@ -1759,7 +1760,7 @@ mod governance_op_storage_roundtrip {
     }
 
     fn signed(op: NamespaceOp) -> SignedNamespaceOp {
-        let sk = PrivateKey::random(&mut OsRng);
+        let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         SignedNamespaceOp::sign(&sk, [0x77; 32].into(), vec![[0x01; 32], [0x02; 32]], 7, op)
             .expect("sign namespace op")
     }
@@ -1803,7 +1804,9 @@ mod governance_op_storage_roundtrip {
         // different ids for the same op. That failure would surface far from
         // here, as peers disagreeing about history.
         let unendorsed = signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member: calimero_account::AccountId::from(*PrivateKey::random(&mut OsRng).public_key()),
+            member: calimero_account::AccountId::from(
+                *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
+            ),
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
             account: sample_join_account(),
@@ -1859,7 +1862,9 @@ mod governance_op_storage_roundtrip {
         // largest and most field-rich op payload — the one most exposed to a
         // codec asymmetry.
         assert_roundtrips(&signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member: calimero_account::AccountId::from(*PrivateKey::random(&mut OsRng).public_key()),
+            member: calimero_account::AccountId::from(
+                *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
+            ),
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
             account: sample_join_account(),
@@ -1886,7 +1891,7 @@ mod governance_op_storage_roundtrip {
             },
             RootOp::AdminChanged {
                 new_admin: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
             },
             RootOp::PolicyUpdated {
@@ -1894,21 +1899,21 @@ mod governance_op_storage_roundtrip {
             },
             RootOp::MemberJoined {
                 member: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
                 signed_invitation: sample_invitation(),
                 account: sample_join_account(),
             },
             RootOp::MemberJoinedOpen {
                 member: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
                 group_id: [7; 32].into(),
                 account: sample_join_account(),
             },
             RootOp::MemberJoinedAt {
                 member: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
@@ -2177,7 +2182,7 @@ fn v10_target_application_set_bytes_are_rejected_not_misparsed() {
         signature: [u8; 64],
     }
 
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let bytes = ::borsh::to_vec(&V10SignedGroupOp {
         version: 10,
         group_id: sample_group_id().to_bytes(),
