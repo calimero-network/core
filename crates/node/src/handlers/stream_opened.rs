@@ -6,6 +6,7 @@ use calimero_network_primitives::stream::Stream;
 use libp2p::{PeerId, StreamProtocol};
 use tracing::{debug, info, warn};
 
+use crate::handlers::blob_announce::handle_blob_announce_stream;
 use crate::handlers::blob_protocol::handle_blob_protocol_stream;
 use crate::sync_session_bridge::{SyncSessionJob, SyncSessionSendError};
 use crate::NodeManager;
@@ -14,6 +15,7 @@ use crate::NodeManager;
 ///
 /// Protocol routing:
 /// - `CALIMERO_BLOB_PROTOCOL` → blob_protocol::handle_blob_protocol_stream
+/// - `CALIMERO_BLOB_ANNOUNCE_PROTOCOL` → blob_announce::handle_blob_announce_stream
 /// - All other protocols → SyncManager::handle_opened_stream
 pub fn handle_stream_opened(
     node_manager: &mut NodeManager,
@@ -40,6 +42,20 @@ pub fn handle_stream_opened(
                 handle_blob_protocol_stream(node_client, context_client, peer_id, stream).await
             {
                 debug!(%peer_id, error = %err, "Failed to handle blob protocol stream");
+            }
+        }));
+    } else if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL {
+        debug!(%peer_id, "Routing to blob announce handler");
+        let node_client = node_manager.clients.node.clone();
+        let context_client = node_manager.clients.context.clone();
+        // Detached like the blob-serving path above, and for the same reason:
+        // a prefetch can run for as long as a transfer, which must not occupy
+        // the NodeManager arbiter.
+        drop(tokio::spawn(async move {
+            if let Err(err) =
+                handle_blob_announce_stream(node_client, context_client, peer_id, stream).await
+            {
+                debug!(%peer_id, error = %err, "Failed to handle blob announce stream");
             }
         }));
     } else {

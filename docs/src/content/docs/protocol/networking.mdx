@@ -25,6 +25,7 @@ behaviour names a fixed version:
 | --- | --- |
 | `/calimero/stream/0.0.2` | the sync stream (heads, tree-diff, snapshots, key recovery) |
 | `/calimero/blob/0.0.2` | the dedicated blob transfer stream |
+| `/calimero/blob-announce/1.0.0` | "I now hold this blob for this context", sent to a context's availability nodes |
 | `/calimero/kad/1.0.0` | the Kademlia DHT (blob discovery) |
 
 libp2p only opens a stream when both peers advertise the **exact same protocol

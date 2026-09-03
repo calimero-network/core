@@ -11,6 +11,7 @@ use tracing::debug;
 use crate::NodeManager;
 
 // Each handler in its own focused file (SRP)
+mod blob_announce;
 mod blob_protocol;
 pub mod ephemeral;
 mod get_blob_bytes;

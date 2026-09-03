@@ -161,22 +161,37 @@ blob store re-chunks the resulting byte stream into 1 MiB storage chunks itself.
 
 ## Announce and discover
 
-A blob is **announced** so peers in a context can locate the bytes.
-`blob_announce_to_context(blob_id, context_id)` looks up the blob's size from
-local metadata and publishes a record to the Kademlia DHT
-([Networking](/protocol/networking/)).
+A blob is **announced** so the context's availability nodes can prefetch the
+bytes. `blob_announce_to_context(blob_id, context_id)` looks up the blob's size
+from local metadata and sends a one-message notice — `{ blob_id, context_id,
+size }` — over a dedicated stream protocol,
+`/calimero/blob-announce/1.0.0` ([Networking](/protocol/networking/)), to each
+of the context's `ReadOnlyTee` members and to nobody else.
 
-```text
-DHT key   = context_id ‖ blob_id
-DHT value = local_peer_id ‖ size   (size as little-endian u64)
-```
+Direct streams to a chosen set, never a topic publish: gossipsub `flood_publish`
+fans every publish to every subscriber, so broadcasting would tell the whole
+context about every blob. And the announce is the ONLY place the blob→context
+association exists — `BlobMeta` is keyed by blob id alone, and state deltas
+carry opaque values — which is why prefetch hangs off it rather than off an
+enumeration of the context's state.
 
-The record is stored with `Quorum::One`. The key is scoped by `context_id`, so
-the same blob announced into different contexts is discovered independently, and
-a discovery query is always made in the context of a specific context.
+A receiver prefetches only if it is itself a `ReadOnlyTee` member of that
+context (read from its own governance state, never taken from the announcement),
+does not already hold the blob, and the advertised size is within the 500 MiB
+transfer cap. At most 2 prefetches run at once, and announcements arriving while
+both slots are busy are dropped rather than queued — a dropped prefetch costs
+availability for one blob, never correctness. Announcing is best-effort in the
+same spirit: a refused or failed announce never fails the write that produced
+the blob.
 
-Discovery does not read that record. A node that holds a `BlobId` in state but
-not the bytes **asks the context's peers directly**: it takes the subscribers of
+**Known gap:** an availability node that is offline when a blob is announced
+never learns about it and has no catch-up path. The blob stays findable by
+probing its original holder, so correctness is unaffected, but availability for
+that blob degrades until something announces it again.
+
+Discovery is a separate mechanism, and does not read any announcement. A node
+that holds a `BlobId` in state but not the bytes **asks the context's peers
+directly**: it takes the subscribers of
 the context's gossipsub topic as candidates and sends each one a *probe* — a
 `BlobRequest` whose response header is read and whose chunks never are, so the
 peer answers `found` without transferring anything.
@@ -184,6 +199,12 @@ peer answers `found` without transferring anything.
 Probes go out in **batches of 8**, concurrently within a batch and sequentially
 between batches, stopping at the first peer that answers `found: true`. The
 winner is then asked for the bytes over the transfer protocol below.
+
+Candidates are ordered **before** they are batched, availability nodes first.
+Because a sweep asks at most 32 candidates (below), that ordering decides which
+peers are asked at all on a large context, not merely in what order: an
+availability node listed 33rd by the subscriber set would never be probed,
+while first it answers in one round trip.
 
 The search is bounded three ways, and all three are load-bearing:
 
@@ -217,9 +238,10 @@ holder that restarts stays discoverable. A probe deliberately does not
 distinguish "not authorised" from "not held": both answer `found: false`, which
 costs a wasted candidate and never a wrong fetch.
 
-The DHT announce above still runs, but **nothing reads it any more** — the
-provider record is write-only. The announce is kept because it is where provider
-state will be republished as an anchor; the lookup goes with it.
+The Kademlia provider-record API (`announce_blob_to_kad` /
+`find_blob_providers`) still exists as published API but has no in-tree caller:
+producers announce to availability nodes and consumers probe, so nothing writes
+or reads that record on the standard path.
 
 :::note
 Global (context-less) blob queries are not supported — discovery always names a
@@ -334,9 +356,11 @@ to a peer that fetches it.
    state).
 
 2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
-   blob's size locally and `put_record`s a Kademlia record keyed
-   `context_id ‖ blob_id` with value `local_peer_id ‖ size` at `Quorum::One`. The
-   image is now discoverable by any member of that context.
+   blob's size locally and sends `{ blob_id, context_id, size }` over
+   `/calimero/blob-announce/1.0.0` to each of the context's availability nodes.
+   Each one that is online, does not already hold the image, and has a free
+   prefetch slot fetches it, so the image ends up on an always-on node as well
+   as the producer.
 
 3. **Discover it.** A second node holds the `BlobId` in state (it synced the
    reference) but not the bytes. It takes the context topic's subscribers as
@@ -411,7 +435,9 @@ wrong or tampered payload cannot masquerade as the requested blob.
   `scope_root`, so blob movement neither creates nor repairs state divergence.
 - Guests use `create → write → close` (yields a `BlobId`), `open → read`, and
   `announce_to_context`, bounded by `max_blob_handles` and `max_blob_chunk_size`.
-- Discovery is a context-scoped Kademlia lookup; transfer runs either over the
+- Discovery is a bounded probe of the context's peers, availability nodes first;
+  producers announce new blobs to those availability nodes over
+  `/calimero/blob-announce/1.0.0` so they prefetch. Transfer runs either over the
   dedicated `/calimero/blob/0.0.2` stream (`BlobRequest` → `BlobResponse` →
   `BlobChunk*`) or, during sync, as encrypted `BlobShare` frames — both gated by
   context-membership authorization and both self-verifying by content address.

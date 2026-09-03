@@ -14,6 +14,23 @@ pub struct BlobRequest {
     pub auth: Option<BlobAuth>,
 }
 
+/// Sole message of [`crate::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL`]: the
+/// sender has the blob and it belongs to this context.
+///
+/// Serialised with `serde_json`, matching [`BlobRequest`] on the transfer
+/// protocol. Carries no auth envelope on purpose — it asks the receiver for
+/// nothing except that it consider fetching, and the receiver re-derives its
+/// own right to the bytes from local governance state before it does. An
+/// announcement from a stranger is therefore, at worst, an ignored frame.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BlobAnnouncement {
+    pub blob_id: BlobId,
+    pub context_id: ContextId,
+    /// Size in bytes, so a receiver can decline an oversized blob before
+    /// opening a transfer stream for it.
+    pub size: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobResponse {
     pub found: bool,

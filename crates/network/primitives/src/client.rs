@@ -34,8 +34,8 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
-    NetworkStatus, OpenStream, PeerCount, ProbeBlob, Publish, QueryBlob, RequestBlob, SetPeerScore,
-    Subscribe, SubscribedPeers, Unsubscribe,
+    NetworkStatus, OpenStream, PeerCount, ProbeBlob, Publish, QueryBlob, RequestBlob,
+    SendBlobAnnouncement, SetPeerScore, Subscribe, SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
@@ -294,6 +294,37 @@ impl NetworkClient {
                 request: QueryBlob {
                     blob_id,
                     context_id,
+                },
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Tell one peer that this node now holds `blob_id` for `context_id`.
+    ///
+    /// Best-effort by contract: an `Err` means that peer missed this blob (it
+    /// was offline, or does not speak the announce protocol), never that the
+    /// write which produced the blob failed. The blob stays reachable from its
+    /// original holder by probing either way.
+    pub async fn announce_blob_to_peer(
+        &self,
+        peer_id: libp2p::PeerId,
+        blob_id: BlobId,
+        context_id: ContextId,
+        size: u64,
+    ) -> eyre::Result<()> {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::SendBlobAnnouncement {
+                request: SendBlobAnnouncement {
+                    peer_id,
+                    blob_id,
+                    context_id,
+                    size,
                 },
                 outcome: tx,
             })

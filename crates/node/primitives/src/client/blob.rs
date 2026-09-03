@@ -591,12 +591,11 @@ impl NodeClient {
 
     /// Query the network for peers that have a specific blob.
     ///
-    /// DEAD PENDING TASK 4: nothing calls this. `get_blob` now discovers
-    /// holders by probing the context's peers, so the DHT is write-only —
-    /// `announce_blob_to_network` below still publishes a provider record that
-    /// no lookup reads. The announce is kept because Task 4 replaces the kad
-    /// put with an anchor announce at exactly that call site; this lookup goes
-    /// with it, one way or the other.
+    /// **No in-tree caller.** `get_blob` discovers holders by probing the
+    /// context's peers — custody is a property of a peer's own blob store, so
+    /// the peer is the authority on it and the answer cannot go stale, which a
+    /// DHT provider record can. Kept as published API for out-of-tree callers,
+    /// alongside its write side [`NodeClient::announce_blob_to_kad`].
     pub async fn find_blob_providers(
         &self,
         blob_id: &BlobId,
@@ -607,12 +606,13 @@ impl NodeClient {
             .await
     }
 
-    /// Announce a blob to the network for discovery.
+    /// Publish a DHT provider record for a blob.
     ///
-    /// The read side of this record is dead — see `find_blob_providers` above.
-    /// Kept, not removed: Task 4 replaces this kad put with an anchor announce
-    /// and hooks its prefetch here.
-    pub async fn announce_blob_to_network(
+    /// **No in-tree caller**, and the counterpart of `find_blob_providers`
+    /// above: producers now announce to the context's availability nodes via
+    /// [`NodeClient::announce_blob_to_network`] instead. Kept as published API
+    /// so an out-of-tree caller that wants the kad record can still write one.
+    pub async fn announce_blob_to_kad(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
@@ -621,6 +621,83 @@ impl NodeClient {
         self.network_client
             .announce_blob(*blob_id, *context_id, size)
             .await
+    }
+
+    /// Tell the context's availability nodes that this node now holds a blob,
+    /// so they can prefetch it.
+    ///
+    /// This is the ONE place in the system where the blob→context association
+    /// exists: `BlobMeta` is keyed by blob id alone, and state deltas carry
+    /// opaque borsh values, so nothing downstream can recover which context a
+    /// blob belongs to. Every producer — the app host function, the admin
+    /// upload handler, and `upgrade_group` — already calls this, which is why
+    /// prefetch hangs off it.
+    ///
+    /// Delivery is direct streams to a bounded, chosen set: the context's
+    /// `ReadOnlyTee` members, resolved through the same lookup that orders
+    /// probe candidates. Never gossipsub — `flood_publish` fans every publish
+    /// to every subscriber of the topic, so a topic broadcast would tell the
+    /// whole context about every blob, which is precisely the fan-out this
+    /// design exists to avoid.
+    ///
+    /// **Best-effort by contract.** A refused, failed, or undeliverable
+    /// announce is logged and swallowed: the upload that triggered it has
+    /// already succeeded, and the blob is findable from this node by probing
+    /// regardless. A context with no availability node announces to nobody,
+    /// which is a no-op rather than an error.
+    ///
+    /// **Known gap:** an availability node that is offline right now misses
+    /// this blob and has no catch-up path — see the module docs of
+    /// `calimero_node::handlers::blob_announce`.
+    pub async fn announce_blob_to_network(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+        size: u64,
+    ) -> eyre::Result<()> {
+        let anchors = self.member_roles.anchors_for_context(context_id);
+        if anchors.is_empty() {
+            tracing::debug!(
+                %blob_id,
+                %context_id,
+                "no availability node known for this context; blob stays findable by probing"
+            );
+            return Ok(());
+        }
+
+        let announced = join_all(anchors.iter().map(|peer_id| async move {
+            self.network_client
+                .announce_blob_to_peer(*peer_id, *blob_id, *context_id, size)
+                .await
+                .map_err(|err| (*peer_id, err))
+        }))
+        .await;
+
+        let mut delivered = 0_usize;
+        for outcome in announced {
+            match outcome {
+                Ok(()) => delivered += 1,
+                Err((peer_id, err)) => {
+                    tracing::debug!(
+                        %blob_id,
+                        %context_id,
+                        %peer_id,
+                        %err,
+                        "failed to announce blob to availability node"
+                    );
+                }
+            }
+        }
+
+        tracing::debug!(
+            %blob_id,
+            %context_id,
+            delivered,
+            attempted = anchors.len(),
+            "announced blob to availability nodes"
+        );
+
+        Ok(())
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
