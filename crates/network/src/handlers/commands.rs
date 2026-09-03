@@ -20,6 +20,7 @@ mod probe_blob;
 mod publish;
 mod query_blob;
 mod request_blob;
+mod send_blob_announcement;
 mod set_peer_score;
 mod subscribe;
 mod subscribed_peers;
@@ -85,6 +86,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::RequestBlob { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::SendBlobAnnouncement { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::ProbeBlob { request, outcome } => {
