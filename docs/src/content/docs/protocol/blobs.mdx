@@ -105,6 +105,7 @@ blob_create() -> fd
 blob_write(fd, src: Buffer)                 -> bytes_written
 blob_close(fd, dst: BufferMut[32]) -> 1     // writes the final BlobId into dst[0..32]
 blob_open(blob_id: Buffer[32])              -> fd
+blob_open_in_context(blob_id: Buffer[32], context_id: Buffer[32]) -> fd  // 0 if unavailable
 blob_read(fd, dst: BufferMut)               -> bytes_read   // 0 at end of blob
 blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
 ```
@@ -125,8 +126,15 @@ blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
 
 4. **`blob_open(blob_id)`** opens a read handle for an existing blob and returns
    an `fd`. The bytes are streamed lazily — opening does not yet fetch anything.
+   Local-only: returns `0` if this node does not already hold the blob.
 
-5. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
+5. **`blob_open_in_context(blob_id, context_id)`** is `blob_open`'s
+   network-aware sibling: if the blob is not already local, it consults the
+   context's peers before giving up, and returns an `fd` for the same
+   streaming read once bytes are available. It returns `0` only when the blob
+   is available neither locally nor from any peer.
+
+6. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
    count, which may be less than the buffer (a partial chunk is buffered
    internally and carried to the next call). A return of `0` means end of blob.
    The read position only advances after the copy into guest memory succeeds, so
