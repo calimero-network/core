@@ -176,8 +176,10 @@ carry opaque values — which is why prefetch hangs off it rather than off an
 enumeration of the context's state.
 
 A receiver prefetches only if it is itself a `ReadOnlyTee` member of that
-context (read from its own governance state, never taken from the announcement),
-does not already hold the blob, and the advertised size is within the 500 MiB
+context — directly, or by inheritance from any ancestor group up to the
+namespace root, which is how a root-admitted fleet node covers the contexts of
+the subgroups it follows; read from its own governance state, never taken from
+the announcement — does not already hold the blob, and the advertised size is within the 500 MiB
 transfer cap. At most 2 prefetches run at once, and announcements arriving while
 both slots are busy are dropped rather than queued — a dropped prefetch costs
 availability for one blob, never correctness.
