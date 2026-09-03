@@ -257,6 +257,80 @@ jobs:
         shell: bash
         run: merobox stop --no-docker --all || true
 
+  # A real node workflow on Windows: three nodes, two invitations, two joins,
+  # a `wait_for_sync`, then a call whose result must have propagated. Where
+  # `windows-auth-seam` proves one node serves HTTP, this proves several of them
+  # find each other and agree — the part with no unix result to borrow from,
+  # since discovery and sync are exactly where the platform differs.
+  #
+  # The bundle comes from `build-apps` rather than being built here. A `.mpk` is
+  # wasm and architecture-independent, so building it once on Linux costs
+  # nothing and avoids asking whether `cargo mero`'s wasm-opt compiles on
+  # windows-msvc — a question this lane does not need to answer.
+  windows-node-workflow:
+    name: Windows e2e (3-node sync, binary mode)
+    needs: [build-apps]
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: windows-e2e
+
+      - name: Point bindgen at the image's LLVM
+        shell: bash
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Build merod
+        run: cargo build -p merod
+
+      - name: Download the app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-app-bundles
+          path: dist/
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install merobox
+        run: pip install merobox==0.6.75
+
+      - name: Run the 3-node workflow (merobox, binary mode)
+        shell: bash
+        run: |
+          ls -la dist/
+          merobox bootstrap run apps/kv-store/workflows/workflow-example.yml \
+            --no-docker --binary-path target/debug/merod.exe
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for d in data/*/logs; do
+            echo "=== $d ==="
+            cat "$d"/*.log || true
+          done
+
+      - name: Stop nodes
+        if: always()
+        shell: bash
+        run: merobox stop --no-docker --all || true
+
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
     name: Build Apps
