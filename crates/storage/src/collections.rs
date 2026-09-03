@@ -28,6 +28,8 @@ pub mod rga;
 pub use rga::ReplicatedGrowableArray;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
+pub mod blob_ref;
+pub use blob_ref::BlobRef;
 pub mod crdt_meta;
 pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageKey, StorageStrategy};
 // Re-export of the `Mergeable` *derive macro*, whose single canonical
