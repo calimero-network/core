@@ -23,10 +23,12 @@ fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
             expiration_timestamp: 1_700_000_000,
             invitation_nonce: [0x33; 32],
             invited_role: 0, // Admin
+            admitters: Vec::new(),
         },
         inviter_signature: "deadbeef".to_string(),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 

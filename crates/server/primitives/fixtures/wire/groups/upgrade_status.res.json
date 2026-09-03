@@ -3,7 +3,7 @@
     "completedAt": null,
     "fromVersion": "1.0.0",
     "initiatedAt": 100,
-    "initiatedBy": "11111111111111111111111111111111",
+    "initiatedBy": "0000000000000000000000000000000000000000000000000000000000000000",
     "localContextsFailed": 0,
     "localContextsSwapped": 1,
     "localContextsTotal": 3,

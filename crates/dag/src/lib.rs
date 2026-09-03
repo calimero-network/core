@@ -41,9 +41,12 @@ pub const MAX_PENDING_DELTAS: usize = 10_000;
 pub const MAX_PRUNED_TRACKED: usize = 100_000;
 
 /// Type of delta - regular operation or checkpoint (snapshot boundary)
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum DeltaKind {
     /// Regular delta with operations to apply
+    #[default]
     Regular,
     /// Checkpoint delta representing a snapshot boundary
     ///
@@ -92,12 +95,6 @@ pub enum DeltaKind {
     /// establish authority is a separate decision, and stays where it was, in
     /// the founder gate.
     Genesis,
-}
-
-impl Default for DeltaKind {
-    fn default() -> Self {
-        Self::Regular
-    }
 }
 
 /// A causal delta with parent references

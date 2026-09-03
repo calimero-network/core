@@ -28,19 +28,21 @@ with `node use`), falling back to `http://127.0.0.1:2528`.
 
 Almost every command accepts an **alias** wherever it accepts an id. An alias is
 a human-readable name (max 50 characters) that the node resolves server-side to
-a `ContextId`, an `ApplicationId`, or a member `PublicKey`. Aliases live on the
-node, not in the CLI: they are created, looked up, and deleted through the
+a `ContextId`, an `ApplicationId`, a member `PublicKey`, or a `DeviceId`. Aliases
+live on the node, not in the CLI: they are created, looked up, and deleted
+through the
 [admin API alias endpoints](/operate/admin-api/#admin-api--identity--alias), so
 every client talking to the same node sees the same aliases.
 
-**Scoping is not uniform across the three target types:**
+**Scoping is not uniform across the four target types:**
 
 | Alias target     | Scope                | Created with                                              |
 | ---------------- | -------------------- | -------------------------------------------------------- |
 | `ContextId`      | Node-global          | `context alias add`, or `context create --name`          |
 | `ApplicationId`  | Node-global          | admin API `alias/create/application`                     |
+| `DeviceId`       | Node-global          | `account alias add`                                      |
 
-Context and application aliases are unique across the whole node.
+Context, application, and device aliases are unique across the whole node.
 
 A reserved `default` alias exists for contexts. Commands that take `--context`
 fall back to `default` when the flag is omitted, and `context use <CONTEXT>`
@@ -51,7 +53,7 @@ just points the `default` alias at a chosen target.
   connection name** — client-side state stored in `nodes.toml`
   (see [meroctl's own config](#meroctls-own-config-nodestoml)) that selects
   which node to talk to. It never reaches the node and has nothing to do with
-  the context/application aliases above.
+  the context/application/device aliases above.
 </Aside>
 
 ## Command groups

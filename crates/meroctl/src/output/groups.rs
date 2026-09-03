@@ -77,6 +77,18 @@ impl Report for NodeIdentityApiResponse {
                 .unwrap_or("none - joining a namespace enrols one"),
         ]);
         let _ = table.add_row(vec!["Signing key", &self.data.public_key]);
+        // The remaining two are what OFFLINE commands consume, and neither was
+        // rendered here: the API carried them and `account show` did not print
+        // them, so an operator holding a cold account root could read this table
+        // and still not have the inputs to certify or pair anything.
+        let _ = table.add_row(vec![
+            "Agreement key",
+            self.data
+                .device_agreement_key
+                .as_deref()
+                .unwrap_or("none - joining a namespace enrols one"),
+        ]);
+        let _ = table.add_row(vec!["Account root key", &self.data.account_root_public_key]);
         println!("{table}");
     }
 }

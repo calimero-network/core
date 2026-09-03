@@ -3364,7 +3364,9 @@ impl VMHostFunctions<'_> {
         }
 
         let writers = bytes
-            .chunks_exact(PUBLIC_KEY_LEN)
+            .as_chunks::<PUBLIC_KEY_LEN>()
+            .0
+            .iter()
             .map(|chunk| {
                 let mut key = [0u8; PUBLIC_KEY_LEN];
                 key.copy_from_slice(chunk);

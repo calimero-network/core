@@ -41,8 +41,8 @@ impl XCallExample {
     }
 
     /// Send a ping to another context, dispatching an `xcall` to its `pong`
-    /// entry point. `target_context` arrives base58-encoded and is parsed into
-    /// a `ContextId` by the SDK.
+    /// entry point. `target_context` arrives as 64 hex and is parsed into a
+    /// `ContextId` by the SDK.
     pub fn ping(&mut self, target_context: ContextId) -> app::Result<()> {
         self.xcall_to(target_context, "pong")
     }

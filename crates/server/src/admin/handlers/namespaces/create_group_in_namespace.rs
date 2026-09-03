@@ -136,14 +136,24 @@ pub async fn handler(
         Ok(account) => account,
         Err(err) => return parse_api_error(err).into_response(),
     };
-    let op = calimero_context_client::local_governance::NamespaceOp::Root(
+    // Sealed under the namespace key: that a subgroup exists, and where it sits,
+    // is members' business. This site does not decide that — the choke point
+    // does. The sibling create path (`context::handlers::create_group`) and
+    // `reparent_group` already route through it; this one published in the clear,
+    // which a receiver now refuses outright.
+    let op = match calimero_governance_store::seal_root_op_for_publish(
+        &state.store,
+        resolved_ns_id.to_bytes().into(),
         calimero_context_client::local_governance::RootOp::GroupCreated {
             group_id: group_id.into(),
             parent_id: namespace_id.to_bytes().into(),
             restricted,
             admin: admin_account,
         },
-    );
+    ) {
+        Ok(op) => op,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     match calimero_governance_store::sign_apply_and_publish_namespace_op(
         &state.store,

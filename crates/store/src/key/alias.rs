@@ -7,7 +7,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::alias::{Alias as AliasPrimitive, ScopedAlias};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{DeviceId, PublicKey};
 use generic_array::sequence::Concat;
 use generic_array::typenum::{Unsigned, U1, U32, U50};
 use generic_array::GenericArray;
@@ -133,6 +133,10 @@ impl Aliasable for ApplicationId {
     const KIND: u8 = 3;
 }
 
+impl Aliasable for DeviceId {
+    const KIND: u8 = 4;
+}
+
 impl Alias {
     fn create_key<T: Aliasable>(scope: [u8; SCOPE_SIZE], alias: [u8; NAME_SIZE]) -> Self {
         let scope = GenericArray::from(scope);
@@ -190,10 +194,6 @@ impl Alias {
         // This is more readable with using consts.
         // Even though the `KIND_SIZE` is equal to 1, inclusive range (`KIND_SIZE..=SCOPE_SIZE`)
         // would be very confusing for comprehension (and would require knowing that KIND_SIZE==1.
-        #[expect(
-            clippy::range_plus_one,
-            reason = "It's more readable with using constants"
-        )]
         scope.copy_from_slice(&bytes[KIND_SIZE..KIND_SIZE + SCOPE_SIZE]);
 
         let scope = <T::Scope as StoreScopeCompat>::Scope::from_scope(scope);
@@ -248,5 +248,30 @@ impl FromKeyParts for Alias {
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_alias_key_roundtrips_kind_scope_and_name() {
+        let alias: AliasPrimitive<DeviceId> = "laptop".parse().unwrap();
+        let key = Alias::new::<DeviceId>(None, alias).expect("device aliases are node-global");
+
+        assert_eq!(key.scope::<DeviceId>(), Some(()));
+        assert_eq!(key.alias::<DeviceId>(), Some(alias));
+    }
+
+    #[test]
+    fn device_alias_key_is_not_read_as_a_different_kind() {
+        let alias: AliasPrimitive<DeviceId> = "laptop".parse().unwrap();
+        let key = Alias::new::<DeviceId>(None, alias).unwrap();
+
+        // The kind byte gates every read: a device-kind key must not be
+        // misparsed as a context or application alias.
+        assert_eq!(key.alias::<ContextId>(), None);
+        assert_eq!(key.alias::<ApplicationId>(), None);
     }
 }

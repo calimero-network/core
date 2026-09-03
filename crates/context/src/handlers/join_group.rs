@@ -611,6 +611,23 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
+                // Every device this account already certified belongs here too.
+                // Pairing bound them wherever this node took part at the time, and
+                // this namespace was not one of them - so without this the paired
+                // device would silently never see it.
+                //
+                // Deliberately after the key wait: the binding is an encrypted
+                // group op and the delivery is that same key wrapped, so neither is
+                // possible without it. Nothing here can fail the join.
+                let _bound = calimero_governance_store::bind_known_devices(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &namespace_id.into(),
+                    &sk,
+                )
+                .await;
+
                 // -------------------------------------------------------
                 // Phase 3: Auto-join contexts from the response.
                 // -------------------------------------------------------
@@ -749,5 +766,88 @@ impl Handler<JoinGroupRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_governance_store::AccountBindingRepository;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::test_support::{actor, certify_device};
+
+    const APP: [u8; 32] = [0xD1; 32];
+    const GROUP: [u8; 32] = [0xD2; 32];
+
+    /// An invitation to `group`, signed the way `create_group_invitation` signs
+    /// one. The inviter is nobody this node knows, which is the state a joiner
+    /// is genuinely in: its `MemberJoinedAt` cannot apply until the inviter's
+    /// binding syncs, and the auto-bind must not depend on that.
+    fn an_invitation(group: ContextGroupId) -> SignedGroupOpenInvitation {
+        let inviter_sk = PrivateKey::from([0xD3; 32]);
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
+            group_id: group,
+            expiration_timestamp: 0,
+            invitation_nonce: [0xD4; 32],
+            invited_role: 1,
+            admitters: Vec::new(),
+        };
+        let signature = inviter_sk
+            .sign(&Sha256::digest(
+                borsh::to_vec(&invitation).expect("borsh the invitation"),
+            ))
+            .expect("sign the invitation");
+        SignedGroupOpenInvitation {
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            inviter_account: None,
+            application_id: Some(APP),
+            bytecode_id: Some([0xD5; 32]),
+            admitter_hints: Vec::new(),
+        }
+    }
+
+    /// The sibling of the creation's auto-bind: a namespace joined after a
+    /// pairing is one the paired device was never bound in, so without this the
+    /// join succeeds and that device silently never sees the group.
+    #[actix::test]
+    async fn joining_a_namespace_carries_this_accounts_devices_into_it() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        // The scope key a join normally takes from its bundle. Seeded because
+        // there is no peer to serve one here, and the auto-bind runs after the
+        // key wait precisely so it can wrap the delivery from it.
+        let _key_id = GroupKeyring::new(&store, group)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        let device = certify_device(&store, 0xD6, &[]);
+
+        let harness = actor::over(store.clone()).await;
+        let _joined = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the join runs");
+
+        assert!(
+            AccountBindingRepository::new(&store)
+                .is_device_linked(&group, device)
+                .expect("read the bindings"),
+            "the device this account already certified has to be bound in the \
+             namespace the join just gained"
+        );
     }
 }

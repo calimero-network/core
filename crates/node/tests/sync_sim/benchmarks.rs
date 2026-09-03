@@ -152,8 +152,8 @@ fn record_simulation_metrics(
     let messages_sent = sim_metrics.protocol.messages_sent;
     if messages_sent > 0 {
         let total_bytes = sim_metrics.protocol.payload_bytes;
-        let base_bytes = (total_bytes / messages_sent) as usize;
-        let remainder = (total_bytes % messages_sent) as usize;
+        let base_bytes = total_bytes.checked_div(messages_sent).unwrap_or(0) as usize;
+        let remainder = total_bytes.checked_rem(messages_sent).unwrap_or(0) as usize;
 
         for i in 0..messages_sent {
             // Add remainder to the last message to preserve total bytes

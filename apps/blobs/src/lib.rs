@@ -28,14 +28,13 @@ const BYTES_PER_MB: f64 = BYTES_PER_KB * 1024.0;
 #[serde(crate = "calimero_sdk::serde")]
 pub struct FileRecord {
     /// Unique file identifier, namespaced by the uploader's identity to stay
-    /// collision-free across replicas (e.g. "<uploader-base58>_0").
+    /// collision-free across replicas (e.g. "<uploader-hex>_0").
     pub id: String,
 
     /// Human-readable file name (e.g., "document.pdf", "image.png")
     pub name: String,
 
-    /// Blob ID. Serializes to/from a base58 string in JSON (e.g.
-    /// "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty") via the SDK's
+    /// Blob ID. Serializes to/from a 64-hex string in JSON via the SDK's
     /// `BlobId` newtype, so no per-app encoding helper is needed.
     pub blob_id: BlobId,
 
@@ -46,8 +45,8 @@ pub struct FileRecord {
     /// Examples: "application/pdf", "image/png", "text/plain", "video/mp4"
     pub mime_type: String,
 
-    /// Uploader's identity as base58-encoded public key
-    /// Derived from `env::device_id()` and converted to base58 string
+    /// Uploader's identity as a hex-encoded public key.
+    /// Derived from `env::device_id()` via `PublicKey`'s `Display`.
     pub uploaded_by: String,
 
     /// Upload timestamp in milliseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
@@ -62,12 +61,12 @@ calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]
 pub struct FileShareState {
-    /// Context owner's identity as base58-encoded public key.
+    /// Context owner's identity as a hex-encoded public key.
     /// Set during initialization from `env::device_id()`.
     pub owner: LwwRegister<String>,
 
     /// Map of file ID to file metadata records.
-    /// Key: file ID (e.g. "<uploader-base58>_0"), Value: FileRecord.
+    /// Key: file ID (e.g. "<uploader-hex>_0"), Value: FileRecord.
     pub files: UnorderedMap<String, FileRecord>,
 
     /// Monotonic counter used to generate unique file IDs.
@@ -79,13 +78,13 @@ pub struct FileShareState {
 pub enum FileShareEvent {
     /// Emitted when a file is successfully uploaded
     FileUploaded {
-        /// Unique file identifier (e.g. "<uploader-base58>_0")
+        /// Unique file identifier (e.g. "<uploader-hex>_0")
         id: String,
         /// File name
         name: String,
         /// File size in bytes
         size: u64,
-        /// Uploader's base58-encoded public key
+        /// Uploader's hex-encoded public key
         uploader: String,
     },
     /// Emitted when a file is deleted
@@ -125,13 +124,13 @@ impl FileShareState {
     ///
     /// # Arguments
     /// * `name` - Human-readable file name
-    /// * `blob_id` - Blob ID (base58 string over the wire; obtained from the blob client)
+    /// * `blob_id` - Blob ID (64-hex string over the wire; obtained from the blob client)
     /// * `size` - File size in bytes
     /// * `mime_type` - MIME type (e.g., "application/pdf", "image/png")
     ///
     /// # Returns
     /// * `Ok(String)` - The generated file ID, namespaced by uploader identity
-    ///   (e.g. "<uploader-base58>_0")
+    ///   (e.g. "<uploader-hex>_0")
     /// * `Err(app::Error)` - Error if storage operation fails
     pub fn upload_file(
         &mut self,
@@ -197,7 +196,7 @@ impl FileShareState {
     /// currently expose blob deletion methods.
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file to delete (e.g. "<uploader-base58>_0")
+    /// * `file_id` - The ID of the file to delete (e.g. "<uploader-hex>_0")
     ///
     /// # Returns
     /// * `Ok(())` - File metadata successfully deleted
@@ -246,7 +245,7 @@ impl FileShareState {
     /// Get a specific file by ID
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file to retrieve (e.g. "<uploader-base58>_0")
+    /// * `file_id` - The ID of the file to retrieve (e.g. "<uploader-hex>_0")
     ///
     /// # Returns
     /// * `Ok(FileRecord)` - Complete file record with all metadata
@@ -259,19 +258,18 @@ impl FileShareState {
         Ok(file_record.clone())
     }
 
-    /// Get blob ID for download (base58-encoded)
+    /// Get blob ID for download (hex-encoded)
     ///
     /// Use this to retrieve the blob ID for downloading the actual file content
     /// via `blobClient.downloadBlob(blob_id, context_id)`.
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file (e.g. "<uploader-base58>_0")
+    /// * `file_id` - The ID of the file (e.g. "<uploader-hex>_0")
     ///
     /// # Returns
-    /// * `Ok(BlobId)` - The blob ID (base58 string over the wire, e.g.
-    ///   "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
+    /// * `Ok(BlobId)` - The blob ID, a 64-hex string over the wire
     /// * `Err(app::Error)` - Error if file not found
-    pub fn get_blob_id_b58(&self, file_id: String) -> app::Result<BlobId> {
+    pub fn get_blob_id_hex(&self, file_id: String) -> app::Result<BlobId> {
         let file_record = self.get_file(file_id)?;
         Ok(file_record.blob_id)
     }
@@ -377,7 +375,7 @@ mod tests {
         assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 1);
         assert_eq!(app.view(|s| s.get_total_files_size()).unwrap(), 12);
         assert_eq!(
-            app.view(|s| s.get_blob_id_b58(file_id.clone())).unwrap(),
+            app.view(|s| s.get_blob_id_hex(file_id.clone())).unwrap(),
             blob_id()
         );
 

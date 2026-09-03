@@ -482,6 +482,26 @@ fn shadow_fold_and_compare(
         // op has nothing to decrypt and folds as `Noop`.
         _ => None,
     };
+    // The shadow must fold exactly what the live apply folded. A sealed root
+    // op this node could not open folded nothing there, so it must fold as a
+    // visible hole here too — otherwise the shadow reports a complete ancestry
+    // the live side never had.
+    let opened_root = match &signed_op.op {
+        calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => {
+            calimero_governance_store::open_sealed_root_op(
+                store,
+                ns_id,
+                key_id.as_bytes(),
+                encrypted,
+            )
+            .map_err(|err| {
+                tracing::warn!(%err, "unified-op shadow: sealed root-op open failed; folded as a hole");
+            })
+            .ok()
+            .flatten()
+        }
+        _ => None,
+    };
     // Resolved from the store, not derived from the key: the op
     // has just applied, and it could not have unless the signer's
     // binding was present — so every node agrees on this value.
@@ -493,6 +513,7 @@ fn shadow_fold_and_compare(
     let shadow_op = calimero_governance_store::op_from_namespace_op_with_binding(
         signed_op,
         decrypted.as_ref(),
+        opened_root.as_ref(),
         signer_binding,
         delta_id,
         delta_hlc,

@@ -269,9 +269,37 @@ Requiring it rather than printing it for comparison is the point: an advisory st
 
 **The key delivery must be a cleartext root operation.** The pairing device holds no scope key, so a device-addressed envelope carried inside an *encrypted* group operation would be unreadable by its only recipient — the same bootstrap deadlock again. `KeyDelivery` being a root operation is what breaks the cycle.
 
-The new device is **never a member**. It records participation in the namespace and takes a gossip subscription — both membership-free operations — and its entire right to participate comes from being a device of the account. Because a node holds exactly one device, "two devices" means two nodes.
+The new device is **never a member**. It records participation in each namespace it was told about and takes a gossip subscription there - both membership-free operations - and its entire right to participate comes from being a device of the account. Because a node holds exactly one device, "two devices" means two nodes.
+
+**The new device is told its namespaces; the holder chooses by application.** A device that is a member of nothing can neither read its account's namespace set off a DAG nor derive it, so `pair-init` takes the set from whoever is driving the pairing and enrolls into all of them under one `DeviceId` - one certificate and one confirmation code, however many namespaces it covers. The holder's side asks a different question, because a namespace is an implementation unit nobody outside the node named: `pair-complete` scopes the fan-out by *application*, and naming none means every namespace the holder takes part in. The two sets need not agree. A binding published where the device is not listening still lands on that namespace's DAG and is picked up whenever it does subscribe, and a subscription the holder never reaches costs the device nothing; only prompt delivery depends on the overlap.
 
 Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
+
+### Pairing is repeated, not a snapshot
+
+A pairing binds the device wherever the holder takes part *at that moment*.
+A namespace created or joined afterwards is not in that set, so without a repeat the paired device would silently never see it.
+
+The repeat is cheap because a certificate carries **no namespace and no expiry**.
+Binding a device somewhere new needs the stored certificate, a fresh endorsement any member of that namespace can sign, and one key wrap - no handshake, no confirmation code, and the device need not be online.
+So the holder keeps every certificate it signs, node-local, beside the device secret: the replicated binding row records the certificate's payload but not the account root's signature, and a link cannot be rebuilt without it.
+
+Two things then use it.
+A node that **gains** a namespace - by joining one, or by creating one - extends every device of its account into it, once it holds that namespace's scope key: after the key arrives on a join, and after the genesis applies on a creation, because a link's endorser is resolved through the binding rows that genesis writes.
+The carry-over is best-effort: a device it cannot extend is logged and skipped, never a reason to fail the join or the creation.
+
+And an operator can ask for the same repeat directly, which is also how a device's scope is widened after the fact:
+
+```bash
+POST /admin-api/account/devices/<DEVICE_ID>/relink
+{ "applications": ["<APP_ID>"] }        # optional; absent repairs the stored scope
+```
+
+It reports, per namespace, where the link landed and where it did not - `alreadyBound`, `noScopeKey`, `outOfScope` - for the same reason a revocation does: publication is per-DAG, so a partially reached device is a state an operator has to be able to see.
+Naming applications widens the **stored** scope before anything is published, since that scope is what every later namespace gain is judged against.
+
+A **revoked** device is refused outright rather than repaired namespace by namespace.
+The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
 
 ## Reading your account
 
@@ -300,6 +328,16 @@ and there is no window in which it writes as something else.
 Both ends still resolve through one rule — the node deciding what to put in a
 writer set and the peer resolving an incoming signature — because a disagreement
 means a node's own writes are refused everywhere else.
+
+**A revoked device is not a device here either.** The device row is read first,
+because for a paired node it is the only place the adopted account is written
+down - but one row serves every namespace while a tombstone is per namespace, so a
+device revoked anywhere is one whose id is spent: enrolling the machine again
+mints a fresh one, which is why the enrolment slot is already released on that
+basis. Once the tombstone lands, `GET /admin-api/identity` reports no device and
+falls back to this node's **own** account root. A paired node that held no root of
+its own has nothing left to report and answers `404` - which is the truth, rather
+than a locally derived id no row in any group is keyed by.
 
 Everything that names a person needs this first: granting a writer, revoking a
 device, or an app method that takes an `AccountId`. Naming them by signing key
@@ -469,11 +507,12 @@ Recovery means *prove who you are, then enrol fresh* — not *restore the old ma
 | Crate / module | What it owns |
 | --- | --- |
 | `crates/account` | The primitives: `AccountId`, `DeviceId`, `AccountGenesis`, `DeviceCert`, `RootKeyHandoff`, `DeviceRevocation`, and their sign/verify functions. No storage, no policy. |
-| `crates/governance-store/src/node_device.rs` | This node's own secrets: the `NodeAccountRoot` and `NodeDeviceIdentity` singletons. Node-local, never gossiped. |
+| `crates/governance-store/src/node_device.rs` | This node's own secrets: the `NodeAccountRoot` and `NodeDeviceIdentity` singletons, plus the `NodeAccountDeviceCert` rows that keep the certificates this account signed. Node-local, never gossiped. |
 | `crates/governance-store/src/account_bindings.rs` | The replicated view: device bindings, revocation tombstones, per-account root keys, and the endorser set. |
 | `crates/governance-store/src/ops/group/account_ops.rs` | Apply handlers for link, revoke, and rotate — the authorization gates. |
 | `crates/governance-store/src/group_keys.rs` | Both wrap modes, the device-first recipient resolution, and the pull-path equivalent. |
-| `crates/context/src/handlers/` | The operations a user drives: `pair_device_init`, `pair_device_complete`, `revoke_device`. |
+| `crates/governance-store/src/device_link.rs` | The one publish path that links a device - the link plus its key delivery - and the decision about whether a namespace needs one. |
+| `crates/context/src/handlers/` | The operations a user drives: `pair_device_init`, `pair_device_complete`, `relink_device`, `revoke_device`. |
 | `crates/context/src/scope_projection.rs` | `member_at_cut`, including the per-device fallthrough. |
 | `crates/projection`, `crates/authz`, `crates/op` | The unified-log account plane. Correct and tested, and the specification the governance path was built against — but not yet fed on the live path. |
 
@@ -532,7 +571,7 @@ merod --node node1 account export
 legal winner thank year wave sausage worth useful legal winner thank year wave
 sausage worth useful legal winner thank year wave sausage worth title
 
-Account root public key: D2RGSD4paRbDANmHeUC2L9Ljaon7vXy6HzaNeHnoQ7Tg
+Account root public key: b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb
 Account:                 03944a72253996cf87a2ac0680ff52b75143333ea21605e0dd1877dc1b16ecaa
 
 The phrase is the whole backup. The account is the content address of this

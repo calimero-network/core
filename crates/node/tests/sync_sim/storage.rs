@@ -82,9 +82,17 @@ impl std::fmt::Debug for SimStorage {
 
 impl SimStorage {
     /// Create a new in-memory storage instance.
+    ///
+    /// The store carries an account root, because the node this simulates has one:
+    /// `merod init` provisions it. Nothing mints one lazily any more, so a
+    /// root-free store here fails on setup — `join_target_group` reaches
+    /// `require_account_root` — rather than exercising the sync path under test.
     pub fn new(context_id: ContextId, executor_id: PublicKey) -> Self {
         let db = InMemoryDB::owned();
         let store = Store::new(Arc::new(db));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("provision the account root an initialised node has");
         Self {
             store,
             context_id,

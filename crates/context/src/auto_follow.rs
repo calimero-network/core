@@ -9,7 +9,9 @@
 //!
 //! - `OpEvent::ContextRegistered { group, context }` — if this node is
 //!   a member of `group` with `auto_follow.contexts = true`, emit a
-//!   `JoinContext { context }`.
+//!   `JoinContext { context }`. Ahead of that decision, and regardless of
+//!   it, acquire the group's application bytecode: a device of a member's
+//!   account that follows no context still has to be able to run it.
 //! - `OpEvent::AutoFollowSet { group, member = self, contexts: true }` —
 //!   enumerate existing contexts in the group and join any we haven't
 //!   already joined. Covers the "flag flipped on after contexts already
@@ -48,7 +50,9 @@ use tracing::{debug, info, warn};
 
 use calimero_governance_store;
 use calimero_governance_store::op_events::{self, OpEvent};
-use calimero_governance_store::{MembershipPath, MembershipRepository, NamespaceRepository};
+use calimero_governance_store::{
+    MembershipPath, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 
 /// Token-bucket rate limit for auto-follow emissions.
 ///
@@ -202,6 +206,14 @@ pub fn spawn(store: Store, context_client: ContextClient) {
     // receivers created before the send.)
     let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
+        // Acquire every known application once, because the event below is
+        // emitted on an op's FIRST apply only: a node whose peers were all
+        // unreachable in that moment has no second event coming for the same
+        // registration. Bytecode only - this publishes nothing and joins
+        // nothing, so the join path stays purely event-driven.
+        for (group_id, context_id) in applications_to_acquire(&store) {
+            acquire_application(&store, &context_client, group_id, context_id).await;
+        }
         run(rx, store, context_client, task_limiter).await;
     })
     .abort_handle();
@@ -449,6 +461,89 @@ pub(crate) fn decide_on_context_registered(
     ContextRegisteredDecision::Join
 }
 
+/// Put the group's target application on this node when the row the registering
+/// apply just wrote names bytecode this node does not hold.
+///
+/// Best-effort by construction: an unreachable blob is a "not yet" that the next
+/// registration retries, so a namespace no peer can serve for never wedges the
+/// follow path behind it.
+async fn acquire_application(
+    store: &Store,
+    context_client: &ContextClient,
+    group_id: [u8; 32],
+    context_id: calimero_primitives::context::ContextId,
+) {
+    let meta = match MetaRepository::new(store).load(&ContextGroupId::from(group_id)) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => return,
+        Err(err) => {
+            warn!(group_id = %hex::encode(group_id), ?err, "auto-follow: failed to read group meta");
+            return;
+        }
+    };
+    let application_id = meta.target_application_id;
+    if application_id == calimero_primitives::application::ZERO_APPLICATION_ID {
+        return;
+    }
+    match context_client
+        .ensure_application_bytecode(application_id, context_id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => debug!(
+            %application_id, %context_id,
+            "auto-follow: application bytecode not available yet; a later registration retries"
+        ),
+        Err(err) => warn!(
+            %application_id, %context_id, ?err,
+            "auto-follow: acquiring the application bytecode failed"
+        ),
+    }
+}
+
+/// One context per group that targets an application, for the startup sweep.
+///
+/// One is enough: a group targets a single application, and the context only
+/// names the scope its bytecode is announced under. A group with no target or no
+/// registered context names nothing to acquire and is skipped.
+///
+/// Pure so the sweep's choice is testable without a live `ContextClient`, the
+/// same split [`decide_on_context_registered`] uses.
+pub(crate) fn applications_to_acquire(
+    store: &Store,
+) -> Vec<([u8; 32], calimero_primitives::context::ContextId)> {
+    let groups = match MetaRepository::new(store).enumerate_all(0, usize::MAX) {
+        Ok(groups) => groups,
+        Err(err) => {
+            warn!(
+                ?err,
+                "auto-follow: failed to enumerate groups for the application sweep"
+            );
+            return Vec::new();
+        }
+    };
+    let mut pairs = Vec::new();
+    for (group_id, meta) in groups {
+        if meta.target_application_id == calimero_primitives::application::ZERO_APPLICATION_ID {
+            continue;
+        }
+        match calimero_governance_store::enumerate_group_contexts(
+            store,
+            &ContextGroupId::from(group_id),
+            0,
+            1,
+        ) {
+            Ok(contexts) => pairs.extend(contexts.into_iter().map(|id| (group_id, id))),
+            Err(err) => warn!(
+                group_id = %hex::encode(group_id),
+                ?err,
+                "auto-follow: failed to enumerate contexts for the application sweep"
+            ),
+        }
+    }
+    pairs
+}
+
 async fn handle_context_registered(
     store: &Store,
     context_client: &ContextClient,
@@ -456,6 +551,13 @@ async fn handle_context_registered(
     group_id: [u8; 32],
     context_id: calimero_primitives::context::ContextId,
 ) {
+    // Before the follow decision, because the two answer different questions:
+    // that one is whether to REPLICATE this context, this one is whether the
+    // node can run its application at all. A device of a member's account that
+    // follows nothing still has to end up with the bytecode, and the apply that
+    // raised this event is what first names it here.
+    acquire_application(store, context_client, group_id, context_id).await;
+
     match decide_on_context_registered(store, group_id, &context_id) {
         ContextRegisteredDecision::NotMember | ContextRegisteredDecision::NotAutoFollowing => {
             return;
@@ -878,7 +980,7 @@ mod tests {
         use rand::rngs::OsRng;
 
         use super::super::{
-            decide_on_auto_follow_enabled, decide_on_context_registered,
+            applications_to_acquire, decide_on_auto_follow_enabled, decide_on_context_registered,
             should_follow_on_subgroup_open, AutoFollowEnabledDecision, ContextRegisteredDecision,
             BACKFILL_LIMIT,
         };
@@ -928,6 +1030,50 @@ mod tests {
                 .add_member(&gid, &account, GroupMemberRole::Member)
                 .expect("add member");
             (store, sk, pk, account)
+        }
+
+        // ----- applications_to_acquire -----------------------------------
+
+        /// The sweep names one context for each group that targets an
+        /// application, and nothing for a group that names no application or has
+        /// registered no context.
+        #[test]
+        fn the_sweep_names_one_context_per_group_that_targets_an_application() {
+            let store = test_store();
+            let admin = calimero_account::AccountId::from([0x01; 32]);
+            let targeting = ContextGroupId::from([0xA1; 32]);
+            let untargeted = ContextGroupId::from([0xA2; 32]);
+            let contextless = ContextGroupId::from([0xA3; 32]);
+
+            MetaRepository::new(&store)
+                .save(&targeting, &sample_meta(admin))
+                .expect("save targeting");
+            // Two contexts, so a sweep that took them all would show it.
+            for context in [[0xC1u8; 32], [0xC2u8; 32]] {
+                register_context_in_group(&store, &targeting, &ContextId::from(context))
+                    .expect("register");
+            }
+
+            let mut zeroed = sample_meta(admin);
+            zeroed.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+            MetaRepository::new(&store)
+                .save(&untargeted, &zeroed)
+                .expect("save untargeted");
+            register_context_in_group(&store, &untargeted, &ContextId::from([0xC3u8; 32]))
+                .expect("register");
+
+            MetaRepository::new(&store)
+                .save(&contextless, &sample_meta(admin))
+                .expect("save contextless");
+
+            let pairs = applications_to_acquire(&store);
+
+            assert_eq!(
+                pairs.len(),
+                1,
+                "one context, from the one group that names an application"
+            );
+            assert_eq!(pairs[0].0, targeting.to_bytes());
         }
 
         // ----- decide_on_context_registered ------------------------------

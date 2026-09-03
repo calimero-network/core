@@ -1476,7 +1476,7 @@ fn decode_kms_encryption_key(response: &PhalaGetKeyResponse) -> Result<Vec<u8>> 
             MAX_KMS_KEY_HEX_LEN
         );
     }
-    if key_hex.len() % 2 != 0 {
+    if !key_hex.len().is_multiple_of(2) {
         bail!("KMS returned encryption key with invalid odd hex length");
     }
 

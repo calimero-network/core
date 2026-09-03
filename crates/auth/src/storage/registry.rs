@@ -64,7 +64,7 @@ pub fn get_all_providers() -> Vec<Arc<dyn StorageProvider>> {
 #[macro_export]
 macro_rules! register_storage_provider {
     ($provider:expr) => {
-        #[ctor::ctor]
+        #[ctor::ctor(unsafe)]
         fn register_this_storage_provider() {
             use std::sync::Arc;
             $crate::storage::registry::register_provider(Arc::new($provider));

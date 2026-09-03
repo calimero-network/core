@@ -160,7 +160,7 @@ impl AuthMetrics {
         // Average duration
         let data = self.auth_duration_ms.read().await;
         let (total, count) = *data;
-        let avg_duration = if count > 0 { total / count } else { 0 };
+        let avg_duration = total.checked_div(count).unwrap_or(0);
         metrics.insert(
             "auth_avg_duration_ms".to_string(),
             serde_json::Value::Number(serde_json::Number::from(avg_duration)),

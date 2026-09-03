@@ -77,12 +77,8 @@ pub struct SubscribeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,
     /// Groups to observe for group-keyed events (membership, migration).
-    /// Hex-encoded, matching the group/namespace admin API's id representation.
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "calimero_primitives::hash::hex_repr::vec"
-    )]
+    /// Hex-encoded, like every id — see `Hash`'s `Display`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_ids: Vec<Hash>,
 }
 
@@ -91,11 +87,7 @@ pub struct SubscribeRequest {
 pub struct SubscribeResponse {
     pub context_ids: Vec<ContextId>,
     /// The group ids actually subscribed (unauthorized ones are dropped).
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "calimero_primitives::hash::hex_repr::vec"
-    )]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_ids: Vec<Hash>,
 }
 // *************************************************************************
@@ -106,11 +98,7 @@ pub struct SubscribeResponse {
 pub struct UnsubscribeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "calimero_primitives::hash::hex_repr::vec"
-    )]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_ids: Vec<Hash>,
 }
 
@@ -118,11 +106,7 @@ pub struct UnsubscribeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
     pub context_ids: Vec<ContextId>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "calimero_primitives::hash::hex_repr::vec"
-    )]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_ids: Vec<Hash>,
 }
 // *************************************************************************

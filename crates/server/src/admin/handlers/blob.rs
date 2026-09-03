@@ -78,7 +78,7 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
     StreamReader::new(byte_stream).compat()
 }
 
-// Clients send `?hash=` base58, like every other `Hash` on the wire; only the
+// Clients send `?hash=` as 64 hex, like every other `Hash` on the wire; only the
 // digest bytes carry over into the `ContentHash` that `add_blob` compares against.
 fn parse_expected_content_hash(hash_str: &str) -> Option<ContentHash> {
     let hash: Hash = hash_str.parse().ok()?;
@@ -490,18 +490,32 @@ pub async fn info_handler(
 mod parse_expected_content_hash_tests {
     use super::*;
 
-    // `?hash=` must stay base58 - the same wire format `Hash` uses
-    // everywhere else - since out-of-repo clients already send it that way.
+    /// `?hash=` takes hex, and base58 is now refused outright.
+    ///
+    /// This inverts a pin that read `base58_is_accepted_hex_is_rejected`, kept
+    /// that way because "out-of-repo clients already send it that way". They do,
+    /// and this is a break for them — a deliberate one: the parser is
+    /// `Hash::from_str`, so `?hash=` could not stay base58 without the type
+    /// carrying a second parser purely for one query string.
+    ///
+    /// Refusing base58 rather than accepting both is what makes it a break the
+    /// caller *sees*. Most base58 hashes are not valid hex, so they fail here; but
+    /// hex digits are a strict subset of the base58 alphabet, so a permissive
+    /// parser would decode some strings under the wrong alphabet and verify the
+    /// upload against a hash nobody asked for.
     #[test]
-    fn base58_is_accepted_hex_is_rejected() {
+    fn hex_is_accepted_base58_is_rejected() {
         let bytes = [0xAB_u8; 32];
-        let base58 = Hash::from(bytes).to_base58();
         let hex = ContentHash::from(bytes).to_string();
 
         assert_eq!(
-            parse_expected_content_hash(&base58),
+            parse_expected_content_hash(&hex),
             Some(ContentHash::from(bytes))
         );
-        assert_eq!(parse_expected_content_hash(&hex), None);
+        // 32 bytes of 0xAB in base58 — no longer a hash this endpoint knows.
+        assert_eq!(
+            parse_expected_content_hash("CZ8YUVdk7znjrUmnb5n7kgySk9yRAsQDYmyCxzfSky9t"),
+            None
+        );
     }
 }

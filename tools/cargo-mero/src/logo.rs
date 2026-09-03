@@ -2,7 +2,7 @@
 //! post-bundle summary. Pure decoration: any failure just means nothing prints.
 
 use std::env;
-use std::io::IsTerminal;
+use std::io::{Cursor, IsTerminal};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -46,9 +46,11 @@ fn render_with(uri: &str, tty: bool, no_color: bool) -> Option<Logo> {
 /// Decodes an 8-bit PNG into `(width, height, RGB pixels)`; 16-bit and indexed
 /// PNGs aren't worth the extra decode paths for a decorative preview.
 fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<[u8; 3]>)> {
-    let decoder = Decoder::new(bytes);
+    // png 0.18 requires `BufRead + Seek`; `&[u8]` is only the former.
+    let decoder = Decoder::new(Cursor::new(bytes));
     let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18 returns `None` here when the buffer size would overflow.
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     if info.bit_depth != BitDepth::Eight || info.width == 0 || info.height == 0 {
         return None;

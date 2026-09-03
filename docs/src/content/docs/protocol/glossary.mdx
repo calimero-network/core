@@ -132,7 +132,7 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 **Blob** — Opaque, immutable, content-addressed bytes stored *outside* the state tree (WASM bundles, attachments, media). State references a blob only by id, and blob bytes are never folded into a scope root, so moving or garbage-collecting a blob can neither cause nor repair divergence. See [Blob Transport](/protocol/blobs/).
 
-**BlobId** — A blob's 32-byte content hash (shown as base58) that both names the blob and lets any holder verify the bytes it received. It is distinct from `BlobMeta.hash` (the digest of the raw content); the `BlobId` addresses the blob through its chunk-id list. See [Blob Transport](/protocol/blobs/).
+**BlobId** — A blob's 32-byte content hash (shown as hex) that both names the blob and lets any holder verify the bytes it received. It is distinct from `BlobMeta.hash` (the digest of the raw content); the `BlobId` addresses the blob through its chunk-id list. See [Blob Transport](/protocol/blobs/).
 
 ## TEE attestation & fleet nodes
 

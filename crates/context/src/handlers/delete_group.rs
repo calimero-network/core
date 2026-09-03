@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteGroupRequest, DeleteGroupResponse};
-use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::local_governance::RootOp;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
@@ -110,11 +110,21 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let signer_sk = PrivateKey::from(signer_sk_bytes);
-                let op = NamespaceOp::Root(RootOp::GroupDeleted {
-                    root_group_id: group_id_bytes.into(),
-                    cascade_group_ids: cascade_group_ids.into_iter().map(Into::into).collect(),
-                    cascade_context_ids: cascade_context_ids.into_iter().map(Into::into).collect(),
-                });
+                // Sealed under the namespace key. The cascade names every group
+                // and context being destroyed, which is a map of the namespace to
+                // anyone who can read it.
+                let op = calimero_governance_store::seal_root_op_for_publish(
+                    &datastore,
+                    namespace_id_bytes.into(),
+                    RootOp::GroupDeleted {
+                        root_group_id: group_id_bytes.into(),
+                        cascade_group_ids: cascade_group_ids.into_iter().map(Into::into).collect(),
+                        cascade_context_ids: cascade_context_ids
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                    },
+                )?;
 
                 let report = calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,

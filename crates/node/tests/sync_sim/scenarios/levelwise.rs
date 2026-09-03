@@ -498,11 +498,10 @@ mod protocol_selection_tests {
         // Shallow wide tree - should use LevelWise
         let (_shallow_a, shallow_b) = Scenario::force_levelwise();
         let shallow_depth = shallow_b.max_depth() as usize;
-        let shallow_avg_children = if shallow_depth > 0 {
-            shallow_b.entity_count() / shallow_depth
-        } else {
-            0
-        };
+        let shallow_avg_children = shallow_b
+            .entity_count()
+            .checked_div(shallow_depth)
+            .unwrap_or(0);
 
         // Check heuristic
         let _should_levelwise = should_use_levelwise(shallow_depth, shallow_avg_children);
@@ -512,11 +511,7 @@ mod protocol_selection_tests {
         // Deep tree - should NOT use LevelWise
         let (_, deep_b) = Scenario::force_subtree_prefetch();
         let deep_depth = deep_b.max_depth() as usize;
-        let deep_avg_children = if deep_depth > 0 {
-            deep_b.entity_count() / deep_depth
-        } else {
-            0
-        };
+        let deep_avg_children = deep_b.entity_count().checked_div(deep_depth).unwrap_or(0);
 
         let should_levelwise_deep = should_use_levelwise(deep_depth, deep_avg_children);
         assert!(!should_levelwise_deep, "Deep tree should NOT use LevelWise");

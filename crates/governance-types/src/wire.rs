@@ -13,7 +13,6 @@
 //! when those phases land.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::identity::PublicKey;
 
 use super::{GovernanceError, NamespaceId, SignedGroupOp, SignedNamespaceOp};
@@ -95,10 +94,14 @@ impl SignedAck {
 
 /// Body of a readiness beacon — every field except the signature.
 /// Borsh-serialized inside [`SignedReadinessBeacon::signable_bytes`] so
-/// the Ed25519 signature covers all seven fields and field-substitution
-/// replays (e.g. flipping `strong`, rewinding `applied_through`, or
-/// stapling on a different `admission_proof`) are detected at
-/// verification time.
+/// the Ed25519 signature covers all six fields and field-substitution
+/// replays (e.g. flipping `strong` or rewinding `applied_through`) are
+/// detected at verification time.
+///
+/// Carried an `admission_proof` until direct admission replaced the path that
+/// read it. Removing it changes the borsh layout of every beacon, not only ones
+/// that carried a proof, so a node on the old shape drops every beacon from a
+/// node on this one until a fleet finishes upgrading.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SignableReadinessBeacon {
     pub namespace_id: NamespaceId,
@@ -107,7 +110,6 @@ pub struct SignableReadinessBeacon {
     pub applied_through: u64,
     pub ts_millis: u64,
     pub strong: bool,
-    pub admission_proof: Option<SignedGroupOpenInvitation>,
 }
 
 /// Periodic readiness signal a peer publishes on the namespace topic to
@@ -127,7 +129,6 @@ pub struct SignedReadinessBeacon {
     pub strong: bool,
     /// Self-contained proof of admission, so a receiver can accept the
     /// beacon before applying the corresponding `MemberJoinedAt` op.
-    pub admission_proof: Option<SignedGroupOpenInvitation>,
     pub signature: [u8; 64],
 }
 
@@ -142,7 +143,6 @@ impl SignedReadinessBeacon {
             applied_through: self.applied_through,
             ts_millis: self.ts_millis,
             strong: self.strong,
-            admission_proof: self.admission_proof.clone(),
         }
     }
 
@@ -376,37 +376,13 @@ pub enum GroupTopicMsg {
 
 #[cfg(test)]
 mod tests {
-    use calimero_context_config::types::{ContextGroupId, GroupInvitationFromAdmin, SignerId};
+    use calimero_context_config::types::SignedGroupOpenInvitation;
     use calimero_primitives::identity::PrivateKey;
 
     use super::*;
 
-    /// Minimal, structurally-valid invitation for beacon-proof tests. Not
-    /// itself cryptographically verified here - only its presence on the
-    /// wire and coverage by the beacon signature are under test.
-    fn test_invitation(sk: &PrivateKey, id: NamespaceId) -> SignedGroupOpenInvitation {
-        SignedGroupOpenInvitation {
-            inviter_account: None,
-            invitation: GroupInvitationFromAdmin {
-                inviter_identity: SignerId::from(*sk.public_key()),
-                group_id: ContextGroupId::from(id.to_bytes()),
-                expiration_timestamp: 1_900_000_000,
-                invitation_nonce: [0x33; 32],
-                invited_role: 1,
-            },
-            inviter_signature: "deadbeef".to_string(),
-            application_id: Some([0x44; 32]),
-            bytecode_id: Some([0x55; 32]),
-        }
-    }
-
-    /// Build a properly-signed beacon carrying (or omitting) an admission
-    /// proof, signed by `sk`.
-    fn signed_beacon_with_proof(
-        sk: &PrivateKey,
-        namespace_id: NamespaceId,
-        admission_proof: Option<SignedGroupOpenInvitation>,
-    ) -> SignedReadinessBeacon {
+    /// Build a properly-signed beacon, signed by `sk`.
+    fn signed_beacon(sk: &PrivateKey, namespace_id: NamespaceId) -> SignedReadinessBeacon {
         let mut beacon = SignedReadinessBeacon {
             namespace_id,
             peer_pubkey: sk.public_key(),
@@ -414,7 +390,6 @@ mod tests {
             applied_through: 42,
             ts_millis: 1_700_000_000_000,
             strong: true,
-            admission_proof,
             signature: [0u8; 64],
         };
         beacon.signature = sk
@@ -463,7 +438,6 @@ mod tests {
             applied_through: 17,
             ts_millis: 42,
             strong: true,
-            admission_proof: None,
             signature: [5u8; 64],
         });
         let bytes = borsh::to_vec(&beacon).expect("ser");
@@ -555,7 +529,6 @@ mod tests {
             applied_through: 42,
             ts_millis: 1_700_000_000_000,
             strong: true,
-            admission_proof: None,
             signature: [0u8; 64],
         };
         beacon.signature = sk
@@ -577,7 +550,6 @@ mod tests {
             applied_through: 42,
             ts_millis: 1_700_000_000_000,
             strong: false,
-            admission_proof: None,
             signature: [0u8; 64],
         };
         beacon.signature = sk
@@ -603,7 +575,6 @@ mod tests {
             applied_through: 100,
             ts_millis: 1_700_000_000_000,
             strong: true,
-            admission_proof: None,
             signature: [0u8; 64],
         };
         beacon.signature = sk
@@ -618,64 +589,46 @@ mod tests {
     }
 
     #[test]
-    fn beacon_signature_covers_admission_proof() {
+    fn beacon_round_trips() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let ns: NamespaceId = [3u8; 32].into();
-        let mut beacon = signed_beacon_with_proof(&sk, ns, Some(test_invitation(&sk, ns)));
-
-        assert!(beacon.verify_signature().is_ok());
-
-        beacon.admission_proof = Some(test_invitation(&sk, [9u8; 32].into()));
-        assert!(
-            beacon.verify_signature().is_err(),
-            "swapping the proof must invalidate the beacon"
-        );
-    }
-
-    #[test]
-    fn beacon_without_proof_round_trips() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
-        let beacon = signed_beacon_with_proof(&sk, [3u8; 32].into(), None);
+        let beacon = signed_beacon(&sk, [3u8; 32].into());
         let bytes = borsh::to_vec(&beacon).unwrap();
         let decoded: SignedReadinessBeacon = borsh::from_slice(&bytes).unwrap();
 
-        assert!(decoded.admission_proof.is_none());
         assert!(decoded.verify_signature().is_ok());
 
-        // Pins the one-byte steady-state cost: namespace_id (32) + peer_pubkey
-        // (32) + dag_head (32) + applied_through (8) + ts_millis (8) + strong
-        // (1) + admission_proof None tag (1) + signature (64).
-        let expected_len = 32 + 32 + 32 + 8 + 8 + 1 + 1 + 64;
+        // Pins the wire layout: namespace_id (32) + peer_pubkey (32) +
+        // dag_head (32) + applied_through (8) + ts_millis (8) + strong (1) +
+        // signature (64). No Option tag - the beacon carries no optional
+        // fields, so every byte here is one a receiver must account for.
+        let expected_len = 32 + 32 + 32 + 8 + 8 + 1 + 64;
         assert_eq!(bytes.len(), expected_len);
     }
 
     #[test]
-    fn old_beacon_layout_rejects_new_encoding() {
-        // Pins the mixed-version contract: an un-upgraded node must fail
-        // closed on a new-format beacon rather than misparse it, whether or
-        // not the beacon carries a proof - `None` is the steady state, every
-        // already-established member's beacon, and the more consequential
-        // case since it means every beacon from an upgraded node is dropped.
+    fn proof_carrying_layout_rejects_new_encoding() {
+        // Pins the mixed-version contract across the removal of
+        // `admission_proof`: a node still on the proof-carrying shape must
+        // fail closed on a beacon in this one rather than misparse it. It
+        // reads the first signature byte where it expects the Option tag, so
+        // it either rejects the tag outright or runs out of bytes - it never
+        // silently accepts a beacon whose fields have shifted under it.
         #[derive(BorshDeserialize)]
         #[allow(dead_code)]
-        struct OldBeacon {
+        struct ProofCarryingBeacon {
             namespace_id: NamespaceId,
             peer_pubkey: PublicKey,
             dag_head: [u8; 32],
             applied_through: u64,
             ts_millis: u64,
             strong: bool,
+            admission_proof: Option<SignedGroupOpenInvitation>,
             signature: [u8; 64],
         }
 
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let ns: NamespaceId = [3u8; 32].into();
-
-        for admission_proof in [None, Some(test_invitation(&sk, ns))] {
-            let new_bytes =
-                borsh::to_vec(&signed_beacon_with_proof(&sk, ns, admission_proof)).unwrap();
-            assert!(borsh::from_slice::<OldBeacon>(&new_bytes).is_err());
-        }
+        let bytes = borsh::to_vec(&signed_beacon(&sk, [3u8; 32].into())).unwrap();
+        assert!(borsh::from_slice::<ProofCarryingBeacon>(&bytes).is_err());
     }
 
     #[test]

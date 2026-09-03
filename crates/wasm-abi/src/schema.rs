@@ -67,7 +67,14 @@ pub enum TypeDef {
         encoding: Option<String>,
     },
     #[serde(rename = "alias")]
-    Alias { target: TypeRef },
+    Alias {
+        target: TypeRef,
+        /// ECMA-262 source text constraining the newtype's values. Descriptive
+        /// only - the node does not enforce it; generated clients use it to
+        /// validate at their own boundary.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
+    },
 }
 
 /// Field in a record type
@@ -553,7 +560,7 @@ impl Manifest {
                     }
                 }
             }
-            TypeDef::Alias { target } => {
+            TypeDef::Alias { target, .. } => {
                 Self::collect_dependencies_from_type_ref(target, all_types, collected, visited)?;
             }
             TypeDef::Bytes { .. } => {

@@ -19,13 +19,13 @@ runs background compaction.
 
 An application is the unit of executable code a context targets: content-addressed
 WASM bytecode plus its embedded ABI. It is identified by an **application id** — a
-32-byte hash, shown base58 — and stored on a node as an `ApplicationMeta` record
+32-byte hash, shown hex — and stored on a node as an `ApplicationMeta` record
 (`crates/store/src/types/application.rs`). The in-memory view handed to callers is
 `Application` (`crates/primitives/src/application.rs`):
 
 ```rust
 pub struct Application {
-    pub id: ApplicationId,        // 32-byte hash, base58
+    pub id: ApplicationId,        // 32-byte hash, hex
     pub blob: ApplicationBlob,    // { bytecode: BlobId, compiled: BlobId }
     pub size: u64,
     pub source: ApplicationSource,

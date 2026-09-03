@@ -1,5 +1,5 @@
 use calimero_wasm_abi::schema::MethodIntent;
-use jsonschema::JSONSchema;
+use jsonschema::validator_for;
 use serde_json::Value;
 
 #[test]
@@ -7,7 +7,7 @@ fn test_schema_validation_basic() {
     // Load the schema
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     // Create a basic manifest
     let mut manifest = calimero_wasm_abi::schema::Manifest {
@@ -35,7 +35,7 @@ fn test_schema_validation_basic() {
     assert!(
         validation_result.is_ok(),
         "Schema validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }
 
@@ -46,7 +46,7 @@ fn test_schema_validation_migration_edges() {
     // fields unless it describes them (the gap this guards).
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     let manifest = calimero_wasm_abi::schema::Manifest {
         schema_version: "wasm-abi/1".to_string(),
@@ -66,7 +66,7 @@ fn test_schema_validation_migration_edges() {
     assert!(
         validation_result.is_ok(),
         "edge-bearing manifest must validate against wasm-abi.schema.json: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }
 
@@ -79,7 +79,7 @@ fn test_schema_validation_shared_storage_crdt_type() {
     // Load the crate's own JSON Schema.
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     // A `SharedStorage<String>` field normalizes to a single-slot Record
     // collection carrying `crdt_type: shared_storage`. The published JSON Schema
@@ -110,7 +110,7 @@ fn test_schema_validation_shared_storage_crdt_type() {
     assert!(
         validation_result.is_ok(),
         "SharedStorage crdt_type must validate against wasm-abi.schema.json: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }
 
@@ -119,7 +119,7 @@ fn test_schema_validation_conformance() {
     // Load the schema
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     // Load the conformance manifest
     let conformance_json = include_str!("../../../apps/abi_conformance/abi.expected.json");
@@ -130,7 +130,7 @@ fn test_schema_validation_conformance() {
     assert!(
         validation_result.is_ok(),
         "Conformance manifest validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }
 
@@ -139,7 +139,7 @@ fn test_schema_validation_bytes_types() {
     // Load the schema
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     // Test fixed bytes in a complete manifest
     let fixed_bytes_manifest = serde_json::json!({
@@ -157,7 +157,7 @@ fn test_schema_validation_bytes_types() {
     assert!(
         validation_result.is_ok(),
         "Fixed bytes validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 
     // Test variable bytes in a complete manifest
@@ -175,7 +175,7 @@ fn test_schema_validation_bytes_types() {
     assert!(
         validation_result.is_ok(),
         "Variable bytes validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }
 
@@ -184,7 +184,7 @@ fn test_schema_validation_map_keys() {
     // Load the schema
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     // Test valid map with string key in a method parameter
     let valid_map_manifest = serde_json::json!({
@@ -220,7 +220,7 @@ fn test_schema_validation_map_keys() {
     assert!(
         validation_result.is_ok(),
         "Valid map validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 
     // Test invalid map with non-string key in a method parameter
@@ -265,7 +265,7 @@ fn test_schema_validation_events() {
     // Load the schema
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     // Test event with payload in a complete manifest
     let event_with_payload_manifest = serde_json::json!({
@@ -285,7 +285,7 @@ fn test_schema_validation_events() {
     assert!(
         validation_result.is_ok(),
         "Event with payload validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 
     // Test event without payload in a complete manifest
@@ -303,7 +303,7 @@ fn test_schema_validation_events() {
     assert!(
         validation_result.is_ok(),
         "Event without payload validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }
 
@@ -314,7 +314,7 @@ fn test_schema_validation_tuple() {
     // on each collection branch means an undescribed `tuple` is rejected here.
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = JSONSchema::compile(&schema_value).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
 
     let mut manifest = calimero_wasm_abi::schema::Manifest {
         schema_version: "wasm-abi/1".to_string(),
@@ -341,6 +341,6 @@ fn test_schema_validation_tuple() {
     assert!(
         validation_result.is_ok(),
         "Schema validation failed: {:?}",
-        validation_result.err().map(|e| e.collect::<Vec<_>>())
+        validation_result.err()
     );
 }

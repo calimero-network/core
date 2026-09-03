@@ -159,13 +159,13 @@ impl fmt::Display for PublicKey {
 
 impl From<PublicKey> for String {
     fn from(id: PublicKey) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
 impl From<&PublicKey> for String {
     fn from(id: &PublicKey) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
@@ -279,9 +279,12 @@ macro_rules! content_address_id {
 
         /// Parses the hex form [`Display`] writes.
         ///
-        /// Hex rather than bs58, which is what a *key* is written in around
-        /// here: an id that renders like a key invites being pasted where a key
-        /// belongs, and both are 32 bytes, so nothing downstream would object.
+        /// Which is also what a *key* is written in now. This once said "hex
+        /// rather than bs58", the difference being what stopped an id from being
+        /// pasted where a key belongs; both are 32 bytes and both are hex, so
+        /// nothing about the string prevents that any more. Where the distinction
+        /// has to hold it is carried explicitly — see `MemberIdentity` and
+        /// `calimero_context::member_account::resolve`.
         impl core::str::FromStr for $name {
             type Err = IdParseError;
 
@@ -354,27 +357,86 @@ impl DeviceId {
     }
 }
 
-/// A member named either by the ACCOUNT it is, or by a KEY it signs with.
-///
-/// The two cannot be confused: an account is 64 hex characters, and bs58 over
-/// 32 bytes is at most 44.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MemberIdentity {
-    Account(AccountId),
-    Key(PublicKey),
+// Needed for `DeviceId` to be aliasable: the alias store layer copies the
+// value's bytes through this, same as `ContextId`/`ApplicationId` do.
+impl AsRef<[u8; 32]> for DeviceId {
+    fn as_ref(&self) -> &[u8; 32] {
+        self.as_bytes()
+    }
 }
 
-/// A string was neither a 64-hex account id nor a bs58 public key.
+/// A member named by 32 bytes that are EITHER its account or a key it signs with.
+///
+/// Plain 64-hex, with nothing marking which of the two it is — because nothing
+/// *can* mark it. Both are 32 bytes and both render as hex, so the string carries
+/// no evidence either way and any attempt to read some out of it is guessing.
+///
+/// This deliberately does not decide. It used to: the two were told apart by
+/// their encoding, an account being 64 hex and a key bs58, so `from_str` tried
+/// account first and fell through to key. Once every id became hex that
+/// fallthrough was unreachable — every key would have parsed as an account, which
+/// on `POST /groups/:id/members` is not a parse error but a **different member
+/// added, silently**.
+///
+/// A `key:` tag was the other way out and is worse in the ordinary case: it makes
+/// every caller declare something the node can simply look up, and it is wrong
+/// exactly when the caller is confused about what they hold.
+///
+/// So the question moves to where it can be answered from data rather than
+/// spelling — `calimero_context::member_account::resolve`, which asks whether
+/// these bytes are a signing key bound to an account in this namespace. A bound
+/// key resolves to its account; anything else is taken as an account as given.
+/// See that function for what the ambiguity costs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct MemberIdentity([u8; 32]);
+
+/// A string was not a 64-hex member identity.
 #[derive(Clone, Copy, Debug, Error)]
-#[error("expected a 64-hex account id or a bs58 public key")]
+#[error("expected 64 hex characters (32 bytes)")]
 pub struct InvalidMemberIdentity;
+
+impl MemberIdentity {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Read these bytes as an account, taking them as given.
+    ///
+    /// Correct only once resolution has ruled out their being a bound key.
+    #[must_use]
+    pub const fn as_account(&self) -> AccountId {
+        AccountId::from_raw(self.0)
+    }
+
+    /// Read these bytes as a signing key.
+    #[must_use]
+    pub fn as_key(&self) -> PublicKey {
+        PublicKey::from(self.0)
+    }
+}
+
+impl From<AccountId> for MemberIdentity {
+    fn from(account: AccountId) -> Self {
+        Self(*account.as_bytes())
+    }
+}
+
+impl From<PublicKey> for MemberIdentity {
+    fn from(key: PublicKey) -> Self {
+        Self(*AsRef::<[u8; 32]>::as_ref(&key))
+    }
+}
+
+impl From<[u8; 32]> for MemberIdentity {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
 
 impl fmt::Display for MemberIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Account(account) => fmt::Display::fmt(account, f),
-            Self::Key(key) => fmt::Display::fmt(key, f),
-        }
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 
@@ -382,10 +444,11 @@ impl FromStr for MemberIdentity {
     type Err = InvalidMemberIdentity;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse()
-            .map(Self::Account)
-            .or_else(|_| s.parse().map(Self::Key))
-            .map_err(|_: InvalidPublicKey| InvalidMemberIdentity)
+        let bytes = hex::decode(s).map_err(|_ignored| InvalidMemberIdentity)?;
+        bytes
+            .try_into()
+            .map(Self)
+            .map_err(|_ignored: Vec<u8>| InvalidMemberIdentity)
     }
 }
 
@@ -469,48 +532,89 @@ mod tests {
         assert!(public_key.verify(message, &sig).is_ok());
     }
 
+    /// The same bytes are one string, whether they name an account or a key.
+    ///
+    /// This replaces a pair of pins that each asserted a way of telling the two
+    /// apart. The first said an account was 64 hex and a key's bs58 could not
+    /// reach that length, so their *shape* decided. When every id became hex that
+    /// stopped being true, and the second pin said a `key:` tag decided instead.
+    ///
+    /// Neither survives, and the reason the tag went is not that it failed — it
+    /// worked — but that it asked every caller to declare something the node can
+    /// look up. What is asserted here is the plain fact underneath both: from the
+    /// string alone the two are indistinguishable, so the type does not pretend
+    /// otherwise and resolution happens against real data instead.
     #[test]
-    fn member_identity_reads_both_encodings() {
-        let account = AccountId::from([0x11; 32]);
-        let key = PublicKey::from([0x11; 32]);
+    fn an_account_and_a_key_over_the_same_bytes_are_one_identity() {
+        for byte in [0x00_u8, 0x01, 0x7f, 0xff] {
+            let bytes = [byte; 32];
+            let account = AccountId::from(bytes);
+            let key = PublicKey::from(bytes);
+
+            assert_eq!(account.to_string(), key.to_string());
+            assert_eq!(
+                account.to_string().parse::<MemberIdentity>().unwrap(),
+                key.to_string().parse::<MemberIdentity>().unwrap(),
+                "one spelling must yield one identity, whichever it names",
+            );
+        }
+    }
+
+    /// Both readings are available, and neither is chosen here.
+    #[test]
+    fn it_offers_both_readings_of_its_bytes() {
+        let bytes = [0x11_u8; 32];
+        let identity = MemberIdentity::from(bytes);
+
+        assert_eq!(identity.as_account(), AccountId::from(bytes));
+        assert_eq!(identity.as_key(), PublicKey::from(bytes));
+        assert_eq!(identity.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn it_round_trips_through_its_hex() {
+        let identity = MemberIdentity::from([0x11_u8; 32]);
 
         assert_eq!(
-            account.to_string().parse::<MemberIdentity>().unwrap(),
-            MemberIdentity::Account(account)
+            identity.to_string(),
+            "11".repeat(32),
+            "a member identity is plain hex, with nothing marking what it names",
         );
         assert_eq!(
-            key.to_string().parse::<MemberIdentity>().unwrap(),
-            MemberIdentity::Key(key)
+            identity.to_string().parse::<MemberIdentity>().unwrap(),
+            identity
         );
         assert!("not-an-id".parse::<MemberIdentity>().is_err());
     }
 
+    /// The `key:` form is gone, and a caller still sending it is told so.
     #[test]
-    fn member_identity_encodings_do_not_collide() {
-        // Whatever the 32 bytes are, the hex form is 64 characters and the
-        // bs58 form cannot reach that length.
-        for byte in [0x00_u8, 0x01, 0x7f, 0xff] {
-            let bytes = [byte; 32];
-            let hex = AccountId::from(bytes).to_string();
-            let bs58 = PublicKey::from(bytes).to_string();
+    fn a_tagged_key_is_no_longer_accepted() {
+        let tagged = format!("key:{}", "11".repeat(32));
 
-            assert_eq!(hex.len(), 64);
-            assert!(bs58.len() < 64);
-            assert!(matches!(
-                hex.parse::<MemberIdentity>().unwrap(),
-                MemberIdentity::Account(_)
-            ));
-            assert!(matches!(
-                bs58.parse::<MemberIdentity>().unwrap(),
-                MemberIdentity::Key(_)
-            ));
-        }
+        assert!(
+            tagged.parse::<MemberIdentity>().is_err(),
+            "the tag is not hex, so it must be refused rather than half-read",
+        );
+    }
+
+    /// A key sent the old base58 way must fail loudly, not be read as an account.
+    #[test]
+    fn an_untagged_base58_key_is_refused() {
+        assert!(
+            "11111111111111111111111111111112"
+                .parse::<MemberIdentity>()
+                .is_err(),
+            "base58 must be refused rather than silently becoming some other account",
+        );
     }
 
     #[test]
     fn member_identity_serializes_as_the_string_it_parses() {
-        let account = MemberIdentity::Account(AccountId::from([0x22; 32]));
-        let key = MemberIdentity::Key(PublicKey::from([0x22; 32]));
+        let account = MemberIdentity::from(AccountId::from([0x22; 32]));
+        let key = MemberIdentity::from(PublicKey::from([0x22; 32]));
+
+        assert_eq!(account, key, "same bytes, one identity");
 
         for identity in [account, key] {
             let json = serde_json::to_string(&identity).unwrap();

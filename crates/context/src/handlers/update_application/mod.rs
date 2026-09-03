@@ -1805,9 +1805,18 @@ mod tests {
     }
 
     /// Creates a test store with in-memory database.
+    ///
+    /// It carries an account root, because `merod init` provisions one and so every
+    /// node these tests stand in for has one. Nothing mints lazily any more, so a
+    /// root-free store here means anything reaching `require_account_root` — the
+    /// migration-state writer does — fails on setup rather than testing anything.
     fn create_test_store() -> Store {
         let db = InMemoryDB::owned();
-        Store::new(Arc::new(db))
+        let store = Store::new(Arc::new(db));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("provision the account root an initialised node has");
+        store
     }
 
     /// Creates a test ApplicationMeta with the given signer_id.

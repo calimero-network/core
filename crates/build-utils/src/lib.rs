@@ -1,7 +1,8 @@
 //! Shared build script utilities for Calimero binaries and crates.
 //!
 //! Provides workspace version reading and git metadata so build scripts stay DRY
-//! and consistent (e.g. correct git_dir resolution for rerun-if-changed).
+//! and consistent (e.g. correct git_dir resolution for rerun-if-changed), plus,
+//! behind the `fetch` feature, cached download and extraction of zip archives.
 
 use std::error::Error;
 use std::path::Path;
@@ -9,6 +10,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use toml::Value;
+
+#[cfg(feature = "fetch")]
+mod fetch;
+
+#[cfg(feature = "fetch")]
+pub use fetch::fetch_and_extract;
 
 /// Read `[workspace.metadata.workspaces].version` from the workspace root Cargo.toml.
 /// Used so binaries and crates get the release version instead of the workspace

@@ -5,7 +5,7 @@
 //! match — so a new `.route(...)` (or a new method on an existing path) reddens
 //! here until it's added to the manifest (and, by convention, exercised by an SDK
 //! e2e test). Method-aware so a broken verb can't hide behind another verb on the
-//! same path (e.g. GET vs DELETE /blobs/:id). Regenerate after an intended change:
+//! same path (e.g. GET vs DELETE /blobs/{id}). Regenerate after an intended change:
 //!   UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest
 //!
 //! Inline `.nest("/prefix", Router::new()...)` mounts are resolved to their real
@@ -57,11 +57,11 @@ fn first_string(s: &str) -> Option<(&str, usize)> {
 }
 
 /// Join a nest `prefix` with a route `path`. Returns `None` for catch-all
-/// literals (`/*path`, at any depth) and the top-level bare root (`/`) — those are
+/// literals (`/{*path}`, at any depth) and the top-level bare root (`/`) — those are
 /// the static-file / SPA handlers, not gated API. A nested `"/"` collapses to the
 /// nest root.
 fn join_path(prefix: &str, path: &str) -> Option<String> {
-    if path.starts_with("/*") {
+    if path.starts_with("/{*") {
         return None;
     }
     if prefix.is_empty() {
@@ -78,7 +78,7 @@ fn join_path(prefix: &str, path: &str) -> Option<String> {
 
 /// Recursively collect `METHOD /admin-api/<path>` from a router-builder region,
 /// accumulating `.nest("<prefix>", Router::new()...)` prefixes so nested routes
-/// resolve to their real paths (e.g. `/contexts/sync/:context_id`). Paren-balanced
+/// resolve to their real paths (e.g. `/contexts/sync/{context_id}`). Paren-balanced
 /// + string-aware, so multi-line calls and trailing code don't confuse it.
 fn collect(region: &str, prefix: &str, out: &mut BTreeSet<String>) {
     let mut cursor = 0;

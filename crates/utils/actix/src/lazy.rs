@@ -262,6 +262,11 @@ const _: () = {
     use core::mem::size_of;
 
     trait Trait {
+        #[expect(
+            dead_code,
+            reason = "Never called: the trait exists only so `Item` has a vtable whose \
+                      layout the `size_of` assertions below can compare against."
+        )]
         fn method(&self);
     }
 

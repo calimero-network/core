@@ -1,12 +1,12 @@
 # calimero-build-utils - Build Script Helpers
 
-Shared helpers for `build.rs` scripts: reads the workspace release version and stamps git/rustc metadata into `cargo:rustc-env` vars.
+Shared helpers for `build.rs` scripts: reads the workspace release version and stamps git/rustc metadata into `cargo:rustc-env` vars, and behind the optional `fetch` feature downloads and extracts zip archives into a build cache.
 
 ## Package Identity
 
 - **Crate**: `calimero-build-utils`
-- **Entry**: `src/lib.rs` (single file, no modules)
-- **Key deps**: `rustc_version` (compiler version string), `toml` (parse workspace `Cargo.toml`); dev-only: `tempfile`
+- **Entry**: `src/lib.rs`, plus `src/fetch.rs` behind the `fetch` feature
+- **Key deps**: `rustc_version` (compiler version string), `toml` (parse workspace `Cargo.toml`); `fetch` only: `eyre`, `reqwest`, `sha2`, `tempfile`, `zip`
 
 ## Commands
 
@@ -14,8 +14,8 @@ Shared helpers for `build.rs` scripts: reads the workspace release version and s
 # Build
 cargo build -p calimero-build-utils
 
-# Test (all)
-cargo test -p calimero-build-utils
+# Test (all, including the fetch helpers)
+cargo test -p calimero-build-utils --features fetch
 
 # Test a single case
 cargo test -p calimero-build-utils git_details_or_unknown_returns_unknown_outside_git_repo -- --nocapture
@@ -31,12 +31,13 @@ cargo test -p calimero-build-utils git_details_or_unknown_returns_unknown_outsid
 | `git_details_or_unknown(pkg_dir)` | fn | Same as above but swallows errors into `GitInfo { describe: "unknown", commit: "unknown" }` and emits `cargo:warning` instead of failing the build |
 | `GitInfo` | struct | `{ describe: String, commit: String }` |
 | `run_command(cmd, args, cwd)` | fn | Thin wrapper over `std::process::Command`; returns stdout as `String`, error includes stderr on non-zero exit |
+| `fetch_and_extract(client, src, cache_dir, freshness, force)` | fn | `fetch` feature. Downloads (or reads, for a local path) a zip and returns the directory it was extracted into; reuses a cached extraction younger than `freshness` unless `force` |
 
 `read_workspace_version_for_dir` and `parse_workspace_metadata_version` are private helpers used only by `read_workspace_version` and the test suite.
 
 ## Mental Model
 
-Callers are `merod` and `meroctl` binaries only (`crates/merod/build.rs`, `crates/meroctl/build.rs`), each calling `calimero_build_utils::set_version_env_vars("MEROD")` / `"MEROCTL"` and `.expect()`-ing the result - a build.rs failing hard here is intentional, not a bug to soften.
+`set_version_env_vars` is called by the `merod` and `meroctl` binaries (`crates/merod/build.rs`, `crates/meroctl/build.rs`) as `calimero_build_utils::set_version_env_vars("MEROD")` / `"MEROCTL"`, `.expect()`-ing the result - a build.rs failing hard here is intentional, not a bug to soften. `fetch_and_extract` is called by `crates/server/build.rs` and `crates/auth/build.rs`, which enable the `fetch` feature to pull the admin dashboard and auth frontend bundles.
 
 `set_version_env_vars` composes the other three: it reads the workspace release version (from the workspace-root `[workspace.metadata.workspaces].version`, not the placeholder `0.0.0` in each crate's own `Cargo.toml`), resolves git info relative to `CARGO_MANIFEST_DIR` (falling back to `"unknown"` rather than failing if the crate is built outside a git checkout, e.g. from a source tarball), and reads the active `rustc` version. It then prints four `cargo:rustc-env=...` lines, which downstream code reads via `env!(...)` at compile time (see `crates/merod/src/version.rs`, `crates/merod/src/cli.rs`, `crates/meroctl/src/version.rs`, `crates/meroctl/src/cli.rs`).
 
@@ -44,7 +45,8 @@ Callers are `merod` and `meroctl` binaries only (`crates/merod/build.rs`, `crate
 
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | Everything: all public fns, `GitInfo`, and all tests |
+| `src/lib.rs` | Version/git helpers, `GitInfo`, and their tests |
+| `src/fetch.rs` | `fetch_and_extract` and its cache, behind the `fetch` feature |
 
 ## Gotchas
 

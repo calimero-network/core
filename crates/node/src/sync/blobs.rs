@@ -6,7 +6,7 @@ use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
-use futures_util::TryStreamExt;
+use futures_util::{AsyncReadExt, TryStreamExt};
 use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -90,16 +90,18 @@ impl SyncManager {
 
         let (tx, mut rx) = mpsc::channel(1);
 
-        // Always cap the inbound stream. A peer advertising size==0 (unknown)
-        // still gets a hard ceiling so a rogue sender cannot stream unbounded data.
+        // A ceiling, not an assertion: `size` is the application's recorded size,
+        // which is 0 on a stub, so integrity rests on the blob id checked below.
         let size_limit = if size > 0 {
             size.min(MAX_BLOB_STREAM_SIZE_BYTES)
         } else {
             MAX_BLOB_STREAM_SIZE_BYTES
         };
         let add_task = self.node_client.add_blob(
-            poll_fn(|cx| rx.poll_recv(cx)).into_async_read(),
-            Some(size_limit),
+            poll_fn(|cx| rx.poll_recv(cx))
+                .into_async_read()
+                .take(size_limit),
+            None,
             None,
         );
 

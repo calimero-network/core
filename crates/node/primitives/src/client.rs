@@ -447,6 +447,13 @@ impl NodeClient {
         }
     }
 
+    /// Subscribe to the context topic, which is the id's hex — matching
+    /// `ns/<hex>` below, where it previously did not.
+    ///
+    /// The topic string is a wire identifier, not a display: two nodes spelling
+    /// the same context differently subscribe to two different topics and simply
+    /// never see each other. There is no error to observe, so this is worth
+    /// stating where the string is built.
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = String::from(context_id);
         self.topic_manager.ensure_subscribed(&topic).await?;

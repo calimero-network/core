@@ -27,7 +27,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
-use crate::{MembershipRepository, NamespaceMembershipService, ReentryRepository};
+use crate::MembershipRepository;
 
 /// Default `min_acks` for governance publishes — at least one peer must
 /// ack before we consider the op delivered. Spec §6.2. Callers that
@@ -222,83 +222,6 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
     }
     signer_is_namespace_member(store, beacon.namespace_id, &beacon.peer_pubkey)
 }
-
-/// Whether a beacon whose signer is not (yet) a known member carries an
-/// invitation proving it was admitted to the namespace.
-///
-/// Consulted only where [`verify_readiness_beacon`] returns `false`. A node
-/// that joins while its governance broadcast reaches no peer is otherwise
-/// invisible: the beacon is the only pull trigger for an established member,
-/// and the beacon is dropped because no `MemberJoinedAt` op has been applied
-/// for its signer. An open invitation is self-contained and
-/// signature-verifiable, so it breaks that circularity without trusting the
-/// beacon.
-///
-/// This grants nothing. It writes no membership row, never populates the
-/// receiver's `ReadinessCache`, and never lets the beacon's advertised state
-/// into local state - it only tells the caller that pulling governance from
-/// this peer is worth the round trip. Membership still arrives exclusively via
-/// a verified `MemberJoinedAt` op on the normal apply path.
-///
-/// Open invitations carry no invitee field: they are bearer credentials, so a
-/// valid proof establishes that the beacon's signer *possesses* an invitation
-/// for this namespace, not that it was issued to them. The beacon signature
-/// covers `admission_proof`, so possession is at least bound to `peer_pubkey`.
-/// What bounds the rest is that the only unlocked action is an authenticated
-/// pull, rate-limited by the caller's per-namespace debounce.
-///
-/// Nothing here reads a clock, so what bounds replay is the caller's own
-/// staleness check on `beacon.ts_millis` - a caller that omits it loses it.
-///
-/// Returns `false` on any failure (including store errors) so the caller drops
-/// the beacon exactly as it does today - the negative path must stay
-/// indistinguishable from an ordinary unverifiable beacon, or it becomes an
-/// oracle for which namespaces this node belongs to.
-#[must_use]
-pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) -> bool {
-    // Cheapest guard first: the caller already spent one Ed25519 verify in
-    // `verify_readiness_beacon`, and a proof-less beacon must not cost a second.
-    let Some(inv) = beacon.admission_proof.as_ref() else {
-        return false;
-    };
-    if beacon.verify_signature().is_err() {
-        return false;
-    }
-    // Inviter signature, the invited group belonging to this namespace, the
-    // inviter holding CAN_INVITE_MEMBERS in our current view, and expiry -
-    // the same gate the key-delivery responder applies to this credential.
-    if NamespaceMembershipService::new(store, beacon.namespace_id)
-        .validate_open_invitation(inv, crate::now_secs())
-        .is_err()
-    {
-        return false;
-    }
-    // The consumed-invitation row is account-keyed, so answering "has this
-    // peer already redeemed it" needs the account its key speaks for. Unlike
-    // every other caller on this plane, an unresolved key here is ORDINARY
-    // rather than an anomaly: this function exists for a peer whose join op
-    // this receiver has not applied yet, and that same op carries the device
-    // binding — so neither exists locally at the moment the beacon arrives.
-    //
-    // Treating unresolvable as "not consumed" is the accurate answer, not a
-    // fallback: no consumption row can exist for a principal this node cannot
-    // name. It is also not a grant — a true verdict unlocks only a
-    // debounce-limited governance pull, and membership still arrives solely
-    // via a verified join op on the normal apply path.
-    let Ok(Some(account)) =
-        crate::member_account_in_namespace(store, &inv.invitation.group_id, &beacon.peer_pubkey)
-    else {
-        return true;
-    };
-    !ReentryRepository::new(store)
-        .is_invitation_consumed(
-            &inv.invitation.group_id,
-            &account,
-            inv.invitation.invitation_nonce,
-        )
-        .unwrap_or(true)
-}
-
 /// Verify a [`SignedMigrationHeartbeat`] against the local store's view of
 /// namespace membership.
 ///

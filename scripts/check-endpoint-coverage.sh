@@ -3,7 +3,7 @@
 # endpoint that ships without an SDK test is flagged.
 #
 # Args:
-#   $1  endpoints.json      committed route manifest, e.g. ["GET /admin-api/contexts/:context_id", ...]
+#   $1  endpoints.json      committed route manifest, e.g. ["GET /admin-api/contexts/{context_id}", ...]
 #   $2  covered-endpoints.json   concrete "METHOD /path" entries the SDK e2e recorded
 #   $3  coverage-baseline.json   (optional) accepted-uncovered routes — known gaps
 #                                that don't fail the build (the ratchet). A new
@@ -11,7 +11,7 @@
 #
 # Entries are method-aware "METHOD /path". A recorded "METHOD /concrete" covers a
 # manifest "METHOD /pattern" when the methods match and the path matches the
-# pattern (":seg" -> one segment, "*rest" -> anything). Query strings are ignored.
+# pattern ("{seg}" -> one segment, "{*rest}" -> anything). Query strings are ignored.
 set -euo pipefail
 
 MANIFEST="${1:?usage: check-endpoint-coverage.sh <endpoints.json> <covered-endpoints.json> [baseline.json]}"
@@ -40,8 +40,8 @@ for pattern in "${patterns[@]}"; do
   # Split "METHOD /path-pattern".
   pmethod="${pattern%% *}"
   ppath="${pattern#* }"
-  # ":seg" -> "[^/]+"; "*rest" -> ".*"
-  rx="^$(printf '%s' "$ppath" | sed -E 's#:[^/]+#[^/]+#g; s#\*[^/]+#.*#g')$"
+  # "{seg}" -> "[^/]+"; "{*rest}" -> ".*" (catch-all first, else the generic rule eats it)
+  rx="^$(printf '%s' "$ppath" | sed -E 's#\{\*[^{}/]+\}#.*#g; s#\{[^{}/]+\}#[^/]+#g')$"
   matched=0
   for hit in "${hits[@]}"; do
     hmethod="${hit%% *}"

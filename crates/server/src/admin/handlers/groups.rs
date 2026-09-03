@@ -102,34 +102,30 @@ pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     Ok(ContextGroupId::from(arr))
 }
 
+/// Parse a context id from a path segment.
+///
+/// One parse, where there used to be two: `ContextId`'s own `FromStr` was tried
+/// first and a manual `hex::decode` caught what it missed, because the type
+/// spelled itself base58 while callers sent hex. Both halves are the same parse
+/// now, so the fallback could only ever repeat the first one's answer.
 pub(crate) fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
-    if let Ok(context_id) = s.parse::<ContextId>() {
-        return Ok(context_id);
-    }
-
-    let bytes = hex::decode(s).map_err(|e| {
-        tracing::debug!(error = %e, "parse_context_id: hex decode failed");
+    s.parse::<ContextId>().map_err(|e| {
+        tracing::debug!(error = %e, "parse_context_id: not a 32-byte hex id");
         ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: "Invalid context id format: expected base58 or hex-encoded 32 bytes".into(),
+            message: "Invalid context id format: expected 64 hex characters (32 bytes)".into(),
         }
-    })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-        tracing::debug!(len = bytes.len(), "parse_context_id: wrong byte length");
-        ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: "Invalid context id: must be exactly 32 bytes".into(),
-        }
-    })?;
-    Ok(ContextId::from(arr))
+    })
 }
 
 /// Parse a member ACCOUNT from a path segment.
 ///
-/// Accounts render as 64 hex characters (see `AccountId`'s `Display`), which is
-/// deliberately not the bs58 a *key* renders as: the two are both 32 bytes, so a
-/// shared encoding would let one be pasted where the other belongs and nothing
-/// downstream would object.
+/// Accounts render as 64 hex characters (see `AccountId`'s `Display`) — and so,
+/// now, does a *key*. The two used to be told apart by encoding alone, so pasting
+/// one where the other belongs was a 400; it no longer is, and this function
+/// cannot detect it. See the test below, which pins the loss rather than hiding
+/// it. Where the distinction has to survive, it is carried by a tag —
+/// `MemberIdentity`'s `key:` prefix — not inferred from the spelling.
 fn parse_account(s: &str) -> Result<calimero_account::AccountId, ApiError> {
     s.parse::<calimero_account::AccountId>()
         .map_err(|_| ApiError {
@@ -144,11 +140,13 @@ mod tests {
 
     use super::{parse_account, parse_context_id};
 
+    /// Base58 was accepted here and no longer is.
+    ///
+    /// `"1"` thirty-two times is base58 for 32 zero bytes, and was a valid
+    /// context id at this endpoint. It is not hex, so it is now a 400.
     #[test]
-    fn parse_context_id_accepts_base58_context_ids() {
-        let context_id = parse_context_id("11111111111111111111111111111111");
-
-        assert!(context_id.is_ok());
+    fn parse_context_id_refuses_base58_context_ids() {
+        assert!(parse_context_id("11111111111111111111111111111111").is_err());
     }
 
     #[test]
@@ -167,19 +165,27 @@ mod tests {
         );
     }
 
-    /// A signing key must NOT parse as an account.
+    /// A signing key now DOES parse as an account, and that is a real loss.
     ///
-    /// Both are 32 bytes, so a shared encoding would let a key be pasted where a
-    /// member account belongs — naming a principal that exists nowhere, and
-    /// silently matching no member. The distinct encodings are what make that a
-    /// 400 instead of a no-op.
+    /// This inverts `parse_account_rejects_a_bs58_signing_key`, which held that
+    /// "the distinct encodings are what make that a 400 instead of a no-op".
+    /// Exactly so — and the encodings are no longer distinct, so the 400 is gone:
+    /// a key pasted into an account path segment now parses, names a principal
+    /// that exists nowhere, and matches no member. The request succeeds and does
+    /// nothing.
+    ///
+    /// Asserted rather than left implicit because it is the price of one
+    /// encoding, and a silent no-op is the kind of thing that gets rediscovered
+    /// as a bug. What survives the collapse survives by being tagged: see
+    /// `MemberIdentity`, where a key is written `key:<hex>` precisely because
+    /// this inference stopped working.
     #[test]
-    fn parse_account_rejects_a_bs58_signing_key() {
+    fn parse_account_now_also_accepts_a_key_because_both_are_hex() {
         let key = PublicKey::from([0; 32]).to_string();
 
         assert!(
-            parse_account(&key).is_err(),
-            "a bs58 key must not be accepted where an account is expected"
+            parse_account(&key).is_ok(),
+            "both render as 64 hex, so this can no longer tell them apart"
         );
     }
 }

@@ -123,9 +123,6 @@ pub struct NodeManager {
     /// from every Ready peer, so an un-debounced behind-node would fire
     /// a sync per beacon per peer.
     ///
-    /// Covers the established-member arm only; the provable-admission arm has
-    /// its own budget in `ns_provable_beacon_sync_debounce`.
-    ///
     /// Shared (`Arc<Mutex<_>>`) because the slot is stamped from inside
     /// the spawned divergence-check future, *after* the async DAG read
     /// confirms a sync is genuinely needed — a beacon from an
@@ -134,18 +131,11 @@ pub struct NodeManager {
     /// Touched only by
     /// `handlers::network_event::readiness::handle_readiness_beacon`.
     pub(crate) ns_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
-    /// The same budget, same window, for beacons admitted only by the
-    /// provable-admission path. Separate because such a beacon comes from a
-    /// peer we do not recognise as a member and its advertised head always
-    /// looks divergent, so a shared slot would let it win most windows and
-    /// silence exactly the member anti-entropy above. Still keyed on the
-    /// namespace, never the peer: a Sybil swarm shares one budget.
-    pub(crate) ns_provable_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
     /// The same budget, same window, for the stranded-member arm: a node that
     /// is a member of a group in the namespace but holds no key for it, pulling
     /// off the *unverifiable* beacon that just arrived.
     ///
-    /// Separate for the same reason the provable arm is: a stranded node cannot
+    /// Separate for the same reason the other arms are: a stranded node cannot
     /// verify any beacon, so every beacon it receives would contend for the
     /// slot, and sharing would let that starve the two arms above. Keyed on the
     /// namespace rather than the peer, so a Sybil swarm shares one budget — the
@@ -244,7 +234,6 @@ impl NodeManager {
             divergence_streak: HashMap::new(),
             behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
-            ns_provable_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             ns_stranded_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,

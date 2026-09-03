@@ -123,7 +123,7 @@ Retrieves a single file's metadata by ID.
 ### Get Blob ID
 
 ```rust
-get_blob_id_b58(file_id: String) -> app::Result<BlobId>
+get_blob_id_hex(file_id: String) -> app::Result<BlobId>
 ```
 
 Returns the base58-encoded blob ID for a file (useful for downloading).
@@ -251,7 +251,7 @@ const response = await contractApi.upload_file(
 const fileId = uploadedFileId; // File ID returned from upload (e.g. "<uploader-base58>_0")
 
 // Option A: Get just the blob ID
-const blobId = await contractApi.get_blob_id_b58(fileId);
+const blobId = await contractApi.get_blob_id_hex(fileId);
 
 // Option B: Get full file metadata (includes blob ID)
 const fileRecord = await contractApi.get_file(fileId);
@@ -429,7 +429,7 @@ Network → All nodes discover blob → Distributed Storage
 **Download Flow:**
 
 ```
-Client → contract.get_blob_id_b58(file_id) → Contract
+Client → contract.get_blob_id_hex(file_id) → Contract
 Contract → returns blob_id → Client
 Client → blobClient.downloadBlob(blob_id, context_id) → Network
 Network → Finds peers with blob → Client receives data

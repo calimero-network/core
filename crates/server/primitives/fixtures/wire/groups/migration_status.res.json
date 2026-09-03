@@ -5,7 +5,7 @@
   "members": [
     {
       "account": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
-      "peer": "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw",
+      "peer": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
       "report": {
         "authoredRemaining": 0,
         "reportedAt": 1700000150,
@@ -18,7 +18,7 @@
     },
     {
       "account": "bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899aa11",
-      "peer": "8Rn4pQyVzL7cWtT3sVvGkHqFyJ2mBdXeA5uNhPzRc6wY",
+      "peer": "6e5ab4386798b8b5eb99eb78906f3bbbe6d727b1a202f48f559b9aa6af469e27",
       "report": {
         "authoredRemaining": 2,
         "migrationFailed": "apply_failed",
@@ -32,7 +32,7 @@
     },
     {
       "account": "cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899aa11bb22",
-      "peer": "Gk9wR2tYqZ3mNbVcXsLdFhJ5uPaEyT7oW4iSzQrB8vDn",
+      "peer": "e9ed6296f98d329f042ab465c85d3da2bc2b320badd338360a655838a01ed5f1",
       "state": "unknown"
     }
   ],

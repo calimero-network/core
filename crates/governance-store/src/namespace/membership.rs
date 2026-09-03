@@ -214,6 +214,89 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// Whether this node may admit a claim of `invitation`.
+    ///
+    /// An empty `admitters` list is every invitation minted before the field
+    /// existed, and means the legacy behaviour: any peer that can validate the
+    /// invitation may admit. A non-empty list means the inviter chose who may,
+    /// and everyone else must refuse — including a node that would otherwise
+    /// have validated it perfectly well.
+    ///
+    /// The check has to live here rather than at the transport, because
+    /// refusing is the *point*: an invitation restricted to named admitters is
+    /// only worth restricting if a peer that receives it anyway declines to act
+    /// on it.
+    ///
+    /// # Errors
+    ///
+    /// When the list is non-empty and does not name `self_account`.
+    pub fn require_may_admit(
+        signed_invitation: &SignedGroupOpenInvitation,
+        self_account: &AccountId,
+    ) -> EyreResult<()> {
+        let admitters = &signed_invitation.invitation.admitters;
+        if admitters.is_empty() || admitters.contains(self_account) {
+            return Ok(());
+        }
+        bail!(
+            "this node is not an admitter for the invitation ({} named);              the joiner must present it to one of them",
+            admitters.len()
+        );
+    }
+
+    /// Who may admit a claim of an invitation the caller did not restrict
+    /// explicitly: the group's current admins, plus every TEE-admitted account.
+    ///
+    /// The point of a default is that an unrestricted invitation stops being the
+    /// easy path. An empty list means "claimable by broadcast", which publishes
+    /// the invitation to every subscriber of the namespace topic — so leaving it
+    /// empty by omission is the one outcome worth designing away.
+    ///
+    /// This is a snapshot, not a live query: the result is signed into the
+    /// invitation, so an admin removed afterwards can still admit until the
+    /// invitation expires. What makes that acceptable is the expiry ceiling —
+    /// the stale window is bounded by `MAX_INVITATION_VALIDITY_SECS`, not by how
+    /// long the group lives. Resolving admitters live at admit time would close
+    /// that window, but it would also mean the joiner could no longer tell from
+    /// the invitation alone who to approach, which is the property that lets it
+    /// reach a node without having synced anything.
+    ///
+    /// TEE nodes are included whatever their role. They are admitters because of
+    /// what they run, not because of what they may do inside the group.
+    ///
+    /// # Errors
+    ///
+    /// When the membership or TEE records cannot be read. An empty result is
+    /// returned as `Ok`: this is a query, and reporting what is there is not the
+    /// same as endorsing it.
+    ///
+    /// Callers must not treat an empty result as "unrestricted". Every group has
+    /// an admin — the last one cannot be removed or demoted away — so an empty
+    /// result is an inconsistent store, and an empty admitter list is exactly the
+    /// value that means claimable by broadcast. The invitation path refuses on it
+    /// rather than minting.
+    pub fn default_admitters(
+        store: &Store,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<Vec<AccountId>> {
+        // BTreeSet, not Vec: an account that is both an admin and TEE-admitted
+        // would otherwise be named twice, and the list is signed — a duplicate
+        // is a difference in bytes for no difference in meaning.
+        let mut out = std::collections::BTreeSet::new();
+
+        for (account, role) in MembershipRepository::new(store).list(group_id, 0, usize::MAX)? {
+            if role == GroupMemberRole::Admin {
+                let _ = out.insert(account);
+            }
+        }
+
+        for account in crate::tee::tee_admission_records(store, group_id)?.into_keys() {
+            let _ = out.insert(account);
+        }
+
+        Ok(out.into_iter().collect())
+    }
+
     /// The joiner must prove it owns the account the op admits, and the
     /// invitation must be genuinely the inviter's.
     ///

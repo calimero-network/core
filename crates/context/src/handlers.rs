@@ -44,6 +44,7 @@ pub mod list_namespaces_for_application;
 pub mod namespace_pending_op_count;
 pub mod pair_device_complete;
 pub mod pair_device_init;
+pub mod relink_device;
 pub mod remove_group_members;
 pub mod resync_context;
 pub mod retry_group_upgrade;
@@ -197,6 +198,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RevokeDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RelinkDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RotateGroupKey { request, outcome } => {

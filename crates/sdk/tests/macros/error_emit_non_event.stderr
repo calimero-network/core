@@ -7,9 +7,17 @@ error[E0277]: (calimero)> `NotAnEvent` cannot be emitted — it is not an app ev
    |         |          not an `#[app::event]` type
    |         required by a bound introduced by this call
    |
-   = help: the trait `AppEventExt` is not implemented for `NotAnEvent`
+help: the trait `AppEventExt` is not implemented for `NotAnEvent`
+  --> tests/macros/error_emit_non_event.rs:5:1
+   |
+ 5 | struct NotAnEvent;
+   | ^^^^^^^^^^^^^^^^^
    = note: `app::emit!(...)` only accepts an enum annotated with `#[app::event]`. Define `#[app::event] pub enum Event { ... }` and emit one of its variants.
-   = help: the trait `AppEventExt` is implemented for `NoEvent`
+help: the trait `AppEventExt` is implemented for `NoEvent`
+  --> src/event.rs
+   |
+   | impl AppEventExt for NoEvent {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `calimero_sdk::event::emit`
   --> src/event.rs
    |

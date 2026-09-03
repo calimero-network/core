@@ -5,13 +5,34 @@ use calimero_governance_store::{MetaRepository, MetadataRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::Store;
 
 use crate::ContextManager;
 use calimero_governance_store;
 
+/// The namespace rows targeting one of `applications`, or every row when the list
+/// is empty.
+///
+/// The one place an application is resolved to namespaces. Both things that scope
+/// by application read `target_application_id` through here - the listing endpoint
+/// and pairing's fan-out - so neither can drift from the other's idea of what an
+/// application covers.
+pub(crate) fn namespace_rows_for_applications(
+    store: &Store,
+    applications: &[ApplicationId],
+) -> eyre::Result<Vec<([u8; 32], GroupMetaValue)>> {
+    let entries = MetaRepository::new(store).enumerate_all(0, usize::MAX)?;
+    if applications.is_empty() {
+        return Ok(entries);
+    }
+    Ok(entries
+        .into_iter()
+        .filter(|(_, meta)| applications.contains(&meta.target_application_id))
+        .collect())
+}
+
 pub(crate) fn collect_namespace_summaries(
     entries: Vec<([u8; 32], GroupMetaValue)>,
-    application_filter: Option<ApplicationId>,
     mut node_identity_for_group: impl FnMut(&ContextGroupId) -> Option<(PublicKey, [u8; 32])>,
     mut build_summary: impl FnMut(
         &ContextGroupId,
@@ -22,13 +43,6 @@ pub(crate) fn collect_namespace_summaries(
     let mut namespaces = Vec::new();
 
     for (group_id_bytes, meta) in entries {
-        if application_filter
-            .as_ref()
-            .is_some_and(|application_id| &meta.target_application_id != application_id)
-        {
-            continue;
-        }
-
         let group_id = ContextGroupId::from(group_id_bytes);
 
         let Some((node_identity, _)) = node_identity_for_group(&group_id) else {
@@ -63,10 +77,9 @@ impl Handler<ListNamespacesRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let entries = MetaRepository::new(&self.datastore).enumerate_all(0, usize::MAX)?;
+            let entries = namespace_rows_for_applications(&self.datastore, &[])?;
             let namespaces = collect_namespace_summaries(
                 entries,
-                None,
                 |group_id| self.node_signing_key(group_id),
                 |group_id, meta, node_identity| {
                     MetadataRepository::new(&self.datastore).build_namespace_summary(
@@ -95,7 +108,9 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{collect_namespace_summaries, paginate_namespaces};
+    use super::{
+        collect_namespace_summaries, namespace_rows_for_applications, paginate_namespaces,
+    };
     use calimero_governance_store::{
         ApplyError, MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     };
@@ -126,19 +141,14 @@ mod tests {
     }
 
     #[test]
-    fn collect_namespace_summaries_applies_filter_and_skips_missing_identity() {
-        let app_a = ApplicationId::from([0x10; 32]);
-        let app_b = ApplicationId::from([0x20; 32]);
-
+    fn collect_namespace_summaries_skips_missing_identity() {
         let entries = vec![
-            ([0x01; 32], test_meta(*app_a)),
-            ([0x02; 32], test_meta(*app_b)),
-            ([0x03; 32], test_meta(*app_a)),
+            ([0x01; 32], test_meta([0x10; 32])),
+            ([0x03; 32], test_meta([0x10; 32])),
         ];
 
         let result = collect_namespace_summaries(
             entries,
-            Some(app_a),
             |group_id| {
                 if group_id.to_bytes() == [0x03; 32] {
                     None
@@ -154,13 +164,48 @@ mod tests {
         assert_eq!(result[0].namespace_id, [0x01; 32].into());
     }
 
+    /// The single application-to-namespace resolution, exercised on both of its
+    /// answers. Pairing's fan-out narrows through the same function, so a drift
+    /// between "which namespaces serve this app" here and there is impossible by
+    /// construction rather than by convention.
+    #[test]
+    fn namespace_rows_for_applications_filters_by_target_application() {
+        let app_a = ApplicationId::from([0x10; 32]);
+        let app_b = ApplicationId::from([0x20; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let meta = MetaRepository::new(&store);
+        for (id, app) in [
+            ([0x01; 32], app_a),
+            ([0x02; 32], app_b),
+            ([0x03; 32], app_a),
+        ] {
+            meta.save(&id.into(), &test_meta(*app))
+                .expect("save group meta");
+        }
+
+        let mut scoped: Vec<_> = namespace_rows_for_applications(&store, &[app_a])
+            .expect("resolve")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        scoped.sort_unstable();
+        assert_eq!(scoped, vec![[0x01; 32], [0x03; 32]]);
+
+        assert_eq!(
+            namespace_rows_for_applications(&store, &[])
+                .expect("resolve")
+                .len(),
+            3,
+            "no application named is every row, not none"
+        );
+    }
+
     #[test]
     fn collect_namespace_summaries_propagates_builder_errors() {
         let entries = vec![([0x01; 32], test_meta([0x10; 32]))];
 
         let err = collect_namespace_summaries(
             entries,
-            None,
             |_group_id| Some((PublicKey::from([0x05; 32]), [0u8; 32])),
             |_group_id, _meta, _node_identity| Err(ApplyError::UnsupportedOp.into()),
         )
@@ -240,12 +285,9 @@ mod tests {
             )
             .expect("add node identity to first namespace group");
 
-        let entries = MetaRepository::new(&store)
-            .enumerate_all(0, usize::MAX)
-            .expect("enumerate");
+        let entries = namespace_rows_for_applications(&store, &[]).expect("enumerate");
         let namespaces = collect_namespace_summaries(
             entries,
-            None,
             |group_id| {
                 NamespaceRepository::new(&store)
                     .resolve_identity(group_id)

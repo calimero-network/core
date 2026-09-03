@@ -1698,7 +1698,7 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    method: get_blob_id_b58
+    method: get_blob_id_hex
     args:
       file_id: "{{png_file_id}}"
     outputs:

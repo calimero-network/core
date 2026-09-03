@@ -323,7 +323,7 @@ pub fn try_merge_registered(
             return MergeRegistryResult::NoFunctionsRegistered;
         }
 
-        for (_type_id, merge_fn) in registry.iter() {
+        for merge_fn in registry.values() {
             if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
                 return MergeRegistryResult::Success(merged);
             }

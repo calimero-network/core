@@ -1,3 +1,4 @@
+pub mod account;
 pub mod alias;
 pub mod applications;
 pub mod blob;

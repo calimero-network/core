@@ -35,8 +35,15 @@ mod _scoped {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "Never constructed: these are compile-only fixtures. The tests above feed \
+              them to `actor!` to check the macro expands, which needs the types to \
+              exist but never an instance."
+)]
 struct NoopActor;
 
+#[expect(dead_code, reason = "Never constructed: see `NoopActor` above.")]
 struct OneStreamActor {
     stream: Box<Repeat<usize>>,
 }

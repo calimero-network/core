@@ -126,6 +126,21 @@ fn canonical(ty: &TypeRef, manifest: &Manifest) -> eyre::Result<serde_json::Valu
 /// and removed after. So a type reachable via several distinct paths (a DAG) is
 /// expanded once per path - correct - while a true cycle (a name reappearing on its
 /// own path) is detected and fails closed.
+/// Re-attaches an alias's `pattern` to its expanded target, so a patternless
+/// alias still canonicalizes exactly as its target does.
+fn merge_alias_pattern(mut value: serde_json::Value, pattern: Option<&str>) -> serde_json::Value {
+    let Some(pattern) = pattern else {
+        return value;
+    };
+    if let Some(map) = value.as_object_mut() {
+        let _ = map.insert(
+            "pattern".to_owned(),
+            serde_json::Value::String(pattern.to_owned()),
+        );
+    }
+    value
+}
+
 fn expand_refs(
     value: serde_json::Value,
     manifest: &Manifest,
@@ -157,7 +172,11 @@ fn expand_refs(
                 // type written inline - otherwise inline-vs-alias falsely diff as
                 // BREAKING. Structural defs (record/variant/bytes) expand as-is.
                 let def_value = match def {
-                    TypeDef::Alias { target } => serde_json::to_value(target),
+                    // A `pattern` rides along on the expanded target: it narrows
+                    // what the type accepts, so tightening or dropping one has to
+                    // stay visible here rather than canonicalize away.
+                    TypeDef::Alias { target, pattern } => serde_json::to_value(target)
+                        .map(|value| merge_alias_pattern(value, pattern.as_deref())),
                     other => serde_json::to_value(other),
                 }
                 .map_err(|e| eyre::eyre!("failed to serialize type '{name}' for diff: {e}"))?;
@@ -360,6 +379,39 @@ mod tests {
     const SHARED_STORAGE: &str = r#"{"name":"acl","type":{"kind":"record","fields":[],"crdt_type":"shared_storage","inner_type":{"kind":"string"}}}"#;
     const COUNTER_U64: &str = r#"{"name":"counter","type":{"kind":"record","fields":[],"crdt_type":"lww_register","inner_type":{"kind":"u64"}}}"#;
     const COUNTER_STR: &str = r#"{"name":"counter","type":{"kind":"record","fields":[],"crdt_type":"lww_register","inner_type":{"kind":"string"}}}"#;
+
+    /// A manifest whose `Root.id` points at an alias, optionally constrained.
+    fn aliased(pattern: Option<&str>) -> Manifest {
+        let pattern = pattern.map_or(String::new(), |p| format!(r#","pattern":"{p}""#));
+        let json = format!(
+            r#"{{"schema_version":"wasm-abi/1","types":{{"Root":{{"kind":"record","fields":[{{"name":"id","type":{{"$ref":"Id"}}}}]}},"Id":{{"kind":"alias","target":{{"kind":"string"}}{pattern}}}}},"methods":[],"events":[],"state_root":"Root"}}"#
+        );
+        serde_json::from_str(&json).expect("valid manifest json")
+    }
+
+    #[test]
+    fn tightening_an_alias_pattern_is_visible() {
+        let findings = diff_checked(&aliased(Some("^b")), &aliased(Some("^a"))).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].field, "id");
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn adding_an_alias_pattern_is_visible() {
+        let findings = diff_checked(&aliased(Some("^a")), &aliased(None)).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].field, "id");
+    }
+
+    #[test]
+    fn a_patternless_alias_still_canonicalizes_to_its_target() {
+        let inline = serde_json::from_str::<Manifest>(
+            r#"{"schema_version":"wasm-abi/1","types":{"Root":{"kind":"record","fields":[{"name":"id","type":{"kind":"string"}}]}},"methods":[],"events":[],"state_root":"Root"}"#,
+        )
+        .expect("valid manifest json");
+        assert!(diff_checked(&aliased(None), &inline).unwrap().is_empty());
+    }
 
     #[test]
     fn authored_map_to_unordered_map_is_unsafe_downgrade() {

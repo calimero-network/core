@@ -135,7 +135,7 @@ steps:
   # NOTE (sync regression on this branch): wait_for_sync was
   # originally used here but is currently broken on this branch — snapshot sync
   # always returns applied_records=0, so node 2's contextStateHash never
-  # converges away from 11111...1 (base58 of 32 zero bytes). This is a
+  # converges away from 000...0 (the all-zero hash, 64 hex). This is a
   # separate regression unrelated to the ephemeral presence feature and is
   # tracked as a concern in the task-9 report. The no-DAG-growth guard in
   # Phase 4 of the assertion script is still correct: if contextStateHash is

@@ -93,7 +93,7 @@ impl<'a> MetaRepository<'a> {
             .ok_or(MetaError::GroupNotFoundForHash)?;
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
-        members.sort_by(|a, b| a.0.cmp(&b.0));
+        members.sort_by_key(|a| a.0);
         // Defensive dedup against the theoretical case of duplicate
         // `GroupMember` rows (store corruption only).
         members.dedup_by(|a, b| a.0 == b.0);
@@ -120,7 +120,7 @@ impl<'a> MetaRepository<'a> {
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.retain(|(account, _role)| account != removed_member);
-        members.sort_by(|a, b| a.0.cmp(&b.0));
+        members.sort_by_key(|a| a.0);
         members.dedup_by(|a, b| a.0 == b.0);
 
         hash_group_state(group_id, &meta, &members)
@@ -146,7 +146,7 @@ impl<'a> MetaRepository<'a> {
                 entries.push((context_id, meta.root_hash));
             }
         }
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_by_key(|a| a.0);
         Ok(entries)
     }
 }

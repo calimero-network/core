@@ -81,7 +81,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
     let public_routes = Router::new()
         // Auth UI/Frontend
         .route("/login", get(login_handler)) // Main auth UI entry point
-        .route("/assets/*path", get(asset_handler)) // Static assets for the UI
+        .route("/assets/{*path}", get(asset_handler)) // Static assets for the UI
         .route("/favicon.ico", get(asset_handler)) // Favicon
         // Public Auth API endpoints
         .route("/token", post(token_handler))
@@ -102,17 +102,17 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         // Root key management
         .route("/keys", get(list_keys_handler))
         .route("/keys", post(create_key_handler))
-        .route("/keys/:key_id", delete(delete_key_handler))
+        .route("/keys/{key_id}", delete(delete_key_handler))
         // Client key management
         .route("/keys/clients", get(list_clients_handler))
         .route("/client-key", post(generate_client_key_handler))
         .route(
-            "/keys/:key_id/clients/:client_id",
+            "/keys/{key_id}/clients/{client_id}",
             delete(delete_client_handler),
         )
         // Permission management for both root and client keys
         .route(
-            "/keys/:key_id/permissions",
+            "/keys/{key_id}/permissions",
             get(get_key_permissions_handler).put(update_key_permissions_handler),
         )
         // Protected system endpoints

@@ -78,6 +78,42 @@ fn one_field_tuple_struct_is_an_alias() {
 }
 
 #[derive(AbiType)]
+#[abi(pattern = "^[0-9a-f]{64}$")]
+struct Hashed(String);
+
+#[test]
+fn newtype_pattern_reaches_the_manifest() {
+    assert_eq!(
+        derived::<Hashed>(),
+        json!({
+            "Hashed": {
+                "kind": "alias",
+                "target": { "kind": "string" },
+                "pattern": "^[0-9a-f]{64}$",
+            }
+        })
+    );
+}
+
+#[derive(AbiType)]
+#[abi(name = "Renamed", pattern = "^x")]
+struct BothKeys(String);
+
+#[test]
+fn name_and_pattern_combine() {
+    assert_eq!(
+        derived::<BothKeys>(),
+        json!({
+            "Renamed": {
+                "kind": "alias",
+                "target": { "kind": "string" },
+                "pattern": "^x",
+            }
+        })
+    );
+}
+
+#[derive(AbiType)]
 struct Pair(Option<String>, u32);
 
 #[test]

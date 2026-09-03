@@ -7,6 +7,7 @@ sidebar:
 ---
 
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 `merod` is the node daemon. Every invocation takes two global arguments, then a
 subcommand.
@@ -22,16 +23,18 @@ subcommand.
 merod --home data/ --node node1 <subcommand>
 ```
 
-Subcommands: `init`, `config`, `run` (alias `up`), `kms`.
+Subcommands: `init`, `config`, `run` (alias `up`), `kms`, `account`.
 
 ## init
 
 Initialize node configuration: creates the home directory, generates an
-ed25519 identity keypair, writes `config.toml`, and opens the datastore.
+ed25519 identity keypair, writes `config.toml`, opens the datastore, and
+**provisions the node's account root** (see [account](#account)).
 
 | Flag                                | Type / values            | Default            | Purpose                                                                 |
 | ----------------------------------- | ------------------------ | ------------------ | ----------------------------------------------------------------------- |
 | `--boot-nodes <ADDR>`               | multiaddr (repeatable)   | —                  | Explicit bootstrap node multiaddrs.                                     |
+| `--no-account-root`                 | bool                     | `false`            | Start with **no** account root: the root stays in cold storage and this node's device is enabled by a certificate signed elsewhere. Such a node cannot certify a device or be the holder half of a pairing. |
 | `--boot-network <NETWORK>`          | `calimero-dev`, `ipfs`   | `calimero-dev`     | Use a known network's bootstrap nodes.                                  |
 | `--swarm-host <HOST>`               | IP list                  | `0.0.0.0,::`       | Hosts to listen on for the libp2p swarm.                                |
 | `--swarm-port <PORT>`               | u16                      | `2428`             | Swarm (peer-to-peer) port.                                              |
@@ -131,6 +134,258 @@ merod --node node1 kms probe --json
   `kms probe` requires a node whose config has a `tee.kms.phala` section; it
   errors if TEE/KMS is not configured.
 </Aside>
+
+## account
+
+The account-root command family. These are the operations whose whole point is that
+**the signing key does not have to reach a running node** — so most of them can run on
+a machine with no node at all.
+
+```sh
+merod --node node1 account <export|import|sign-cert|revoke-proof|warrant>
+```
+
+<Aside type="caution" title="export and import need the node stopped">
+Both open the datastore directly, and RocksDB's lock is exclusive. A KMS-encrypted
+store is refused rather than misread. `sign-cert`, `revoke-proof` and `warrant` avoid
+this entirely when given `--from`, because they open no store.
+</Aside>
+
+### Where an account root comes from
+
+Exactly two places, and nothing else mints one:
+
+| How | Result |
+| --- | --- |
+| `merod init` | Provisions a root. Every ordinary node. |
+| `merod account import` | Restores one from a 24-word phrase. |
+| `merod init --no-account-root` | **No root, deliberately.** The root stays in cold storage; this node's device is enabled by a certificate signed elsewhere. |
+
+Nothing provisions a root lazily. Any path that needs one and doesn't find one fails
+with an error naming these three options, rather than generating a key that certifies
+nothing anyone recognises.
+
+A root-free node can still *name* its account — a certified device row answers before
+the root fallback. What it cannot do is certify a device (its own or anyone's), so it
+cannot self-enrol or be the holder half of a pairing.
+
+### sign-cert
+
+Certify a device for an account, offline. This closes a specific gap: `pair-complete`
+mints certificates but needs a running node holding the root, so a thin client — a
+phone, a script, anything that runs no application and joins no group — had no way to
+obtain the credential it needs to present itself.
+
+<Aside type="caution" title="A certificate establishes identity, and only identity">
+It proves this device speaks for that account. It does **not** make the device able
+to use anything, and two things still have to come from a peer:
+
+- **Which namespaces and apps to join.** A device is a member of nothing, so it
+  cannot read the account's namespace set off any DAG — there is no replicated
+  account-to-namespaces directory, by design. Today that list is supplied
+  explicitly, at `pair-init` or out of band.
+- **The scope key for each namespace.** The certificate confers *authority*, not
+  *readability*. Without key delivery the link lands and the device still cannot
+  decrypt anything.
+
+So an offline-certified device can prove it belongs to the account and still be
+unable to open a single app until a peer tells it what to join and hands over the
+keys. If you are restoring from a recovery phrase alone, the phrase proves who you
+are and nothing tells you what you are a member of — that has to come from a node
+you run, or from a service that keeps the list for you.
+</Aside>
+
+There are **two independent choices**, which is why the flag list looks larger than the
+number of real modes.
+
+#### Choice 1 — who mints the device keys
+
+| Mode | Flags | Who ever holds the device secret |
+| --- | --- | --- |
+| **Certify** | `--device` `--sign-pk` `--kem-pk` (all three) | The client. It minted its own keypairs and sent you only public halves. |
+| **Generate** | `--generate` (conflicts with the three above) | **This machine.** It mints the device and prints the secret to stdout. |
+
+Prefer **Certify**. `--generate` exists for clients that cannot mint their own — a
+provisioning script, a fresh install — and it prints a signing key, so the holder is
+trusting this machine with it. A client that can mint its own device should, because
+then the secret never exists anywhere but there.
+
+<SeqDiagram
+  id="d-signcert-certify"
+  title="Certify: the device secret never leaves the client"
+  lanes={[
+    { label: 'Client (holds no node)', color: '#58a6ff' },
+    { label: 'Offline signer (root)', color: '#3fb950' },
+    { label: 'Any node', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 1, to: 0, label: 'root_pk (out of band)', dashed: true },
+    { from: 0, to: 0, label: 'mint DeviceId + sign key + KEM key — secret stays here' },
+    { from: 0, to: 1, label: 'deviceId + signPk + kemPk (public halves only)', dashed: true },
+    { from: 1, to: 1, label: 'sign-cert --device --sign-pk --kem-pk --from phrase' },
+    { from: 1, to: 0, label: 'hex credential (self-certifying)', dashed: true },
+    { from: 0, to: 2, label: 'present the credential; no node ever saw the secret', color: '#a5ff11' },
+  ]}
+/>
+
+<SeqDiagram
+  id="d-signcert-generate"
+  title="Generate: this machine mints the device, and prints its secret"
+  lanes={[
+    { label: 'Client (cannot mint)', color: '#58a6ff' },
+    { label: 'Offline signer (root)', color: '#3fb950' },
+    { label: 'Any node', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 1, to: 1, label: 'sign-cert --generate --from phrase' },
+    { from: 1, to: 1, label: 'mint DeviceId + both keypairs, certify in one step' },
+    { from: 1, to: 1, label: 'prints credential AND Secret — this machine held it' },
+    { from: 1, to: 0, label: 'credential + secret (out of band, treat as a key)', dashed: true },
+    { from: 0, to: 2, label: 'present the credential', color: '#a5ff11' },
+  ]}
+/>
+
+#### Choice 2 — where the root comes from
+
+| Mode | Flag | Requires |
+| --- | --- | --- |
+| Node's store | *(default)* | A **stopped** node that holds the root. |
+| Recovery phrase | `--from PATH` | Nothing. Opens no datastore, so it runs on a machine with no node — no home, no store, no `init`. |
+
+`--from` is what makes an air-gapped signing machine possible, and it composes with
+either choice above.
+
+#### Commands
+
+```sh
+# Certify a client's own device, on a machine with no node (the recommended shape).
+merod account sign-cert \
+  --device  <64-hex DeviceId> \
+  --sign-pk <64-hex ed25519 public key> \
+  --kem-pk  <64-hex x25519 public key> \
+  --from    ./phrase.txt
+
+# Mint and certify in one step, for a client that cannot mint its own.
+merod account sign-cert --generate --from ./phrase.txt
+
+# Read the root from a stopped node's store instead of a phrase.
+merod --node node1 account sign-cert --device <HEX> --sign-pk <HEX> --kem-pk <HEX>
+
+# Re-issue after a device re-key. The epoch must strictly advance.
+merod account sign-cert --device <HEX> --sign-pk <HEX> --kem-pk <HEX> \
+  --device-epoch 1 --from ./phrase.txt
+```
+
+Output is the hex credential on the first line, then `Account:`, `Device:`, and —
+under `--generate` only — `Secret:`, followed by a hint showing the `meroctl context
+intent` invocation that consumes it.
+
+#### Three limits, all deliberate
+
+- **It cannot check the device id — for two separate reasons.** The signer *does*
+  know the account: it derives it from the root it holds, and prints it on the
+  `Account:` line, so an operator can at least confirm the account is the intended one.
+  What it cannot confirm is the `--device` value.
+
+  `DeviceId` is `H(account ‖ nonce)` where the nonce is **16 random bytes chosen by
+  whoever minted the device**, and the client sends only `deviceId`, `signPk` and
+  `kemPk` — never the nonce. So the signer cannot recompute the id to compare it.
+  Separately, the id deliberately **excludes the keys** so that a device survives a
+  re-key, which means the id cannot be checked against `--sign-pk` / `--kem-pk`
+  either.
+
+  Consequence: nothing here can tell a mistyped id from a real one. A certificate
+  naming a device nobody holds is **inert rather than dangerous** — there is no
+  matching secret, so it authorises no one. The failure mode is a wasted certificate,
+  not a forged one.
+
+  <Aside type="note" title="Why the certificate does not carry the nonce">
+  It would make the derivation checkable — but the check buys nothing, because the
+  **root's signature is the authorization**. A verifier asks "did this account's root
+  vouch for this device and these keys?", not "was the id derived correctly." A root
+  is free to sign any device id, and one nobody holds authorises nobody.
+
+  The attack this seems to invite — one account certifying a device id another account
+  already uses — is refused where it matters: a link whose device already has a
+  binding naming a different account is rejected as `AccountReassignment`. Genuine
+  collisions are anticipated too; the first-link path deliberately stores both and
+  lets `live_bindings` decide which is live, so arrival order cannot decide it.
+
+  So adding the nonce would cost a signing-payload change (a replicated-wire break)
+  and 16 bytes per binding, to catch operator typos that are already inert. If the
+  typo check is wanted, the cheap version is CLI-only: have `pair-init` also emit its
+  nonce and let `sign-cert` take it to verify locally, with no wire change at all.
+  </Aside>
+- **Epoch 0 only.** The certificate is signed at key epoch 0 with an empty handoff
+  chain. An account whose *root* has rotated needs the chain up to the signing epoch,
+  and nothing in this CLI produces one.
+- **`--device-epoch` must strictly advance.** The projection refuses a link that does
+  not advance it, so re-issuing at the same epoch is inert rather than a rollback.
+
+Why any of this works offline: the certificate is **self-certifying** — it carries the
+genesis and the root-key chain, so a verifier checks it from the account id alone with
+no folded state. That is why it does not matter who publishes or presents it.
+
+### revoke-proof
+
+Sign a device revocation offline, to be published by any node. Same shape and same
+reasoning as `sign-cert`, and also epoch 0 only. `--from` means it needs no store at
+all.
+
+```sh
+merod account revoke-proof --device <64-hex DeviceId> --from ./phrase.txt
+```
+
+### warrant
+
+Sign a warrant authorising one relay to perform one intent, once. Offline by
+construction: it opens no store and contacts no node, because a warrant is a statement
+about an *intent* rather than about any node's state. The device secret signs it locally
+and is never sent — only the signature travels.
+
+```sh
+merod account warrant \
+  --context <hex ContextId> \
+  --method  set \
+  --args    '{"key":"k","value":"v"}' \
+  --executor <64-hex AccountId of the relay> \
+  --nonce 1 \
+  --device-secret <64-hex> \
+  --credential <hex from sign-cert>
+```
+
+<Aside type="tip" title="Every id is 64-character hex">
+`ContextId`, `PublicKey`, `AccountId`, `DeviceId`, `ApplicationId` and `BlobId` all
+render and parse as **64 lowercase hex characters**. `ContextId` and `PublicKey` used to
+be base58, and pasting one encoding where the other belonged parsed as a
+different-but-valid value — failing only on real data. That whole class of mistake is
+gone.
+
+What it costs: an account and a key are now spelled identically, so nothing can tell
+them apart by looking. Where the difference matters — adding a group member — the key is
+tagged: `key:<64-hex>`, against a bare `<64-hex>` for an account.
+</Aside>
+
+### export and import
+
+```sh
+# Print the 24-word phrase to stdout.
+merod --node node1 account export
+
+# Write it to a file instead. Refused without the second flag; created 0600.
+merod --node node1 account export --out backup.txt --allow-plaintext-file
+
+# Restore. Reads stdin by default, or --from PATH.
+merod --node node1 account import
+```
+
+A backup is **one secret**. The account id is `H(genesis(root_pk))` — a pure function
+of the root key with no per-namespace nonce — so it is the same account in every
+namespace, and the phrase alone recovers all of it.
+
+Import refuses to replace a root that has already **certified a device**, because that
+is unrecoverable and there is no second copy. Restoring onto a freshly-`init`ed node
+whose own root has certified nothing needs no `--force`.
 
 ## Example: a long-lived node
 

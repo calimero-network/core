@@ -21,9 +21,8 @@ use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_context_client::local_governance::{
-    NamespaceOp, NamespaceTopicMsg, RootOp, SignedNamespaceOp, SignedReadinessBeacon,
+    NamespaceTopicMsg, SignedNamespaceOp, SignedReadinessBeacon,
 };
-use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::identity::PublicKey;
@@ -482,17 +481,6 @@ fn prune_expired_republishes(pending: &mut HashMap<[u8; 32], PendingJoin>, now: 
     pending.retain(|_, p| now.duration_since(p.queued_at) < REPUBLISH_CAP);
 }
 
-/// The invitation embedded in a queued join op. Stapled to our beacons so a
-/// peer that does not yet know us as a member can verify we were admitted.
-fn admission_proof_from(op: &SignedNamespaceOp) -> Option<SignedGroupOpenInvitation> {
-    match &op.op {
-        NamespaceOp::Root(RootOp::MemberJoinedAt {
-            signed_invitation, ..
-        }) => Some(signed_invitation.clone()),
-        _ => None,
-    }
-}
-
 impl Actor for ReadinessManager {
     type Context = Context<Self>;
 
@@ -739,15 +727,6 @@ impl ReadinessManager {
             }
         };
 
-        // A queued join op is the only local signal that no peer has confirmed
-        // our membership yet, so its invitation rides every beacon until the
-        // `REPUBLISH_CAP` pruner drops the entry. Stopping at "seen in a peer's
-        // state" is not observable: membership rows carry no provenance.
-        let admission_proof = self
-            .pending_republish
-            .get(&ns_id)
-            .and_then(|p| admission_proof_from(&p.op));
-
         // Build with a placeholder signature, sign over the canonical
         // signable_bytes(), then write the real signature back.
         let mut beacon = SignedReadinessBeacon {
@@ -757,7 +736,6 @@ impl ReadinessManager {
             applied_through: state.local_applied_through,
             ts_millis,
             strong,
-            admission_proof,
             signature: [0u8; 64],
         };
         let signable = match beacon.signable_bytes() {

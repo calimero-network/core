@@ -1,10 +1,12 @@
 use calimero_server_primitives::admin::{
+    AccountApplicationsApiResponse, AccountDevicesApiResponse, AccountPairCompleteApiRequest,
+    AccountPairInitApiRequest, AdmitJoinApiRequest, AdmitJoinApiResponse,
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
     JoinGroupApiRequest, JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse,
     ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
-    PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceInitApiRequest,
-    PairDeviceInitApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RelinkDeviceApiRequest,
+    RelinkDeviceApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -89,43 +91,80 @@ where
     }
 
     /// Mint a device on this node for an account that already exists elsewhere
-    /// — the first half of pairing.
+    /// - the first half of pairing.
     ///
-    /// Needs no scope key: nothing is
-    /// published here. It returns the device id and agreement key that the
-    /// account holder certifies in the second half.
+    /// Takes the SET of namespaces the device will listen on, because a node
+    /// that is a member of nothing can neither read its account's namespaces off
+    /// a DAG nor derive them. Needs no scope key: nothing is published here. It
+    /// returns the device id and agreement key that the account holder certifies
+    /// in the second half.
     pub async fn pair_device_init(
         &self,
-        namespace_id: &str,
-        request: PairDeviceInitApiRequest,
+        request: AccountPairInitApiRequest,
     ) -> Result<PairDeviceInitApiResponse> {
         let response = self
             .connection
+            .post("admin-api/account/pair-init", request)
+            .await?;
+        Ok(response)
+    }
+
+    /// Certify a device another node minted, link it, and deliver the scope
+    /// keys - the second half of pairing.
+    ///
+    /// Run on the node that holds the account, and scoped by APPLICATION rather
+    /// than by namespace: naming none means every namespace this node takes part
+    /// in. Needs the current scope key there: the link is an encrypted group op,
+    /// and the delivery is that same key wrapped for the new device.
+    pub async fn pair_device_complete(
+        &self,
+        request: AccountPairCompleteApiRequest,
+    ) -> Result<PairDeviceCompleteApiResponse> {
+        let response = self
+            .connection
+            .post("admin-api/account/pair-complete", request)
+            .await?;
+        Ok(response)
+    }
+
+    /// Repair or widen the reach of a device this account already certified.
+    ///
+    /// Re-runs pairing's fan-out against the namespaces this node takes part in
+    /// now, which is what closes the drift a namespace gained afterwards leaves
+    /// behind. Naming no application repairs without widening.
+    pub async fn relink_device(
+        &self,
+        device_id: &str,
+        request: RelinkDeviceApiRequest,
+    ) -> Result<RelinkDeviceApiResponse> {
+        let response = self
+            .connection
             .post(
-                &format!("admin-api/namespaces/{namespace_id}/account/pair-init"),
+                &format!("admin-api/account/devices/{device_id}/relink"),
                 request,
             )
             .await?;
         Ok(response)
     }
 
-    /// Certify a device another node minted, link it, and deliver the scope
-    /// key — the second half of pairing.
+    /// Every device of this account, with the scope and bindings this node can see.
     ///
-    /// Run on the node that holds the account. Needs the current scope key:
-    /// the link is an encrypted group op, and the delivery is that same key
-    /// wrapped for the new device.
-    pub async fn pair_device_complete(
-        &self,
-        namespace_id: &str,
-        request: PairDeviceCompleteApiRequest,
-    ) -> Result<PairDeviceCompleteApiResponse> {
+    /// Joined from the node-local certificate cache and the live bindings of every
+    /// namespace this node takes part in, so it reports devices this node never
+    /// certified as well as the ones it did.
+    pub async fn list_account_devices(&self) -> Result<AccountDevicesApiResponse> {
+        let response = self.connection.get("admin-api/account/devices").await?;
+        Ok(response)
+    }
+
+    /// The applications this account speaks in.
+    ///
+    /// The only route by which a device that is a member of nothing can learn
+    /// them: a namespace summary is withheld from non-members.
+    pub async fn list_account_applications(&self) -> Result<AccountApplicationsApiResponse> {
         let response = self
             .connection
-            .post(
-                &format!("admin-api/namespaces/{namespace_id}/account/pair-complete"),
-                request,
-            )
+            .get("admin-api/account/applications")
             .await?;
         Ok(response)
     }
@@ -175,6 +214,33 @@ where
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/join"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Hand a join this caller already signed to a node the inviter named as an
+    /// admitter, for that node to publish.
+    ///
+    /// The counterpart to [`Self::join_namespace`], which publishes from the node
+    /// serving the call. A keyholder has no such node — an account, a device
+    /// certificate signed offline, and nowhere to publish from — so it signs the
+    /// membership op itself and presents it here.
+    ///
+    /// Handing the op to somebody else is safe because it is signed by the
+    /// joiner's device key, and every peer checks that key against the credential
+    /// the op carries when applying a join. The admitter carries the claim and
+    /// cannot author one: it may refuse to publish, and nothing else.
+    pub async fn admit_join(
+        &self,
+        namespace_id: &str,
+        request: AdmitJoinApiRequest,
+    ) -> Result<AdmitJoinApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/admit"),
                 request,
             )
             .await?;

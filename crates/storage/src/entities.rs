@@ -611,9 +611,14 @@ pub const fn storage_type_name(storage_type: &StorageType) -> &'static str {
 
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+// `Public` is the default for backward compatibility: entries written before the
+// storage domain was recorded decode as public.
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
+)]
 pub enum StorageType {
     /// Public data, accessible to all members of context.
+    #[default]
     Public,
     /// Verifiable, user-signed, synchronized storage.
     User {
@@ -681,13 +686,6 @@ pub enum StorageType {
         /// writer set resolved from `anchor` at the action's causal cut.
         signature_data: Option<SignatureData>,
     },
-}
-
-// Default to `Public` for backward compatibility
-impl Default for StorageType {
-    fn default() -> Self {
-        Self::Public
-    }
 }
 
 /// System metadata (timestamps in u64 nanoseconds).

@@ -7,7 +7,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::FromRequest;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{async_trait, Json};
+use axum::Json;
 use calimero_server_primitives::validation::{Validate, ValidationError};
 use serde::de::DeserializeOwned;
 
@@ -82,7 +82,6 @@ impl IntoResponse for ValidatedJsonRejection {
     }
 }
 
-#[async_trait]
 impl<T, S> FromRequest<S> for ValidatedJson<T>
 where
     T: DeserializeOwned + Validate,

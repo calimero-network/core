@@ -10,6 +10,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
+use calimero_governance_store::MembershipError;
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::{alias, blob, groups, namespaces, tee};
+use super::handlers::{account, alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, get_application_abi, install_application, install_dev_application,
@@ -97,64 +98,64 @@ pub(crate) fn setup(
         )
         .route("/applications", get(list_applications::handler))
         .route(
-            "/applications/:application_id",
+            "/applications/{application_id}",
             get(get_application::handler).delete(uninstall_application::handler),
         )
         .route(
-            "/applications/:application_id/abi",
+            "/applications/{application_id}/abi",
             get(get_application_abi::handler),
         )
         .route(
-            "/applications/:application_id/versions",
+            "/applications/{application_id}/versions",
             get(list_application_versions::handler),
         )
         // Package management
         .route("/packages", get(list_packages::handler))
-        .route("/packages/:package/versions", get(list_versions::handler))
-        .route("/packages/:package/latest", get(get_latest_version::handler))
+        .route("/packages/{package}/versions", get(list_versions::handler))
+        .route("/packages/{package}/latest", get(get_latest_version::handler))
         // Context management
         .route(
             "/contexts",
             get(get_context_ids::handler).post(create_context::handler),
         )
         .route(
-            "/contexts/:context_id",
+            "/contexts/{context_id}",
             get(get_context::handler).delete(delete_context::handler),
         )
         .route(
-            "/contexts/:context_id/application",
+            "/contexts/{context_id}/application",
             post(update_context_application::handler),
         )
         .route(
-            "/contexts/:context_id/intents",
+            "/contexts/{context_id}/intents",
             post(perform_intent::handler),
         )
         .route(
-            "/contexts/:context_id/resync",
+            "/contexts/{context_id}/resync",
             post(resync_context::handler),
         )
         .route(
-            "/contexts/for-application/:application_id",
+            "/contexts/for-application/{application_id}",
             get(get_contexts_for_application::handler),
         )
         .route(
-            "/contexts/with-executors/for-application/:application_id",
+            "/contexts/with-executors/for-application/{application_id}",
             get(get_contexts_with_executors_for_application::handler),
         )
         .route(
-            "/contexts/:context_id/storage",
+            "/contexts/{context_id}/storage",
             get(get_context_storage::handler),
         )
         .route(
-            "/contexts/:context_id/identities",
+            "/contexts/{context_id}/identities",
             get(get_context_identities::handler),
         )
         .route(
-            "/contexts/:context_id/identities-owned",
+            "/contexts/{context_id}/identities-owned",
             get(get_context_identities::handler),
         )
         .route(
-            "/contexts/:context_id/group",
+            "/contexts/{context_id}/group",
             get(get_context_group::handler),
         )
         // Identity management
@@ -167,7 +168,7 @@ pub(crate) fn setup(
             "/contexts/sync",
             Router::new()
                 .route("/", post(sync::handler))
-                .route("/:context_id", post(sync::handler)),
+                .route("/{context_id}", post(sync::handler)),
         )
         // Per-namespace usage (counts + on-disk bytes)
         .route("/usage", get(usage::handler))
@@ -178,7 +179,7 @@ pub(crate) fn setup(
         // Blob management
         .route("/blobs", put(blob::upload_handler).get(blob::list_handler))
         .route(
-            "/blobs/:blob_id",
+            "/blobs/{blob_id}",
             get(blob::download_handler)
                 .head(blob::info_handler)
                 .delete(blob::delete_handler),
@@ -186,144 +187,157 @@ pub(crate) fn setup(
         // Group management
         .route("/groups", post(groups::create_group::handler))
         .route(
-            "/groups/:group_id",
+            "/groups/{group_id}",
             get(groups::get_group_info::handler).delete(groups::delete_group::handler),
         )
         .route(
-            "/groups/:group_id/contexts",
+            "/groups/{group_id}/contexts",
             get(groups::list_group_contexts::handler),
         )
         .route(
-            "/groups/:group_id/reparent",
+            "/groups/{group_id}/reparent",
             post(groups::reparent_group::handler),
         )
         .route(
-            "/groups/:group_id/subgroups",
+            "/groups/{group_id}/subgroups",
             get(groups::list_subgroups::handler),
         )
         .route(
-            "/groups/:group_id/members",
+            "/groups/{group_id}/members",
             get(groups::list_group_members::handler).post(groups::add_group_members::handler),
         )
         .route(
-            "/groups/:group_id/members/remove",
+            "/groups/{group_id}/members/remove",
             post(groups::remove_group_members::handler),
         )
         .route(
-            "/groups/:group_id/member-devices",
+            "/groups/{group_id}/member-devices",
             get(groups::list_member_devices::handler),
         )
         .route(
-            "/groups/:group_id/leave",
+            "/groups/{group_id}/leave",
             post(groups::leave_group::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/role",
+            "/groups/{group_id}/members/{account}/role",
             put(groups::update_member_role::handler),
         )
         .route(
-            "/groups/:group_id/metadata",
+            "/groups/{group_id}/metadata",
             get(groups::set_group_metadata::get_handler).put(groups::set_group_metadata::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/metadata",
+            "/groups/{group_id}/members/{account}/metadata",
             get(groups::set_member_metadata::get_handler).put(groups::set_member_metadata::handler),
         )
         .route(
-            "/groups/:group_id/contexts/:context_id/metadata",
+            "/groups/{group_id}/contexts/{context_id}/metadata",
             get(groups::set_context_metadata::get_handler)
                 .put(groups::set_context_metadata::handler),
         )
         .route(
-            "/groups/:group_id/contexts/:context_id/remove",
+            "/groups/{group_id}/contexts/{context_id}/remove",
             post(groups::detach_context_from_group::handler),
         )
         .route(
-            "/groups/:group_id/upgrade",
+            "/groups/{group_id}/upgrade",
             post(groups::upgrade_group::handler),
         )
         .route(
-            "/groups/:group_id/upgrade/status",
+            "/groups/{group_id}/upgrade/status",
             get(groups::get_group_upgrade_status::handler),
         )
         .route(
-            "/groups/:namespace_id/cascade-status",
+            "/groups/{namespace_id}/cascade-status",
             get(groups::get_cascade_status::handler),
         )
         .route(
-            "/groups/:namespace_id/migration-status",
+            "/groups/{namespace_id}/migration-status",
             get(groups::get_migration_status::handler),
         )
         .route(
-            "/groups/:namespace_id/migration/abort",
+            "/groups/{namespace_id}/migration/abort",
             post(groups::abort_migration::handler),
         )
         .route(
-            "/groups/:group_id/upgrade/retry",
+            "/groups/{group_id}/upgrade/retry",
             post(groups::retry_group_upgrade::handler),
         )
         .route(
-            "/groups/:group_id/issue-ownership-proof",
+            "/groups/{group_id}/issue-ownership-proof",
             post(groups::issue_ownership_proof::handler),
         )
         .route(
-            "/groups/:group_id/issue-namespace-ownership-proof",
+            "/groups/{group_id}/issue-namespace-ownership-proof",
             post(groups::issue_namespace_ownership_proof::handler),
         )
         .route(
-            "/groups/:group_id/sync",
+            "/groups/{group_id}/sync",
             post(groups::sync_group::handler),
         )
         .route(
-            "/groups/:group_id/join-via-inheritance",
+            "/groups/{group_id}/join-via-inheritance",
             post(groups::join_subgroup_inheritance::handler),
         )
         .route(
-            "/contexts/:context_id/join",
+            "/contexts/{context_id}/join",
             post(join_context::handler),
         )
         .route(
-            "/contexts/:context_id/leave",
+            "/contexts/{context_id}/leave",
             post(leave_context::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/capabilities",
+            "/groups/{group_id}/members/{account}/capabilities",
             get(groups::get_member_capabilities::handler)
                 .put(groups::set_member_capabilities::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/auto-follow",
+            "/groups/{group_id}/members/{account}/auto-follow",
             put(groups::set_member_auto_follow::handler),
         )
         .route(
-            "/groups/:group_id/settings/default-capabilities",
+            "/groups/{group_id}/settings/default-capabilities",
             put(groups::set_default_capabilities::handler),
         )
         .route(
-            "/groups/:group_id/settings/tee-admission-policy",
+            "/groups/{group_id}/settings/tee-admission-policy",
             get(groups::get_tee_admission_policy::handler)
                 .put(groups::set_tee_admission_policy::handler),
         )
         .route(
-            "/groups/:group_id/settings/subgroup-visibility",
+            "/groups/{group_id}/settings/subgroup-visibility",
             put(groups::set_subgroup_visibility::handler),
         )
         // Legacy subgroup invitation/join routes kept for backwards compatibility.
         .route(
-            "/groups/:group_id/invite",
+            "/groups/{group_id}/invite",
             post(groups::create_group_invitation::handler),
         )
         .route("/groups/join", post(groups::join_group::handler))
+        // Pairing is account-level: the certificate is root-signed and the
+        // endorsement node-level, so neither half ever named a namespace.
+        .route("/account/pair-init", post(account::pair_init::handler))
         .route(
-            "/namespaces/:namespace_id/account/pair-init",
-            post(namespaces::pair_device_init::handler),
+            "/account/pair-complete",
+            post(account::pair_complete::handler),
+        )
+        // Read-only aggregation over the same account-level state: the settings
+        // UI's device list and the applications this account speaks in.
+        .route("/account/devices", get(account::devices::handler))
+        .route(
+            "/account/applications",
+            get(account::applications::handler),
+        )
+        // Pairing is a snapshot; this is how it is repeated. A namespace gained
+        // after a pairing binds its devices on its own, and this closes the drift
+        // left by every one gained before that landed.
+        .route(
+            "/account/devices/{device_id}/relink",
+            post(account::relink::handler),
         )
         .route(
-            "/namespaces/:namespace_id/account/pair-complete",
-            post(namespaces::pair_device_complete::handler),
-        )
-        .route(
-            "/namespaces/:namespace_id/account/revoke",
+            "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
         )
         // Namespace management
@@ -332,28 +346,32 @@ pub(crate) fn setup(
             get(namespaces::list::handler).post(namespaces::create_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id",
+            "/namespaces/{namespace_id}",
             get(namespaces::get_namespace::handler).delete(namespaces::delete_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/invite",
+            "/namespaces/{namespace_id}/invite",
             post(namespaces::invite_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/join",
+            "/namespaces/{namespace_id}/join",
             post(namespaces::join_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/leave",
+            "/namespaces/{namespace_id}/admit",
+            post(namespaces::admit_join::handler),
+        )
+        .route(
+            "/namespaces/{namespace_id}/leave",
             post(namespaces::leave_namespace::handler),
         )
         .route(
-            "/namespaces/for-application/:application_id",
+            "/namespaces/for-application/{application_id}",
             get(namespaces::list_for_application::handler),
         )
         // Namespace governance (Phase 2)
         .route(
-            "/namespaces/:namespace_id/groups",
+            "/namespaces/{namespace_id}/groups",
             get(namespaces::list_namespace_groups::handler)
                 .post(namespaces::create_group_in_namespace::handler),
         )
@@ -418,7 +436,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
         .route("/", get(serve_embedded_file)) // Match base path
-        .route("/*path", get(serve_embedded_file)); // Match all sub-paths
+        .route("/{*path}", get(serve_embedded_file)); // Match all sub-paths
 
     Some((path, router))
 }
@@ -629,8 +647,100 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// The status a device-pairing refusal answers with, or `None` if `err` is not
+/// one.
+///
+/// Grouped rather than one arm apiece because the statuses are the whole
+/// distinction a client can act on: fix the payload, come back when this node is
+/// ready, go to the node that holds the account, or stop - this can never work.
+fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option<StatusCode> {
+    use calimero_context::error::ContextError as Refusal;
+
+    Some(match err {
+        Refusal::PairingStatementInvalid { .. } | Refusal::PairingCodeMismatch { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
+            StatusCode::CONFLICT
+        }
+        Refusal::PairingNotTheAccountHolder { .. } | Refusal::PairingDeviceRevoked { .. } => {
+            StatusCode::FORBIDDEN
+        }
+        Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
+        _ => return None,
+    })
+}
+
+/// The status a membership refusal answers with, or `None` if it is this node's
+/// fault rather than the caller's.
+///
+/// Every one of these was a `500 {"error":"Internal server error"}` before, and
+/// that is the wrong answer to all but the last group: the gate did its job, the
+/// request was understood and deliberately refused. A client told `500` cannot
+/// tell "you are not allowed" from "the node fell over", so it can neither
+/// explain the refusal to a person nor decide whether a retry is pointless.
+///
+/// Matched exhaustively on purpose: a new variant must be classified here rather
+/// than silently inheriting the generic 500 through a `_` arm.
+fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
+    use MembershipError as Refusal;
+
+    Some(match err {
+        // The caller lacks the authority, and no change of state on their part
+        // will help — only being granted it will.
+        Refusal::NotAdmin { .. }
+        | Refusal::NotMember { .. }
+        | Refusal::SelfLeaveOnly
+        | Refusal::AutoFollowAuthFailed
+        | Refusal::OnlyOwnerCanTransfer(_)
+        | Refusal::OnlyOwnerCanDelete(_)
+        | Refusal::OwnerImmuneFromRemoval(_)
+        | Refusal::OwnerCannotSelfLeave(_)
+        | Refusal::TeeVerifierNotMember
+        | Refusal::ReadOnlyTeeViaAttestationOnly
+        | Refusal::TeeRoleMustBeReadOnly
+        | Refusal::TeeAdmissionWrongNamespace { .. }
+        | Refusal::TeeCredentialNotTheAttestedKey { .. } => StatusCode::FORBIDDEN,
+
+        // Well-formed and permitted, but it conflicts with how the group looks
+        // right now. Escalating privileges does not help; changing the group
+        // does — transfer ownership first, issue a fresh invitation, re-add the
+        // member.
+        Refusal::LastAdmin
+        | Refusal::LastAdminDemotion
+        | Refusal::RemovedFromGroup { .. }
+        | Refusal::ReentryBlocked { .. }
+        | Refusal::InvitationAlreadyConsumed { .. }
+        | Refusal::OwnerOwnsSubgroup(_)
+        | Refusal::TransferTargetNotAdmin { .. }
+        | Refusal::TransferTargetNotMember(_)
+        | Refusal::MemberNotDirect(_)
+        | Refusal::NoTeeAdmissionPolicy => StatusCode::CONFLICT,
+
+        Refusal::UnknownGroup(_) | Refusal::MemberNotFound { .. } => StatusCode::NOT_FOUND,
+
+        // Genuinely this node's problem: a row that exists with no value, or a
+        // parent chain that will not terminate. Fall through to the generic 500,
+        // which also keeps their messages (they name internal rows) out of the
+        // response.
+        Refusal::MissingMemberValue { .. } | Refusal::DepthExceeded(_) => return None,
+    })
+}
+
 #[must_use]
 pub fn parse_api_error(err: Report) -> ApiError {
+    // A membership refusal: the governance gate understood the request and said
+    // no. Which "no" it is decides what the caller should do next, so map it
+    // rather than flattening the whole family into the generic 500 below.
+    if let Some(status_code) = err
+        .downcast_ref::<MembershipError>()
+        .and_then(membership_refusal_status)
+    {
+        return ApiError {
+            status_code,
+            message: err.to_string(),
+        };
+    }
     // A membership-gate rejection ("node is not a member of group X") is a
     // legitimate client-side precondition, not a server fault. Surface it as a
     // typed 403 with its (safe, intended) message instead of letting it fall
@@ -695,6 +805,28 @@ pub fn parse_api_error(err: Report) -> ApiError {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: err.to_string(),
+        };
+    }
+    // A pairing refusal is always about the caller or about this node's state,
+    // never about its health, and the five are not interchangeable: retrying a
+    // bad confirmation code is pointless, retrying a missing scope key is
+    // exactly right. Flattened to one `500` a client can tell neither.
+    if let Some(status_code) = err
+        .downcast_ref::<calimero_context::error::ContextError>()
+        .and_then(pairing_refusal_status)
+    {
+        return ApiError {
+            status_code,
+            message: err.to_string(),
+        };
+    }
+    // This node's own device slot already holds a linked device for another
+    // account. The request is well-formed and the node is healthy; it is simply
+    // not the machine that may certify here, which no retry changes.
+    if let Some(refusal) = err.downcast_ref::<calimero_governance_store::NodeDeviceError>() {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
         };
     }
     match err.downcast::<ApiError>() {
@@ -880,6 +1012,73 @@ mod parse_api_error_tests {
 
     use super::{parse_api_error, ApiError};
 
+    use calimero_governance_store::MembershipError;
+
+    /// The bug this arm exists for. A member who is admin of a *subgroup* but
+    /// not of the namespace root is refused by `require_admin` — correctly —
+    /// and the caller was told `500 {"error":"Internal server error"}`. A UI
+    /// cannot distinguish that from the node falling over, so it cannot say
+    /// "you are not allowed" and cannot decide whether to retry.
+    #[test]
+    fn not_admin_maps_to_403_with_the_reason() {
+        let err = MembershipError::NotAdmin {
+            group_id: "channel-subgroup".to_owned(),
+            identity: "namespace-admin".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("is not an admin"),
+            "the refusal's own words are what tell a client what to fix; got: {}",
+            api.message
+        );
+    }
+
+    #[test]
+    fn not_member_maps_to_403() {
+        let err = MembershipError::NotMember {
+            group_id: "g".to_owned(),
+            identity: "i".to_owned(),
+        };
+        assert_eq!(
+            parse_api_error(err.into()).status_code,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// "You may not" and "not while the group looks like this" are different
+    /// answers. Removing the last admin is refused no matter who asks, so it is
+    /// a conflict with state, not an authorization failure — a client that
+    /// retries after escalating privileges is wasting its time.
+    #[test]
+    fn last_admin_maps_to_409_not_403() {
+        let api = parse_api_error(MembershipError::LastAdmin.into());
+        assert_eq!(api.status_code, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn unknown_group_maps_to_404() {
+        let err = MembershipError::UnknownGroup("g".to_owned());
+        assert_eq!(
+            parse_api_error(err.into()).status_code,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// Store corruption is the one family here that really IS this node's
+    /// fault, and it must keep answering 500 — and must NOT echo its message,
+    /// which names internal rows.
+    #[test]
+    fn store_corruption_stays_500_and_stays_quiet() {
+        let err = MembershipError::MissingMemberValue {
+            group_id: "g".to_owned(),
+            account: "a".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api.message, "Internal server error");
+    }
+
     #[test]
     fn not_a_group_member_maps_to_403_with_message() {
         let err = calimero_context::error::ContextError::NotAGroupMember {
@@ -1059,5 +1258,149 @@ mod parse_api_error_tests {
         );
         assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         assert_eq!(api.message, "bad group id");
+    }
+
+    /// The five refusals both pairing handlers raise, and the one the device slot
+    /// underneath them raises. Every one of them used to answer
+    /// `500 {"error":"Internal server error"}`, so a client could not tell a
+    /// mistyped code from a node that had not synced a scope key yet.
+    mod pairing {
+        use calimero_context::error::ContextError;
+
+        use super::{parse_api_error, StatusCode};
+
+        /// The statement is the caller's bytes, so a caller can fix it.
+        #[test]
+        fn an_unverifiable_statement_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::PairingStatementInvalid {
+                    device: "d".to_owned(),
+                    cause: "pairing statement signature is invalid".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert!(
+                api.message.contains("account pair-init"),
+                "the refusal should say how to get a good statement; got: {}",
+                api.message
+            );
+        }
+
+        /// And it must still never echo the code the caller failed to supply -
+        /// an attacker driving this endpoint would otherwise be handed the one
+        /// value it cannot compute.
+        #[test]
+        fn a_mismatched_confirmation_code_maps_to_400_without_the_expected_code() {
+            let api = parse_api_error(
+                ContextError::PairingCodeMismatch {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert!(
+                !api.message.chars().any(|c| c.is_ascii_digit()),
+                "a confirmation code is hex, so no digit should reach the caller; got: {}",
+                api.message
+            );
+        }
+
+        /// `409`, not `400`: the request is well-formed and the identical call
+        /// works once this node takes part in the namespaces it names.
+        #[test]
+        fn a_scope_this_node_signs_nowhere_in_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::PairingNoNamespaceIdentity {
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+        }
+
+        #[test]
+        fn no_current_scope_key_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::PairingNoScopeKey {
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+        }
+
+        /// The right request at the wrong node, which no retry and no sync fixes.
+        #[test]
+        fn a_node_that_does_not_hold_the_account_maps_to_403() {
+            let api = parse_api_error(
+                ContextError::PairingNotTheAccountHolder {
+                    enrolled: "a".to_owned(),
+                    account: "b".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("the node that holds the account"),
+                "the caller should learn where to run this; got: {}",
+                api.message
+            );
+        }
+
+        /// Raised a crate deeper, in `calimero-governance-store`, and it reaches
+        /// the client only because the context handler propagates the report
+        /// rather than restating it.
+        #[test]
+        fn a_device_linked_to_another_account_maps_to_403() {
+            let api = parse_api_error(
+                calimero_governance_store::NodeDeviceError::LinkedToAnotherAccount {
+                    device: "d".to_owned(),
+                    account: "a".to_owned(),
+                    namespace: "ns".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("revoking the existing device first"),
+                "the refusal has to say what to do next; got: {}",
+                api.message
+            );
+        }
+
+        /// A relink names a device this node holds no certificate for. `404`,
+        /// because the thing being addressed does not exist here - not `403`,
+        /// which would say the caller is at the wrong machine.
+        #[test]
+        fn an_unknown_device_maps_to_404() {
+            let api = parse_api_error(
+                ContextError::PairingUnknownDevice {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// And a revoked one to `403`, permanently: re-enrolling the machine mints
+        /// a FRESH device id, so no sequence of calls makes this id work again -
+        /// which the message has to say rather than imply an un-revoke.
+        #[test]
+        fn a_revoked_device_maps_to_403_and_says_re_enrolling_mints_a_new_id() {
+            let api = parse_api_error(
+                ContextError::PairingDeviceRevoked {
+                    device: "d".to_owned(),
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("mints a new device id"),
+                "the caller must learn that the id is spent for good; got: {}",
+                api.message
+            );
+        }
     }
 }

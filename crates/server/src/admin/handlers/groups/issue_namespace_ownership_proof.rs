@@ -52,7 +52,7 @@ pub async fn handler(
             );
             ApiResponse {
                 payload: IssueOwnershipProofApiResponse {
-                    // `PublicKey: Display` produces base58 (see calimero-primitives::identity).
+                    // `PublicKey: Display` produces 64 hex (see calimero-primitives::identity).
                     signer_public_key: resp.signer_public_key.to_string(),
                     signed_payload: base64_engine.encode(&resp.signed_payload),
                     signature: base64_engine.encode(resp.signature),

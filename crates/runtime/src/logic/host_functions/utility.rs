@@ -103,17 +103,18 @@ impl VMHostFunctions<'_> {
         let headers: Vec<(String, String)> =
             from_borsh_slice(headers).map_err(|_| HostError::DeserializationError)?;
 
-        let mut request = ureq::request(method, url);
+        // ureq 3 dropped the free `request(method, url)`; a dynamic method now
+        // goes through an `http::Request` handed to `ureq::run`.
+        let mut builder = ureq::http::Request::builder().method(method).uri(url);
 
         for (key, value) in &headers {
-            request = request.set(key, value);
+            builder = builder.header(key, value);
         }
 
-        let response = if body.is_empty() {
-            request.call()
-        } else {
-            request.send_bytes(body)
-        };
+        let response = builder
+            .body(body)
+            .map_err(ureq::Error::from)
+            .and_then(ureq::run);
 
         // Bound the response body before buffering it. It ultimately lands in a
         // register (capped at `max_register_size`), but `read_to_end` runs first
@@ -126,6 +127,7 @@ impl VMHostFunctions<'_> {
             Ok(response) => {
                 let mut buffer = vec![];
                 match response
+                    .into_body()
                     .into_reader()
                     .take(max_response_size)
                     .read_to_end(&mut buffer)

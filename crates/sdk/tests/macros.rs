@@ -83,6 +83,7 @@ fn all() {
     t.compile_fail("tests/macros/error_non_byte_key.rs");
     // A union has no single shape to describe in the ABI.
     t.compile_fail("tests/macros/error_abi_type_union.rs");
+    t.compile_fail("tests/macros/error_abi_pattern_on_record.rs");
     // Note: the `AppArg`/`AppReturn` diagnostics (non-(de)serializable method
     // args/returns) live in the `#[cfg(target_arch = "wasm32")]` export body, so
     // they only fire for a wasm build — the host-compiled trybuild suite can't

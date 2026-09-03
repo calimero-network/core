@@ -28,7 +28,29 @@ pub struct GenerateClientKeyRequest {
 
     /// Target node URL for which to generate the client key
     pub target_node_url: Option<String>,
+
+    /// Seconds this key stays valid. Defaults to
+    /// [`DEFAULT_CLIENT_KEY_TTL_SECS`] when absent.
+    ///
+    /// There is deliberately no way to ask for a key that never expires. That
+    /// was the previous behaviour and it is the whole problem: the credential
+    /// handed to an agent subprocess outlived any reason to trust it, and
+    /// nothing on the node ever aged it out. A caller that wants a shorter life
+    /// than the default — an agent session is hours, not weeks — passes one.
+    pub ttl_secs: Option<u64>,
 }
+
+/// How long a client key lives when the caller does not say.
+///
+/// 30 days is chosen to be uneventful rather than clever: long enough that no
+/// ordinary integration notices, short enough that a credential someone forgot
+/// about stops working while they still remember what it was for. An agent
+/// session should ask for far less.
+///
+/// It is a change in behaviour, and the direction is deliberate — a key that
+/// expires eventually is strictly better than one that never does, and "never"
+/// is what shipped.
+pub const DEFAULT_CLIENT_KEY_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// Client list handler
 ///
@@ -179,8 +201,10 @@ pub async fn generate_client_key_handler(
 
     let name = format!("Context Client - {context_id} ({context_identity})");
 
+    let ttl_secs = request.ttl_secs.unwrap_or(DEFAULT_CLIENT_KEY_TTL_SECS);
     let client_key =
-        Key::new_client_key(root_key_id.clone(), name, all_permissions, node_url.clone());
+        Key::new_client_key(root_key_id.clone(), name, all_permissions, node_url.clone())
+            .with_ttl_secs(Some(ttl_secs));
 
     if let Err(err) = state.0.key_manager.set_key(&client_id, &client_key).await {
         error!("Failed to store client key: {}", err);
@@ -340,6 +364,7 @@ mod tests {
                     context_identity: None,
                     permissions: Some(vec!["admin".to_string()]),
                     target_node_url: None,
+                    ttl_secs: None,
                 }),
             )
             .await
@@ -366,5 +391,66 @@ mod tests {
                 "minted key {client_id} must be retrievable"
             );
         }
+    }
+
+    /// A minted client key must carry an expiry even when the caller says nothing.
+    ///
+    /// This is the whole point of the change. `KeyMetadata::new()` sets
+    /// `expires_at: None`, and every setter that could change it was called only
+    /// from tests — so the credential handed to an agent subprocess never aged
+    /// out. An opt-in TTL would have left that true for every existing caller.
+    #[test]
+    fn a_client_key_expires_by_default() {
+        let key = Key::new_client_key("root".to_owned(), "agent".to_owned(), vec![], None)
+            .with_ttl_secs(Some(DEFAULT_CLIENT_KEY_TTL_SECS));
+
+        let expires_at = key
+            .metadata
+            .expires_at
+            .expect("a minted client key must have an expiry");
+
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        assert!(expires_at > now, "the expiry must be in the future");
+        assert!(
+            expires_at <= now + DEFAULT_CLIENT_KEY_TTL_SECS,
+            "and no further out than the default",
+        );
+        assert!(!key.is_expired());
+    }
+
+    /// A caller asking for a shorter life gets it.
+    ///
+    /// An agent session is hours, not weeks, and the caller closest to the
+    /// credential is the one that knows.
+    #[test]
+    fn an_explicit_ttl_is_honoured() {
+        let key = Key::new_client_key("root".to_owned(), "agent".to_owned(), vec![], None)
+            .with_ttl_secs(Some(60));
+
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let expires_at = key.metadata.expires_at.expect("expiry set");
+
+        assert!(
+            expires_at <= now + 60,
+            "an explicit 60s TTL must not be widened to the default",
+        );
+    }
+
+    /// A key past its expiry reports itself expired.
+    ///
+    /// Worth asserting here rather than trusting the setter: `is_expired` is what
+    /// `verify_token` consults on every request, so this is the property the whole
+    /// change rests on.
+    #[test]
+    fn a_key_past_its_expiry_is_expired() {
+        let mut key = Key::new_client_key("root".to_owned(), "agent".to_owned(), vec![], None);
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+
+        key.set_expires_at(Some(now.saturating_sub(1)));
+
+        assert!(
+            key.is_expired(),
+            "a key one second past its expiry is expired"
+        );
     }
 }

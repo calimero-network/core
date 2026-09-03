@@ -231,7 +231,7 @@ fn profile_full_materialisation_vs_page() {
     let mut n = 0_usize;
     for &target in &CHECKPOINTS {
         while n < target {
-            v.push(make_msg(n, n % 10 == 0)).expect("push");
+            v.push(make_msg(n, n.is_multiple_of(10))).expect("push");
             n += 1;
         }
         reset();
@@ -280,7 +280,7 @@ fn profile_unread_count_scan() {
     let mut n = 0_usize;
     for &target in &CHECKPOINTS {
         while n < target {
-            v.push(make_msg(n, n % 10 == 0)).expect("push");
+            v.push(make_msg(n, n.is_multiple_of(10))).expect("push");
             n += 1;
         }
         let last_read = 1_700_000_000_000_u64 + (target as u64) - 10;
@@ -340,7 +340,7 @@ fn profile_reactions_for_a_page() {
     for &target in &[250_usize, 500, 1_000, 2_000] {
         while n < target {
             // Every 4th message carries reactions, so a page mixes hits/misses.
-            if n % 4 == 0 {
+            if n.is_multiple_of(4) {
                 let mut inner =
                     UnorderedMap::<String, UnorderedSet<String, Counting>, Counting>::new();
                 for emoji in ["thumbsup", "heart"] {
@@ -404,7 +404,9 @@ fn profile_index_backed_page() {
             let mut key = Vec::with_capacity(16);
             key.extend_from_slice(&(1_700_000_000_000_u64 + n as u64).to_be_bytes());
             key.extend_from_slice(&(n as u64).to_be_bytes());
-            let _ = sm.insert(key, make_msg(n, n % 10 == 0)).expect("insert");
+            let _ = sm
+                .insert(key, make_msg(n, n.is_multiple_of(10)))
+                .expect("insert");
             n += 1;
         }
 

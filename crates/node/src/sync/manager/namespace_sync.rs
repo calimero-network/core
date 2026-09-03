@@ -2692,6 +2692,7 @@ mod join_target_tests {
             expiration_timestamp: 0,
             invitation_nonce: [0x11; 32],
             invited_role: 1,
+            admitters: Vec::new(),
         };
         let signature = admin_sk
             .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
@@ -2702,6 +2703,7 @@ mod join_target_tests {
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
             bytecode_id: None,
+            admitter_hints: Vec::new(),
         }
     }
 

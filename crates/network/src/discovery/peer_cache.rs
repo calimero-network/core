@@ -192,7 +192,7 @@ impl PeerAddrCache {
             .collect();
         // Deterministic order (HashMap iteration is randomised) so the
         // persisted file is stable across runs and tests are reproducible.
-        out.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        out.sort_by_key(|a| a.peer_id);
         out
     }
 
@@ -233,7 +233,7 @@ impl PeerAddrCache {
             .filter(|p| is_fresh(p.last_seen_secs, now_secs, ttl_secs))
             .cloned()
             .collect();
-        out.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        out.sort_by_key(|a| a.peer_id);
         out
     }
 

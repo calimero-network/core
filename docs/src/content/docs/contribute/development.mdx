@@ -61,15 +61,33 @@ two nodes that talk to each other:
 1. Initialize and run the first node:
 
    ```sh
-   merod --node node1 init --server-port 2428 --swarm-port 2528
+   merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
    merod --node node1 run
    ```
 
-2. Initialize the second node and point it at the first's swarm address:
+2. Initialize the second node so it can find the first:
 
    ```sh
-   merod --node node2 init --server-port 2429 --swarm-port 2529
-   merod --node node2 config --swarm-addrs /ip4/127.0.0.1/tcp/2528
+   merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
+   merod --node node2 run
+   ```
+
+   `--mdns` is on both, and it is load-bearing rather than tidy-up. mDNS is off by
+   default, and two nodes with no bootstrap peer and no rendezvous have no other
+   way to find each other. Leaving it off does not fail cleanly: the nodes start,
+   the join is accepted locally, and it then times out waiting for a group key —
+   so it reads as a broken join rather than as two nodes that never met.
+
+   To point the second node at the first explicitly instead, you need node1's
+   **peer id** — a bare `/ip4/…/tcp/…` is rejected at startup with "Failed to
+   parse peer id from addr":
+
+   ```sh
+   # with node1 running
+   curl -s localhost:2428/admin-api/network/status | jq -r .localPeerId
+
+   merod --node node2 init --server-port 2429 --swarm-port 2529 \
+     --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
    merod --node node2 run
    ```
 

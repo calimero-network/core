@@ -22,7 +22,6 @@ pub enum NodeEvent {
 pub struct GroupMembershipEvent {
     /// The group whose membership changed (the joined subgroup, never the
     /// namespace root). Hex-encoded to match the group/namespace admin API.
-    #[serde(with = "crate::hash::hex_repr")]
     pub group_id: Hash,
     #[serde(flatten)]
     pub payload: MembershipChangePayload,
@@ -72,7 +71,6 @@ pub struct GroupMigrationEvent {
     /// The namespace root the migration runs under, never a descendant
     /// subgroup: it is the id a client subscribes with. Hex, like `groupId`
     /// everywhere else.
-    #[serde(with = "crate::hash::hex_repr")]
     pub group_id: Hash,
     #[serde(flatten)]
     pub payload: GroupMigrationPayload,
@@ -111,7 +109,6 @@ pub enum GroupMigrationPayload {
     /// reading a bare `total` off this stream cannot tell the two apart.
     #[serde(rename_all = "camelCase")]
     CascadeProgress {
-        #[serde(with = "crate::hash::hex_repr")]
         subgroup_id: Hash,
         local_contexts_swapped: u32,
         local_contexts_total: u32,
