@@ -1029,7 +1029,18 @@ mod publish_on_namespace_now_tests {
     use calimero_utils_actix::LazyRecipient;
     use tokio::sync::{broadcast, mpsc};
 
+    use calimero_primitives::context::ContextId;
+
     use super::{BlobManager, NodeClient, SyncClient};
+
+    /// [`MemberRoles`] stub: one availability peer for every context.
+    struct OneAnchor(libp2p::PeerId);
+
+    impl super::MemberRoles for OneAnchor {
+        fn anchors_for_context(&self, _context_id: &ContextId) -> Vec<libp2p::PeerId> {
+            vec![self.0]
+        }
+    }
 
     /// Stub network actor: records how many times a `Publish` is requested and
     /// reports whatever mesh peer count the test sets via the shared atomic.
@@ -1038,6 +1049,11 @@ mod publish_on_namespace_now_tests {
     struct CountingNetworkActor {
         publish_count: Arc<AtomicUsize>,
         mesh_peers: Arc<AtomicUsize>,
+        /// Counts `SendBlobAnnouncement`s that have been ANSWERED, each after
+        /// `announce_delay` — the stand-in for an availability node that is
+        /// slow or unreachable.
+        announce_count: Arc<AtomicUsize>,
+        announce_delay: Duration,
     }
 
     impl Actor for CountingNetworkActor {
@@ -1056,6 +1072,18 @@ mod publish_on_namespace_now_tests {
                     let _prev = self.publish_count.fetch_add(1, Ordering::SeqCst);
                     let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
+                NetworkMessage::SendBlobAnnouncement { outcome, .. } => {
+                    // Answer late, off the mailbox, so the announce future is
+                    // genuinely pending while the test checks that its caller
+                    // already returned.
+                    let delay = self.announce_delay;
+                    let counted = Arc::clone(&self.announce_count);
+                    actix::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let _prev = counted.fetch_add(1, Ordering::SeqCst);
+                        let _ = outcome.send(Ok(()));
+                    });
+                }
                 _ => {}
             }
         }
@@ -1068,6 +1096,21 @@ mod publish_on_namespace_now_tests {
     /// mesh-peer atomics for assertions. The `TempDir` is returned so the
     /// caller keeps the blobstore filesystem alive for the test's duration.
     async fn make_client() -> (
+        NodeClient,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        tempfile::TempDir,
+    ) {
+        make_client_with_announce(&Arc::new(AtomicUsize::new(0)), Duration::ZERO).await
+    }
+
+    /// [`make_client`] with the stub actor's blob-announce behaviour under the
+    /// test's control: `announce_count` counts answered announcements and
+    /// `announce_delay` is how long each one takes to be answered.
+    async fn make_client_with_announce(
+        announce_count: &Arc<AtomicUsize>,
+        announce_delay: Duration,
+    ) -> (
         NodeClient,
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
@@ -1090,6 +1133,8 @@ mod publish_on_namespace_now_tests {
         let actor = CountingNetworkActor {
             publish_count: Arc::clone(&publish_count),
             mesh_peers: Arc::clone(&mesh_peers),
+            announce_count: Arc::clone(announce_count),
+            announce_delay,
         };
         let _addr = CountingNetworkActor::create(move |ctx| {
             assert!(network_recipient.init(ctx), "network recipient init");
@@ -1115,6 +1160,80 @@ mod publish_on_namespace_now_tests {
         );
 
         (node_client, publish_count, mesh_peers, tmp)
+    }
+
+    /// The announce must NOT be awaited by the caller. It is best-effort, its
+    /// outcome is nothing an uploader can act on, and one unreachable
+    /// availability node would otherwise put a full announce timeout on the
+    /// admin upload handler's response — the kad put it replaced never blocked
+    /// that way. The stub answers each announcement only after a delay, so a
+    /// caller that waited would take at least that long.
+    #[actix::test]
+    async fn announcing_does_not_block_the_caller() {
+        const ANNOUNCE_DELAY: Duration = Duration::from_millis(750);
+
+        let announced = Arc::new(AtomicUsize::new(0));
+        let (client, _publish, _mesh, _tmp) =
+            make_client_with_announce(&announced, ANNOUNCE_DELAY).await;
+        assert!(
+            client.install_member_roles(Arc::new(OneAnchor(libp2p::PeerId::random()))),
+            "member-roles seam installs once"
+        );
+
+        let started = std::time::Instant::now();
+        client
+            .announce_blob_to_network(
+                &calimero_primitives::blobs::BlobId::from([0xB1; 32]),
+                &ContextId::from([0xC1; 32]),
+                42,
+            )
+            .await
+            .expect("announce is scheduled");
+        let returned_after = started.elapsed();
+
+        assert!(
+            returned_after < ANNOUNCE_DELAY,
+            "announce_blob_to_network must return before the announcement completes, \
+             took {returned_after:?} against a {ANNOUNCE_DELAY:?} announce"
+        );
+        assert_eq!(
+            announced.load(Ordering::SeqCst),
+            0,
+            "the announcement cannot have been answered yet — that is the point"
+        );
+
+        // ...and the detached work still happens.
+        tokio::time::sleep(ANNOUNCE_DELAY * 4).await;
+        assert_eq!(
+            announced.load(Ordering::SeqCst),
+            1,
+            "the detached announce must still reach the availability node"
+        );
+    }
+
+    /// A context with no availability node announces to nobody. Not an error:
+    /// the blob stays findable by probing whoever holds it.
+    #[actix::test]
+    async fn a_context_with_no_availability_node_announces_to_nobody() {
+        let announced = Arc::new(AtomicUsize::new(0));
+        let (client, _publish, _mesh, _tmp) =
+            make_client_with_announce(&announced, Duration::ZERO).await;
+
+        client
+            .announce_blob_to_network(
+                &calimero_primitives::blobs::BlobId::from([0xB2; 32]),
+                &ContextId::from([0xC2; 32]),
+                42,
+            )
+            .await
+            .expect("announce is scheduled");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            announced.load(Ordering::SeqCst),
+            0,
+            "no availability node, no announcement"
+        );
     }
 
     /// `publish_on_namespace_now` publishes exactly once per call and reports the

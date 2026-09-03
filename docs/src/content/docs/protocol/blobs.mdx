@@ -180,9 +180,14 @@ context (read from its own governance state, never taken from the announcement),
 does not already hold the blob, and the advertised size is within the 500 MiB
 transfer cap. At most 2 prefetches run at once, and announcements arriving while
 both slots are busy are dropped rather than queued — a dropped prefetch costs
-availability for one blob, never correctness. Announcing is best-effort in the
-same spirit: a refused or failed announce never fails the write that produced
-the blob.
+availability for one blob, never correctness.
+
+Announcing is best-effort in the same spirit, and **the producer does not wait
+for it**: the notices are sent detached, so `blob_announce_to_context` returns
+once the work is scheduled, not once it is delivered. A refused, failed or
+undelivered announce never fails — nor delays — the write that produced the
+blob. Anything that needs to know an availability node actually holds the bytes
+must observe that on the availability node.
 
 **Known gap:** an availability node that is offline when a blob is announced
 never learns about it and has no catch-up path. The blob stays findable by

@@ -640,34 +640,69 @@ impl NodeClient {
     /// whole context about every blob, which is precisely the fan-out this
     /// design exists to avoid.
     ///
-    /// **Best-effort by contract.** A refused, failed, or undeliverable
-    /// announce is logged and swallowed: the upload that triggered it has
-    /// already succeeded, and the blob is findable from this node by probing
-    /// regardless. A context with no availability node announces to nobody,
-    /// which is a no-op rather than an error.
+    /// **Returns as soon as the work is scheduled, without waiting for it.**
+    /// The announce is best-effort by design and its outcome is nothing the
+    /// uploader can act on, so making a user-facing upload wait on it buys
+    /// nothing: the blob is already stored, and one unreachable availability
+    /// node would otherwise put a full announce timeout on the admin upload
+    /// handler's response. The kad put this replaced did not block that way
+    /// either — `put_record` at `Quorum::One` returns before the record is
+    /// confirmed anywhere. The detached work stays bounded by the network
+    /// layer's per-announce timeout.
+    ///
+    /// So `Ok(())` means "scheduled", never "delivered": a caller that needs to
+    /// know an availability node actually holds the bytes must observe that on
+    /// the availability node, not here.
     ///
     /// **Known gap:** an availability node that is offline right now misses
     /// this blob and has no catch-up path — see the module docs of
     /// `calimero_node::handlers::blob_announce`.
+    #[allow(
+        clippy::unused_async,
+        reason = "async is the published signature and all three producers await it; \
+                  desugaring it would churn every call site for nothing"
+    )]
     pub async fn announce_blob_to_network(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
         size: u64,
     ) -> eyre::Result<()> {
-        let anchors = self.member_roles.anchors_for_context(context_id);
+        let client = self.clone();
+        let blob_id = *blob_id;
+        let context_id = *context_id;
+
+        // Detached on purpose (see above). Anchor resolution is a store read,
+        // so it goes inside the task too — the caller then does no I/O at all
+        // on the announce path.
+        drop(tokio::spawn(async move {
+            client.announce_to_anchors(blob_id, context_id, size).await;
+        }));
+
+        Ok(())
+    }
+
+    /// The body of the announce, run detached by
+    /// [`NodeClient::announce_blob_to_network`].
+    ///
+    /// Every failure is logged and swallowed: this runs after the write that
+    /// produced the blob was already reported successful, so there is nobody
+    /// left to return an error to. A context with no availability node
+    /// announces to nobody, which is a no-op rather than a failure.
+    async fn announce_to_anchors(&self, blob_id: BlobId, context_id: ContextId, size: u64) {
+        let anchors = self.member_roles.anchors_for_context(&context_id);
         if anchors.is_empty() {
             tracing::debug!(
                 %blob_id,
                 %context_id,
                 "no availability node known for this context; blob stays findable by probing"
             );
-            return Ok(());
+            return;
         }
 
         let announced = join_all(anchors.iter().map(|peer_id| async move {
             self.network_client
-                .announce_blob_to_peer(*peer_id, *blob_id, *context_id, size)
+                .announce_blob_to_peer(*peer_id, blob_id, context_id, size)
                 .await
                 .map_err(|err| (*peer_id, err))
         }))
@@ -696,8 +731,6 @@ impl NodeClient {
             attempted = anchors.len(),
             "announced blob to availability nodes"
         );
-
-        Ok(())
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
