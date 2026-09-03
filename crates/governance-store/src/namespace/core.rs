@@ -11,8 +11,9 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
-use rand::rngs::OsRng;
-use rand::Rng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::RngExt;
 use sha2::Digest;
 
 use super::super::{
@@ -374,7 +375,7 @@ impl<'a> NamespaceRepository<'a> {
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {
-            let invitation_nonce: [u8; 32] = OsRng.gen();
+            let invitation_nonce: [u8; 32] = UnwrapErr(SysRng).random();
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
@@ -717,7 +718,7 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(existing.public_key);
         }
 
-        let private_key = PrivateKey::random(&mut OsRng);
+        let private_key = PrivateKey::random(&mut UnwrapErr(SysRng));
         let public_key = private_key.public_key();
 
         let mut handle = self.store.handle();
@@ -874,7 +875,7 @@ impl<'a> NamespaceRepository<'a> {
             });
         }
 
-        let private_key = PrivateKey::random(&mut OsRng);
+        let private_key = PrivateKey::random(&mut UnwrapErr(SysRng));
         let public_key = private_key.public_key();
 
         self.store_identity(&ns_id, &public_key, private_key.as_bytes())?;

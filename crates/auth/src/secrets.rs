@@ -8,7 +8,7 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use eyre::{eyre, Result};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
@@ -76,7 +76,7 @@ const NONCE_LEN: usize = 12;
 /// Seal `plaintext` as `MAGIC || nonce || ciphertext+tag` using AES-256-GCM.
 fn seal(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
-    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().gen();
+    let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
         .map_err(|e| eyre!("failed to seal secret: {e}"))?;
@@ -133,7 +133,7 @@ fn kek_from_keyfile(path: &Path) -> Result<[u8; 32]> {
         );
     }
 
-    let kek: [u8; 32] = rand::thread_rng().gen();
+    let kek: [u8; 32] = rand::rng().random();
     std::fs::write(path, kek).map_err(|e| eyre!("failed to write KEK file {:?}: {e}", path))?;
 
     #[cfg(unix)]
@@ -159,7 +159,7 @@ fn resolve_secret_kek(config: &StorageConfig) -> [u8; 32] {
             Ok(kek) => kek,
             Err(e) => {
                 warn!("Falling back to ephemeral at-rest KEK: {e}");
-                rand::thread_rng().gen()
+                rand::rng().random()
             }
         },
         StorageConfig::Memory => {
@@ -167,7 +167,7 @@ fn resolve_secret_kek(config: &StorageConfig) -> [u8; 32] {
                 "No {KEK_ENV} set and storage is in-memory; using an ephemeral at-rest KEK \
                  (dev/test only — persisted secrets would not survive a restart)"
             );
-            rand::thread_rng().gen()
+            rand::rng().random()
         }
     }
 }
@@ -291,7 +291,7 @@ impl VersionedSecret {
         let now = now_secs();
 
         // Generate a secure random secret
-        let secret: [u8; 32] = rand::thread_rng().gen();
+        let secret: [u8; 32] = rand::rng().random();
 
         Self {
             value: URL_SAFE_NO_PAD.encode(secret),

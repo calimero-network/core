@@ -20,8 +20,9 @@ use calimero_crypto::X25519SecretKey;
 use calimero_primitives::identity::PrivateKey;
 use clap::Parser;
 use eyre::{Result, WrapErr};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::Rng;
 
 use crate::cli::Environment;
 
@@ -52,11 +53,11 @@ impl DeviceInitCommand {
         // binding it to the keys would cost the device its replica slot every
         // time it rotated.
         let mut nonce = [0u8; 16];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let device = DeviceId::mint(account, nonce);
 
-        let sign_sk = PrivateKey::random(&mut OsRng);
-        let kem_sk = X25519SecretKey::random(&mut OsRng);
+        let sign_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let kem_sk = X25519SecretKey::random(&mut UnwrapErr(SysRng));
 
         println!("Device:      {device}");
         println!(

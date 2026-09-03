@@ -6,7 +6,7 @@ use calimero_context_config::types::{
 use calimero_context_config::MemberCapabilities;
 use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use calimero_primitives::identity::PrivateKey;
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 use crate::ContextManager;
@@ -218,8 +218,8 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             let private_key = PrivateKey::from(node_sk);
 
-            let mut rng = rand::thread_rng();
-            let invitation_nonce: [u8; 32] = rng.gen();
+            let mut rng = rand::rng();
+            let invitation_nonce: [u8; 32] = rng.random();
 
             let now_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

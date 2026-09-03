@@ -25,7 +25,8 @@ use calimero_primitives::identity::PrivateKey;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 use sha2::{Digest, Sha256};
 
@@ -147,7 +148,7 @@ fn apply_wire_payload(store: &Store, payload: &[u8]) {
 
 #[test]
 fn two_nodes_converge_on_same_signed_op_sequence() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -232,7 +233,7 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
 
 #[test]
 fn two_nodes_converge_on_target_application_and_migration() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -314,7 +315,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
 fn two_nodes_converge_on_namespace_member_joined() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
 
@@ -410,7 +411,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
 fn member_joined_at_rejects_expired_invitation() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store = empty_store();
@@ -499,7 +500,7 @@ fn member_joined_at_rejects_expired_invitation() {
 fn the_legacy_member_joined_variant_can_no_longer_admit() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store = empty_store();
@@ -569,7 +570,7 @@ fn the_legacy_member_joined_variant_can_no_longer_admit() {
 fn member_joined_at_accepts_in_window_invitation() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store_a = empty_store();
@@ -650,7 +651,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
     // the responder key-delivery gate (`validate_open_invitation`, exercised in
     // governance-store tests), which uses the responder's own clock. Fully
     // closing this would need an admin co-signature at redemption (out of scope).
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store = empty_store();
@@ -720,7 +721,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
 fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store_a = empty_store();
@@ -797,7 +798,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
 fn member_joined_at_ignores_zero_expiration() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store = empty_store();
@@ -863,7 +864,7 @@ fn member_joined_at_ignores_zero_expiration() {
 fn recursive_invite_joins_all_descendant_groups() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let ns_id = sample_group_id();
     let child_a = ContextGroupId::from([0xAA; 32]);
     let child_b = ContextGroupId::from([0xBB; 32]);
@@ -1040,7 +1041,7 @@ fn recursive_invite_joins_all_descendant_groups() {
 fn nest_group_rejects_cycles() {
     let store = empty_store();
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
@@ -1087,7 +1088,7 @@ fn nest_group_rejects_cycles() {
 
 #[test]
 fn two_nodes_converge_on_context_alias_as_admin() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -1188,7 +1189,7 @@ fn two_nodes_converge_on_context_alias_as_admin() {
 
 #[test]
 fn op_log_records_applied_ops_and_head_advances() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1256,7 +1257,7 @@ fn op_log_records_applied_ops_and_head_advances() {
 
 #[test]
 fn duplicate_op_is_idempotent() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1293,7 +1294,7 @@ fn duplicate_op_is_idempotent() {
 
 #[test]
 fn offline_node_replays_missed_ops_from_log() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -1389,7 +1390,7 @@ fn offline_node_replays_missed_ops_from_log() {
 
 #[tokio::test]
 async fn dag_applies_ops_in_causal_order() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1474,7 +1475,7 @@ async fn dag_applies_ops_in_causal_order() {
 
 #[tokio::test]
 async fn dag_concurrent_ops_create_two_heads() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1566,7 +1567,7 @@ async fn dag_concurrent_ops_create_two_heads() {
 
 #[tokio::test]
 async fn dag_duplicate_delta_is_idempotent() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1608,7 +1609,7 @@ async fn dag_duplicate_delta_is_idempotent() {
 
 #[tokio::test]
 async fn dag_deep_chain_with_out_of_order_delivery() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1680,7 +1681,7 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
 
 #[test]
 fn rejects_op_with_too_many_parents() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1730,7 +1731,7 @@ fn rejects_op_with_too_many_parents() {
 
 #[test]
 fn dag_heads_are_capped_at_max() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -1798,7 +1799,7 @@ fn concurrent_independent_member_adds_converge() {
     // authorization-order confound: under the live-fallback authorizer a removed
     // admin's later op would fail on *authorization*, masking the convergence
     // property this test pins down.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -1976,7 +1977,7 @@ fn concurrent_independent_member_adds_converge() {
 
 #[test]
 fn cascade_removal_on_member_kick() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
     let store = empty_store();
@@ -2066,7 +2067,7 @@ fn cascade_removal_on_member_kick() {
 
 #[test]
 fn cascade_removal_deterministic_across_nodes() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -2157,7 +2158,7 @@ fn cascade_removal_deterministic_across_nodes() {
 
 #[test]
 fn group_member_with_keys_persists_and_retrieves() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let store = empty_store();
 
@@ -2206,7 +2207,7 @@ fn group_member_with_keys_persists_and_retrieves() {
 
 #[test]
 fn group_member_without_keys_has_none_keys() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let store = empty_store();
 
@@ -2255,7 +2256,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     use calimero_context_config::types::GovernanceParentEdge;
     use calimero_governance_store::NamespaceDagService;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
 
@@ -2386,7 +2387,7 @@ struct JoinFixture {
 /// A namespace with an enrolled admin, and an in-window invitation naming that
 /// admin — and only that admin — as its admitter.
 fn join_fixture() -> JoinFixture {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = sample_group_id();
     let ns_id = gid.to_bytes();
     let store = empty_store();
@@ -2487,7 +2488,7 @@ fn member_joined_at_accepts_an_endorsement_from_the_named_admitter() {
 /// one, because nothing on the op said who had agreed to it.
 #[test]
 fn member_joined_at_rejects_an_endorsement_from_an_account_the_invitation_did_not_name() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let f = join_fixture();
 
     let other_sk = PrivateKey::random(&mut rng);
@@ -2523,7 +2524,7 @@ fn member_joined_at_rejects_an_endorsement_from_an_account_the_invitation_did_no
 /// transferable to this one.
 #[test]
 fn member_joined_at_rejects_an_endorsement_bound_to_a_different_joiner() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let f = join_fixture();
     let someone_else =
         calimero_context::test_support::account_for(&PrivateKey::random(&mut rng).public_key());
@@ -2563,7 +2564,7 @@ fn member_joined_at_rejects_an_endorsement_issued_for_another_namespace() {
 /// account in `admitters` is not satisfied by signing with an unrelated key.
 #[test]
 fn member_joined_at_rejects_an_endorsement_from_a_key_bound_to_no_account() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let f = join_fixture();
     let stranger_sk = PrivateKey::random(&mut rng);
 

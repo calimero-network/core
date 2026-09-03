@@ -2451,7 +2451,9 @@ mod tests {
     fn test_join_account_for(
         sign_pk: PublicKey,
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-        let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+        let root_sk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        );
         let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
         let cert = calimero_account::DeviceCert::sign(
             &root_sk,

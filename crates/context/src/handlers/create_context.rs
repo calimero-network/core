@@ -244,7 +244,7 @@ impl Prepared<'_> {
             effective_app_id = meta.target.application_id;
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let identity_secret = identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rng));
 

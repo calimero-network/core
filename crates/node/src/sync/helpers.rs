@@ -14,7 +14,7 @@ use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
 use eyre::{bail, Result};
-use rand::Rng;
+use rand::RngExt;
 
 /// Read the local root-hash for `context_id` from the index.
 ///
@@ -143,7 +143,7 @@ pub fn validate_application_id(ours: &ApplicationId, theirs: &ApplicationId) -> 
 /// Generates a random nonce for message encryption.
 #[must_use]
 pub fn generate_nonce() -> calimero_crypto::Nonce {
-    rand::thread_rng().gen()
+    rand::rng().random()
 }
 
 /// Extract the authorization triple to put on the HashComparison wire

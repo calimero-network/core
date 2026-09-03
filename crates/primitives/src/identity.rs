@@ -4,7 +4,7 @@ use core::ops::Deref;
 use core::str::FromStr;
 
 #[cfg(feature = "rand")]
-use rand::{CryptoRng, RngCore};
+use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 // `random()` zeroizes its local seed copy, which needs the `Zeroize` trait in
@@ -77,7 +77,7 @@ impl PrivateKey {
     }
 
     #[cfg(feature = "rand")]
-    pub fn random<R: CryptoRng + RngCore>(csprng: &mut R) -> Self {
+    pub fn random<R: CryptoRng + Rng>(csprng: &mut R) -> Self {
         let mut secret = [0; 32];
 
         csprng.fill_bytes(&mut secret);

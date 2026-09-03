@@ -1483,8 +1483,8 @@ async fn request_missing_deltas(
                     delta_id: missing_id,
                 },
                 next_nonce: {
-                    use rand::Rng;
-                    rand::thread_rng().gen()
+                    use rand::RngExt;
+                    rand::rng().random()
                 },
                 pop: delta_pop,
             };

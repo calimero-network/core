@@ -664,8 +664,8 @@ async fn fetch_and_apply_namespace_backfill(
             delta_ids,
         },
         next_nonce: {
-            use rand::Rng;
-            rand::thread_rng().gen()
+            use rand::RngExt;
+            rand::rng().random()
         },
         // Sentinel party id; backfill serves only already-signed deltas, which
         // the requester re-verifies on receipt - no proof of possession.

@@ -24,7 +24,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
 const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
@@ -84,7 +85,7 @@ fn create_group(
 
 #[test]
 fn cascade_upgrade_atomic_op_sets_target_bytecode_id_and_migration_and_records_cascade_hlc() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let store = empty_store();
@@ -161,7 +162,7 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
     use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
     use calimero_dag::DagStore;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 

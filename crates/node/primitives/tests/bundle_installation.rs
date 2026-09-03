@@ -11,7 +11,8 @@ use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use tar::Builder;
 use tempfile::TempDir;
@@ -223,7 +224,7 @@ fn create_test_bundle_custom_wasm_path(
     let mut tar = Builder::new(encoder);
 
     // Generate a signing key for the test bundle
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest.json with custom WASM path (without signature initially)
@@ -990,7 +991,7 @@ fn create_tampered_bundle(
     let mut tar = Builder::new(encoder);
 
     // Generate a signing key
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create the ORIGINAL manifest (what was signed)
@@ -1074,10 +1075,10 @@ fn create_signer_id_mismatch_bundle(
     let mut tar = Builder::new(encoder);
 
     // Generate signing key A (will be used for signing)
-    let signing_key_a = SigningKey::generate(&mut OsRng);
+    let signing_key_a = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     // Generate signing key B (its signerId will be declared in manifest)
-    let signing_key_b = SigningKey::generate(&mut OsRng);
+    let signing_key_b = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id_b = derive_signer_id_did_key(signing_key_b.verifying_key().as_bytes());
 
     // Create manifest that claims signerId from key B
@@ -1287,8 +1288,8 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Generate two different signing keys
-    let signing_key_s1 = SigningKey::generate(&mut OsRng);
-    let signing_key_s2 = SigningKey::generate(&mut OsRng);
+    let signing_key_s1 = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let signing_key_s2 = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let signer_id_s1 = derive_signer_id_did_key(signing_key_s1.verifying_key().as_bytes());
     let signer_id_s2 = derive_signer_id_did_key(signing_key_s2.verifying_key().as_bytes());
@@ -1564,7 +1565,7 @@ async fn test_bundle_validation_path_traversal_in_package() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Generate a signing key
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest with path traversal in package
@@ -1609,7 +1610,7 @@ async fn test_bundle_validation_path_traversal_in_version() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Generate a signing key
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest with path traversal in appVersion
@@ -1657,7 +1658,7 @@ async fn test_bundle_validation_path_traversal_in_service_wasm_path() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     let mut manifest = serde_json::json!({
@@ -1700,7 +1701,7 @@ async fn test_bundle_validation_forward_slash_in_package() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Generate a signing key
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest with forward slash in package
@@ -1745,7 +1746,7 @@ async fn test_bundle_validation_backslash_in_package() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Generate a signing key
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest with backslash in package
@@ -1790,7 +1791,7 @@ async fn test_bundle_validation_windows_absolute_path_in_package() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Generate a signing key
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest with Windows absolute path in package

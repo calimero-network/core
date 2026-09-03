@@ -10,7 +10,8 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use tar::{Archive, Builder};
 use tempfile::TempDir;
@@ -122,7 +123,7 @@ async fn install(
 #[tokio::test]
 async fn tampered_wasm_is_rejected_even_though_manifest_signature_verifies() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let honest_wasm = b"HONEST wasm bytecode from the publisher".as_slice();
     let evil_wasm = b"EVIL!! wasm bytecode from the registry ".as_slice();
@@ -173,7 +174,7 @@ async fn tampered_wasm_is_rejected_even_though_manifest_signature_verifies() {
 #[tokio::test]
 async fn manifest_without_artifact_hash_is_rejected() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"some wasm".as_slice();
 
     let signer_id = derive_signer_id_did_key(key.verifying_key().as_bytes());
@@ -213,7 +214,7 @@ async fn manifest_without_artifact_hash_is_rejected() {
 #[tokio::test]
 async fn oversized_manifest_is_refused_before_any_signature_check() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm behind an oversized manifest".as_slice();
 
     let signer_id = derive_signer_id_did_key(key.verifying_key().as_bytes());
@@ -257,7 +258,7 @@ async fn oversized_manifest_is_refused_before_any_signature_check() {
 #[tokio::test]
 async fn normal_manifest_still_installs() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm behind a normal manifest".as_slice();
     let manifest = signed_manifest("com.example.normal", "1.0.0", wasm, &key);
     let bundle = pack(&dir, "normal.mpk", &manifest, wasm);
@@ -273,7 +274,7 @@ async fn normal_manifest_still_installs() {
 #[tokio::test]
 async fn services_sharing_an_artifact_path_each_get_the_right_bytes() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let a = b"wasm for service a".as_slice();
     let b = b"wasm for service b, distinct".as_slice();
 
@@ -365,7 +366,7 @@ async fn services_sharing_an_artifact_path_each_get_the_right_bytes() {
 #[tokio::test]
 async fn a_shared_path_is_checked_against_every_service_digest() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"the one artifact both services name".as_slice();
     let other = b"bytes no entry in this archive holds".as_slice();
 
@@ -420,7 +421,7 @@ async fn a_shared_path_is_checked_against_every_service_digest() {
 #[tokio::test]
 async fn manifest_past_the_tenth_entry_is_a_bundle_on_both_paths() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm behind eleven leading entries".as_slice();
     let manifest = signed_manifest("com.example.latemanifest", "1.0.0", wasm, &key);
 
@@ -457,7 +458,7 @@ async fn an_unmatchable_entry_ahead_of_the_manifest_installs_on_both_paths() {
     use std::path::Path;
 
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm behind an entry no path can name".as_slice();
     let manifest = signed_manifest("com.example.oddentry", "1.0.0", wasm, &key);
 
@@ -488,7 +489,7 @@ async fn an_unmatchable_entry_ahead_of_the_manifest_installs_on_both_paths() {
 #[tokio::test]
 async fn decoy_entry_cannot_satisfy_the_digest_check_for_another_entry() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let honest = b"HONEST wasm bytecode from the publisher".as_slice();
     let evil = b"EVIL!! wasm bytecode from the registry ".as_slice();
@@ -533,7 +534,7 @@ async fn decoy_entry_cannot_satisfy_the_digest_check_for_another_entry() {
 #[tokio::test]
 async fn install_writes_no_extracted_directory() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm for the no-extract check".as_slice();
     let manifest = signed_manifest("com.example.noextract", "1.0.0", wasm, &key);
     let bundle = pack(&dir, "noextract.mpk", &manifest, wasm);
@@ -555,7 +556,7 @@ async fn install_writes_no_extracted_directory() {
 #[tokio::test]
 async fn a_nested_manifest_is_never_the_bundle_manifest() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let old_wasm = b"wasm bytecode of the superseded release".as_slice();
     let old = signed_manifest_at(
         "com.example.nested",
@@ -588,7 +589,7 @@ async fn a_nested_manifest_is_never_the_bundle_manifest() {
 #[tokio::test]
 async fn a_nested_manifest_cannot_roll_the_install_back_to_an_older_release() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let old_wasm = b"wasm bytecode of the superseded release".as_slice();
     let new_wasm = b"wasm bytecode of the current release !!".as_slice();
@@ -635,7 +636,7 @@ async fn a_nested_manifest_cannot_roll_the_install_back_to_an_older_release() {
 #[tokio::test]
 async fn duplicate_top_level_manifest_entries_are_refused() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm behind two manifests".as_slice();
 
     let first = signed_manifest("com.example.twomanifests", "1.0.0", wasm, &key);
@@ -667,7 +668,7 @@ async fn duplicate_top_level_manifest_entries_are_refused() {
 #[tokio::test]
 async fn a_bundle_larger_than_the_manifest_scan_cap_still_installs() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     // Past the 8 MiB scan cap, and compressible enough to stay quick.
     let wasm = vec![0xABu8; 12 * 1024 * 1024];
@@ -691,7 +692,7 @@ async fn a_bundle_larger_than_the_manifest_scan_cap_still_installs() {
 #[tokio::test]
 async fn a_manifest_declaring_no_wasm_is_refused_at_install() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let migration = b"migration bytes and nothing to run them against".as_slice();
 
     let signer_id = derive_signer_id_did_key(key.verifying_key().as_bytes());
@@ -735,7 +736,7 @@ async fn a_manifest_declaring_no_wasm_is_refused_at_install() {
 #[tokio::test]
 async fn duplicate_entries_at_the_manifest_path_are_refused() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let honest = b"HONEST wasm bytecode from the publisher".as_slice();
     let evil = b"EVIL!! wasm bytecode from the registry ".as_slice();
@@ -768,7 +769,7 @@ async fn duplicate_entries_at_the_manifest_path_are_refused() {
 #[tokio::test]
 async fn a_bundle_written_with_leading_dot_slash_installs_on_both_paths() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm from a bundle built by ordinary tar".as_slice();
 
     // The manifest declares the plain path; only the entries carry the `./`.
@@ -797,7 +798,7 @@ async fn a_bundle_written_with_leading_dot_slash_installs_on_both_paths() {
 #[tokio::test]
 async fn a_manifest_declaring_a_dot_slash_path_matches_a_plain_entry() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm named with a leading dot-slash".as_slice();
 
     let manifest = signed_manifest_at(
@@ -823,7 +824,7 @@ async fn a_manifest_declaring_a_dot_slash_path_matches_a_plain_entry() {
 #[tokio::test]
 async fn a_dot_slash_archive_still_refuses_a_nested_manifest_rollback() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let old_wasm = b"wasm bytecode of the superseded release".as_slice();
     let new_wasm = b"wasm bytecode of the current release !!".as_slice();
@@ -875,7 +876,7 @@ async fn a_dot_slash_archive_still_refuses_a_nested_manifest_rollback() {
 #[tokio::test]
 async fn a_dot_slash_duplicate_of_the_manifest_is_refused() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm = b"wasm behind two spellings of one manifest".as_slice();
 
     let first = signed_manifest("com.example.dotslashdupmanifest", "1.0.0", wasm, &key);
@@ -907,7 +908,7 @@ async fn a_dot_slash_duplicate_of_the_manifest_is_refused() {
 #[tokio::test]
 async fn a_dot_slash_duplicate_of_an_artifact_is_refused() {
     let dir = TempDir::new().unwrap();
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let honest = b"HONEST wasm bytecode from the publisher".as_slice();
     let evil = b"EVIL!! wasm bytecode from the registry ".as_slice();

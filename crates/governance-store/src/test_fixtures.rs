@@ -17,7 +17,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef, GroupTarget};
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 /// A fresh account root: its signing key and the genesis that names it.
 ///
@@ -25,7 +26,7 @@ use rand::rngs::OsRng;
 /// a rejoin, or a person's second device — which is the whole distinction the
 /// account plane exists to draw.
 pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
-    let root_sk = PrivateKey::random(&mut OsRng);
+    let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     (root_sk, genesis)
 }
@@ -202,7 +203,7 @@ pub(super) fn bootstrap_namespace_with_admin_account(
     store: &Store,
     ns_id: [u8; 32],
 ) -> ((PrivateKey, PublicKey), AccountId) {
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let ns_gid = ContextGroupId::from(ns_id);

@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn verified_heartbeat_is_cached_and_readable() {
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let hb = signed_hb(&sk, NS, 2, 0, 0);
         // Caller verifies first; a well-formed heartbeat verifies.
         assert!(hb.verify_signature().is_ok());
@@ -1312,7 +1312,7 @@ mod tests {
         // `BTreeMap<PublicKey, MemberMigrationReport>` the rollup consumes.
         // Each fresh entry projects 1:1; `ts_millis` becomes `reported_at`.
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let hb = signed_hb(&sk, NS, 2, 1, 7);
         cache.insert(&hb);
 
@@ -1332,7 +1332,7 @@ mod tests {
         // Only the requested namespace's peers project — a heartbeat from a
         // different namespace must not leak into the rollup snapshot.
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let other_ns = [7u8; 32];
         cache.insert(&signed_hb(&sk, other_ns, 2, 0, 0));
 
@@ -1356,7 +1356,7 @@ mod tests {
         // `&Store` and namespace member-set, neither of which this pure cache
         // unit owns. Here we only pin that the wire type's own signature check
         // (the primitive the gate is built on) catches a mutated field.
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut hb = signed_hb(&sk, NS, 2, 5, 0);
         assert!(hb.verify_signature().is_ok());
         hb.residue_auto = 0; // tampered after signing
@@ -1369,7 +1369,7 @@ mod tests {
     #[test]
     fn stale_entry_is_filtered_after_ttl() {
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         cache.insert(&signed_hb(&sk, NS, 2, 0, 0));
         // Drive the TTL via a very small per-call window — the same seam the
         // readiness tests use (`pick_sync_partner_excludes_stale_entries`).
@@ -1392,7 +1392,7 @@ mod tests {
         // entry: the fresher heartbeat's fields remain after the older one
         // arrives second.
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let fresh = signed_hb(&sk, NS, 2, 0, 2000);
         let stale = signed_hb(&sk, NS, 1, 9, 1000);
         cache.insert(&fresh);
@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn insert_accepts_newer_heartbeat_from_same_peer() {
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let older = signed_hb(&sk, NS, 1, 9, 1000);
         let newer = signed_hb(&sk, NS, 2, 0, 2000);
         cache.insert(&older);
@@ -1431,7 +1431,7 @@ mod tests {
     #[test]
     fn insert_reports_a_facts_change_but_not_a_bare_hlc_advance() {
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         // `signed_hb` signs `synced_up_to_hlc: 0`; overwriting it after signing
         // is fine here because `insert` never verifies (the receiver gate does).
         let hb = |schema_version, residue_auto, ts_millis, hlc| {
@@ -1464,7 +1464,7 @@ mod tests {
         // freeze the entry, dropping every later legitimate heartbeat as
         // "older".
         let cache = MigrationStatusCache::default();
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1623,7 +1623,7 @@ mod tests {
                     to_version: "2".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::Completed { completed_at: None },
                     cascade_hlc: None,
                     cascade_seq: None,
@@ -1662,7 +1662,7 @@ mod tests {
                     to_version: "10.2.0".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,
@@ -1689,7 +1689,7 @@ mod tests {
                     to_version: "10.2.0".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,
@@ -1806,7 +1806,7 @@ mod tests {
                     to_version: "2".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,
@@ -1857,7 +1857,7 @@ mod tests {
                     to_version: "2".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::Completed { completed_at: None },
                     cascade_hlc: None,
                     cascade_seq: None,
@@ -1917,7 +1917,7 @@ mod tests {
                     to_version: "2".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: calimero_store::key::GroupUpgradeStatus::Completed {
                         completed_at: None,
                     },
@@ -2152,7 +2152,7 @@ mod tests {
                         to_version: "2".to_owned(),
                         migration: None,
                         initiated_at: 0,
-                        initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                        initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                         status: GroupUpgradeStatus::InProgress {
                             total: 1,
                             completed: 0,
@@ -2203,7 +2203,7 @@ mod tests {
 
     #[test]
     fn built_heartbeat_verifies_and_carries_facts() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let facts = MigrationFacts {
             schema_version: 2,
             residue_auto: 3,
@@ -2257,7 +2257,7 @@ mod tests {
                     to_version: "2".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,
@@ -2337,7 +2337,7 @@ mod tests {
                     to_version: "3".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,
@@ -2476,7 +2476,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = [0x9Au8; 32];
         let subgroup = ContextGroupId::from([0x9Bu8; 32]);
-        let self_pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+        let self_pk = PrivateKey::random(&mut rand::rng()).public_key();
 
         // This node's namespace identity (what its heartbeat would be signed by).
         NamespaceRepository::new(&store)
@@ -2492,7 +2492,7 @@ mod tests {
                     to_version: "3".to_owned(),
                     migration: None,
                     initiated_at: 0,
-                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    initiated_by: PrivateKey::random(&mut rand::rng()).public_key(),
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,

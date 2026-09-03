@@ -356,7 +356,7 @@ mod key_recovery_trigger {
     #[test]
     fn keyless_member_awaits_key_even_with_empty_governance_pending() {
         let store = fresh_store();
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
         let signer_sk = PrivateKey::random(&mut rng);
 
         let namespace_id = [0xE7u8; 32];
@@ -420,14 +420,14 @@ mod key_recovery_trigger {
         use calimero_primitives::context::GroupMemberRole;
 
         let store = fresh_store();
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
 
         let namespace_id = [0xF1u8; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
 
         // Our namespace identity + a direct membership row, no key, no op —
         // the quiescent "joined, pending key" state.
-        let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
+        let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
         let my_id = PrivateKey::from(sk_bytes).public_key();
         NamespaceRepository::new(&store)
             .store_identity(&ns_gid, &my_id, &sk_bytes)

@@ -19,7 +19,8 @@ use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use tar::Builder;
 use tempfile::TempDir;
@@ -168,7 +169,7 @@ pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8P
         Compression::default(),
     ));
 
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let manifest = BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),

@@ -43,7 +43,8 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::key::GroupTarget;
 use calimero_store::Store;
 use core::num::NonZeroU128;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -75,8 +76,8 @@ fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 #[test]
 fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let ns = ContextGroupId::from([0x11; 32]);
     let ns_bytes = ns.to_bytes();
@@ -184,7 +185,7 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
 #[test]
 fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let ns = ContextGroupId::from([0x22; 32]);
     let ns_bytes = ns.to_bytes();
 
@@ -243,8 +244,8 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
 #[test]
 fn locally_authored_op_lands_in_the_op_store_atomically() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let ns = ContextGroupId::from([0x33; 32]);
     let ns_bytes = ns.to_bytes();
     // Enrolled, so the admin row names the account this key resolves to.
@@ -338,8 +339,8 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
 #[test]
 fn a_legacy_noop_row_for_an_unreadable_op_is_re_derived_as_a_hole() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let ns = ContextGroupId::from([0x71; 32]);
     let ns_bytes = ns.to_bytes();

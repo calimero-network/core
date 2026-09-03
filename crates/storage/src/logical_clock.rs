@@ -459,13 +459,13 @@ impl LogicalClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::RngCore;
+    use rand::Rng;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn test_hlc_monotonicity() {
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
 
         let ts1 = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
         let ts2 = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
@@ -485,7 +485,7 @@ mod tests {
         // silently lost. Monotonicity is preserved by holding physical time at
         // the last observed value and advancing the logical counter instead.
         let time = AtomicU64::new(2_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
 
         let before = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
@@ -532,7 +532,7 @@ mod tests {
         // time (which would let the HLC regress and collide timestamps).
         let secs_overflow: u64 = (1_u64 << 33) * 1_000_000_000; // secs = 2^33
         let time = AtomicU64::new(secs_overflow);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         let ts = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
         assert_eq!(
             physical_time_secs(&ts),
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn test_hybrid_timestamp_borsh() {
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         let ts = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
         // Serialize
@@ -581,8 +581,8 @@ mod tests {
     #[test]
     fn test_hlc_uniqueness() {
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc1 = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
-        let mut hlc2 = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc1 = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
+        let mut hlc2 = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
 
         let ts1 = hlc1.new_timestamp(|| time.load(Ordering::Relaxed));
         let ts2 = hlc2.new_timestamp(|| time.load(Ordering::Relaxed));
@@ -610,7 +610,7 @@ mod tests {
         // A local and a remote event share the same physical tick, and the
         // remote counter is ahead of ours.
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
 
         let _ = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
         let local = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
@@ -632,7 +632,7 @@ mod tests {
         // Remote is one physical tick ahead with a non-zero counter; the local
         // wall clock stays behind, so ordering must fall to the counter.
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         let local = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
         let remote_phys = (local.get_time().as_u64() & PHYSICAL_MASK) + (1 << COUNTER_BITS);
@@ -652,7 +652,7 @@ mod tests {
         // behind. Observing it must still move the counter past the local
         // event so the next local timestamp is strictly greater.
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         let _ = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
         let local = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
@@ -673,7 +673,7 @@ mod tests {
         // local HLC state and the remote timestamp, so the resulting tick is
         // the wall clock's and the counter resets to zero.
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
 
         // Build up a non-zero counter on the starting tick.
         let _ = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
@@ -703,8 +703,8 @@ mod tests {
         // B issues many events on a stalled tick; A observes B's latest and
         // must issue a strictly-later timestamp despite its own low counter.
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut a = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
-        let mut b = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut a = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
+        let mut b = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
 
         let mut b_ts = b.new_timestamp(|| time.load(Ordering::Relaxed));
         for _ in 0..20 {
@@ -727,7 +727,7 @@ mod tests {
         // hold must still produce strictly increasing timestamps (carry into
         // physical time rather than wrapping the counter back to zero).
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         let mut prev = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
         for _ in 0..70_000 {
             let next = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
@@ -843,7 +843,7 @@ mod tests {
     fn test_update_rejects_far_future() {
         // Remote timestamps more than the drift tolerance ahead are rejected.
         let time = AtomicU64::new(1_000_000_000_000_000_000);
-        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         let now = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
         let future = remote_ts(now.get_time().as_u64() + (10_u64 << 32), 0);

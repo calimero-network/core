@@ -370,7 +370,7 @@ mod tests {
         bytecode_id: [u8; 32],
         coords: (&str, &str),
     ) {
-        let admin_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+        let admin_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
         let admin = crate::test_support::enrol(store, &gid, &admin_sk.public_key());
         MembershipRepository::new(store)
             .add_member(&gid, &admin, GroupMemberRole::Admin)

@@ -23,8 +23,8 @@ use futures_util::stream::{self};
 use futures_util::StreamExt;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::seq::IndexedRandom;
+use rand::RngExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Instant};
 use tracing::{debug, error, info, warn};
@@ -802,7 +802,7 @@ impl SyncManager {
         // anchors fail. Empty cache or context with no observed anchor
         // peers degrades to plain random selection.
         let mut shuffled: Vec<libp2p::PeerId> = peers
-            .choose_multiple(&mut rand::thread_rng(), peers.len())
+            .sample(&mut rand::rng(), peers.len())
             .copied()
             .collect();
         let anchor_count = super::peers::partition_peers_anchor_first(
@@ -1054,7 +1054,7 @@ impl SyncManager {
             .context_client
             .get_context_members(&context_id, Some(true));
 
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
             .await
             .transpose()?
         else {
@@ -1093,7 +1093,7 @@ impl SyncManager {
                         context_id,
                         party_id: our_identity,
                         payload: InitPayload::DagHeadsRequest { context_id },
-                        next_nonce: rand::thread_rng().gen(),
+                        next_nonce: rand::rng().random(),
                         pop: self.build_init_pop(context_id, our_identity).await,
                     };
 
@@ -1799,7 +1799,7 @@ impl SyncManager {
             context_id,
             party_id: our_identity,
             payload: InitPayload::DagHeadsRequest { context_id },
-            next_nonce: rand::thread_rng().gen(),
+            next_nonce: rand::rng().random(),
             pop: self.build_init_pop(context_id, our_identity).await,
         };
 
@@ -1959,7 +1959,7 @@ impl SyncManager {
             .context_client
             .get_context_members(&context.id, Some(true));
 
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
             .await
             .transpose()?
         else {
@@ -2115,8 +2115,8 @@ impl SyncManager {
             party_id: our_identity,
             payload: InitPayload::DagHeadsRequest { context_id },
             next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
+                use rand::RngExt;
+                rand::rng().random()
             },
             pop: self.build_init_pop(context_id, our_identity).await,
         };
@@ -2245,8 +2245,8 @@ impl SyncManager {
                         },
                         pop: delta_pop,
                         next_nonce: {
-                            use rand::Rng;
-                            rand::thread_rng().gen()
+                            use rand::RngExt;
+                            rand::rng().random()
                         },
                     };
 
@@ -3632,7 +3632,7 @@ impl SyncManager {
             .context_client
             .get_context_members(&context.id, Some(true));
 
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
             .await
             .transpose()?
         else {
@@ -4008,7 +4008,7 @@ impl SyncManager {
         let identities = self
             .context_client
             .get_context_members(&context.id, Some(true));
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
             .await
             .transpose()?
         else {

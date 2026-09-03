@@ -498,10 +498,9 @@ impl SyncManager {
             .context_client
             .get_context_members(&context_id, Some(true));
 
-        let Some((our_identity, _)) =
-            crate::utils::choose_stream(identities, &mut rand::thread_rng())
-                .await
-                .transpose()?
+        let Some((our_identity, _)) = crate::utils::choose_stream(identities, &mut rand::rng())
+            .await
+            .transpose()?
         else {
             eyre::bail!("No owned identity found for context: {}", context_id);
         };
@@ -586,10 +585,9 @@ impl SyncManager {
             .context_client
             .get_context_members(&context_id, Some(true));
 
-        let Some((our_identity, _)) =
-            crate::utils::choose_stream(identities, &mut rand::thread_rng())
-                .await
-                .transpose()?
+        let Some((our_identity, _)) = crate::utils::choose_stream(identities, &mut rand::rng())
+            .await
+            .transpose()?
         else {
             eyre::bail!("No owned identity found for context: {}", context_id);
         };

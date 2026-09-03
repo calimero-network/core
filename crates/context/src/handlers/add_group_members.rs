@@ -187,7 +187,8 @@ mod tests {
     use calimero_context_client::local_governance::EnvelopeRecipient;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::*;
     use crate::test_support::{account_for, enrol};
@@ -206,7 +207,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
         let group = ContextGroupId::from([0x02; 32]);
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         let admin_sk = PrivateKey::random(&mut rng);
         let member = PrivateKey::random(&mut rng).public_key();
@@ -238,7 +239,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
         let group = ContextGroupId::from([0x02; 32]);
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         let admin_sk = PrivateKey::random(&mut rng);
         // Never enrolled, so the namespace holds no binding.
@@ -261,7 +262,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
         let group = ContextGroupId::from([0x02; 32]);
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         let admin_sk = PrivateKey::random(&mut rng);
         // A small-order point: the identity agreement refuses it, because a
@@ -285,7 +286,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
         let group = ContextGroupId::from([0x02; 32]);
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         let admin_sk = PrivateKey::random(&mut rng);
         let member = PrivateKey::random(&mut rng).public_key();

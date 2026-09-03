@@ -24,7 +24,8 @@ use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
 const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
@@ -85,7 +86,7 @@ fn create_group(
 
 #[test]
 fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 

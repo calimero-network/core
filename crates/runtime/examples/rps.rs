@@ -9,8 +9,8 @@ use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
-use rand::distributions::{Distribution, Standard};
-use rand::{random, thread_rng, Rng};
+use rand::distr::{Distribution, StandardUniform};
+use rand::{random, Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice as from_json_slice, json, to_vec as to_json_vec};
 
@@ -33,9 +33,9 @@ enum Choice {
     Scissors,
 }
 
-impl Distribution<Choice> for Standard {
+impl Distribution<Choice> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Choice {
-        match rng.gen_range(0..3) {
+        match rng.random_range(0..3) {
             0 => Choice::Rock,
             1 => Choice::Paper,
             _ => Choice::Scissors,
@@ -73,7 +73,7 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "First, we create a keypair for Joe".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let joe_seed: [u8; 32] = thread_rng().gen();
+    let joe_seed: [u8; 32] = rand::rng().random();
 
     let input = to_json_vec(&json!({
         "seed": joe_seed,
@@ -103,7 +103,7 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Next, we create a keypair for Melissa".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let melissa_seed: [u8; 32] = thread_rng().gen();
+    let melissa_seed: [u8; 32] = rand::rng().random();
 
     let input = to_json_vec(&json!({
         "seed": melissa_seed,
@@ -210,7 +210,7 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Joe makes a choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let joe_nonce: [u8; 32] = thread_rng().gen();
+    let joe_nonce: [u8; 32] = rand::rng().random();
     let joe_choice: Choice = random();
 
     let input = to_json_vec(&json!({
@@ -241,7 +241,7 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Melissa makes a choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let melissa_nonce: [u8; 32] = thread_rng().gen();
+    let melissa_nonce: [u8; 32] = rand::rng().random();
     let melissa_choice: Choice = random();
 
     let input = to_json_vec(&json!({

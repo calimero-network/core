@@ -1538,8 +1538,9 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
-    use rand::rngs::OsRng;
-    use rand::RngCore;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+    use rand::Rng;
 
     use calimero_governance_store::{
         GroupKeyring, MembershipRepository, MetaRepository, PendingSelfPurgeRepository,
@@ -1571,7 +1572,7 @@ mod tests {
     /// stored namespace identity + per-group group-key material.
     /// Returns `(store, ns_id, self_pk)`.
     fn seed_namespace_self_member() -> (Store, ContextGroupId, PublicKey) {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let store = empty_store();
         let ns_id = ContextGroupId::from([0x77u8; 32]);
         let self_sk = PrivateKey::random(&mut rng);
@@ -1629,7 +1630,7 @@ mod tests {
         // A namespace root + one nested subgroup, each holding an AES group
         // encryption key. A namespace-root cascade must delete BOTH — an
         // evicted TEE replica must not retain decryption keys (forward secrecy).
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let store = empty_store();
 
         let ns_id = ContextGroupId::from([0x70u8; 32]);
@@ -2504,7 +2505,7 @@ mod tests {
         // common case for the listener — every node receives every
         // group's events broadcast process-wide.
         let store = empty_store();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let other_pk = PrivateKey::random(&mut rng).public_key();
         let action = decide_purge_action(
             &store,
@@ -2519,7 +2520,7 @@ mod tests {
         // We have an identity for this namespace, but the event removed
         // somebody else. We stay.
         let (store, ns_id, _self_pk) = seed_namespace_self_member();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let other_pk = PrivateKey::random(&mut rng).public_key();
         let action = decide_purge_action(
             &store,
@@ -2598,7 +2599,7 @@ mod tests {
     /// other tests").
     #[tokio::test]
     async fn broadcast_channel_delivers_tee_member_removed_to_subscriber() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let member = PrivateKey::random(&mut rng).public_key();
         // Random 32-byte tag, not a fixed pattern, so the chance of any
         // other concurrent test using the same id is effectively zero.
@@ -2753,7 +2754,7 @@ mod tests {
         // must NOT trip the self-purge listener. If the predicate ever
         // starts returning `Some` for `MemberRemoved`, the 4 e2e
         // workflows that this PR was narrowed to preserve will break.
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let member = PrivateKey::random(&mut rng).public_key();
         let event = OpEvent::MemberRemoved {
             group_id: [0xAAu8; 32],
@@ -2770,7 +2771,7 @@ mod tests {
     fn dispatch_target_fires_on_tee_member_removed() {
         // Positive path: the role-scoped follow-up event is exactly the
         // listener's wake-up signal.
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let member = PrivateKey::random(&mut rng).public_key();
         let gid = [0xBBu8; 32];
         let event = OpEvent::TeeMemberRemoved {
@@ -2788,7 +2789,7 @@ mod tests {
     fn dispatch_target_skips_unrelated_op_events() {
         // Any other op-event variant must be ignored by the listener
         // (auto-follow / context-registered / etc. handlers own those).
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let member = PrivateKey::random(&mut rng).public_key();
         let gid = [0xCCu8; 32];
 
@@ -2819,7 +2820,7 @@ mod tests {
     /// the wire-format compatibility.
     #[tokio::test]
     async fn live_channel_skips_non_tee_member_removed() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let member = PrivateKey::random(&mut rng).public_key();
         let mut group_id = [0u8; 32];
         rng.fill_bytes(&mut group_id);
@@ -2884,7 +2885,7 @@ mod tests {
         };
 
         let store = empty_store();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         // Namespace root + this node's identity (makes it a "known" namespace).
         let mut ns_bytes = [0u8; 32];

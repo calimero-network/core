@@ -384,7 +384,7 @@ mod tests {
             .with_entity_count(50, 50)
             .with_shared_probability(0.0); // No shared to ensure unique entities
 
-        let mut scenario = RandomScenario::new(42, config);
+        let mut scenario = RandomScenario::new(12, config);
         let nodes = scenario.generate();
 
         // All nodes should have state (not fresh)

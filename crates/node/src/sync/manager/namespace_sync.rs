@@ -16,7 +16,7 @@ use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, Str
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
-use rand::Rng;
+use rand::RngExt;
 use tokio::time;
 use tracing::{debug, info, warn};
 
@@ -200,7 +200,7 @@ impl SyncManager {
                 namespace_id,
                 delta_ids: Vec::new(),
             },
-            next_nonce: rand::thread_rng().gen(),
+            next_nonce: rand::rng().random(),
             // Sentinel party id (no owned key to prove); backfill serves only
             // already-signed deltas, which the requester re-verifies on receipt.
             pop: None,
@@ -1381,7 +1381,7 @@ impl SyncManager {
                     joiner_public_key: params.joiner_public_key,
                     joiner_credential_bytes: params.joiner_credential_bytes.clone(),
                 },
-                next_nonce: rand::thread_rng().gen(),
+                next_nonce: rand::rng().random(),
             };
 
             if let Err(send_err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -1597,8 +1597,8 @@ impl SyncManager {
                 delta_ids: vec![],
             },
             next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
+                use rand::RngExt;
+                rand::rng().random()
             },
             // Sentinel party id; see the catch-up backfill site above.
             pop: None,
@@ -2031,8 +2031,8 @@ impl SyncManager {
                 key_id,
             },
             next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
+                use rand::RngExt;
+                rand::rng().random()
             },
             // The response is an ECDH key envelope sealed either to
             // `requester_public_key` or to `requester_device`'s certified KEM
@@ -2323,7 +2323,7 @@ async fn fetch_open_subgroup_key_once(
                 subgroup_id: params.subgroup_id,
                 joiner_public_key: params.joiner_public_key,
             },
-            next_nonce: rand::thread_rng().gen(),
+            next_nonce: rand::rng().random(),
             pop: join_pop,
         };
 
@@ -2685,13 +2685,14 @@ mod joiner_credential_tests {
     use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::SyncManager;
 
     /// An account root plus a credential certifying `sign_pk` under it.
     fn credential_for(sign_pk: &PublicKey) -> (JoinAccountCredential, AccountGenesis) {
-        let root_sk = PrivateKey::random(&mut OsRng);
+        let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let genesis = AccountGenesis::new(root_sk.public_key());
         let cert = DeviceCert::sign(
             &root_sk,
@@ -2870,7 +2871,8 @@ mod join_target_tests {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     use sha2::{Digest, Sha256};
 
     use super::join_target_group;
@@ -2905,7 +2907,7 @@ mod join_target_tests {
         NamespaceRepository::new(&store)
             .nest(&namespace, &subgroup)
             .expect("nest the subgroup");
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
         // The request names the namespace; only the invitation knows it is for
         // the subgroup, and serving the namespace instead is the whole bug.
@@ -2919,7 +2921,7 @@ mod join_target_tests {
     fn a_namespace_invitation_resolves_to_the_namespace() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let namespace = ContextGroupId::from([0x01; 32]);
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
         assert_eq!(
             join_target_group(&store, namespace, &invitation_to(&admin_sk, namespace)).unwrap(),
@@ -2936,7 +2938,7 @@ mod join_target_tests {
         NamespaceRepository::new(&store)
             .nest(&elsewhere, &stranger)
             .expect("nest the foreign subgroup");
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
         // Pairing a valid invitation with someone else's namespace must not
         // release that namespace's key material.
