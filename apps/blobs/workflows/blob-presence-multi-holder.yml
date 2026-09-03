@@ -1,0 +1,202 @@
+name: Blob Presence — Any Surviving Holder Serves
+description: >
+  A blob replicated onto three nodes must stay fetchable by a fourth after two
+  of the three holders go offline.
+
+  A DHT provider record names whoever announced it; when that node is gone the
+  lookup resolves to nobody even though other nodes are sitting on the exact
+  same bytes. Asking the context's peers instead makes every holder equally
+  discoverable, so the search only fails when the last holder does. This is the
+  scenario a single-valued discovery record cannot pass.
+
+  MUST RUN UNDER DOCKER. `stop_node` is how the holders are taken offline, and
+  node isolation is a no-op in merobox's --no-docker mode
+  (merobox/commands/bootstrap/steps/network.py) — a native run would go green
+  without any holder ever having gone away, which is the whole experiment.
+
+  ON THE NEGATIVE CONTROLS: blobs are content-addressed, so a node already
+  holding identical bytes serves them from local storage and never touches the
+  network. Every cross-node fetch below is therefore preceded by a local-only
+  read (no `context_id`) that MUST fail. Without that, a passing fetch proves
+  nothing — and proving that discovery happened at all is the entire point of
+  this scenario.
+
+  Run locally — --e2e-mode is REQUIRED, it clears the public devnet bootstrap
+  list `merod init` writes:
+    cd apps/blobs
+    MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password \
+      merobox bootstrap run workflows/blob-presence-multi-holder.yml \
+      --image merod:local --e2e-mode
+
+force_pull_image: true
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-blob-presence-multi
+
+steps:
+  - name: Login on rust-blob-presence-multi-1
+    type: login
+    node: rust-blob-presence-multi-1
+    username: dev
+    password: dev-password
+
+  - name: Login on rust-blob-presence-multi-2
+    type: login
+    node: rust-blob-presence-multi-2
+    username: dev
+    password: dev-password
+
+  - name: Login on rust-blob-presence-multi-3
+    type: login
+    node: rust-blob-presence-multi-3
+    username: dev
+    password: dev-password
+
+  - name: Login on rust-blob-presence-multi-4
+    type: login
+    node: rust-blob-presence-multi-4
+    username: dev
+    password: dev-password
+
+  - name: Install Rust blobs app on inviter
+    type: install_application
+    node: rust-blob-presence-multi-1
+    path: "res/blobs.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-blob-presence-multi-1
+    application_id: "{{app_id}}"
+    nodes:
+      - rust-blob-presence-multi-2
+      - rust-blob-presence-multi-3
+      - rust-blob-presence-multi-4
+    outputs:
+      context_id: contextId
+      inviter_key: memberPublicKey
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  - name: Upload the PNG on node 1
+    type: upload_blob
+    node: rust-blob-presence-multi-1
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      blob_id: blob_id
+      blob_size: size
+
+  - name: Read the PNG locally on node 1
+    type: download_blob
+    node: rust-blob-presence-multi-1
+    blob_id: "{{blob_id}}"
+    expected_size: "{{blob_size}}"
+    outputs:
+      source_sha256: sha256
+
+  - name: Let the upload settle across the mesh
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-presence-multi-1
+      - rust-blob-presence-multi-2
+      - rust-blob-presence-multi-3
+      - rust-blob-presence-multi-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ---------- Replicate onto two more holders ----------
+
+  - name: Node 2 must not already hold the PNG
+    type: download_blob
+    node: rust-blob-presence-multi-2
+    blob_id: "{{blob_id}}"
+    expected_failure: true
+
+  - name: Node 2 fetches the PNG, becoming a holder
+    type: download_blob
+    node: rust-blob-presence-multi-2
+    blob_id: "{{blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{blob_size}}"
+    expected_sha256: "{{source_sha256}}"
+
+  - name: Node 3 must not already hold the PNG
+    type: download_blob
+    node: rust-blob-presence-multi-3
+    blob_id: "{{blob_id}}"
+    expected_failure: true
+
+  - name: Node 3 fetches the PNG, becoming a holder
+    type: download_blob
+    node: rust-blob-presence-multi-3
+    blob_id: "{{blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{blob_size}}"
+    expected_sha256: "{{source_sha256}}"
+
+  # ---------- Fault: two of the three holders go away ----------
+
+  - name: Stop the uploader and one replica
+    type: stop_node
+    nodes:
+      - rust-blob-presence-multi-1
+      - rust-blob-presence-multi-2
+
+  # Node 4 has to observe the two stopped peers leaving the context topic's
+  # subscriber set; until then it may probe them, and an unreachable peer only
+  # answers once its probe times out.
+  - name: Let node 4 notice the departures
+    type: wait
+    seconds: 20
+
+  # Negative control, immediately before the fetch that matters. Node 4 holds
+  # nothing, and the only node that does is node 3.
+  - name: Node 4 must not already hold the PNG
+    type: download_blob
+    node: rust-blob-presence-multi-4
+    blob_id: "{{blob_id}}"
+    expected_failure: true
+
+  - name: Node 4 fetches the PNG from the last surviving holder
+    type: download_blob
+    node: rust-blob-presence-multi-4
+    blob_id: "{{blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{blob_size}}"
+    expected_sha256: "{{source_sha256}}"
+    outputs:
+      received_size: size
+      received_sha256: sha256
+
+  - name: Assert node 4's bytes are byte-identical to node 1's original
+    type: assert
+    statements:
+      - "equal({{received_size}}, {{blob_size}})"
+      - "equal({{received_sha256}}, {{source_sha256}})"
+
+  # Node 3 is the only reachable holder, so this marker in ITS log is the
+  # positive evidence that node 4 discovered a peer that never announced the
+  # blob to anyone — it merely happens to hold it.
+  - name: Node 3, which never uploaded, served the blob
+    type: assert_log_present
+    nodes:
+      - rust-blob-presence-multi-3
+    patterns:
+      - "Processing blob request stream"
+    tail_lines: 5000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

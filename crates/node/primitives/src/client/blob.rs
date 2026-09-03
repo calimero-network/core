@@ -14,7 +14,9 @@ use calimero_store::key;
 use calimero_store::layer::LayerExt;
 use calimero_store::namespace_signer::resolve_owned_namespace_signer;
 use eyre::bail;
+use futures_util::future::join_all;
 use futures_util::{AsyncRead, StreamExt};
+use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, trace};
@@ -105,6 +107,46 @@ impl BlobManager {
     }
 }
 
+/// How many peers are probed at once when looking for a blob's holder.
+///
+/// Bounded on purpose: the candidate list is the whole subscriber set of a
+/// context topic (up to `MAX_ESTABLISHED_TOTAL` peers), and probing all of it
+/// on every local miss is the fan-out this discovery path exists to avoid. At a
+/// realistic holder fraction of 0.2-0.3, eight probes answer 83-94% of misses,
+/// and a miss only widens the search by one more batch.
+const PROBE_BATCH: usize = 8;
+
+/// Find the first peer in `candidates` that answers "yes, I hold it".
+///
+/// Probes go out `PROBE_BATCH` at a time, concurrently within a batch (so one
+/// slow peer costs the batch a single probe timeout, not one per peer) and
+/// strictly sequentially between batches: a batch containing a holder ends the
+/// search, and no peer after it is ever probed. Within a batch, the
+/// earliest-listed holder wins, which keeps the choice deterministic.
+///
+/// `probe` must answer `false` for a peer it cannot reach — a search with other
+/// candidates left should not be aborted by one unreachable peer.
+async fn find_blob_holder<P, F>(candidates: &[PeerId], probe: P) -> Option<PeerId>
+where
+    P: Fn(PeerId) -> F,
+    F: core::future::Future<Output = bool>,
+{
+    for batch in candidates.chunks(PROBE_BATCH) {
+        let answers = join_all(batch.iter().map(|peer_id| {
+            let peer_id = *peer_id;
+            let probe = &probe;
+            async move { (peer_id, probe(peer_id).await) }
+        }))
+        .await;
+
+        if let Some((peer_id, _)) = answers.into_iter().find(|&(_, holds)| holds) {
+            return Some(peer_id);
+        }
+    }
+
+    None
+}
+
 impl NodeClient {
     // todo! maybe this should be an actor method?
     // todo! so we can cache the blob in case it's
@@ -143,163 +185,115 @@ impl NodeClient {
                 "Blob not found locally, attempting network discovery"
             );
 
-            // Poll the DHT quickly at first and widen the gap only if the record
-            // stays missing. The blob record is usually available within a few
-            // hundred ms on a warm cluster; a flat multi-second wait otherwise
-            // dominates time-to-first-byte even when both peers are local.
-            const MAX_RETRIES: usize = 6;
-            const INITIAL_RETRY_DELAY: core::time::Duration =
-                core::time::Duration::from_millis(100);
-            const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+            // Ask the context's peers who holds this blob, rather than
+            // reading a single-valued DHT provider record: custody is a
+            // property of a peer's own blob store, so the peer is the
+            // authority on it and the answer cannot go stale.
+            //
+            // `subscribed_peers` is the full connected+subscribed set, not the
+            // grafted mesh, so probing all of it on every miss is exactly the
+            // fan-out this design exists to avoid. Probes therefore go out in
+            // bounded batches, short-circuiting on the first holder.
+            let candidates = self
+                .network_client
+                .subscribed_peers(TopicHash::from_raw(*context_id))
+                .await;
 
-            // 100ms, doubling per attempt, capped at MAX_RETRY_DELAY. The
-            // `.min(31)` bounds the shift so it stays well-defined if
-            // MAX_RETRIES is ever raised past 32.
-            let backoff = |attempt: usize| {
-                // `saturating_sub(1)` so the shift is underflow-safe even
-                // if the loop bounds ever start at 0 (today it's 1..=MAX).
-                INITIAL_RETRY_DELAY
-                    .saturating_mul(1_u32 << (attempt.saturating_sub(1) as u32).min(31))
-                    .min(MAX_RETRY_DELAY)
-            };
-
-            for attempt in 1..=MAX_RETRIES {
-                tracing::debug!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    attempt,
-                    max_attempts = MAX_RETRIES,
-                    "Attempting network discovery"
-                );
-
-                let peers = match self
-                    .network_client
-                    .query_blob(*blob_id, Some(*context_id))
-                    .await
-                {
-                    Ok(peers) => peers,
-                    Err(e) => {
-                        tracing::warn!(
-                            blob_id = %blob_id,
-                            context_id = %context_id,
-                            attempt,
-                            error = %e,
-                            "Failed to query DHT for blob"
-                        );
-                        if attempt < MAX_RETRIES {
-                            tokio::time::sleep(backoff(attempt)).await;
-                            continue;
-                        }
-                        return Err(e);
-                    }
-                };
-
-                if peers.is_empty() {
-                    tracing::info!(
-                        blob_id = %blob_id,
-                        context_id = %context_id,
-                        attempt,
-                        "No peers found with blob"
-                    );
-                    if attempt < MAX_RETRIES {
-                        tokio::time::sleep(backoff(attempt)).await;
-                        continue;
-                    }
-                    return Ok(None);
-                }
-
+            if candidates.is_empty() {
                 tracing::info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
-                    peer_count = peers.len(),
-                    attempt,
-                    "Found {} peers with blob, attempting download", peers.len()
+                    "No context peers to ask for the blob"
                 );
-
-                // Try to get the blob from each available peer
-                for (peer_index, peer_id) in peers.iter().enumerate() {
-                    tracing::debug!(
-                        peer_id = %peer_id,
-                        peer_index = peer_index + 1,
-                        total_peers = peers.len(),
-                        attempt,
-                        "Attempting to download blob from peer"
-                    );
-
-                    // Generate Authorization for the blob.
-                    let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
-
-                    match self
-                        .network_client
-                        .request_blob(*blob_id, *context_id, *peer_id, auth)
-                        .await
-                    {
-                        Ok(Some(data)) => {
-                            tracing::info!(
-                                blob_id = %blob_id,
-                                peer_id = %peer_id,
-                                size = data.len(),
-                                attempt,
-                                "Successfully downloaded blob from network"
-                            );
-
-                            // Store the blob locally for future use
-                            let (blob_id_stored, _size) = self
-                                .add_blob(data.as_slice(), Some(data.len() as u64), None)
-                                .await?;
-
-                            // Verify we stored the correct blob
-                            if blob_id_stored != *blob_id {
-                                tracing::warn!(
-                                    expected = %blob_id,
-                                    actual = %blob_id_stored,
-                                    "Downloaded blob ID mismatch"
-                                );
-                                continue;
-                            }
-
-                            // Return the newly stored blob as a stream
-                            return self.blob_manager.get_blob_stream(*blob_id);
-                        }
-                        Ok(None) => {
-                            tracing::debug!(
-                                peer_id = %peer_id,
-                                attempt,
-                                "Peer doesn't have the blob"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                peer_id = %peer_id,
-                                error = %e,
-                                attempt,
-                                "Failed to download blob from peer"
-                            );
-                        }
-                    }
-                }
-
-                // If we reach here, all peers failed for this attempt
-                if attempt < MAX_RETRIES {
-                    let retry_delay = backoff(attempt);
-                    tracing::info!(
-                        blob_id = %blob_id,
-                        context_id = %context_id,
-                        attempt,
-                        retry_delay_ms = retry_delay.as_millis(),
-                        "All peers failed, retrying after backoff"
-                    );
-                    tokio::time::sleep(retry_delay).await;
-                }
+                return Ok(None);
             }
 
-            tracing::debug!(
+            // Generate authorization for the blob. The same signed proof
+            // authorizes both the probe and the fetch that follows it — a peer
+            // answers `found: false` to an unauthorized probe, so probing
+            // without it would find only public blobs.
+            let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
+
+            let holder = find_blob_holder(&candidates, |peer_id| async move {
+                self.network_client
+                    .probe_blob(*blob_id, *context_id, peer_id, auth)
+                    .await
+                    .unwrap_or(false)
+            })
+            .await;
+
+            let Some(peer_id) = holder else {
+                tracing::info!(
+                    blob_id = %blob_id,
+                    context_id = %context_id,
+                    candidates = candidates.len(),
+                    "No context peer holds this blob"
+                );
+                return Ok(None);
+            };
+
+            tracing::info!(
                 blob_id = %blob_id,
                 context_id = %context_id,
-                max_attempts = MAX_RETRIES,
-                "Failed to download blob from any peer after all retry attempts"
+                peer_id = %peer_id,
+                "Found a peer holding the blob, downloading"
             );
-            return Ok(None);
+
+            let data = match self
+                .network_client
+                .request_blob(*blob_id, *context_id, peer_id, auth)
+                .await
+            {
+                Ok(Some(data)) => data,
+                Ok(None) => {
+                    // The peer said yes to the probe and no to the fetch:
+                    // custody changed underneath us, or it declined. Either
+                    // way there is nothing to serve.
+                    tracing::warn!(
+                        blob_id = %blob_id,
+                        peer_id = %peer_id,
+                        "Peer answered the probe but did not serve the blob"
+                    );
+                    return Ok(None);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        blob_id = %blob_id,
+                        peer_id = %peer_id,
+                        error = %e,
+                        "Failed to download blob from peer"
+                    );
+                    return Ok(None);
+                }
+            };
+
+            tracing::info!(
+                blob_id = %blob_id,
+                peer_id = %peer_id,
+                size = data.len(),
+                "Successfully downloaded blob from network"
+            );
+
+            // Store the blob locally for future use
+            let (blob_id_stored, _size) = self
+                .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                .await?;
+
+            // Verify we stored the correct blob. Blobs are content-addressed,
+            // so a mismatch means the peer served different bytes than asked
+            // for — refuse to pass them off as the requested blob.
+            if blob_id_stored != *blob_id {
+                tracing::warn!(
+                    expected = %blob_id,
+                    actual = %blob_id_stored,
+                    peer_id = %peer_id,
+                    "Downloaded blob ID mismatch"
+                );
+                return Ok(None);
+            }
+
+            // Return the newly stored blob as a stream
+            return self.blob_manager.get_blob_stream(*blob_id);
         };
 
         Ok(Some(stream))
@@ -718,4 +712,136 @@ fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
     }
 
     "application/octet-stream"
+}
+
+#[cfg(test)]
+mod find_blob_holder_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    use super::{find_blob_holder, PeerId, PROBE_BATCH};
+
+    /// Records who was probed, and how many probes were ever in flight at once.
+    #[derive(Default)]
+    struct ProbeRecorder {
+        probed: Mutex<Vec<PeerId>>,
+        in_flight: AtomicUsize,
+        peak_in_flight: AtomicUsize,
+    }
+
+    impl ProbeRecorder {
+        /// Run one probe: enter, yield enough times that any concurrent sibling
+        /// gets scheduled (so `peak_in_flight` reflects real overlap rather
+        /// than luck), then leave with `answer`.
+        async fn probe(&self, peer_id: PeerId, answer: bool) -> bool {
+            self.probed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(peer_id);
+
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ignored = self.peak_in_flight.fetch_max(now, Ordering::SeqCst);
+
+            for _ in 0..(PROBE_BATCH * 2) {
+                tokio::task::yield_now().await;
+            }
+
+            let _ignored = self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            answer
+        }
+
+        fn probed(&self) -> Vec<PeerId> {
+            self.probed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    fn peers(count: usize) -> Vec<PeerId> {
+        (0..count).map(|_| PeerId::random()).collect()
+    }
+
+    #[tokio::test]
+    async fn never_exceeds_the_batch_bound() {
+        // Far more candidates than one batch: the bound is what stops this from
+        // becoming a broadcast to every subscriber of the context topic.
+        let candidates = peers(PROBE_BATCH * 4 + 3);
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(&candidates, |peer_id| recorder.probe(peer_id, false)).await;
+
+        assert_eq!(holder, None);
+        // Nobody holds it, so every candidate must have been asked...
+        assert_eq!(recorder.probed().len(), candidates.len());
+        // ...but never more than a batch at a time.
+        assert_eq!(
+            recorder.peak_in_flight.load(Ordering::SeqCst),
+            PROBE_BATCH,
+            "probes must run a full batch wide, and no wider"
+        );
+    }
+
+    #[tokio::test]
+    async fn stops_at_the_first_holder_without_probing_the_rest() {
+        let candidates = peers(PROBE_BATCH * 3);
+        let holder_index = 2;
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(&candidates, |peer_id| {
+            let answer = peer_id == candidates[holder_index];
+            recorder.probe(peer_id, answer)
+        })
+        .await;
+
+        assert_eq!(holder, Some(candidates[holder_index]));
+        // The holder is in the first batch, so the search ends there: the
+        // batch it sits in is probed in full (those probes are concurrent and
+        // already in flight), and not one peer beyond it.
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH].to_vec());
+    }
+
+    #[tokio::test]
+    async fn widens_past_a_missing_batch() {
+        let candidates = peers(PROBE_BATCH * 3);
+        let holder_index = PROBE_BATCH + 1;
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(&candidates, |peer_id| {
+            let answer = peer_id == candidates[holder_index];
+            recorder.probe(peer_id, answer)
+        })
+        .await;
+
+        assert_eq!(holder, Some(candidates[holder_index]));
+        // Two batches: the miss widened the search exactly once, and the third
+        // batch was never touched.
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH * 2].to_vec());
+    }
+
+    #[tokio::test]
+    async fn earliest_holder_in_a_batch_wins() {
+        // Determinism matters: concurrent probes complete in arbitrary order,
+        // so the winner is chosen by candidate order, not by who answers first.
+        let candidates = peers(PROBE_BATCH);
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(&candidates, |peer_id| {
+            let answer = peer_id == candidates[1] || peer_id == candidates[5];
+            recorder.probe(peer_id, answer)
+        })
+        .await;
+
+        assert_eq!(holder, Some(candidates[1]));
+    }
+
+    #[tokio::test]
+    async fn no_candidates_means_no_holder() {
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(&[], |peer_id| recorder.probe(peer_id, true)).await;
+
+        assert_eq!(holder, None);
+        assert!(recorder.probed().is_empty());
+    }
 }

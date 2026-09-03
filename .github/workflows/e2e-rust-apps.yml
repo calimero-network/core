@@ -518,6 +518,20 @@ jobs:
           - workflow: blob-cross-node-sizes
             file: workflows/blob-cross-node-sizes.yml
             app: blobs
+          # Blob custody is discovered by asking the context's peers, not by
+          # reading a Kademlia provider record. These two pin the properties a
+          # single-valued, expiring record cannot have: a holder stays
+          # discoverable across a restart, and any surviving holder can serve
+          # even when the node that uploaded (and announced) is gone. Both are
+          # Docker-only by construction — `stop_node`/`restart_container` are
+          # no-ops under merobox's --no-docker mode, so a native run would go
+          # green without ever removing a holder.
+          - workflow: blob-presence-restart
+            file: workflows/blob-presence-restart.yml
+            app: blobs
+          - workflow: blob-presence-multi-holder
+            file: workflows/blob-presence-multi-holder.yml
+            app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e

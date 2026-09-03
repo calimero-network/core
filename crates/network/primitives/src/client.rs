@@ -34,8 +34,8 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
-    NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob, SetPeerScore, Subscribe,
-    SubscribedPeers, Unsubscribe,
+    NetworkStatus, OpenStream, PeerCount, ProbeBlob, Publish, QueryBlob, RequestBlob, SetPeerScore,
+    Subscribe, SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
@@ -294,6 +294,35 @@ impl NetworkClient {
                 request: QueryBlob {
                     blob_id,
                     context_id,
+                },
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Ask a single peer whether it holds a blob, without transferring it.
+    ///
+    /// Answers `false` — never an error — for a peer that is unreachable,
+    /// slow, or unwilling, so a caller ranking candidates can simply move on.
+    pub async fn probe_blob(
+        &self,
+        blob_id: BlobId,
+        context_id: ContextId,
+        peer_id: libp2p::PeerId,
+        auth: Option<BlobAuth>,
+    ) -> eyre::Result<bool> {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::ProbeBlob {
+                request: ProbeBlob {
+                    blob_id,
+                    context_id,
+                    peer_id,
+                    auth,
                 },
                 outcome: tx,
             })

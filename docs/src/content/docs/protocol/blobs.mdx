@@ -175,14 +175,30 @@ The record is stored with `Quorum::One`. The key is scoped by `context_id`, so
 the same blob announced into different contexts is discovered independently, and
 a discovery query is always made in the context of a specific context.
 
-Discovery is the mirror: a node that holds a `BlobId` in state but not the bytes
-queries the DHT for the same `context_id ‖ blob_id` key to learn which peers
-advertised it. The lookup is retried with exponential backoff — up to **6
-attempts**, starting at **100 ms** and doubling to a **2 s** cap — because a
-freshly announced record may take a few hundred milliseconds to become visible.
-Each returned peer is then asked for the bytes over the transfer protocol below;
-the first peer that delivers a blob whose recomputed id matches wins, and the
-bytes are stored locally for reuse.
+Discovery does not read that record. A node that holds a `BlobId` in state but
+not the bytes **asks the context's peers directly**: it takes the subscribers of
+the context's gossipsub topic as candidates and sends each one a *probe* — a
+`BlobRequest` whose response header is read and whose chunks never are, so the
+peer answers `found` without transferring anything.
+
+Probes go out in **batches of 8**, concurrently within a batch and sequentially
+between batches, stopping at the first peer that answers `found: true`. The
+bound is the point: the candidate list is a topic's whole subscriber set, and
+fanning out to all of it on every local miss is what this design avoids. The
+winner is then asked for the bytes over the transfer protocol below, and a blob
+whose recomputed id does not match the one requested is rejected rather than
+stored.
+
+Asking is authoritative in a way a record is not: custody is a property of a
+peer's own blob store, so the answer cannot be stale, cannot expire, and is not
+limited to whichever single peer happened to announce. Any node that has the
+bytes — including one that only ever downloaded them — is discoverable, and a
+holder that restarts stays discoverable. A probe deliberately does not
+distinguish "not authorised" from "not held": both answer `found: false`, which
+costs a wasted candidate and never a wrong fetch.
+
+The DHT announce above still runs, and `query_blob` remains for application
+bundles, which are fetched outside a context's sync stream.
 
 :::note
 Global (context-less) blob queries are not supported — discovery always names a
@@ -302,9 +318,10 @@ to a peer that fetches it.
    image is now discoverable by any member of that context.
 
 3. **Discover it.** A second node holds the `BlobId` in state (it synced the
-   reference) but not the bytes. It `get_record`s the same `context_id ‖ blob_id`
-   key — retried with backoff, since a fresh record takes a moment to propagate —
-   and learns the announcing peer and the size.
+   reference) but not the bytes. It takes the context topic's subscribers as
+   candidates and probes them 8 at a time — a `BlobRequest` whose `found` answer
+   it reads and whose chunks it does not — until one says yes. Any node holding
+   the bytes qualifies, not just the announcer.
 
 4. **Fetch it.** The fetcher opens `/calimero/blob/0.0.2` to that peer and sends a
    `BlobRequest { blob_id, context_id, auth? }`. The provider authorizes the
