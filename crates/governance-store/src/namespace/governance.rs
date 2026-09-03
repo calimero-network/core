@@ -620,12 +620,19 @@ impl<'a> NamespaceGovernance<'a> {
     /// so a caller that needs to rebroadcast it later (e.g. after a publish
     /// that reached no peer) can do so without re-signing - re-signing would
     /// mint a second op at the next nonce.
+    /// `endorsement` is an admitter's consent, for the join ops that need one
+    /// and `None` for everything else. Attached after signing, because it is
+    /// deliberately outside the signature — see
+    /// [`SignedNamespaceOp::admitter_endorsement`]. Taken here rather than left
+    /// to the caller so the op is endorsed before it is applied and published:
+    /// attaching it afterwards would apply an op locally that peers refuse.
     pub async fn sign_apply_and_publish_returning_op(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
+        endorsement: Option<Box<calimero_governance_types::AdmitterEndorsement>>,
     ) -> EyreResult<(DeliveryReport, SignedNamespaceOp)> {
         let topic = ns_topic(self.namespace_id);
 
@@ -658,6 +665,9 @@ impl<'a> NamespaceGovernance<'a> {
         // `op_hash` on the synthesized best-effort report (below)
         // consistent with the success path, so log correlation works
         // regardless of whether the publish confirmed.
+        let mut signed = signed;
+        signed.admitter_endorsement = endorsement;
+
         let op_hash = hash_scoped_namespace(topic.as_str().as_bytes(), &signed)
             .map_err(|e| eyre::eyre!("hash_scoped_namespace: {e}"))?;
 
@@ -751,7 +761,7 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
     ) -> EyreResult<DeliveryReport> {
         let (report, _signed) = self
-            .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op)
+            .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op, None)
             .await?;
         Ok(report)
     }
@@ -2475,9 +2485,10 @@ pub async fn sign_apply_and_publish_namespace_op_returning_op(
     namespace_id: NamespaceId,
     signer_sk: &PrivateKey,
     op: NamespaceOp,
+    endorsement: Option<Box<calimero_governance_types::AdmitterEndorsement>>,
 ) -> EyreResult<(DeliveryReport, SignedNamespaceOp)> {
     NamespaceGovernance::new(store, namespace_id)
-        .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op)
+        .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op, endorsement)
         .await
 }
 

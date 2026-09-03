@@ -906,26 +906,6 @@ pub enum RootOp {
         /// Required and boxed; see [`JoinAccountCredential`] for why this rides
         /// the join op and why it is not optional.
         account: Box<JoinAccountCredential>,
-        /// An admitter's consent to this join.
-        ///
-        /// Required, not optional, and that is the whole point. `admitters`
-        /// names who may complete a membership, and the joiner signs its own
-        /// join — so without evidence in the op that an admitter agreed, the
-        /// list restricts nothing: a holder of a valid invitation could publish
-        /// and every peer would fold it. An `Option` here would leave exactly
-        /// that hole open under a different name.
-        ///
-        /// Verified by every peer at apply against
-        /// [`admitter_endorsement_payload`], with the signer resolved to an
-        /// account and checked against the invitation's *signed* `admitters`.
-        /// The check reads only the op, so every replica reaches the same
-        /// verdict — a gate that consulted local state instead would make
-        /// membership depend on who was asking.
-        ///
-        /// Boxed for the same reason the credential beside it is: this variant
-        /// is much the largest, and `NamespaceOp` is moved around by value on
-        /// every apply and sync path, so the whole enum would pay for it.
-        admitter_endorsement: Box<AdmitterEndorsement>,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:
     /// authoritatively records the namespace's founding administrator/owner.
@@ -1309,6 +1289,30 @@ pub struct SignedNamespaceOp {
     pub nonce: u64,
     pub op: NamespaceOp,
     pub signature: [u8; 64],
+    /// An admitter's consent to the membership this op records, when it records
+    /// one. `None` on every op that admits nobody.
+    ///
+    /// **On the envelope, deliberately outside `signature` and outside the op
+    /// id.** It is self-authenticating — a signature over
+    /// [`admitter_endorsement_payload`], naming the namespace, the joiner and
+    /// the invitation — so the joiner signing it too adds nothing, while NOT
+    /// signing it buys the thing that matters: whoever relays a join can attach
+    /// consent without invalidating the joiner's signature or changing the op's
+    /// identity. That is what lets a keyholder be admitted at all. It has no
+    /// node, so it signs its own join, hands it to an admitter, and the
+    /// admitter attaches its consent as it relays.
+    ///
+    /// [`to_signable`](SignedNamespaceOp::to_signable) does not copy it, and
+    /// that is load-bearing rather than incidental: `content_hash` is taken
+    /// over the signable form, so two nodes holding the same op with and
+    /// without an endorsement still agree on its id. Copying it there would
+    /// turn attaching consent into a fork.
+    ///
+    /// Unsigned costs nothing an attacker can use. Stripping it makes the apply
+    /// refuse the join — fail closed. Substituting a different endorsement that
+    /// verifies is a no-op, because any such endorsement is over the same
+    /// namespace, joiner and invitation as the one removed.
+    pub admitter_endorsement: Option<Box<AdmitterEndorsement>>,
 }
 
 /// Wire/schema version for [`SignedNamespaceOp`].
@@ -1340,7 +1344,13 @@ pub struct SignedNamespaceOp {
 /// a credential so the founder is bound at genesis — it is the one member no
 /// join op ever admits. Both change the layout of signed structures, so every op
 /// id changes: another re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 7;
+/// v8: the admitter endorsement moved off `RootOp::MemberJoinedAt` and onto the
+/// envelope as `SignedNamespaceOp::admitter_endorsement`. The op body loses a
+/// field, so every join op's layout and id changes — another re-bootstrap. The
+/// move is what makes a keyholder join possible: the endorsement is no longer
+/// covered by the joiner's signature, so an admitter can attach its consent to
+/// an op it did not author and cannot alter.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 8;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
@@ -1476,6 +1486,13 @@ impl SignedNamespaceOp {
             nonce: signable.nonce,
             op: signable.op,
             signature: sig.to_bytes(),
+            // Unendorsed. Signing and endorsing are separate acts by separate
+            // parties — the joiner proves it owns the account, an admitter agrees
+            // to admit it — so whoever holds the admitter's key attaches that
+            // afterwards. Nothing here is invalidated by doing so: both the
+            // signature and the op id are taken over the signable form, which does
+            // not carry this field.
+            admitter_endorsement: None,
         })
     }
 

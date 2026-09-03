@@ -218,6 +218,59 @@ impl<'a> NamespaceMembershipService<'a> {
 
     /// Whether this node may admit a claim of `invitation`.
     ///
+    /// Endorse `member`'s join under `signed_invitation`, if this node may.
+    ///
+    /// `Ok(None)` means this node is not an account the invitation named, which
+    /// is an ordinary answer rather than a fault: a member that is not an
+    /// admitter can still serve the key and the governance history, it just
+    /// cannot authorise a membership. The caller reports that as "not endorsed"
+    /// and the joiner goes looking for a node that can.
+    ///
+    /// Shared by the two ways a join gets endorsed — the sync responder
+    /// answering a peer, and the admin endpoint answering a keyholder that has
+    /// no node of its own — because the alternative is two copies of the same
+    /// signing rule drifting apart. The payload is the one the apply gate
+    /// re-derives, so what this node asserts and what every peer verifies are
+    /// the same bytes.
+    ///
+    /// # Errors
+    ///
+    /// When the store cannot be read. A missing identity or binding is
+    /// `Ok(None)`, not an error: it means this node has nothing to endorse
+    /// with.
+    pub fn endorse_join(
+        store: &Store,
+        namespace: &ContextGroupId,
+        member: &AccountId,
+        signed_invitation: &SignedGroupOpenInvitation,
+    ) -> EyreResult<Option<calimero_governance_types::AdmitterEndorsement>> {
+        // This node's own namespace identity — the key it signs governance
+        // with, and the one whose account the invitation's list is checked
+        // against.
+        let Some((signer, secret)) =
+            crate::NamespaceRepository::new(store).resolve_identity(namespace)?
+        else {
+            return Ok(None);
+        };
+
+        let Some(account) = crate::member_account_in_namespace(store, namespace, &signer)? else {
+            return Ok(None);
+        };
+
+        if !signed_invitation.invitation.admitters.contains(&account) {
+            return Ok(None);
+        }
+
+        let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+            &calimero_primitives::identity::PrivateKey::from(secret),
+            &namespace.to_bytes(),
+            member,
+            &signed_invitation.invitation.invitation_nonce,
+        )?;
+
+        Ok(Some(endorsement))
+    }
+
     /// The list names who may, and everyone else must refuse — including a node
     /// that would otherwise have validated the invitation perfectly well.
     ///
@@ -337,16 +390,16 @@ impl<'a> NamespaceMembershipService<'a> {
         signed_invitation: &SignedGroupOpenInvitation,
         endorsement: Option<&calimero_governance_types::AdmitterEndorsement>,
     ) -> EyreResult<()> {
-        // `MemberJoined` — the pre-`joined_at` variant — has nowhere to carry
-        // consent. Refused rather than waved through: a variant that cannot be
-        // endorsed cannot authorise a membership once `admitters` means
-        // anything, and accepting it would leave the whole gate bypassable by
-        // choosing the older op.
+        // No endorsement, no membership. `admitters` names who may complete a
+        // join, and the joiner signs its own — so without an admitter's
+        // signature the list restricts nothing: a holder of a valid invitation
+        // could publish and every peer would fold it.
+        //
+        // The endorsement rides the envelope rather than the op body, so this
+        // applies uniformly to both join variants; neither can dodge the gate
+        // by being the older shape.
         let Some(endorsement) = endorsement else {
-            bail!(
-                "join op carries no admitter endorsement; the legacy MemberJoined variant \
-                 cannot express one and is no longer sufficient to admit a member"
-            );
+            bail!("join op carries no admitter endorsement, so nobody entitled to admit this member has agreed to it");
         };
         let inv = &signed_invitation.invitation;
 

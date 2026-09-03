@@ -360,6 +360,7 @@ pub(crate) fn setup(
         .route(
             "/namespaces/{namespace_id}/admit",
             post(namespaces::admit_join::handler),
+
         )
         .route(
             "/namespaces/{namespace_id}/leave",

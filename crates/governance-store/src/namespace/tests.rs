@@ -231,11 +231,16 @@ async fn sign_apply_and_publish_returns_the_signed_op() {
         signed_invitation,
         joined_at: 0,
         account: crate::test_fixtures::real_join_account(&sk.public_key()),
-        admitter_endorsement,
     });
 
     let (report, signed) = NamespaceGovernance::new(&store, ns_id)
-        .sign_apply_and_publish_returning_op(&node_client, &ack_router, &sk, op)
+        .sign_apply_and_publish_returning_op(
+            &node_client,
+            &ack_router,
+            &sk,
+            op,
+            Some(admitter_endorsement),
+        )
         .await
         .expect("publish");
 
@@ -272,11 +277,16 @@ async fn a_published_op_is_fed_to_the_local_apply_path() {
         signed_invitation,
         joined_at: 0,
         account: crate::test_fixtures::real_join_account(&sk.public_key()),
-        admitter_endorsement,
     });
 
     let (_report, signed) = NamespaceGovernance::new(&store, ns_id)
-        .sign_apply_and_publish_returning_op(&node_client, &ack_router, &sk, op)
+        .sign_apply_and_publish_returning_op(
+            &node_client,
+            &ack_router,
+            &sk,
+            op,
+            Some(admitter_endorsement),
+        )
         .await
         .expect("publish");
     let published = signed.content_hash().expect("content hash");

@@ -4158,18 +4158,22 @@ fn member_joined_clears_deny_list_for_rejoiner() {
             signed_invitation,
             joined_at: 1,
             account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-            admitter_endorsement: Box::new(
-                calimero_governance_types::AdmitterEndorsement::sign(
-                    &admin_sk,
-                    &ns_id,
-                    &member,
-                    &[0x42; 32],
-                )
-                .expect("the admin endorses the rejoin"),
-            ),
         }),
     )
     .unwrap();
+    // On the envelope, after signing: the endorsement is outside the joiner's
+    // signature, which is what lets an admitter attach one to an op it did not
+    // author.
+    let mut signed = signed;
+    signed.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            &admin_sk,
+            &ns_id,
+            &member,
+            &[0x42; 32],
+        )
+        .expect("the admin endorses the rejoin"),
+    ));
     apply_signed_namespace_op(&store, &signed).unwrap();
 
     // The join materialized the joiner's direct membership row...
@@ -5484,10 +5488,12 @@ fn apply_member_joined(
             signed_invitation,
             joined_at: 1,
             account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-            admitter_endorsement,
         }),
     )
     .unwrap();
+    // On the envelope, after signing — see above.
+    let mut signed = signed;
+    signed.admitter_endorsement = Some(admitter_endorsement);
     apply_signed_namespace_op(store, &signed).map(|_result| ())
 }
 

@@ -70,7 +70,7 @@ fn queued_join_op(
     joiner_sk: &PrivateKey,
     invitation: SignedGroupOpenInvitation,
 ) -> SignedNamespaceOp {
-    SignedNamespaceOp::sign(
+    let op = SignedNamespaceOp::sign(
         joiner_sk,
         NS.into(),
         Vec::new(),
@@ -82,20 +82,24 @@ fn queued_join_op(
             signed_invitation: invitation,
             joined_at: 0,
             account: test_join_account(),
-            // A joiner only ever queues an endorsed join — without one it fails
-            // rather than republishing, so the republish fixture carries one.
-            admitter_endorsement: Box::new(
-                calimero_governance_types::AdmitterEndorsement::sign(
-                    &calimero_primitives::identity::PrivateKey::from([5u8; 32]),
-                    &[7u8; 32],
-                    &test_join_account().statement.account,
-                    &[0u8; 32],
-                )
-                .expect("sign endorsement"),
-            ),
         }),
     )
-    .expect("sign join op")
+    .expect("sign join op");
+
+    // A joiner only ever queues an endorsed join — without one it fails rather
+    // than republishing, so the republish fixture carries one. On the envelope,
+    // after signing: the endorsement is outside the joiner's signature.
+    let mut op = op;
+    op.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            &calimero_primitives::identity::PrivateKey::from([5u8; 32]),
+            &[7u8; 32],
+            &test_join_account().statement.account,
+            &[0u8; 32],
+        )
+        .expect("sign endorsement"),
+    ));
+    op
 }
 
 /// The single gossipsub payload this node put on the wire, decoded through the

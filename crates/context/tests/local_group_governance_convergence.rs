@@ -370,7 +370,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -380,10 +380,10 @@ fn two_nodes_converge_on_namespace_member_joined() {
             signed_invitation,
             joined_at: 1,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
 
     calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
@@ -449,7 +449,7 @@ fn member_joined_at_rejects_expired_invitation() {
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -459,10 +459,10 @@ fn member_joined_at_rejects_expired_invitation() {
             signed_invitation,
             joined_at: 2_000_000,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
 
     let err = calimero_governance_store::apply_signed_namespace_op(&store, &ns_op)
         .expect_err("expired MemberJoinedAt must be rejected on apply");
@@ -612,7 +612,7 @@ fn member_joined_at_accepts_in_window_invitation() {
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -622,10 +622,10 @@ fn member_joined_at_accepts_in_window_invitation() {
             signed_invitation,
             joined_at: 1_000_000,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
 
     calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
@@ -689,7 +689,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -699,10 +699,10 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
             signed_invitation,
             joined_at: 0,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
 
     calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     assert!(
@@ -765,7 +765,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -775,10 +775,10 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
             signed_invitation,
             joined_at: 999_999,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
 
     calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
@@ -835,7 +835,7 @@ fn member_joined_at_ignores_zero_expiration() {
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -845,10 +845,10 @@ fn member_joined_at_ignores_zero_expiration() {
             signed_invitation,
             joined_at: u64::MAX,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
 
     calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     assert!(MembershipRepository::new(&store)
@@ -949,7 +949,7 @@ fn recursive_invite_joins_all_descendant_groups() {
             &calimero_context::test_support::account_for(&joiner_pk),
             signed_inv,
         );
-        let ns_op = SignedNamespaceOp::sign(
+        let mut ns_op = SignedNamespaceOp::sign(
             &joiner_sk,
             ns_id.to_bytes().into(),
             vec![],
@@ -959,10 +959,10 @@ fn recursive_invite_joins_all_descendant_groups() {
                 signed_invitation: signed_inv.clone(),
                 joined_at: 1,
                 account: calimero_context::test_support::credential(&joiner_pk),
-                admitter_endorsement,
             }),
         )
         .expect("sign MemberJoinedAt");
+        ns_op.admitter_endorsement = Some(admitter_endorsement);
 
         calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     }
@@ -2308,7 +2308,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         &signed_invitation,
     );
 
-    let ns_op = SignedNamespaceOp::sign(
+    let mut ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
@@ -2318,10 +2318,10 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
             signed_invitation,
             joined_at: 1,
             account: calimero_context::test_support::credential(&joiner_pk),
-            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+    ns_op.admitter_endorsement = Some(admitter_endorsement);
     let op_hash = ns_op.content_hash().expect("content_hash");
 
     // The bug is in one store's head-set bookkeeping, so a single store that
@@ -2446,10 +2446,14 @@ fn apply_join_endorsed(
             signed_invitation: f.signed_invitation.clone(),
             joined_at: 1,
             account: calimero_context::test_support::credential(&f.joiner_sk.public_key()),
-            admitter_endorsement: endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
+
+    // On the envelope, so the harness can vary the endorsement independently
+    // of the op — which is the whole point of these tests.
+    let mut ns_op = ns_op;
+    ns_op.admitter_endorsement = Some(endorsement);
 
     calimero_governance_store::apply_signed_namespace_op(&f.store, &ns_op)
         .map(|_| ())

@@ -155,6 +155,7 @@ fn fold_subgroup_structure(
             restricted: true,
         }),
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     proj.ingest_op(&op_from_namespace_op(
         &created,
@@ -199,6 +200,7 @@ fn ns_group_envelope(
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     }
 }
 
@@ -254,7 +256,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     );
 
     // (1) joiner joins the namespace root via invitation — a DIRECT membership.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -270,15 +272,15 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
             ),
             joined_at: 1,
             account: test_join_account_for(&joiner),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x42; 32],
-            ),
         }),
     )
     .expect("sign join_ns");
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let id1 = [0xA1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[s2]));
@@ -434,7 +436,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     );
 
     // join ns (nonce 1) + inherit subgroup (nonce 2).
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -450,15 +452,15 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
             ),
             joined_at: 1,
             account: test_join_account_for(&joiner),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x42; 32],
-            ),
         }),
     )
     .unwrap();
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &join_ns,
@@ -530,7 +532,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     // invitation is spent for the identity that used it, so presenting the same
     // one again after exiting cannot readmit them. Coming back means being
     // re-invited.
-    let rejoin_ns = SignedNamespaceOp::sign(
+    let mut rejoin_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -546,15 +548,15 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
             ),
             joined_at: 1,
             account: test_join_account_for(&joiner),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x43; 32],
-            ),
         }),
     )
     .unwrap();
+    rejoin_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x43; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &rejoin_ns).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &rejoin_ns,
@@ -633,7 +635,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
 
     // LIVE applies the full chain — root join + inherited subgroup join — so the
     // live resolver authoritatively sees the joiner as an inherited member.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -649,15 +651,15 @@ fn projection_defers_when_cut_ancestry_incomplete() {
             ),
             joined_at: 1,
             account: test_join_account_for(&joiner),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x42; 32],
-            ),
         }),
     )
     .unwrap();
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -765,7 +767,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
 
     // Both join ops are durably applied to the op-store — the state a node holds
     // after the backfill pull delivered them.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -781,15 +783,15 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
             ),
             joined_at: 1,
             account: test_join_account_for(&joiner),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x42; 32],
-            ),
         }),
     )
     .unwrap();
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -957,7 +959,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     // has no folded presence in the subgroup, so reaching it can only be the
     // inheritance walk. Folding an open-join into the subgroup instead would
     // hand the admin a direct presence there and prove something easier.
-    let admin_join_root = SignedNamespaceOp::sign(
+    let mut admin_join_root = SignedNamespaceOp::sign(
         &admin_sk,
         ns.to_bytes().into(),
         vec![],
@@ -973,10 +975,15 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
             ),
             joined_at: 1,
             account: admin_credential,
-            admitter_endorsement: endorse(&admin_sk, &ns.to_bytes(), &admin_account, &[0x77; 32]),
         }),
     )
     .expect("sign admin root-join");
+    admin_join_root.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &admin_account,
+        &[0x77; 32],
+    ));
     let id0 = [0xB7; 32];
     proj.ingest_op(&op_from_namespace_op(
         &admin_join_root,
@@ -1006,7 +1013,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     );
 
     // The joiner joins the namespace carrying a credential that really folds.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -1022,15 +1029,15 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
             ),
             joined_at: 1,
             account: real_join_account_for(&joiner, [0x3E; 32]),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x42; 32],
-            ),
         }),
     )
     .expect("sign join_ns");
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     let id1 = [0xB1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[id0]));
 
@@ -1677,7 +1684,7 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     );
 
     // The joiner is a member at this cut, by an op the projection HAS folded.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
@@ -1693,15 +1700,15 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
             ),
             joined_at: 1,
             account: test_join_account_for(&joiner),
-            admitter_endorsement: endorse(
-                &admin_sk,
-                &ns.to_bytes(),
-                &calimero_context::test_support::account_for(&joiner),
-                &[0x42; 32],
-            ),
         }),
     )
     .expect("sign join");
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let joined = [0xD1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, joined, hlc(1), &[s2]));

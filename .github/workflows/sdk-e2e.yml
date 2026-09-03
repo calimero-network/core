@@ -17,11 +17,26 @@ concurrency:
 
 on:
   pull_request:
+    # `push` below has no filter, so anything missing here does not skip the
+    # job — it defers it until after merge, when master goes red instead of a
+    # PR. That is how #3804 landed a breaking op layout: it changed
+    # `crates/governance-types`, which was not listed, so this job never ran on
+    # the PR and mero-js's borsh encoder was 96 bytes short on master.
+    #
+    # The rule for this list: any crate whose types the SDK re-encodes or whose
+    # HTTP surface it calls. The SDK hand-encodes namespace ops in borsh, so
+    # the governance crates that define those ops belong here as much as the
+    # server that serves them.
     paths:
       - "crates/server/**"
       - "crates/auth/**"
       - "crates/primitives/**"
       - "crates/merod/**"
+      - "crates/governance-types/**"
+      - "crates/governance-store/**"
+      - "crates/context/**"
+      - "crates/context/config/**"
+      - "crates/node/**"
       - ".github/workflows/sdk-e2e.yml"
       - "scripts/resolve-paired-ref.sh"
   push:

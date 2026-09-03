@@ -68,7 +68,7 @@ pub async fn handler(
     // topic — anything handed to it, signed by anyone, published under its own
     // connection. Decoding costs one borsh parse and bounds what this endpoint
     // can be used for.
-    let op: SignedNamespaceOp = match borsh::from_slice(&signed_op_bytes) {
+    let mut op: SignedNamespaceOp = match borsh::from_slice(&signed_op_bytes) {
         Ok(op) => op,
         Err(e) => {
             return ApiError {
@@ -171,6 +171,55 @@ pub async fn handler(
         .into_response();
     }
 
+    // This node's consent, attached to the op it is about to carry.
+    //
+    // The joiner could not have supplied this: it has no node, and an
+    // endorsement can only be signed by an account the invitation named. So the
+    // admitter adds its own as it relays — which is possible precisely because
+    // the endorsement rides the envelope and is outside the joiner's signature.
+    // Attaching it changes neither that signature nor the op's id.
+    //
+    // Overwritten rather than preserved if the caller sent one. Whatever a
+    // keyholder put there, this node is the one vouching for the op it
+    // publishes under its own connection, and `require_may_admit` above has
+    // already established it may. A caller-supplied endorsement would have to
+    // be re-verified to be worth keeping, and there is nothing to gain by
+    // keeping it: any endorsement that verifies is over the same namespace,
+    // joiner and invitation as the one written here.
+    let member = match joining_member(&op.op) {
+        Some(member) => *member,
+        // `carries_a_join` already established the variant.
+        None => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "signed_op is not a join; an admitter carries joins only".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
+    match calimero_governance_store::NamespaceMembershipService::endorse_join(
+        &state.store,
+        &namespace_id,
+        &member,
+        &req.invitation,
+    ) {
+        Ok(Some(endorsement)) => op.admitter_endorsement = Some(Box::new(endorsement)),
+        // `require_may_admit` passed, so the invitation names an account —
+        // reaching here means this node cannot resolve its own identity to
+        // that account, i.e. it is named but holds nothing to sign with.
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::CONFLICT,
+                message: "this node is named as an admitter but holds no namespace identity \
+                          bound to that account, so it cannot endorse this join"
+                    .to_owned(),
+            }
+            .into_response();
+        }
+        Err(err) => return parse_api_error(err).into_response(),
+    }
+
     // Applied here before it is published anywhere.
     //
     // Publishing alone leaves this node with the stalest possible view of the
@@ -238,6 +287,16 @@ pub async fn handler(
 ///
 /// `MemberJoinedOpen` is deliberately absent: it carries no invitation, so there
 /// is nothing naming this node as entitled to carry it.
+/// The account a join op admits, for either join variant.
+const fn joining_member(op: &NamespaceOp) -> Option<&calimero_account::AccountId> {
+    match op {
+        NamespaceOp::Root(
+            RootOp::MemberJoined { member, .. } | RootOp::MemberJoinedAt { member, .. },
+        ) => Some(member),
+        _ => None,
+    }
+}
+
 const fn carries_a_join(op: &NamespaceOp) -> bool {
     matches!(
         op,
