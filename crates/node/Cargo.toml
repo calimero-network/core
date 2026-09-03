@@ -79,7 +79,7 @@ calimero-node-primitives = { workspace = true, features = ["testing"] }
 calimero-storage = { workspace = true, features = ["testing"] }
 ed25519-dalek.workspace = true
 parking_lot.workspace = true
-rand_chacha = "0.3"
+rand_chacha = "0.9"
 serial_test.workspace = true
 tempfile.workspace = true
 wat.workspace = true
