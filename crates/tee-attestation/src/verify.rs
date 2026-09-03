@@ -1,7 +1,7 @@
 //! TDX quote verification.
 
 use calimero_server_primitives::admin::Quote;
-use dcap_qvl::collateral::get_collateral_from_pcs;
+use dcap_qvl::collateral::{CollateralClient, INTEL_PCS_URL};
 use dcap_qvl::verify::verify;
 use tdx_quote::Quote as TdxQuote;
 #[cfg(feature = "mock-attestation")]
@@ -148,7 +148,9 @@ pub async fn verify_attestation(
     info!(report_data=%report_data_hex, "Extracted report data from quote");
 
     // Fetch collateral from Intel PCS
-    let collateral = get_collateral_from_pcs(quote_bytes).await.map_err(|err| {
+    let client = CollateralClient::with_default_http(INTEL_PCS_URL)
+        .map_err(|err| AttestationError::CollateralFetchFailed(format!("{err:?}")))?;
+    let collateral = client.fetch(quote_bytes).await.map_err(|err| {
         error!(error=?err, "Failed to fetch collateral from Intel PCS");
         AttestationError::CollateralFetchFailed(format!("{err:?}"))
     })?;
