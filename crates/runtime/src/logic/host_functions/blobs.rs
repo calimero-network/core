@@ -441,6 +441,75 @@ impl VMHostFunctions<'_> {
         Ok(fd)
     }
 
+    /// Opens a blob for reading, fetching it from the context's peers when it
+    /// is not held locally.
+    ///
+    /// Unlike [`blob_open`](Self::blob_open), which is local-only, this consults
+    /// the network. It is safe from a `#[app::view]` method: blob calls go
+    /// through the node client rather than the storage trait, so the read-only
+    /// storage wrapper does not suppress them and no delta is produced.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
+    ///   containing the 32-byte `BlobId`.
+    /// * `src_context_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
+    ///   containing the 32-byte `ContextId` whose peers may be queried.
+    ///
+    /// # Returns
+    ///
+    /// A read file descriptor, or `0` if the blob is available neither locally
+    /// nor from any peer.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::BlobsNotSupported` if the node client is not configured.
+    /// * `HostError::TooManyBlobHandles` if the handle limit is exceeded.
+    /// * `HostError::InvalidMemoryAccess` if a descriptor read fails.
+    pub fn blob_open_in_context(
+        &mut self,
+        src_blob_id_ptr: u64,
+        src_context_id_ptr: u64,
+    ) -> VMLogicResult<u64> {
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
+
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let context_id =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
+
+        let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
+        let context_id =
+            ContextId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&context_id)?);
+
+        // `block_in_place` hands the blocking wait off the async worker; a bare
+        // `Handle::block_on` panics on a runtime thread. Same shape as
+        // `blob_announce_to_context` above.
+        let found = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(node_client.get_blob(&blob_id, Some(&context_id)))
+        })
+        .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+
+        if found.is_none() {
+            return Ok(0);
+        }
+
+        // The blob is local now (or was already); hand back an ordinary read
+        // handle rather than duplicating `blob_open`'s bookkeeping.
+        self.blob_open(src_blob_id_ptr)
+    }
+
     /// Reads a chunk of data from an open blob.
     ///
     /// Data is read from the blob and copied into the provided guest memory buffer.
