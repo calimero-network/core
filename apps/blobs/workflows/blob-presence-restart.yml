@@ -1,0 +1,166 @@
+name: Blob Presence — Survives a Holder Restart
+description: >
+  A blob uploaded on node 1 must still be fetchable by node 2 after node 1
+  restarts.
+
+  Under DHT discovery the provider record lived in an in-memory Kademlia store
+  with a 12h TTL and nothing re-announced it, so a restarted holder eventually
+  became invisible with the bytes still intact on its disk — discovery, not
+  custody, was the thing that expired. Custody is now discovered by asking the
+  context's peers directly, and the answer comes out of node 1's own blob
+  store, so a restart changes nothing. This is the guard against reintroducing
+  a discovery record that can go stale.
+
+  ON THE NEGATIVE CONTROLS: blobs are content-addressed, so a node already
+  holding identical bytes serves them from local storage and never touches the
+  network. Every cross-node fetch below is therefore preceded by a local-only
+  read (no `context_id`) that MUST fail. Without that, a passing fetch proves
+  nothing — and proving that discovery happened at all is the entire point of
+  this scenario.
+
+  Run locally — --e2e-mode is REQUIRED, it clears the public devnet bootstrap
+  list `merod init` writes:
+    cd apps/blobs
+    MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password \
+      merobox bootstrap run workflows/blob-presence-restart.yml \
+      --image merod:local --e2e-mode
+
+force_pull_image: true
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-blob-presence-restart
+
+steps:
+  - name: Login on rust-blob-presence-restart-1
+    type: login
+    node: rust-blob-presence-restart-1
+    username: dev
+    password: dev-password
+
+  - name: Login on rust-blob-presence-restart-2
+    type: login
+    node: rust-blob-presence-restart-2
+    username: dev
+    password: dev-password
+
+  - name: Install Rust blobs app on inviter
+    type: install_application
+    node: rust-blob-presence-restart-1
+    path: "res/blobs.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-blob-presence-restart-1
+    application_id: "{{app_id}}"
+    nodes:
+      - rust-blob-presence-restart-2
+    outputs:
+      context_id: contextId
+      inviter_key: memberPublicKey
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  - name: Upload the PNG on node 1
+    type: upload_blob
+    node: rust-blob-presence-restart-1
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      blob_id: blob_id
+      blob_size: size
+
+  # Read it back locally for the authoritative hash of what node 1 holds.
+  # Comparing node 2 against this, rather than a hardcoded digest, keeps the
+  # workflow honest if the fixture ever changes.
+  - name: Read the PNG locally on node 1
+    type: download_blob
+    node: rust-blob-presence-restart-1
+    blob_id: "{{blob_id}}"
+    expected_size: "{{blob_size}}"
+    outputs:
+      source_sha256: sha256
+
+  # Negative control (pre-restart). No context_id, so this is a local-only
+  # read: node 2 must not already hold these bytes.
+  - name: Node 2 must not already hold the PNG
+    type: download_blob
+    node: rust-blob-presence-restart-2
+    blob_id: "{{blob_id}}"
+    expected_failure: true
+
+  # ---------- Fault: the only holder restarts ----------
+
+  - name: Restart node 1, the only holder
+    type: restart_container
+    container: rust-blob-presence-restart-1
+    wait_healthy: true
+    timeout: 60
+
+  # wait_healthy confirms merod's admin endpoint is back; it does NOT confirm
+  # that libp2p re-dialled and rejoined the gossipsub mesh for this context.
+  # Discovery here asks the context topic's subscribers, so node 1 has to be
+  # back in that subscriber set before node 2 can find it.
+  - name: Wait for node 1 to rejoin the context mesh
+    type: wait
+    seconds: 20
+
+  - name: Let both nodes settle after the restart
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-presence-restart-1
+      - rust-blob-presence-restart-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Negative control (post-restart). Re-asserted immediately before the real
+  # fetch: node 2 still holds nothing, so whatever it returns next came over
+  # the network.
+  - name: Node 2 still must not hold the PNG
+    type: download_blob
+    node: rust-blob-presence-restart-2
+    blob_id: "{{blob_id}}"
+    expected_failure: true
+
+  - name: Node 2 fetches the PNG from the restarted holder
+    type: download_blob
+    node: rust-blob-presence-restart-2
+    blob_id: "{{blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{blob_size}}"
+    expected_sha256: "{{source_sha256}}"
+    outputs:
+      received_size: size
+      received_sha256: sha256
+
+  - name: Assert node 2's bytes are byte-identical to node 1's
+    type: assert
+    statements:
+      - "equal({{received_size}}, {{blob_size}})"
+      - "equal({{received_sha256}}, {{source_sha256}})"
+
+  # The restarted node must have actually served. `docker restart` replaces the
+  # container's log stream, so a match here can only come from the post-restart
+  # incarnation — which is exactly the claim under test.
+  - name: The restarted node 1 served a blob request
+    type: assert_log_present
+    nodes:
+      - rust-blob-presence-restart-1
+    patterns:
+      - "Processing blob request stream"
+    tail_lines: 5000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
