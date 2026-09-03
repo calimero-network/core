@@ -272,6 +272,29 @@ mod tests {
         vec![0x42; 48]
     }
 
+    /// Look up a committed known-answer vector by name.
+    fn vector(name: &str) -> &'static str {
+        include_str!("../fixtures/known_answers.txt")
+            .lines()
+            .filter_map(|line| line.split_once(char::is_whitespace))
+            .find_map(|(key, value)| (key == name).then_some(value.trim()))
+            .expect("fixture holds the named vector")
+    }
+
+    #[test]
+    fn a_blob_sealed_by_the_shipped_key_manager_still_opens() {
+        // Pins the HKDF-SHA256 DEK derivation and the version||nonce||ciphertext framing.
+        let mut manager = KeyManager::new(test_master_key()).unwrap();
+        let sealed = hex::decode(vector("sealed_v1")).expect("fixture value is hex");
+
+        assert_eq!(
+            manager
+                .decrypt(&sealed)
+                .expect("the pinned blob must still open"),
+            b"sealed-under-aes-gcm-0.10"
+        );
+    }
+
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let mut manager = KeyManager::new(test_master_key()).unwrap();

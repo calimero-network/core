@@ -1,0 +1,3 @@
+# Known-answer vectors: name, then the value as hex.
+# sealed_v1: KeyManager::new(vec![0x42; 48]).encrypt(b"sealed-under-aes-gcm-0.10")
+sealed_v1 01de580218dfe14e1fa9dc788b21354dfaa53ccad65d6c86c121b1ad2d37ccedb6fb81f761ecc785df8ae58a05e1628913454615c6fe

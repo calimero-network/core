@@ -1,0 +1,6 @@
+# Known-answer vectors: name, then the value as hex.
+# Both are SharedKey::encrypt_with_nonce(b"known-answer payload", [0x03; 12]).
+# ed25519_sealed: SharedKey::new, secrets [0x11; 32] and [0x22; 32].
+# x25519_sealed: SharedKey::from_x25519, secrets [0x44; 32] and [0x55; 32].
+ed25519_sealed b22f1373b9336f665a483e90a8e47ed09f34eef2c89347a85882f639272ba42d1099b0a1
+x25519_sealed 7169d8d73d6da755cf8f207ff0717dfe3caca345914cfb97b04d8a77e45f35ab3682fce6

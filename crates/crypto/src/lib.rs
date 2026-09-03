@@ -641,3 +641,65 @@ mod x25519_tests {
         assert_ne!(a.public_key(), b.public_key());
     }
 }
+
+#[cfg(test)]
+mod known_answer_tests {
+    use super::*;
+
+    const PAYLOAD: &[u8] = b"known-answer payload";
+    const NONCE: Nonce = [0x03; NONCE_LEN];
+
+    /// Look up a committed known-answer vector by name.
+    fn vector(name: &str) -> &'static str {
+        include_str!("../fixtures/known_answers.txt")
+            .lines()
+            .filter_map(|line| line.split_once(char::is_whitespace))
+            .find_map(|(key, value)| (key == name).then_some(value.trim()))
+            .expect("fixture holds the named vector")
+    }
+
+    #[test]
+    fn the_ed25519_agreement_seals_to_pinned_bytes() {
+        // Pins the Edwards scalar multiplication, the HKDF-SHA256 derivation and the AEAD.
+        let signer = PrivateKey::from([0x11; 32]);
+        let verifier = PrivateKey::from([0x22; 32]);
+        let signer_key = SharedKey::new(&signer, &verifier.public_key()).expect("agree");
+        let verifier_key = SharedKey::new(&verifier, &signer.public_key()).expect("agree");
+
+        let sealed = signer_key
+            .encrypt_with_nonce(PAYLOAD.to_vec(), NONCE)
+            .expect("encrypt");
+        assert_eq!(hex::encode(&sealed), vector("ed25519_sealed"));
+
+        let pinned = hex::decode(vector("ed25519_sealed")).expect("fixture value is hex");
+        assert_eq!(
+            verifier_key
+                .decrypt(pinned, NONCE)
+                .expect("the pinned ciphertext must still open"),
+            PAYLOAD
+        );
+    }
+
+    #[test]
+    fn the_x25519_agreement_seals_to_pinned_bytes() {
+        // Pins the Montgomery clamped multiplication, its own HKDF label and the AEAD.
+        let sender = X25519SecretKey::from([0x44; 32]);
+        let recipient = X25519SecretKey::from([0x55; 32]);
+        let sender_key = SharedKey::from_x25519(&sender, &recipient.public_key()).expect("agree");
+        let recipient_key =
+            SharedKey::from_x25519(&recipient, &sender.public_key()).expect("agree");
+
+        let sealed = sender_key
+            .encrypt_with_nonce(PAYLOAD.to_vec(), NONCE)
+            .expect("encrypt");
+        assert_eq!(hex::encode(&sealed), vector("x25519_sealed"));
+
+        let pinned = hex::decode(vector("x25519_sealed")).expect("fixture value is hex");
+        assert_eq!(
+            recipient_key
+                .decrypt(pinned, NONCE)
+                .expect("the pinned ciphertext must still open"),
+            PAYLOAD
+        );
+    }
+}
