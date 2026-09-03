@@ -153,7 +153,7 @@ impl KeyManager {
         // Generate random nonce
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         rand::rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         // Bind the version and nonce as additional authenticated data so the
         // unencrypted header cannot be tampered with (e.g. flipping the version
@@ -163,7 +163,7 @@ impl KeyManager {
         // Encrypt
         let ciphertext = cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: plaintext,
                     aad: &aad,
@@ -210,7 +210,7 @@ impl KeyManager {
         let nonce_bytes: [u8; NONCE_SIZE] = ciphertext[1..1 + NONCE_SIZE]
             .try_into()
             .map_err(|_| eyre!("nonce slice is not NONCE_SIZE bytes"))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
         let encrypted_data = &ciphertext[1 + NONCE_SIZE..];
 
         // The version and nonce header is authenticated via AAD, so any
@@ -227,7 +227,7 @@ impl KeyManager {
 
         cipher
             .decrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: encrypted_data,
                     aad: &aad,

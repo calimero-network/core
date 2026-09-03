@@ -75,10 +75,10 @@ const NONCE_LEN: usize = 12;
 
 /// Seal `plaintext` as `MAGIC || nonce || ciphertext+tag` using AES-256-GCM.
 fn seal(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*kek));
     let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+        .encrypt(&Nonce::from(nonce_bytes), plaintext)
         .map_err(|e| eyre!("failed to seal secret: {e}"))?;
 
     let mut out = Vec::with_capacity(SEALED_MAGIC.len() + NONCE_LEN + ciphertext.len());
@@ -96,11 +96,13 @@ fn unseal(kek: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>> {
         return Ok(blob.to_vec());
     }
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
-    let nonce = &blob[SEALED_MAGIC.len()..SEALED_MAGIC.len() + NONCE_LEN];
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*kek));
+    let nonce: [u8; NONCE_LEN] = blob[SEALED_MAGIC.len()..SEALED_MAGIC.len() + NONCE_LEN]
+        .try_into()
+        .map_err(|_| eyre!("sealed secret nonce is not NONCE_LEN bytes"))?;
     let ciphertext = &blob[SEALED_MAGIC.len() + NONCE_LEN..];
     cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(&Nonce::from(nonce), ciphertext)
         .map_err(|e| eyre!("failed to unseal secret: {e}"))
 }
 
