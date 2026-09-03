@@ -310,18 +310,25 @@ jobs:
       - name: Install merobox
         run: pip install merobox==0.6.75
 
+      # `cd` into the app first, exactly as the Linux matrix above does. The
+      # scenario's `path: ../../dist/...` is resolved against the CWD, not
+      # against the YAML's own location, so running it from the repo root
+      # climbs two levels OUT of the checkout. The binary is passed absolute
+      # for the same reason.
       - name: Run the 3-node workflow (merobox, binary mode)
         shell: bash
         run: |
           ls -la dist/
-          merobox bootstrap run apps/kv-store/workflows/workflow-example.yml \
-            --no-docker --binary-path target/debug/merod.exe
+          MEROD="$GITHUB_WORKSPACE/target/debug/merod.exe"
+          cd apps/kv-store
+          merobox bootstrap run workflows/workflow-example.yml \
+            --no-docker --binary-path "$MEROD"
 
       - name: Logs on failure
         if: failure()
         shell: bash
         run: |
-          for d in data/*/logs; do
+          for d in apps/kv-store/data/*/logs; do
             echo "=== $d ==="
             cat "$d"/*.log || true
           done
