@@ -14,7 +14,7 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::de::{Error as SerdeError, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{to_writer as to_json_writer, Result as JsonResult};
+use serde_json::{to_vec as to_json_vec, Result as JsonResult};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
@@ -64,18 +64,12 @@ impl Hash {
     }
 
     pub fn hash_json<T: Serialize>(data: &T) -> JsonResult<Self> {
-        let mut hasher = Sha256::default();
-        to_json_writer(&mut hasher, data)?;
-        let hash_bytes: [u8; BYTES_LEN] = hasher.finalize().into();
-        Ok(Self { bytes: hash_bytes })
+        Ok(Self::new(&to_json_vec(data)?))
     }
 
     #[cfg(feature = "borsh")]
     pub fn hash_borsh<T: BorshSerialize>(data: &T) -> io::Result<Self> {
-        let mut hasher = Sha256::default();
-        data.serialize(&mut hasher)?;
-        let hash_bytes: [u8; BYTES_LEN] = hasher.finalize().into();
-        Ok(Self { bytes: hash_bytes })
+        Ok(Self::new(&borsh::to_vec(data)?))
     }
 
     /// Decode the hex form [`Display`] writes.
