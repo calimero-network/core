@@ -199,7 +199,7 @@ members = [
 
 [workspace.dependencies]
 actix = "0.13.5"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 async-trait = "0.1.89"
