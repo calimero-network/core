@@ -56,6 +56,7 @@ signature**. Being named is permission to carry a valid claim, and nothing else.
     { from: 1, to: 1, label: 'verify the op signature' },
     { from: 1, to: 1, label: 'refuse unless named in signed admitters', color: '#ff7b72' },
     { from: 1, to: 1, label: 'validate invitation: inviter, group, expiry' },
+    { from: 1, to: 1, label: 'attach its endorsement to the envelope', color: '#3fb950' },
     { from: 1, to: 1, label: 'apply locally, then publish' },
     { from: 1, to: 2, label: 'broadcast MemberJoinedAt' },
     { from: 2, to: 2, label: 'check signer == credential.sign_pk, then fold' },
@@ -79,22 +80,67 @@ signature**. Being named is permission to carry a valid claim, and nothing else.
    under its name.
 
 4. **Peers fold it normally.** The op is an ordinary `MemberJoinedAt`; nothing
-   about the admit path relaxes what applying one requires.
+   about the admit path relaxes what applying one requires — including the
+   endorsement, which every peer verifies for itself rather than trusting the
+   node that relayed it.
 
 </Steps>
 
 ## What an admitter can and cannot do
 
-It can **decline to publish**. That is the whole of its power.
+It can **decline to consent**. That is the whole of its power — and it is real
+power, because without that consent the membership does not exist.
 
-It cannot admit a different account, change the group, or grant a role, because
-all of that sits inside a signature it does not hold. The check that stops
-substitution — `signer == credential.statement.sign_pk` — lives at apply on every
-peer, deliberately rather than at the endpoint, because it has to hold for ops the
-endpoint never sees.
+A join is only applied if it carries an `AdmitterEndorsement`: a signature by an
+account the invitation named, over the namespace, the joiner and the invitation's
+nonce. Every peer re-checks it, resolving the signing key to an account through
+the device bindings and requiring that account to appear in the invitation's
+*signed* `admitters` list.
+
+That is what makes `admitters` an authorization boundary rather than a
+preference. Before it, the list restricted nothing on the publish path: a joiner
+signs its own join, so a holder of a valid invitation could publish and every
+peer would fold it, whether or not any named admitter had ever agreed.
+
+What an admitter still cannot do is admit a different account, change the group,
+or grant a role, because all of that sits inside a signature it does not hold.
+The check that stops substitution — `signer == credential.statement.sign_pk` —
+lives at apply on every peer, deliberately rather than at the endpoint, because
+it has to hold for ops the endpoint never sees.
 
 A hostile admitter is therefore a liveness problem, not an authority one, which is
 why an invitation naming several is worth more than one naming a single node.
+
+## Where the consent rides
+
+The endorsement sits on the **envelope** — `SignedNamespaceOp` — not in the op
+body, and deliberately outside both the joiner's signature and the op's id.
+
+That placement is what makes a keyholder admissible at all. A keyholder signs its
+own join, so anything covered by that signature has to exist before it signs; and
+an endorsement can only be signed by an account the invitation named, which a
+keyholder is not. It cannot have one. Nor could the admitting node supply one if
+the field were inside the signature, because the first thing `/admit` does is
+verify that signature — attaching anything it covers would invalidate what was
+just checked.
+
+Outside the signature, the node that relays a join can attach its own consent to
+an op it did not author and cannot alter. `to_signable` does not copy the field,
+and the op's id is taken over the signable form, so attaching consent leaves the
+op's identity untouched. If it did not, relaying a join would fork history: the
+relay's copy and the author's copy would be different ops.
+
+Leaving it unsigned costs nothing an attacker can use:
+
+- **Stripping it** makes the apply refuse the join. Fail closed.
+- **Substituting** another endorsement that verifies is a no-op, because any
+  endorsement that verifies is over the same namespace, joiner and invitation as
+  the one removed.
+
+An invitation that names nobody is refused rather than treated as open season —
+an empty list is one no endorsement can satisfy, so minting refuses to produce
+one and a node asked to act on one declines rather than doing the work and
+producing a join every peer rejects.
 
 ## Who is an admitter by default
 
@@ -194,10 +240,27 @@ Which path a joiner takes is decided by one thing: whether it runs a node.
    re-checks `join_op_proves_ownership` at apply, so an admitter relays a join, it
    never grants one.
 
+A joiner that runs a node obtains its endorsement during the join exchange: the
+peer serving the join signs one if the invitation names it, and answers without
+one if it does not — usefully, since it can still serve the group key and the
+governance history. A joiner that gets an unendorsed answer tries the next peer
+rather than publishing a membership it cannot have authorised, and fails if it
+reaches no admitter at all. Reaching one is a requirement, not a preference.
+
 `admitter_addrs` exists to make step 3 reliable when the joiner is not already
-connected to an admitter. **Today the addresses are written into the invitation
-but nothing dials them yet** — a joiner still depends on gossip reaching an
-admitter. Consuming them is a separate change.
+connected to an admitter, and the joiner now dials them: one pass over the
+addresses before peer selection, then those peers are tried ahead of whoever
+discovery happens to have surfaced.
+
+The dial pass is bounded by a single timeout rather than by how many addresses
+the invitation carries. An address is a snapshot from mint time, so hints that
+no longer resolve are the ordinary case, and a dial only resolves once the
+transport gives up — awaiting them one after another let a handful of dead hints
+spend the whole join before peer selection had been asked once.
+
+Alternative addresses for one peer are still tried in order, because they are
+routes to the same machine; different machines are dialed concurrently, because
+they have no reason to wait for each other.
 
 ### A joiner holding only a key
 
@@ -208,8 +271,10 @@ and no governance state.
 2. It signs its own `MemberJoinedAt`, exactly as a node joiner would.
 3. It `POST`s that op to `/admin-api/namespaces/:namespace_id/admit` on a node that
    is named in `admitters`.
-4. That node verifies the signature, checks it may admit, applies the membership
-   locally, and publishes.
+4. That node verifies the signature, checks it may admit, **attaches its own
+   endorsement**, applies the membership locally, and publishes. The keyholder
+   never handles an endorsement itself — it has nothing to sign one with, and
+   needs no extra round trip to obtain one.
 
 Step 3 needs an address, and `admitter_addrs` is no use here — those are
 multiaddrs, and there is no swarm to dial one from. This path is answered outside
