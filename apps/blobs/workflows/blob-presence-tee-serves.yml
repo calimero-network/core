@@ -1,0 +1,256 @@
+name: Blob Presence — An Availability Node Serves What It Prefetched
+description: >
+  An availability node (a `ReadOnlyTee` fleet member) must end up holding the
+  BYTES of the blobs its context references, not just the state that references
+  them — otherwise it answers every probe honestly and always says no.
+
+  The scenario: a mock-TEE replica is admitted to the namespace root as a
+  ReadOnlyTee, the owner uploads a blob into the context, the owner is then
+  STOPPED, and a third node — which never held the blob — fetches it. With the
+  owner gone the availability node is the only holder left, so a byte-identical
+  fetch is proof that it prefetched the announcement.
+
+  WHY THIS GOES RED WITHOUT THE PREFETCH. Before the announce/prefetch change,
+  `announce_blob_to_network` wrote a Kademlia provider record that nothing read,
+  and no node ever fetched a blob it was not asked for. The TEE replicated the
+  context's STATE (which carries the blob id) but never the blob's bytes, so
+  after the owner stops, the only holder of those bytes is gone: the consumer's
+  probes reach the TEE, the TEE answers `found: false`, and the fetch fails.
+  The "prefetching announced blob" assertion below fails even earlier, and its
+  log line does not exist in a binary without this change.
+
+  NODES MUST BE BUILT WITH `--features mock-attestation`. `merod run --mock-tee`
+  refuses to start otherwise ("this merod binary was built without
+  mock-attestation support"), and the feature is off by default so release
+  binaries carry no mock code.
+
+  MUST RUN UNDER DOCKER IN CI. `stop_node` is how the owner is taken offline.
+
+  NO `auth_mode` / `login` STEPS ON PURPOSE: the `tee_*` steps talk to the
+  admin API over raw HTTP with no Authorization header (see merobox
+  commands/bootstrap/steps/tee.py), so an auth-enabled node would reject them
+  with 401.
+
+  ON THE NEGATIVE CONTROLS: blobs are content-addressed, so a node already
+  holding identical bytes serves them from local storage and never touches the
+  network. Every cross-node fetch below is therefore preceded by a local-only
+  read (no `context_id`) that MUST fail. Without that, a passing fetch proves
+  nothing — and proving the bytes came off the availability node is the entire
+  point of this scenario.
+
+  Run locally, with a mock-attestation merod:
+    cargo build -p merod --release --features mock-attestation
+    cd apps/blobs
+    merobox bootstrap run workflows/blob-presence-tee-serves.yml \
+      --image merod:local-mock-tee --e2e-mode
+
+force_pull_image: false
+
+# Individually defined so exactly one node boots as `merod run --mock-tee`.
+# Explicit ports are required in this form — the dict path does not stride
+# `base_port` per node, so omitting them collides every node on one port.
+nodes:
+  blob-tee-owner:
+    port: 2428
+    rpc_port: 2528
+  blob-tee-replica:
+    port: 2429
+    rpc_port: 2529
+    # Boot mock from the start rather than restarting into it: a restart
+    # perturbs the gossipsub topic mesh exactly when fleet-join needs a stable
+    # bidirectional one.
+    mock_tee: true
+  blob-tee-consumer:
+    port: 2430
+    rpc_port: 2530
+
+steps:
+  - name: Install Rust blobs app on the owner
+    type: install_application
+    node: blob-tee-owner
+    path: "res/blobs.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Owner + consumer only. The TEE replica joins the namespace by fleet-join
+  # below, not by invitation — that is the path an availability node takes.
+  - name: Create Mesh
+    type: create_mesh
+    context_node: blob-tee-owner
+    application_id: "{{app_id}}"
+    nodes:
+      - blob-tee-consumer
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{namespace_id}})"
+
+  # ---------- Admit the availability node ----------
+
+  # accept_mock + the all-zero MRTD are the step defaults; set on the namespace
+  # root (group id == namespace id).
+  - name: Set the namespace-root TeeAdmissionPolicy to accept mock attestation
+    type: set_tee_admission_policy
+    node: blob-tee-owner
+    group_id: "{{namespace_id}}"
+    accept_mock: true
+
+  - name: Let the policy settle
+    type: wait
+    seconds: 8
+
+  # One call covers ONE admission window (core's MAX_ADMISSION_WAIT ~= 30s) and
+  # returns 200 either way, so several sequential attempts are issued. The
+  # authoritative gate is `assert_tee_member` below, not the per-call flag.
+  - name: TEE fleet-join attempt 1
+    type: tee_fleet_join
+    node: blob-tee-replica
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: TEE fleet-join attempt 2
+    type: tee_fleet_join
+    node: blob-tee-replica
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: TEE fleet-join attempt 3
+    type: tee_fleet_join
+    node: blob-tee-replica
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  # The ACCOUNT, not the signing key: membership is recorded against the
+  # account a key speaks for, so the member listing reports accounts and
+  # comparing a key against one would report the member absent.
+  - name: Assert the replica reported its account
+    type: assert
+    statements:
+      - "is_set({{tee_account}})"
+
+  - name: Let root membership settle
+    type: wait
+    seconds: 10
+
+  - name: Assert the replica is a ReadOnlyTee member of the namespace root
+    type: assert_tee_member
+    node: blob-tee-owner
+    group_id: "{{namespace_id}}"
+    account: "{{tee_account}}"
+    role: ReadOnlyTee
+
+  # The replica must have auto-followed the context before the upload: the
+  # announce is one-shot and has no catch-up path, so an availability node that
+  # is not yet following the context when the blob is announced never hears
+  # about it. That is a documented limitation of the design, not of this test.
+  - name: Let the replica auto-follow the context
+    type: wait
+    seconds: 20
+
+  # ---------- Upload, and let the availability node prefetch ----------
+
+  - name: Upload the PNG on the owner
+    type: upload_blob
+    node: blob-tee-owner
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      blob_id: blob_id
+      blob_size: size
+
+  # Read it back locally for the authoritative hash of what the owner holds, so
+  # the consumer is compared against real bytes rather than a hardcoded digest.
+  - name: Read the PNG locally on the owner
+    type: download_blob
+    node: blob-tee-owner
+    blob_id: "{{blob_id}}"
+    expected_size: "{{blob_size}}"
+    outputs:
+      source_sha256: sha256
+
+  - name: Give the announce and the prefetch time to complete
+    type: wait
+    seconds: 30
+
+  # The discriminator. This line is emitted by the prefetch path only; a binary
+  # without it never fetches a blob it was not asked for, so this assertion
+  # fails before the owner is even stopped.
+  - name: The availability node prefetched the announced blob
+    type: assert_log_present
+    nodes:
+      - blob-tee-replica
+    patterns:
+      - "prefetching announced blob"
+    tail_lines: 20000
+
+  # ---------- Fault: the only other holder goes away ----------
+
+  - name: Stop the owner, leaving the availability node as the only holder
+    type: stop_node
+    nodes:
+      - blob-tee-owner
+
+  # The consumer has to observe the owner leaving the context topic's subscriber
+  # set; until then it may probe it, and an unreachable peer only answers once
+  # its probe times out.
+  - name: Let the consumer notice the departure
+    type: wait
+    seconds: 20
+
+  # Negative control, immediately before the fetch that matters: without it, a
+  # consumer that somehow already held identical bytes would serve them locally
+  # and the assertion below would prove nothing.
+  - name: The consumer must not already hold the PNG
+    type: download_blob
+    node: blob-tee-consumer
+    blob_id: "{{blob_id}}"
+    expected_failure: true
+
+  - name: The consumer fetches the PNG from the availability node
+    type: download_blob
+    node: blob-tee-consumer
+    blob_id: "{{blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{blob_size}}"
+    expected_sha256: "{{source_sha256}}"
+    outputs:
+      received_size: size
+      received_sha256: sha256
+
+  - name: Assert the consumer's bytes are byte-identical to the owner's original
+    type: assert
+    statements:
+      - "equal({{received_size}}, {{blob_size}})"
+      - "equal({{received_sha256}}, {{source_sha256}})"
+
+  # The availability node is the only reachable holder, so this marker in ITS
+  # log is the positive evidence that it, and not some cached copy, served the
+  # bytes.
+  - name: The availability node served the blob
+    type: assert_log_present
+    nodes:
+      - blob-tee-replica
+    patterns:
+      - "Processing blob request stream"
+    tail_lines: 20000
+
+  - name: No panics on the surviving nodes
+    type: assert_log_absent
+    nodes:
+      - blob-tee-replica
+      - blob-tee-consumer
+    patterns:
+      - "panicked at"
+    tail_lines: 20000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
