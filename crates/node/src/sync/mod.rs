@@ -57,11 +57,18 @@ pub(crate) fn anchor_device_keys(
 /// The signing keys of a group's availability nodes — its `ReadOnlyTee`
 /// members, INCLUDING those it inherits from its ancestors.
 ///
-/// A strict subset of [`anchor_device_keys`], and a deliberately different
-/// question. The anchor set answers "who is authoritative here" (Owner ∪ Admins
-/// ∪ ReadOnlyTee), which is what sync peer selection wants. Blob discovery
-/// wants "who is always on and holds the bytes", and only a `ReadOnlyTee`
-/// answers that: an admin is an ordinary laptop that may hold nothing.
+/// Neither a subset nor a superset of [`anchor_device_keys`] — the two answer
+/// deliberately different questions and walk the group tree differently. The
+/// anchor set answers "who is authoritative in THIS group" (Owner ∪ Admins ∪
+/// ReadOnlyTee of `group_id` alone, no ancestor walk), which is what sync peer
+/// selection wants. This set answers "who is always on and holds the bytes for
+/// this context", which includes `ReadOnlyTee` members inherited from
+/// ancestors: a root-admitted `ReadOnlyTee` over an `Open` subgroup is an
+/// availability node for that subgroup's contexts without ever holding a
+/// direct membership row there, so it appears here but not in
+/// [`anchor_device_keys`] for the subgroup. Conversely an ordinary admin of
+/// `group_id` appears in the anchor set but never here, since only
+/// `ReadOnlyTee` answers "holds the bytes".
 ///
 /// Same account→device expansion as the anchor set, for the same reason.
 /// Returns an empty set on any store failure — callers then fall back to

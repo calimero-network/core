@@ -339,28 +339,33 @@ Initiator                                              Responder
 ### Blob Discovery and Transfer
 
 ```text
-Requester                      DHT                       Provider
-    │                           │                            │
-    │  1. Need blob_id for context                           │
-    │                                                        │
-    │── Kad.get_record(ctx‖blob_id) ►│                       │
-    │                           │                            │
-    │◄─ Record(peer_id‖size) ───│                            │
-    │                           │                            │
-    │  2. Dial the advertised peer                           │
-    │                                                        │
-    │── OpenStream(CALIMERO_BLOB_PROTOCOL) ─────────────────►│
-    │── BlobRequest { blob_id, context_id, auth? } ─────────►│
-    │                                                        │
-    │◄─ BlobResponse { found, size? } ───────────────────────│
-    │◄─ BlobChunk { data } ... BlobChunk { data: [] } ───────│
-    │                                                        │
-    │  3. Verify recomputed id matches blob_id               │
-    │  4. Store locally                                      │
-    │  5. Announce own record                                │
-    │                                                        │
-    │── Kad.put_record(ctx‖blob_id, peer_id‖size) ►│         │
-    │                            │                           │
+Requester                                    Candidates              Availability Node(s)
+    │                                             │                          │
+    │  1. Need blob_id for context                │                          │
+    │                                             │                          │
+    │  2. Probe candidates PROBE_BATCH at a time  │                          │
+    │     (availability nodes first, then the     │                          │
+    │     rest of the topic's subscribers)        │                          │
+    │                                             │                          │
+    │── OpenStream(CALIMERO_BLOB_PROTOCOL) ──────►│                          │
+    │── BlobRequest { blob_id, context_id } ─────►│                          │
+    │◄─ BlobResponse { found: true, size? } ──────│                          │
+    │                                             │                          │
+    │  3. Fetch from the first candidate that answered "yes"                │
+    │                                             │                          │
+    │── OpenStream(CALIMERO_BLOB_PROTOCOL) ──────►│                          │
+    │── BlobRequest { blob_id, context_id } ─────►│                          │
+    │◄─ BlobResponse { found, size? } ────────────│                          │
+    │◄─ BlobChunk{data} .. BlobChunk{data:[]} ────│                          │
+    │                                             │                          │
+    │  4. Verify recomputed id matches blob_id                              │
+    │  5. Store locally                                                     │
+    │  6. Announce to the context's availability nodes                     │
+    │                                             │                          │
+    │── OpenStream(CALIMERO_BLOB_ANNOUNCE_PROTOCOL) ────────────────────────►│
+    │── BlobAnnouncement { blob_id, context_id, size } ─────────────────────►│
+    │                                             │        (no response; prefetch
+    │                                             │         if not already held)
 ```
 
 ## Protocol Constants
