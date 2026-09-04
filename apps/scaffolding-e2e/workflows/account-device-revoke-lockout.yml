@@ -83,6 +83,12 @@ description: >
        line no code path emits in this shape. The refusal is still logged at
        `info` on the responder for the day a scenario can drive it.
 
+    8. The lockout has an exit, and it is an operator command. A revoked id is
+       spent for good, so `merod account device --reset` drops the row offline and
+       the re-pair mints a fresh replica under the same account. The same rule
+       guards it in reverse: the fresh device still serves, so resetting it again
+       is refused rather than stranding the state held under it.
+
   What this does NOT cover (intentionally):
     * Self-service revocation (an account revoking its own lost device without
       an admin). Needs the root-signed revocation proof, which is a wire
@@ -516,12 +522,95 @@ steps:
       value: phone-really-should-not-land
     expected_failure: true
 
+  # ── Phase 8: reset the spent identity and re-pair ─────────────────
+  #
+  # The lockout has an exit. A revoked id is spent for good, so until the device
+  # row is dropped the node keeps presenting it and every certificate minted for
+  # it is refused by every peer. `account device --reset` drops it on demand.
+  #
+  # Offline by construction, which is why it is a `merod` subcommand and not an
+  # admin route: the row lives in the datastore and RocksDB's lock is exclusive.
+
+  - name: Stop the revoked node so its device row can be dropped
+    type: stop_node
+    nodes: account-revoke-node-3
+
+  - name: Reset the revoked device identity
+    type: node_exec
+    node: account-revoke-node-3
+    args: [account, device, --reset]
+    capture:
+      reset_device: '^Reset device ([0-9a-f]{64})$'
+    outputs:
+      reset_device: reset_device
+
+  - name: The reset dropped exactly the device that was revoked
+    type: json_assert
+    statements:
+      - 'json_equal({{reset_device}}, {{paired_device}})'
+
+  # The step that makes the reset load-bearing rather than decorative. A pair-init
+  # re-mints on its own once the tombstone has landed, so the re-pair below would
+  # succeed either way; only a direct observation of the empty slot proves the
+  # command did the dropping. `account device` has nothing left to print.
+  - name: The node now holds no device at all
+    type: node_exec
+    node: account-revoke-node-3
+    args: [account, device]
+    expected_failure: true
+
+  - name: The reset node comes back up
+    type: start_node
+    nodes: account-revoke-node-3
+
+  - name: Log back in to node-3
+    type: login
+    node: account-revoke-node-3
+    username: dev
+    password: dev-password
+
+  - name: Re-pair node-3 onto Alice's account
+    type: account_pair
+    node: account-revoke-node-3
+    holder: account-revoke-node-2
+    root_key: '{{root_key}}'
+    namespaces:
+      - '{{namespace_id}}'
+
+  - name: What node-3 speaks as after the re-pair
+    type: node_identity
+    node: account-revoke-node-3
+    outputs:
+      repaired_account: accountId
+      repaired_device: deviceId
+
+  # A fresh replica under the same account, which is the whole point: the account
+  # survived the revocation, the device id did not.
+  - name: The re-pair minted a fresh device under the same account
+    type: json_assert
+    statements:
+      - 'json_not_equal({{repaired_device}}, {{paired_device}})'
+      - 'json_equal({{repaired_account}}, {{alice_account}})'
+
+  # The guard, at the other end of the same rule. The fresh device is live, and a
+  # device id IS its replica lineage, so dropping this one would strand the CRDT
+  # state held under it with nothing able to author there again.
+  - name: Stop node-3 again to attempt a reset of a live device
+    type: stop_node
+    nodes: account-revoke-node-3
+
+  - name: Resetting a device that still serves is refused
+    type: node_exec
+    node: account-revoke-node-3
+    args: [account, device, --reset]
+    expected_failure: true
+
 # ── Wiring ─────────────────────────────────────────────────────────
 #
 # Wired into `.github/workflows/e2e-rust-apps.yml`.
 #
-# `node_identity`, `account_pair`, `account_revoke` and `account_show` are all
-# native merobox steps. `account_pair` drives the account-level routes as of
+# `node_identity`, `account_pair`, `account_revoke`, `account_show` and
+# `node_exec` are all native merobox steps. `account_pair` drives the account-level routes as of
 # merobox 0.6.71; before that it drove the namespace-scoped ones, which no
 # longer exist - they took one namespace from the path and fanned the link out
 # to every namespace regardless.

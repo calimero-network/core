@@ -1124,6 +1124,46 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(self.revoked_in(held.device())?.is_empty().then_some(held))
     }
 
+    /// Drop this node's device identity so the next enrolment mints a fresh one.
+    ///
+    /// The operator's forcing handle on the revocation lockout: a spent row keeps
+    /// being certified until some enrolment happens to consult the namespace that
+    /// holds the tombstone, and this runs that decision on demand instead.
+    ///
+    /// Gated on [`Self::stored_identity_still_serves`] rather than on a rule of its
+    /// own, across every namespace this node takes part in. A live device's id *is*
+    /// its replica lineage - counter slots and an HLC seed - so dropping a row the
+    /// enrolment path would have kept strands that state with nothing able to
+    /// author under it again.
+    ///
+    /// # Errors
+    /// If no device is stored, if the stored one still serves a namespace this node
+    /// takes part in, or the store read or write fails.
+    pub fn reset_device(&self) -> EyreResult<DeviceId> {
+        let _guard = NODE_DEVICE_MINT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let Some(existing) = self.get()? else {
+            eyre::bail!("this node holds no device identity, so there is nothing to reset");
+        };
+        let account = existing.account;
+
+        for namespace in NamespaceRepository::new(self.store).participating_namespaces()? {
+            if self.stored_identity_still_serves(&namespace, &existing, account)? {
+                eyre::bail!(
+                    "device {} still serves namespace {namespace:?}: it is neither revoked \
+                     nor unlinked, and dropping it would strand the replica state held under \
+                     it. Revoke the device first, then reset",
+                    hex::encode(existing.device().as_bytes())
+                );
+            }
+        }
+
+        self.delete()?;
+        Ok(existing.device())
+    }
+
     /// Drop this node's device identity. Idempotent.
     ///
     /// Called by the namespace teardown for the same reason the group keyring is
@@ -1306,6 +1346,61 @@ mod tests {
             repo.get().expect("read").is_some(),
             "and the row itself stays, because the KEM secret still opens keys \
              already wrapped for it"
+        );
+    }
+
+    /// The operator's forcing handle: a revoked row is spent, so dropping it is
+    /// what lets the next pairing mint an id peers will admit.
+    #[test]
+    fn resetting_drops_a_revoked_device() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+        NamespaceRepository::new(&store)
+            .note_participation(&ns)
+            .expect("take part in the namespace");
+
+        let spent = repo.ensure_enrolled(&ns).expect("enroll");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, spent.device())
+            .expect("tombstone the device");
+
+        assert_eq!(repo.reset_device().expect("reset"), spent.device());
+        assert!(
+            repo.get().expect("read").is_none(),
+            "the row is gone, which is what releases the slot"
+        );
+        assert_ne!(
+            repo.ensure_enrolled(&ns).expect("re-enroll").device(),
+            spent.device(),
+            "and the next enrolment mints a fresh id rather than the spent one"
+        );
+    }
+
+    /// The guard. A live device's id is its replica lineage, so a reset the
+    /// enrolment rule would not have released has to be refused rather than
+    /// orphan the state held under it.
+    #[test]
+    fn resetting_a_device_that_still_serves_is_refused() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+        NamespaceRepository::new(&store)
+            .note_participation(&ns)
+            .expect("take part in the namespace");
+        let held = repo.ensure_enrolled(&ns).expect("enroll");
+
+        let err = repo
+            .reset_device()
+            .expect_err("a device that still serves must be refused");
+        assert!(
+            err.to_string().contains("still serves"),
+            "the refusal must say why: {err}"
+        );
+        assert_eq!(
+            repo.get().expect("read").expect("present").device(),
+            held.device(),
+            "and it must leave the row alone"
         );
     }
 
