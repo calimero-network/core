@@ -30,6 +30,10 @@ variable. For example `NODE_PATH_PREFIX=/node1` makes the admin API live at
 `/node1/admin-api`. The tables below show the unprefixed paths.
 </Aside>
 
+Every request body on these surfaces is a closed set.
+A body carrying a field the node does not declare is a 400 at deserialization, never a silent drop, so a client built against a different shape fails loudly instead of installing, joining, or upgrading something it did not name.
+Query strings stay lenient.
+
 ## Choosing an API surface
 
 All four surfaces are mounted on a single HTTP server and wrapped by the **same

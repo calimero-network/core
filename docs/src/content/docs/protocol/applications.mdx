@@ -95,8 +95,8 @@ There are two ways to install one, and no third:
 
 Neither request names a location on the network.
 The caller says *which* application; the node's own `[registry]` config says *where from*.
-The coordinate request sets `deny_unknown_fields`, so a body carrying a `url` field is a
-400 rather than an install of something the caller did not name.
+Like every admin request body, the coordinate request refuses unknown fields, so a body
+carrying a `url` field is a 400 rather than an install of something the caller did not name.
 
 ## How bytecode reaches a node
 
