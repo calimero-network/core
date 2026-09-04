@@ -262,6 +262,51 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
 ///
 /// Free function (not a method) so it can be unit-tested against
 /// synthetic inputs without spinning up a sync manager.
+/// How many of an anchor-first-ordered candidate list may serve a group key.
+///
+/// A group key is the one thing on the sync paths a peer is trusted for by
+/// *content* rather than by signature. An op is signature-verified before it
+/// mutates anything, so the worst a bad peer can do there is serve nothing or
+/// something stale. An unwrapped key is just bytes: a node that stores a key an
+/// insider chose seals its own later writes under it, and cannot decode the
+/// group's real ops.
+///
+/// So the answer depends on whether this particular request can be verified:
+///
+/// * **`verifiable`** — a governance op awaits a specific `key_id`, and that op
+///   is signed, so `SHA256(served) == expected` settles it and the responder is
+///   not trusted at all. Every candidate may serve; the anchor ordering ahead of
+///   this is then only about not wasting round-trips. Restricting to anchors
+///   here would buy nothing and cost availability.
+/// * **not verifiable** — a keyless member of a group no op names a key for yet,
+///   which is cold start. There is nothing to compare against, so trust in the
+///   responder is all there is, and **only an anchor may serve**: `None` rather
+///   than fall through to an arbitrary member.
+///
+/// `None` means refuse and retry later, deliberately in preference to accepting
+/// an unverifiable key from a non-anchor. That trades a liveness risk for a
+/// confidentiality one — a namespace whose anchors are all unreachable cannot
+/// complete a cold join — which is the intended policy, not an oversight.
+///
+/// The two `None` cases are distinguished by `anchors_known` so callers can log
+/// them apart: "no anchor is reachable" is the accepted cost, while "no anchor
+/// can even be identified" points at unfolded governance state and is worth
+/// noticing.
+pub(crate) fn key_servers_allowed(
+    total_candidates: usize,
+    anchor_count: usize,
+    anchors_known: bool,
+    verifiable: bool,
+) -> Option<usize> {
+    if verifiable {
+        return (total_candidates > 0).then_some(total_candidates);
+    }
+    if !anchors_known || anchor_count == 0 {
+        return None;
+    }
+    Some(anchor_count)
+}
+
 pub(crate) fn partition_peers_anchor_first(
     peers: &mut [PeerId],
     state_access: &dyn SyncStateAccess,
@@ -649,6 +694,46 @@ mod tests {
                 SyncStateAccessCall::PeerIdentities(plain_peer),
                 SyncStateAccessCall::PeerIdentities(anchor_peer),
             ]
+        );
+    }
+    /// A verifiable request may use any candidate: the hash decides, so the
+    /// responder is not trusted and restricting to anchors would only cost
+    /// availability.
+    #[test]
+    fn a_verifiable_key_request_may_use_any_candidate() {
+        assert_eq!(key_servers_allowed(5, 2, true, true), Some(5));
+        assert_eq!(
+            key_servers_allowed(5, 0, false, true),
+            Some(5),
+            "not even an identifiable anchor is needed when the key can be checked"
+        );
+        assert_eq!(
+            key_servers_allowed(0, 0, true, true),
+            None,
+            "but there still has to be somebody to ask"
+        );
+    }
+
+    /// **The gate.** An unverifiable request — cold start, no op naming a key —
+    /// is restricted to anchors, and refuses rather than falling through.
+    #[test]
+    fn an_unverifiable_key_request_is_restricted_to_anchors() {
+        assert_eq!(
+            key_servers_allowed(5, 2, true, false),
+            Some(2),
+            "only the anchors, which the anchor-first ordering has put in front"
+        );
+        assert_eq!(
+            key_servers_allowed(5, 0, true, false),
+            None,
+            "anchors are known but none is reachable: refuse and retry, never \
+             fall through to an arbitrary member"
+        );
+        assert_eq!(
+            key_servers_allowed(5, 0, false, false),
+            None,
+            "and no identifiable anchor refuses too — the distinction is for the \
+             log line, not for the verdict"
         );
     }
 }
