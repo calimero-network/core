@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, AccountProof, DeviceCert, PairingOffer};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, PairingOffer};
 use calimero_context_client::group::{
     BindOutcome, PairDeviceCompleteRequest, PairDeviceCompleteResponse,
 };
@@ -169,6 +169,23 @@ pub(crate) fn require_this_node_holds(store: &Store, account: AccountId) -> Eyre
     }
 }
 
+/// Is this device id still usable, or has it been spent?
+///
+/// The tombstone is per namespace but the id is spent everywhere, so a device
+/// revoked anywhere is refused outright rather than skipped per namespace: no
+/// certificate is minted for it, and enrolling afresh mints a new id.
+pub(crate) fn require_not_revoked(store: &Store, device: DeviceId) -> EyreResult<()> {
+    let revoked = NodeDeviceRepository::new(store).revoked_in(device)?;
+    if revoked.is_empty() {
+        return Ok(());
+    }
+    Err(ContextError::PairingDeviceRevoked {
+        device: device.to_string(),
+        namespaces: format!("{revoked:?}"),
+    }
+    .into())
+}
+
 /// Does this node hold a current scope key in any of `namespaces`?
 ///
 /// One is enough. Pairing publishes an encrypted group op and delivers that same
@@ -291,6 +308,13 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
+        // Before the certificate is signed, not per namespace: the tombstone is
+        // per namespace but the id is spent everywhere, so the fan-out reporting
+        // `Revoked` in each one would already have minted a certificate for it.
+        if let Err(err) = require_not_revoked(&store, device) {
+            return ActorResponse::reply(Err(err));
+        }
+
         // One precondition covers both ops: the link is an encrypted group op so
         // publishing it needs the current key, and the delivery is that same key
         // wrapped for the new device. Checking it here, before anything is
@@ -406,12 +430,15 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_account::AccountGenesis;
-    use calimero_governance_store::MetaRepository;
+    use calimero_governance_store::{
+        AccountBindingRepository, MembershipRepository, MetaRepository,
+    };
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
 
     use super::*;
+    use crate::test_support::{actor, enrol};
 
     const NS_A: [u8; 32] = [0xA1; 32];
     const NS_B: [u8; 32] = [0xB2; 32];
@@ -724,6 +751,103 @@ mod tests {
                 }
             ),
         ]));
+    }
+
+    /// A namespace this node holds everything a pairing needs in: its own
+    /// identity, an account root, a membership its endorsement is admissible
+    /// under, and the scope key the delivery is wrapped from.
+    fn a_node_that_can_pair_in_one_namespace() -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from(NS_A);
+        let (_ns, node_pk, _sk) = NamespaceRepository::new(&store)
+            .participate_in(&ns)
+            .expect("this node's identity here");
+        let devices = NodeDeviceRepository::new(&store);
+        let _root = devices
+            .provision_account_root()
+            .expect("a node that ran `merod init` holds a root");
+        let _held = devices
+            .ensure_enrolled(&ns)
+            .expect("mint this node's own device");
+        let account = enrol(&store, &ns, &node_pk);
+        MetaRepository::new(&store)
+            .save(
+                &ns,
+                &GroupMetaValue {
+                    target: calimero_store::key::GroupTarget {
+                        application_id: app(APP_ONE),
+                        bytecode_id: [0xAA; 32],
+                        ..Default::default()
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace metadata");
+        MembershipRepository::new(&store)
+            .add_member(
+                &ns,
+                &account,
+                calimero_primitives::context::GroupMemberRole::Admin,
+            )
+            .expect("be a member here");
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        store
+    }
+
+    /// The id is spent everywhere, so pairing it again is refused before the
+    /// certificate exists - not left to the fan-out, which reports `Revoked` per
+    /// namespace only after this node has already certified the device.
+    #[actix::test]
+    async fn a_revoked_device_is_refused_before_a_certificate_is_minted() {
+        let store = a_node_that_can_pair_in_one_namespace();
+        let account = NodeDeviceRepository::new(&store)
+            .require_account_root()
+            .expect("this node's root")
+            .account();
+        let device_sk = PrivateKey::from([0x71; 32]);
+        let device = DeviceId::from([0x72; 32]);
+        let kem_pk = calimero_account::KemPublicKey::from([0x73; 32]);
+        let (offer, statement) =
+            PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the offer");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&NS_A.into(), device)
+            .expect("tombstone the device");
+
+        let harness = actor::over(store.clone()).await;
+        let refused = harness
+            .manager
+            .send(PairDeviceCompleteRequest {
+                applications: vec![],
+                device,
+                kem_pk,
+                sign_pk: device_sk.public_key(),
+                statement,
+                confirmation_code: offer.confirmation_code(),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the id is spent");
+
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::PairingDeviceRevoked { .. })
+            ),
+            "a revoked device has to be refused by name, not by a generic bail; got: {refused}"
+        );
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .device_cert(device)
+                .expect("read the certificate store")
+                .is_none(),
+            "no certificate may exist for a spent device id"
+        );
     }
 
     /// A node that paired INTO somebody else's account cannot certify a third
