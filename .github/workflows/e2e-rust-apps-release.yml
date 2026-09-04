@@ -64,8 +64,11 @@ jobs:
       - name: Build scaffolding-e2e app
         run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
-      - name: Build scaffolding-e2e multi-service bundle
+      - name: Build scaffolding-e2e bundle
         run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
+
+      - name: Build scaffolding-e2e-multi bundle
+        run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
 
       - name: Build xcall-example app
         run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
