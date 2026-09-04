@@ -1923,13 +1923,9 @@ impl SyncManager {
             // candidate may serve a key the hash can check, and only an anchor
             // may serve one it cannot.
             let mut ordered = candidates.clone();
-            let anchors = {
-                let store = self.context_client.datastore_handle().into_inner();
-                crate::sync::anchor_device_keys(
-                    &store,
-                    &calimero_context_config::types::ContextGroupId::from(group_id),
-                )
-            };
+            let anchors = self.anchor_identities_for_group(
+                &calimero_context_config::types::ContextGroupId::from(group_id),
+            );
             let anchor_count = crate::sync::peers::partition_peers_anchor_first(
                 &mut ordered,
                 &*self.state_access,
