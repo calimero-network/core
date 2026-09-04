@@ -69,7 +69,12 @@ impl Request<RequestPayload> {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+#[serde(
+    tag = "method",
+    content = "params",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RequestPayload {
     Execute(ExecutionRequest),
     SyncStatus(SyncStatusRequest),
@@ -138,7 +143,7 @@ pub enum ServerResponseError {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ExecutionRequest {
     pub context_id: ContextId,
@@ -188,7 +193,7 @@ pub enum ExecutionError {
 /// hit `Uninitialized` on `execute` tell whether sync is actively running,
 /// waiting for a peer, or wedged — instead of guessing from one opaque error.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[non_exhaustive]
 pub struct SyncStatusRequest {
     pub context_id: ContextId,
@@ -263,7 +268,7 @@ pub enum SyncStatusError {
 /// `state` is the raw presence bytes (e.g. cursor position, typing indicator).
 /// Rejected by the handler when `state.len() > EPHEMERAL_MAX_BYTES` (16 384).
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[non_exhaustive]
 pub struct SetEphemeralRequest {
     pub context_id: ContextId,

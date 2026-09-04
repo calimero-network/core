@@ -50,7 +50,7 @@ impl InstallApplicationResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
 }
@@ -202,7 +202,7 @@ impl GetApplicationAbiResponse {
 }
 // -------------------------------------------- Context API --------------------------------------------
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateContextRequest {
     pub application_id: ApplicationId,
     /// Which service from the application bundle to run. Optional for single-service apps.
@@ -382,7 +382,7 @@ impl GetContextsResponse {
 /// app's embedded ABI and resolved by the node during a group upgrade — the
 /// caller never names a migrate method.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateContextApplicationRequest {
     pub application_id: ApplicationId,
     pub executor_public_key: PublicKey,
@@ -798,7 +798,7 @@ impl TryFrom<tdx_quote::Quote> for Quote {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TeeAttestRequest {
     /// Client-provided nonce for freshness (32 bytes as hex string)
     pub nonce: String,
@@ -817,7 +817,7 @@ impl TeeAttestRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FleetJoinRequest {
     pub group_id: String,
 }
@@ -1110,7 +1110,7 @@ impl Validate for TeeAttestRequest {
 // -------------------------------------------- Group API --------------------------------------------
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateGroupApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
@@ -1155,7 +1155,7 @@ pub struct CreateGroupApiResponseData {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateNamespaceApiRequest {
     pub application_id: ApplicationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1193,7 +1193,7 @@ pub struct CreateNamespaceApiResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteNamespaceApiRequest {}
 
 impl Validate for DeleteNamespaceApiRequest {
@@ -1215,7 +1215,7 @@ pub struct DeleteNamespaceApiResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteGroupApiRequest {}
 
 impl Validate for DeleteGroupApiRequest {
@@ -1277,7 +1277,7 @@ pub struct GroupInfoApiResponseData {
 /// does not — the warrant commits to `H(method ‖ args)` and the detail is sealed
 /// beside the operations.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PerformIntentApiRequest {
     /// The method to run.
     pub method: String,
@@ -1393,7 +1393,7 @@ pub struct IntentRelayApiResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddGroupMembersApiRequest {
     pub members: Vec<GroupMemberApiInput>,
 }
@@ -1417,7 +1417,7 @@ impl Validate for AddGroupMembersApiRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupMemberApiInput {
     /// The member's ACCOUNT - what every other verb on this resource names and
     /// what the listing returns.
@@ -1445,7 +1445,7 @@ pub struct GroupMemberApiInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveGroupMembersApiRequest {
     /// The members to remove, named by ACCOUNT — the principal the membership
     /// rows are keyed by. `GET .../members` returns these same ids.
@@ -1539,7 +1539,7 @@ pub struct ListGroupContextsQuery {
 /// A group upgrade names only the target application — whether and what to
 /// migrate is resolved by the node from the apps' embedded ABIs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpgradeGroupApiRequest {
     pub target_application_id: ApplicationId,
     /// When `true`, emit one atomic `GroupOp::CascadeUpgrade` fanning out to
@@ -1726,7 +1726,7 @@ pub struct AbortMigrationApiResponse {
 /// overwrites local state with a peer's, discarding any local DAG heads, so
 /// `force` must be set when the context still holds them.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResyncContextApiRequest {
     #[serde(default)]
     pub force: bool,
@@ -1767,7 +1767,7 @@ pub struct GroupUpgradeStatusApiData {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RetryGroupUpgradeApiRequest {}
 
 impl Validate for RetryGroupUpgradeApiRequest {
@@ -1861,7 +1861,7 @@ pub struct PairDeviceCompleteApiResponse {
 /// set of namespaces. One device for the whole set, so the response carries one
 /// id, one key pair and one code however many namespaces it covers.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountPairInitApiRequest {
     /// Hex-encoded epoch-0 root **public** key (32 bytes). Named for the half it
     /// carries: private and public are both 32 hex bytes, and the private root
@@ -1905,7 +1905,7 @@ impl Validate for AccountPairInitApiRequest {
 /// Every field but `applications` is what that node's `pair-init` returned, and
 /// the response is [`PairDeviceCompleteApiResponse`] unchanged.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountPairCompleteApiRequest {
     /// Hex-encoded `DeviceId` the other node minted (32 bytes).
     pub device_id: String,
@@ -1969,7 +1969,7 @@ impl Validate for AccountPairCompleteApiRequest {
 
 /// Withdraw a device from an account, terminally.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RevokeDeviceApiRequest {
     /// Hex-encoded `DeviceId` to withdraw (32 bytes).
     pub device_id: String,
@@ -2085,7 +2085,7 @@ pub struct RevokeDeviceApiResponse {
 /// re-running pairing's fan-out against the namespaces this node takes part in
 /// now. The device is named in the path and need not be online.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RelinkDeviceApiRequest {
     /// Applications to add to the stored scope, hex-encoded. Empty repairs
     /// without widening; it is not overloaded to mean "every application" so the
@@ -2204,7 +2204,7 @@ pub struct AccountApplicationsApiResponse {
 /// certificate, and nowhere to publish from. This is how such a joiner gets its
 /// membership op onto the DAG.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdmitJoinApiRequest {
     /// The invitation being claimed. Must name this node in its `admitters`,
     /// and must otherwise verify — being designated is permission to carry a
@@ -2253,7 +2253,7 @@ pub struct AdmitJoinApiResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateGroupInvitationApiRequest {
     /// Duration in seconds for the invitation validity.
     /// Defaults to 1 year when not provided.
@@ -2325,7 +2325,7 @@ pub struct CreateRecursiveInvitationApiResponse {
 /// Atomically move a group to a new parent. Replaces the old
 /// nest/unnest pair — orphan state is no longer reachable.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReparentGroupApiRequest {
     pub new_parent_id: String,
 }
@@ -2384,7 +2384,7 @@ pub struct ListNamespaceGroupsApiResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JoinGroupApiRequest {
     pub invitation: SignedGroupOpenInvitation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2452,7 +2452,7 @@ pub struct AddGroupMembersApiResponse {}
 pub struct RemoveGroupMembersApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateMemberRoleApiRequest {
     pub role: GroupMemberRole,
 }
@@ -2476,7 +2476,7 @@ impl Validate for UpdateMemberRoleApiRequest {
 pub struct DetachContextFromGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DetachContextFromGroupApiRequest {}
 
 impl Validate for DetachContextFromGroupApiRequest {
@@ -2488,7 +2488,7 @@ impl Validate for DetachContextFromGroupApiRequest {
 // ---- Sync Group ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SyncGroupApiRequest {}
 
 impl Validate for SyncGroupApiRequest {
@@ -2591,7 +2591,7 @@ pub struct LeaveGroupApiResponseData {
 // `b"calimero.ownership-claim.v1\x00"` (defined in calimero-context).
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IssueOwnershipProofApiRequest {
     pub audience: String,
     /// Hex-encoded 32-byte context id. Parsed server-side via `parse_context_id`,
@@ -2672,7 +2672,7 @@ impl Validate for IssueOwnershipProofApiRequest {
 /// [`IssueOwnershipProofApiResponse`] verbatim. Purely additive to
 /// `calimero-server-primitives`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IssueNamespaceOwnershipProofApiRequest {
     pub audience: String,
     pub subject: String,
@@ -2755,7 +2755,7 @@ pub struct GetContextGroupApiResponse {
 // ---- Group Permissions API ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetMemberCapabilitiesApiRequest {
     pub capabilities: u32,
 }
@@ -2770,7 +2770,7 @@ impl Validate for SetMemberCapabilitiesApiRequest {
 pub struct SetMemberCapabilitiesApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetMemberAutoFollowApiRequest {
     /// When true, the target auto-joins new contexts registered in this group.
     pub auto_follow_contexts: bool,
@@ -2790,7 +2790,7 @@ pub struct SetMemberAutoFollowApiResponse {}
 // ---- Set Metadata (group / member / context) ----
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetMetadataApiRequest {
     /// New display name. Absent field keeps the current name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2847,7 +2847,7 @@ pub struct GetMemberCapabilitiesApiData {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetDefaultCapabilitiesApiRequest {
     pub default_capabilities: u32,
 }
@@ -2862,7 +2862,7 @@ impl Validate for SetDefaultCapabilitiesApiRequest {
 pub struct SetDefaultCapabilitiesApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetTeeAdmissionPolicyApiRequest {
     #[serde(default)]
     pub allowed_mrtd: Vec<String>,
@@ -2925,7 +2925,7 @@ impl GetTeeAdmissionPolicyApiResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetSubgroupVisibilityApiRequest {
     pub subgroup_visibility: String,
 }

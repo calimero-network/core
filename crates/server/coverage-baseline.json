@@ -1,6 +1,7 @@
 [
   "GET /admin-api/account/applications",
   "GET /admin-api/account/devices",
+  "GET /admin-api/contexts/{context_id}/intents",
   "GET /admin-api/groups/{group_id}/member-devices",
   "GET /admin-api/groups/{group_id}/members/{account}/metadata",
   "GET /admin-api/identity",

@@ -22,14 +22,19 @@ pub struct Request<P> {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+#[serde(
+    tag = "method",
+    content = "params",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RequestPayload {
     Subscribe(ContextIds),
     Unsubscribe(ContextIds),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContextIds {
     /// Default so a group-only subscribe (no `contextIds`) still parses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
