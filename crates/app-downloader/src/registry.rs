@@ -11,6 +11,7 @@ pub const PENDING_BLOB_SHARE_SOURCE: &str = "calimero://pending-blob-share";
 
 const ARTIFACT_PREFIX: &str = "artifacts"; // `/api/artifacts/...` handler; `/artifacts/...` is the documented rewrite
 const ARTIFACT_EXTENSION: &str = "mpk"; // bundles are the distribution unit
+const PLACEHOLDER_COORDS: (&str, &str) = ("unknown", "0.0.0"); // what releases before registry-only install stamped on raw-wasm rows; still on disk
 const MAX_COORD_LEN: usize = 128; // bounds a hostile op's URL
 
 /// Which single source this node uses for application bundles. `Http` nodes
@@ -147,7 +148,7 @@ fn is_safe_coord(coord: &str) -> bool {
 /// its install completes, so it can still be unaddressable.
 #[must_use]
 pub fn stored_coords<'a>(package: &'a str, version: &'a str) -> Option<RegistryCoords<'a>> {
-    if package.is_empty() || version.is_empty() {
+    if package.is_empty() || version.is_empty() || (package, version) == PLACEHOLDER_COORDS {
         return None;
     }
     Some(RegistryCoords::new(package, version))
@@ -253,6 +254,13 @@ mod tests {
         );
         assert_eq!(stored_coords("", "1.0.0"), None);
         assert_eq!(stored_coords("com.acme.app", ""), None);
+    }
+
+    // Rows written by releases that still installed raw wasm carry this pair.
+    // Signing it onto an op would aim receivers at a URL nobody published.
+    #[test]
+    fn stored_coords_reject_the_raw_wasm_placeholder() {
+        assert_eq!(stored_coords("unknown", "0.0.0"), None);
     }
 
     #[test]
