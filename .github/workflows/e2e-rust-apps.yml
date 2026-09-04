@@ -30,6 +30,8 @@ on:
       - "apps/team-metrics-custom/**"
       - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/e2e-rust-apps-release.yml"
+      - "scripts/lint-e2e-bundle-coverage.py"
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
@@ -55,6 +57,8 @@ on:
       - "apps/team-metrics-custom/**"
       - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/e2e-rust-apps-release.yml"
+      - "scripts/lint-e2e-bundle-coverage.py"
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
@@ -104,6 +108,8 @@ jobs:
         run: python3 scripts/lint-e2e-convergence.py
       - name: Lint merobox scenarios for unnamed multi-service bundles
         run: python3 scripts/lint-e2e-bundle-shape.py
+      - name: Lint e2e workflows for unbuilt scenario bundles
+        run: python3 scripts/lint-e2e-bundle-coverage.py
 
   # ── Auth seam: client-token e2e over real HTTP ──
   # Proves a client token minted the way the auth frontend mints it can call

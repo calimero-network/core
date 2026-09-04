@@ -365,6 +365,71 @@ mod tests {
         );
     }
 
+    /// A group's default capabilities reach an attested TEE node on admission,
+    /// so a fleet relay does not need a per-node grant.
+    ///
+    /// This is the ergonomic answer to "every fleet node lands
+    /// authorship-closed": set the mask once on the namespace and every
+    /// non-admin member admitted afterwards inherits it. It is asserted through
+    /// `account_may_author` rather than by reading the capability row, because
+    /// that function is what `POST .../intents` and the relay descriptor both
+    /// call — a row that the gate does not read would prove nothing.
+    ///
+    /// The role matters: `ReadOnlyTee` is read-only for its OWN writes, and the
+    /// read-only gate is only ever applied to a delta's author, never to its
+    /// executor. So a read-only TEE node relaying for someone else is coherent,
+    /// and this pins that it is also reachable.
+    #[test]
+    fn a_groups_default_capabilities_reach_an_admitted_tee_node() {
+        let w = seed(7);
+        let tee = calimero_account::AccountId::from([0x7E; 32]);
+
+        CapabilitiesRepository::new(&w.store)
+            .set_default_capabilities(&w.group, MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits())
+            .expect("set the group default");
+
+        // Admitted AFTER the default is set, and never granted anything
+        // directly — the whole point is that no per-node op is needed.
+        //
+        // Through `admit_member_if_absent`, which is the call both TEE-attestation
+        // apply handlers make (`ops/namespace/member_joined_via_tee.rs`,
+        // `ops/group/member_joined_via_tee_attestation.rs`), rather than the
+        // `add_member` it currently delegates to. Asserting the entry point means
+        // a refactor that stops routing admission through `add_member` fails here
+        // instead of passing while production regresses.
+        crate::membership::MembershipPolicy::new(&w.store, w.group)
+            .admit_member_if_absent(&tee, &GroupMemberRole::ReadOnlyTee)
+            .expect("admit the TEE node");
+
+        assert!(
+            account_may_author(&w.store, &w.context, tee).expect("read the grant"),
+            "a TEE node admitted under a default mask carrying CAN_AUTHOR_ON_BEHALF \
+             must be able to relay without a per-node grant"
+        );
+    }
+
+    /// The control for the test above: without the default, the same admission
+    /// leaves the node closed.
+    ///
+    /// Without this, that test would pass just as happily if `add_member` were
+    /// granting authorship to every TEE node regardless of the default — which
+    /// is the failure it is meant to rule out, not demonstrate.
+    #[test]
+    fn an_admitted_tee_node_is_closed_when_no_default_is_set() {
+        let w = seed(7);
+        let tee = calimero_account::AccountId::from([0x7E; 32]);
+
+        crate::membership::MembershipPolicy::new(&w.store, w.group)
+            .admit_member_if_absent(&tee, &GroupMemberRole::ReadOnlyTee)
+            .expect("admit the TEE node");
+
+        assert!(
+            !account_may_author(&w.store, &w.context, tee).expect("read the grant"),
+            "admission alone must not confer authorship — it is implied by \
+             neither membership nor the TEE role"
+        );
+    }
+
     /// The author must be a member. This is the check that would silently pass
     /// if it were keyed by device rather than by account — a thin client's
     /// device is in no group's rows.

@@ -27,8 +27,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, join_context, leave_context, perform_intent,
-    resync_context, sync, update_context_application,
+    get_contexts_with_executors_for_application, intent_relay, join_context, leave_context,
+    perform_intent, resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -43,12 +43,74 @@ use crate::AdminState;
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+
+    /// Serve the delegated-execution routes without a node credential.
+    ///
+    /// # What this opens, and what it does not
+    ///
+    /// It opens exactly two routes — `GET`/`POST
+    /// /admin-api/contexts/:context_id/intents` — and nothing else. Both are
+    /// self-authenticating: the `POST` carries a warrant signed by the author's
+    /// device key that commits to this context, this method and these arguments,
+    /// has not expired, and whose nonce this node has not spent; and it is
+    /// refused unless this node holds `CAN_AUTHOR_ON_BEHALF` on the group owning
+    /// the context. A node token proves none of that and none of that needs a
+    /// node token.
+    ///
+    /// # Why it is off by default and why it exists at all
+    ///
+    /// Off, because a self-hosted node's operator did not ask for an
+    /// unauthenticated surface and the routes are useless to them: a member with
+    /// a node authors its own writes.
+    ///
+    /// On, because the clients delegated authorship exists for — a browser tab,
+    /// a phone, an agent holding one signing key — have no relationship with the
+    /// relay and so cannot hold a credential on it. Requiring one makes the
+    /// feature unreachable for precisely the callers it was built for, which is
+    /// recorded as the known gap in the direct-admission docs. Hosted TEE relays
+    /// set this; nothing else should need to.
+    ///
+    /// The residual exposure is warrant verification on an unauthenticated
+    /// request: signature checks and one store read, refused before anything is
+    /// executed or published. Rate limiting that hop belongs to the deployment's
+    /// reverse proxy, as it does for the other public routes.
+    ///
+    /// # What it does under each auth mode — read this before relying on it
+    ///
+    /// Under [`AuthMode::Embedded`](crate::config::AuthMode::Embedded) this is
+    /// the gate: the guard layer wraps the protected router only, so moving the
+    /// routes across genuinely removes the credential requirement.
+    ///
+    /// Under [`AuthMode::Proxy`](crate::config::AuthMode::Proxy) — the default —
+    /// **core installs no guard at all**, on either router. A reverse proxy
+    /// enforces auth, and it is the only thing that does. So flipping this alone
+    /// changes nothing a caller can observe, and *not* flipping it does not
+    /// close the path: whatever the proxy exempts is open regardless.
+    ///
+    /// That asymmetry is the trap. A proxy deployment must set this **and**
+    /// exempt exactly this path at the ingress, from one source of truth, or the
+    /// two drift — and the drift is silent in the unsafe direction, because the
+    /// ingress exemption is the half that actually opens the door. mero-tee's
+    /// node image drives both from a single Ansible variable for this reason.
+    #[serde(default)]
+    pub public_intents: bool,
 }
 
 impl AdminConfig {
+    /// One constructor taking both flags, rather than a `new(enabled)` plus a
+    /// `with_public_intents`.
+    ///
+    /// `public_intents` decides whether this node exposes a write path to
+    /// callers holding no credential on it, so there should be no way to build
+    /// this type without answering that. A default-false convenience
+    /// constructor is exactly how a relay ships with the posture nobody
+    /// intended — in either direction.
     #[must_use]
-    pub const fn new(enabled: bool) -> Self {
-        Self { enabled }
+    pub const fn new(enabled: bool, public_intents: bool) -> Self {
+        Self {
+            enabled,
+            public_intents,
+        }
     }
 }
 
@@ -65,7 +127,7 @@ pub(crate) fn setup(
     config: &ServerConfig,
     shared_state: Arc<AdminState>,
 ) -> Option<(String, Router, Router)> {
-    let _ = match &config.admin {
+    let admin_config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin api is disabled");
@@ -125,10 +187,6 @@ pub(crate) fn setup(
         .route(
             "/contexts/{context_id}/application",
             post(update_context_application::handler),
-        )
-        .route(
-            "/contexts/{context_id}/intents",
-            post(perform_intent::handler),
         )
         .route(
             "/contexts/{context_id}/resync",
@@ -380,6 +438,15 @@ pub(crate) fn setup(
         .nest("/tee", tee::protected_service())
         // Alias management
         .nest("/alias", alias::service())
+        // Delegated execution, unless this deployment serves it publicly. The
+        // routes are built once and mounted on exactly one of the two routers,
+        // so the two postures cannot both be live and no ordering between the
+        // routers decides which wins.
+        .merge(if admin_config.public_intents {
+            Router::new()
+        } else {
+            delegated_execution_routes()
+        })
         .layer(Extension(Arc::clone(&shared_state)))
         .layer(session_layer.clone());
 
@@ -389,9 +456,37 @@ pub(crate) fn setup(
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
         .nest("/tee", tee::service())
+        .merge(if admin_config.public_intents {
+            info!(
+                "Delegated execution is served publicly: a warrant is the credential on \
+                 GET/POST {admin_path}/contexts/:context_id/intents"
+            );
+            delegated_execution_routes()
+        } else {
+            Router::new()
+        })
         .layer(Extension(shared_state));
 
     Some((admin_path, protected_routes, public_routes))
+}
+
+/// The delegated-execution surface: run one intent a member authorized, and read
+/// what a member needs to know before authorizing one.
+///
+/// One function rather than two route lines in each router, because the two
+/// halves have to move together. A client that can `POST` but not `GET` cannot
+/// learn which account to name as the executor, and a client that can `GET` but
+/// not `POST` learns the answer to a question it cannot then act on — either
+/// split is a surface that looks available and is not.
+///
+/// Which router this is merged into is [`AdminConfig::public_intents`]; see there
+/// for why an unauthenticated posture is a coherent choice for these two routes
+/// and only these two.
+fn delegated_execution_routes() -> Router {
+    Router::new().route(
+        "/contexts/{context_id}/intents",
+        post(perform_intent::handler).get(intent_relay::handler),
+    )
 }
 
 /// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.

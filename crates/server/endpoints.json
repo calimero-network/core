@@ -18,6 +18,7 @@
   "GET /admin-api/contexts/{context_id}/group",
   "GET /admin-api/contexts/{context_id}/identities",
   "GET /admin-api/contexts/{context_id}/identities-owned",
+  "GET /admin-api/contexts/{context_id}/intents",
   "GET /admin-api/contexts/{context_id}/storage",
   "GET /admin-api/contexts/for-application/{application_id}",
   "GET /admin-api/contexts/with-executors/for-application/{application_id}",
