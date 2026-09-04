@@ -426,3 +426,51 @@ struct ReloadPaths {
     artifact_path: Utf8PathBuf,
     project_path: Utf8PathBuf,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use camino::Utf8PathBuf;
+    use tempfile::TempDir;
+
+    use super::resolve_artifact;
+
+    fn utf8_dir(dir: &TempDir) -> Utf8PathBuf {
+        Utf8PathBuf::try_from(dir.path().to_path_buf()).expect("temp dir path must be utf8")
+    }
+
+    #[test]
+    fn refuses_a_non_mpk_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = utf8_dir(&dir).join("app.wasm");
+        fs::write(path.as_std_path(), b"not a bundle").expect("write");
+
+        let err = resolve_artifact(&path, false).expect_err("a non-.mpk file must be refused");
+        assert!(
+            err.to_string().contains("Unsupported file type"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn refuses_no_build_with_no_prebuilt_bundle() {
+        let dir = TempDir::new().expect("tempdir");
+        let project = utf8_dir(&dir);
+        fs::write(project.join("Cargo.toml").as_std_path(), b"[package]\n").expect("write");
+
+        let err = resolve_artifact(&project, true)
+            .expect_err("--no-build with nothing prebuilt must be refused");
+        assert!(err.to_string().contains("No bundle at"), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_a_signed_mpk_path() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = utf8_dir(&dir).join("app.mpk");
+        fs::write(path.as_std_path(), b"bundle bytes").expect("write");
+
+        let resolved = resolve_artifact(&path, false).expect("a .mpk file must be accepted");
+        assert_eq!(resolved.file_name(), Some("app.mpk"));
+    }
+}

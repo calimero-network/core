@@ -4,6 +4,35 @@
 
 ### Added
 
+- **`grantedOnGroupId` on the relay descriptor** (`GET admin-api/contexts/:id/intents`),
+  optional. `canAuthorOnBehalf` answers whether this node may execute a delegated
+  write in the group owning this context; this says **where** a grant lives, which
+  is what makes a refusal actionable — the two ways of being refused need opposite
+  things from the caller. Absent means no group reachable from here carries it, so
+  someone must grant it on `groupId`. Equal to `groupId` means granted here.
+  *Different* from `groupId` means granted on an ancestor this node inherits
+  membership through but not on this context's own group — and that case is the
+  reason the field exists: contexts routinely live in subgroups while a TEE fleet
+  node is admitted once at the namespace root, and the grant does not travel down
+  the tree, so a namespace-wide grant leaves a subgroup context refused. A client
+  seeing only `false` would send someone to re-grant a capability they had already
+  granted, at the level they already granted it.
+
+  Reports where a grant *lives*, never what is *permitted*: `canAuthorOnBehalf`
+  remains the only authorization answer and a client must not read an ancestor as
+  permission. Backed by `warrant_gate::authorship_grant_source`, which defers to
+  `MembershipRepository::effective_capabilities` and `check_path` rather than
+  re-deriving the traversal — so it cannot report a grant across a boundary the
+  membership walk itself refuses to cross (a private subgroup required its own
+  admission, so it requires its own grant), and cannot report one for a node
+  deny-listed off an Open subgroup. Both properties are pinned by tests verified
+  through mutation.
+
+  Should the gate later widen to honour an inherited grant, `canAuthorOnBehalf`
+  becomes `true` in that third case and this field is unchanged — the shape
+  survives that change, which is why it is worth fixing now rather than after the
+  DTO ships.
+
 - **`GET admin-api/contexts/:context_id/intents`** — the relay descriptor a
   keyholder needs *before* minting a warrant: `executorAccount` (whom the
   warrant's `executor` must name), `canAuthorOnBehalf` (whether this node holds

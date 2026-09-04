@@ -40,8 +40,7 @@ struct Draft {
 /// # Errors
 /// Propagates the underlying store scan or read failure.
 fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
-    let Some((account, _root_pk, self_device, _agreement, _holds_root)) = node_identity(store)?
-    else {
+    let Some((account, _root_pk, self_device, ..)) = node_identity(store)? else {
         return Ok(None);
     };
 

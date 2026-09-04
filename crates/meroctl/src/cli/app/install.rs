@@ -39,6 +39,12 @@ pub struct InstallCommand {
 fn split_coords(coords: &str) -> Result<(String, String)> {
     match coords.split_once('@') {
         Some((package, version)) if !package.is_empty() && !version.is_empty() => {
+            if version.contains('@') {
+                bail!(
+                    "expected PACKAGE@VERSION, got '{coords}' (only one '@' is allowed; \
+                     package names cannot contain '@')"
+                );
+            }
             Ok((package.to_owned(), version.to_owned()))
         }
         _ => bail!("expected PACKAGE@VERSION, got '{coords}'"),
@@ -150,5 +156,19 @@ mod tests {
         for bad in ["com.example.myapp", "@1.0.0", "com.example.myapp@", ""] {
             assert!(split_coords(bad).is_err(), "{bad} must be refused");
         }
+    }
+
+    #[test]
+    fn refuses_a_second_at_sign() {
+        let err = split_coords("a@b@c").expect_err("a second '@' must be refused");
+        assert!(err.to_string().contains('@'), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_a_version_without_a_second_at_sign() {
+        assert_eq!(
+            split_coords("a@b").expect("valid"),
+            ("a".to_owned(), "b".to_owned())
+        );
     }
 }
