@@ -60,6 +60,60 @@ fn seal_for_test(
         .expect("seal a root op for a test")
 }
 
+/// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
+/// comes back SEALED, so the delivery metadata — which account, at which causal
+/// position — no longer reaches every peer on the namespace topic.
+///
+/// This is asserted at `seal_root_op_for_publish` and not through
+/// `root_op_is_sealable` alone, because the predicate is not where the change
+/// takes effect: every other test in this crate hand-builds
+/// `NamespaceOp::Root(RootOp::KeyDelivery { .. })` and applies it directly,
+/// which bypasses the publish helper entirely and would pass whatever the
+/// classification said. This is the one local test that crosses the boundary the
+/// change actually moved.
+///
+/// What it deliberately does NOT assert is that a keyless recipient recovers the
+/// key anyway. That path is the readiness beacon driving
+/// `SyncManager::recover_missing_group_keys` across two nodes and a partition,
+/// which is a merobox scenario (`account-pairing-missed-publish`) rather than
+/// anything a single store can show.
+#[test]
+fn a_key_delivery_is_sealed_at_the_publish_boundary() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_governance_types::{EnvelopeRecipient, KeyEnvelope};
+
+    let store = test_store();
+    let namespace_id = [0xE1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let delivery = RootOp::KeyDelivery {
+        group_id: ns_gid,
+        envelope: KeyEnvelope {
+            // Member-addressed: the bootstrap form. Sealing the carrier does not
+            // change who the envelope inside is addressed to.
+            recipient: EnvelopeRecipient::Member {
+                identity: PublicKey::from([0xE2u8; 32]),
+                ephemeral_pk: PublicKey::from([0xE3u8; 32]),
+            },
+            sender: PublicKey::from([0xE4u8; 32]),
+            nonce: [0u8; 12],
+            ciphertext: vec![9, 9, 9],
+            signature: [0u8; 64],
+        },
+    };
+
+    let published = seal_for_test(&store, ns_gid, delivery);
+
+    match published {
+        NamespaceOp::RootSealed { .. } => {}
+        NamespaceOp::Root(op) => panic!(
+            "a KeyDelivery must not reach the topic in the clear; the publish \
+             helper returned an unsealed {op:?}"
+        ),
+        other => panic!("unexpected published shape: {other:?}"),
+    }
+}
+
 /// A genesis whose founder credential is inadmissible establishes nothing.
 ///
 /// Two layers enforce it and this pins the property, not either one.
