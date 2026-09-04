@@ -156,6 +156,14 @@ impl NodeClient {
         };
         trace!(path = %path, "application path canonicalized");
 
+        let file_size = tokio::fs::metadata(&path).await?.len();
+        if file_size > bundle::MAX_ARCHIVE_BYTES {
+            bail!(
+                "application file at {path} is {file_size} bytes, exceeding the {} byte bundle cap",
+                bundle::MAX_ARCHIVE_BYTES
+            );
+        }
+
         let bundle_data: Arc<[u8]> = tokio::fs::read(&path).await?.into();
         if !bundle::is_bundle_blob(&bundle_data) {
             bail!("{NOT_A_BUNDLE}: {path}");

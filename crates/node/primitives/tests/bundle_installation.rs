@@ -5,6 +5,7 @@ use std::fs;
 use calimero_node_primitives::bundle::{
     derive_signer_id_did_key, sign_manifest_json, BundleManifest,
 };
+use calimero_node_primitives::client::application::bundle::MAX_ARCHIVE_BYTES;
 use calimero_node_primitives::client::NodeClient;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
@@ -1887,4 +1888,27 @@ async fn a_raw_wasm_payload_is_refused() {
             "{name} got: {err}"
         );
     }
+}
+
+/// A file over the bundle cap must be refused by its metadata length, before
+/// it is ever read into memory. `set_len` makes a sparse file so the test
+/// does not actually write out the cap's worth of bytes.
+#[tokio::test]
+async fn install_from_path_rejects_a_file_over_the_bundle_cap() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    let path = temp_dir.path().join("huge.mpk");
+    let file = fs::File::create(&path).unwrap();
+    file.set_len(MAX_ARCHIVE_BYTES + 1).unwrap();
+    let path: Utf8PathBuf = path.try_into().unwrap();
+
+    let err = node_client
+        .install_application_from_path(path)
+        .await
+        .expect_err("a file over the bundle cap must be refused");
+    assert!(
+        err.to_string().contains(&MAX_ARCHIVE_BYTES.to_string()),
+        "error should name the byte cap, got: {err}"
+    );
 }
