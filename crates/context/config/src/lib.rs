@@ -118,19 +118,36 @@ impl MemberCapabilities {
     /// a warrant that member signed. Held by attested relays executing on a
     /// client's behalf.
     ///
-    /// Deliberately not implied by admin, and deliberately NOT propagated by the
-    /// subgroup-admit cascade: availability cascades because a relay that
-    /// silently missed new subgroups would fail at the job it was admitted to do,
-    /// but authorship is the step from *reads what members read* to *decides the
-    /// content of their writes*. Every new context is therefore
-    /// authorship-closed until an admin says otherwise. If the cascade ever
-    /// carried this bit, least privilege would invert silently.
+    /// Deliberately not implied by admin, and never written as a row by the
+    /// subgroup-admit cascade. It IS resolved through the membership anchor,
+    /// which is a different thing and is the one exception to capabilities being
+    /// read from the target group alone: a grant found on the ancestor a member
+    /// inherits its membership through counts for the groups below it on that
+    /// Open chain.
     ///
-    /// Checked on the group that OWNS the target context, and that is
-    /// deterministic here unlike [`Self::CAN_CREATE_SUBGROUP`]: a peer applying a
-    /// delta for a context is by definition a member of the owning group and
-    /// holds its key, so it can read the capability row and every peer reaches
-    /// the same verdict.
+    /// That is a deliberate reversal of the original rule that only a row on the
+    /// owning group counted. The rule was defensible in the abstract and broken
+    /// in practice: a relay fleet is admitted once at the namespace root while
+    /// contexts live in subgroups, so a namespace-wide grant authorized nothing
+    /// at all, and there was no row to write for an inherited member short of
+    /// admitting the relay directly to every subgroup. The scoping did not
+    /// disappear, it moved to where the admin writes the grant — on the subgroup
+    /// for one group, on the root for a fleet — and `Restricted` visibility and
+    /// the per-member deny-list both still refuse, because a grant reaches
+    /// wherever membership reaches and no further. The cost is real and is
+    /// stated here rather than hidden: a root grant now also reaches Open
+    /// subgroups created *after* it.
+    ///
+    /// Checked on the group that owns the target context and, failing that, on
+    /// that group's membership anchor. Both are deterministic, unlike
+    /// [`Self::CAN_CREATE_SUBGROUP`], and for a stronger reason than the owning
+    /// group alone would give: resolving the membership already reads the
+    /// anchor's own state — `check_path` consults `CAN_JOIN_OPEN_SUBGROUPS` in
+    /// exactly the capability row this bit lives in to decide a non-admin's
+    /// inheritance, and the parent's admin set to decide an admin's. A peer that
+    /// cannot read the anchor cannot resolve the membership either, and would
+    /// refuse the delta a step earlier. So the lookup needs no information a
+    /// peer applying the delta could lack.
     pub const CAN_AUTHOR_ON_BEHALF: Self = Self(1 << 9);
 
     /// The union of every defined capability bit.
