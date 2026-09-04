@@ -187,6 +187,89 @@ pub fn account_may_author(
     holds_authorship(store, &group_id, account)
 }
 
+/// Which group's capability row carries `account`'s authorship grant, if any.
+///
+/// **Reports; does not decide.** [`account_may_author`] is the gate, and it reads
+/// only the context's own group. This walks the one extra step that gate does
+/// not: it also looks at the ancestor `account` inherits membership through. The
+/// two therefore disagree by design today — a namespace-level grant makes this
+/// return `Some(namespace)` while the gate still says `false` for a subgroup
+/// context — and that difference is exactly what a client needs in order to
+/// distinguish "nobody granted this anywhere" from "granted upstream, but this
+/// group needs its own entry". Those are different actions, and a bare `false`
+/// cannot tell them apart.
+///
+/// # Why it looks at this group and its anchor, and nothing else
+///
+/// It mirrors [`MembershipRepository::check_path`] exactly, which is the whole
+/// design rule: **a grant reaches wherever membership reaches, and no further.**
+/// `check_path` already stops at a non-Open boundary and already returns the
+/// closest ancestor holding a direct row, so deferring to it means this cannot
+/// report a grant across a privacy boundary the membership walk itself refuses
+/// to cross — a subgroup that required its own admission also requires its own
+/// grant. Re-deriving the traversal here would be a second implementation of
+/// that rule, free to drift from the first.
+///
+/// An intermediate ancestor between `group` and `anchor` cannot hold a
+/// meaningful row: capability rows are written alongside membership rows, and by
+/// `check_path`'s definition the anchor is the closest ancestor that has one.
+pub fn authorship_grant_source(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+) -> EyreResult<Option<ContextGroupId>> {
+    let membership = MembershipRepository::new(store);
+
+    // `effective_capabilities` rather than `check_path` + a raw row read, because
+    // it is the deny-list-aware pair of the two. `check_path` deliberately does
+    // NOT consult the deny-list, so building on it directly would report a grant
+    // for a node kicked from an Open subgroup — where the deny entry *is* the
+    // removal, there being no direct row to delete. Reusing the audited read
+    // keeps that rule in one place instead of restating it here.
+    //
+    // `None` means not an effective member of this group by any path, so nothing
+    // reachable from here can carry a grant.
+    let Some(here) = membership.effective_capabilities(group_id, &account)? else {
+        return Ok(None);
+    };
+    if MemberCapabilities::from_bits_truncate(here)
+        .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
+    {
+        return Ok(Some(*group_id));
+    }
+
+    // Not granted on this group. The anchor is the only other place it can live:
+    // membership is inherited from there, and `check_path` has already refused to
+    // cross any non-Open boundary on the way. A `Direct` member has no anchor, so
+    // its own row above was the whole answer.
+    let MembershipPath::Inherited { anchor, .. } = membership.check_path(group_id, &account)?
+    else {
+        return Ok(None);
+    };
+    let Some(bits) = CapabilitiesRepository::new(store).member_capability(&anchor, &account)?
+    else {
+        return Ok(None);
+    };
+    Ok(MemberCapabilities::from_bits_truncate(bits)
+        .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
+        .then_some(anchor))
+}
+
+/// [`authorship_grant_source`] keyed by context, mirroring [`account_may_author`].
+///
+/// A context registered to no group reports `None` for the same reason the gate
+/// refuses it: there is no group whose capabilities could carry a grant.
+pub fn authorship_grant_source_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    account: AccountId,
+) -> EyreResult<Option<ContextGroupId>> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(None);
+    };
+    authorship_grant_source(store, &group_id, account)
+}
+
 /// Whether the operator holds the authorship grant on `group_id`.
 fn holds_authorship(
     store: &Store,
@@ -231,13 +314,18 @@ mod tests {
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::Store;
 
-    use super::{account_may_author, check_delegated_delta, spend_warrant_nonce, WarrantRefusal};
-    use crate::test_fixtures::{
-        enrol_member, real_join_account, sample_meta_with_admin, test_store,
+    use super::{
+        account_may_author, authorship_grant_source, check_delegated_delta, spend_warrant_nonce,
+        WarrantRefusal,
     };
-    use crate::{CapabilitiesRepository, MembershipRepository, MetaRepository};
+    use crate::test_fixtures::{
+        enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
+    };
+    use crate::{CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository};
+    use calimero_account::AccountId;
     use calimero_account::{Delegation, Warrant};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
     use calimero_primitives::context::ContextId;
 
     const GROUP: [u8; 32] = [0xC0; 32];
@@ -362,6 +450,186 @@ mod tests {
             !account_may_author(&w.store, &other, w.delegation.warrant.executor)
                 .expect("read the grant"),
             "a context in no group must not be readable as a grant"
+        );
+    }
+
+    // ── `authorship_grant_source`: where a grant lives, vs whether it applies ──
+    //
+    // Every test below builds `namespace → subgroup`, puts the context in the
+    // SUBGROUP, and grants only at the namespace. That is the shape the fleet
+    // actually runs: a TEE node is admitted once at the namespace root, while
+    // contexts live in subgroups (channels, DMs, per-team groups). The gate
+    // reads only the context's own group, so these tests pin the reporting
+    // helper *and* the deliberate disagreement between it and the gate.
+
+    /// A subgroup under `namespace`, Open so membership inherits, with `tee`
+    /// admitted at the ROOT only and holding `CAN_JOIN_OPEN_SUBGROUPS` so the
+    /// inheritance path is live. Returns `(namespace, subgroup, context, tee)`.
+    fn nested(
+        grant_at_root: bool,
+    ) -> (Store, ContextGroupId, ContextGroupId, ContextId, AccountId) {
+        let store = test_store();
+        let namespace = ContextGroupId::from([0xB1; 32]);
+        let subgroup = ContextGroupId::from([0xB2; 32]);
+        let context = ContextId::from([0xB3; 32]);
+        let tee = AccountId::from([0x7E; 32]);
+
+        for gid in [namespace, subgroup] {
+            MetaRepository::new(&store)
+                .save(&gid, &sample_meta_with_admin(AccountId::from([0xEE; 32])))
+                .expect("save meta");
+        }
+        nest_for_test(&store, &namespace, &subgroup);
+        // The context is in the SUBGROUP — not the root. This is the whole point.
+        crate::contexts::register_context_in_group(&store, &subgroup, &context)
+            .expect("register context");
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .expect("open the subgroup");
+
+        // Admitted at the ROOT only, exactly as a fleet node is.
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &tee, GroupMemberRole::ReadOnlyTee)
+            .expect("admit at the root");
+
+        let mut root_caps = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+        if grant_at_root {
+            root_caps |= MemberCapabilities::CAN_AUTHOR_ON_BEHALF;
+        }
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(&namespace, &tee, root_caps.bits())
+            .expect("set the root mask");
+
+        (store, namespace, subgroup, context, tee)
+    }
+
+    /// The reason this helper exists: a namespace-level grant is REPORTED for a
+    /// subgroup context, while the gate still refuses it.
+    ///
+    /// Those two lines are not a contradiction, they are the product: a client
+    /// seeing only `false` would tell someone to grant a capability they have
+    /// already granted, at the level they already granted it. Reporting the
+    /// ancestor is what turns that into "this subgroup needs its own entry".
+    #[test]
+    fn a_namespace_grant_is_reported_for_a_subgroup_context_that_the_gate_refuses() {
+        let (store, namespace, subgroup, context, tee) = nested(true);
+
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, tee).expect("locate the grant"),
+            Some(namespace),
+            "the grant lives on the namespace and must be reported as such"
+        );
+        assert!(
+            !account_may_author(&store, &context, tee).expect("read the gate"),
+            "the gate reads only the context's own group, so it must still refuse — \
+             if this ever passes, the gate has widened and PR B has landed"
+        );
+    }
+
+    /// Granted on the context's own group: reported as that group, and allowed.
+    #[test]
+    fn a_grant_on_the_contexts_own_group_is_reported_as_that_group() {
+        let (store, _namespace, subgroup, context, tee) = nested(false);
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &tee, GroupMemberRole::ReadOnlyTee)
+            .expect("admit directly");
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &subgroup,
+                &tee,
+                MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+            )
+            .expect("grant here");
+
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, tee).expect("locate the grant"),
+            Some(subgroup),
+        );
+        assert!(account_may_author(&store, &context, tee).expect("read the gate"));
+    }
+
+    /// Granted nowhere reachable: absent, not a stale ancestor.
+    #[test]
+    fn no_grant_anywhere_reports_nothing() {
+        let (store, _namespace, subgroup, _context, tee) = nested(false);
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, tee).expect("locate the grant"),
+            None,
+            "CAN_JOIN_OPEN_SUBGROUPS alone is not an authorship grant"
+        );
+    }
+
+    /// **The security property.** A non-Open subgroup terminates the membership
+    /// walk, so a namespace grant must not be reported through it.
+    ///
+    /// A private subgroup required its own admission; it therefore requires its
+    /// own grant. Reporting the ancestor here would tell a client the relay is
+    /// "nearly" authorized for a group it is not even a member of — and would be
+    /// the exact bug that widening the gate later must not introduce.
+    #[test]
+    fn a_namespace_grant_is_not_reported_across_a_private_subgroup_boundary() {
+        let (store, _namespace, subgroup, _context, tee) = nested(true);
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .expect("close the subgroup");
+
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_member(&subgroup, &tee)
+                .expect("read membership"),
+            "precondition: closing the subgroup ends the inheritance path"
+        );
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, tee).expect("locate the grant"),
+            None,
+            "a grant must not be reported across a boundary membership cannot cross"
+        );
+    }
+
+    /// Deny-listed on the subgroup: the inheritance is revoked there, so the
+    /// ancestor grant stops being reachable too.
+    ///
+    /// Without this, a node kicked from a subgroup would still be reported as
+    /// grant-carrying for it — and a kick from an Open subgroup IS the deny
+    /// entry, since there is no direct row to delete.
+    #[test]
+    fn a_deny_listed_node_reports_no_grant_for_that_subgroup() {
+        let (store, _namespace, subgroup, _context, tee) = nested(true);
+        DenyListRepository::new(&store)
+            .mark(&subgroup, &tee)
+            .expect("deny-list on the subgroup");
+
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, tee).expect("locate the grant"),
+            None,
+        );
+    }
+
+    /// A stray row on a group the account is no member of is not a grant there.
+    #[test]
+    fn a_row_on_a_group_with_no_membership_is_not_reported() {
+        let store = test_store();
+        let orphan = ContextGroupId::from([0x0F; 32]);
+        let stranger = AccountId::from([0x5A; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &orphan,
+                &sample_meta_with_admin(AccountId::from([0xEE; 32])),
+            )
+            .expect("save meta");
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &orphan,
+                &stranger,
+                MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+            )
+            .expect("write a row without membership");
+
+        assert_eq!(
+            authorship_grant_source(&store, &orphan, stranger).expect("locate the grant"),
+            None,
+            "membership is checked first, so an orphaned row carries no grant"
         );
     }
 

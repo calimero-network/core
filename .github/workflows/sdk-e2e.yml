@@ -1,11 +1,13 @@
 name: SDK E2E (paired)
 
-# Live behavioural gate ("core breaks first"). Builds merod from this PR, boots a
-# single node with embedded auth, then runs the mero-js e2e suite against it. A
-# renamed/removed param makes the SDK send the old shape → the node 4xx → red here,
-# on the core dev's PR. The SDK ref is paired: declare `sdk-ref: <branch>` in the
-# PR body (or push a same-named branch on mero-js) so a breaking change and its SDK
-# fix go green together; otherwise it runs against mero-js master.
+# Live behavioural gate ("core breaks first"): merod is built from this PR and the
+# mero-js e2e suite runs against it, then every route in the manifest must have
+# answered the SDK under 400 at least once. A renamed or removed field makes the
+# node refuse the old shape, leaving that route only 4xx, and the run goes red.
+#
+# The SDK ref is paired: declare `sdk-ref: <branch>` in the PR body (or push a
+# same-named branch on mero-js) so a breaking change and its SDK fix go green
+# together; otherwise it runs against mero-js master.
 
 permissions:
   contents: read
@@ -39,6 +41,8 @@ on:
       - "crates/node/**"
       - ".github/workflows/sdk-e2e.yml"
       - "scripts/resolve-paired-ref.sh"
+      - "scripts/check-endpoint-coverage.sh"
+      - "scripts/tests/check-endpoint-coverage.test.sh"
   push:
     branches:
       - master
@@ -74,6 +78,18 @@ env:
   MERO_E2E_PASS: dev-password
 
 jobs:
+  coverage-gate:
+    name: Coverage gate self-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core (PR head)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Test check-endpoint-coverage.sh against fixtures
+        run: bash scripts/tests/check-endpoint-coverage.test.sh
+
   sdk-e2e:
     name: SDK E2E (paired)
     runs-on: ubuntu-latest
@@ -198,8 +214,8 @@ jobs:
           COVERED="_mero-js/covered-endpoints.json"
           chmod +x scripts/check-endpoint-coverage.sh
           if [ -f "$COVERED" ]; then
-            # Enforced with a baseline ratchet: a NEW uncovered route fails; the
-            # accepted-uncovered backlog lives in coverage-baseline.json.
+            # A route with no call under 400 fails: never requested, or requested
+            # and refused every time. coverage-baseline.json lists the accepted gaps.
             scripts/check-endpoint-coverage.sh \
               crates/server/endpoints.json "$COVERED" crates/server/coverage-baseline.json
           else

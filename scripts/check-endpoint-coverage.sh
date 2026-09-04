@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# Fail if any manifest endpoint was NOT exercised by the SDK e2e run — so a new
-# endpoint that ships without an SDK test is flagged.
+# Fail if any manifest endpoint was NOT exercised by the SDK e2e run, or was
+# exercised but answered >= 400 on every call - a route the SDK only ever gets
+# refused on is an untested route wearing a coverage badge.
 #
 # Args:
 #   $1  endpoints.json      committed route manifest, e.g. ["GET /admin-api/contexts/{context_id}", ...]
-#   $2  covered-endpoints.json   concrete "METHOD /path" entries the SDK e2e recorded
-#   $3  coverage-baseline.json   (optional) accepted-uncovered routes — known gaps
-#                                that don't fail the build (the ratchet). A new
-#                                uncovered route NOT in the baseline fails.
+#   $2  covered-endpoints.json   what the SDK e2e recorded: either {"route": "METHOD /path",
+#                                "status": 200} objects, or bare "METHOD /path" strings from an
+#                                older recorder (status unknown, taken as a hit)
+#   $3  coverage-baseline.json   (optional) accepted gaps that don't fail the build
+#                                (the ratchet): routes with no test, and routes a
+#                                single CI node can only ever refuse. A route NOT
+#                                in the baseline fails either way.
 #
 # Entries are method-aware "METHOD /path". A recorded "METHOD /concrete" covers a
-# manifest "METHOD /pattern" when the methods match and the path matches the
-# pattern ("{seg}" -> one segment, "{*rest}" -> anything). Query strings are ignored.
+# manifest "METHOD /pattern" when the methods match, the path matches the pattern
+# ("{seg}" -> one segment, "{*rest}" -> anything), and the response was under 400.
+# Query strings are ignored. A baselined route that was only refused is still
+# printed with its statuses, so the gap stays visible while it is excused.
 set -euo pipefail
 
 MANIFEST="${1:?usage: check-endpoint-coverage.sh <endpoints.json> <covered-endpoints.json> [baseline.json]}"
@@ -21,8 +27,14 @@ command -v jq >/dev/null || { echo "ERROR: jq is required"; exit 1; }
 
 patterns=()
 while IFS= read -r line; do patterns+=("$line"); done < <(jq -r '.[]' "$MANIFEST")
+# Each hit is read as "<status> METHOD /path". A legacy string entry gets -1, which
+# compares under 400 and so counts as a successful call, keeping an older recorder working.
 hits=()
-while IFS= read -r line; do hits+=("$line"); done < <(jq -r '.[]' "$COVERED")
+hit_status=()
+while IFS= read -r line; do
+  hit_status+=("${line%% *}")
+  hits+=("${line#* }")
+done < <(jq -r '.[] | if type == "string" then "-1 \(.)" else "\(.status) \(.route)" end' "$COVERED")
 baseline=()
 if [ -n "$BASELINE" ] && [ -f "$BASELINE" ]; then
   while IFS= read -r line; do baseline+=("$line"); done < <(jq -r '.[]' "$BASELINE")
@@ -36,6 +48,7 @@ is_baselined() {
 
 new_uncovered=()
 baselined_uncovered=()
+refused_only=()
 for pattern in "${patterns[@]}"; do
   # Split "METHOD /path-pattern".
   pmethod="${pattern%% *}"
@@ -43,15 +56,21 @@ for pattern in "${patterns[@]}"; do
   # "{seg}" -> "[^/]+"; "{*rest}" -> ".*" (catch-all first, else the generic rule eats it)
   rx="^$(printf '%s' "$ppath" | sed -E 's#\{\*[^{}/]+\}#.*#g; s#\{[^{}/]+\}#[^/]+#g')$"
   matched=0
-  for hit in "${hits[@]}"; do
+  refused=""
+  for i in "${!hits[@]}"; do
+    hit="${hits[$i]}"
     hmethod="${hit%% *}"
     hrest="${hit#* }"
     hp="${hrest%%\?*}"
     hp="${hp%/}"  # trailing slash is path-equivalent (e.g. /contexts/sync/ == /contexts/sync)
-    if [ "$hmethod" = "$pmethod" ] && [[ "$hp" =~ $rx ]]; then matched=1; break; fi
+    [ "$hmethod" = "$pmethod" ] && [[ "$hp" =~ $rx ]] || continue
+    if [ "${hit_status[$i]}" -lt 400 ]; then matched=1; break; fi
+    case " $refused " in *" ${hit_status[$i]} "*) ;; *) refused="${refused:+$refused }${hit_status[$i]}" ;; esac
   done
   if [ "$matched" -eq 0 ]; then
-    if is_baselined "$pattern"; then baselined_uncovered+=("$pattern"); else new_uncovered+=("$pattern"); fi
+    if is_baselined "$pattern"; then baselined_uncovered+=("$pattern${refused:+ (status $refused)}")
+    elif [ -n "$refused" ]; then refused_only+=("$pattern (status $refused)")
+    else new_uncovered+=("$pattern"); fi
   fi
 done
 
@@ -60,10 +79,18 @@ if [ "${#baselined_uncovered[@]}" -gt 0 ]; then
   printf '  - %s\n' "${baselined_uncovered[@]}"
 fi
 
+fail=0
+if [ "${#refused_only[@]}" -gt 0 ]; then
+  echo "Endpoint(s) exercised but every call was refused (fix the SDK call or the route, or baseline it with a reason):"
+  printf '  %s\n' "${refused_only[@]}"
+  fail=1
+fi
+
 if [ "${#new_uncovered[@]}" -gt 0 ]; then
   echo "New endpoint(s) with no SDK e2e coverage (add a mero-js e2e test, or add to coverage-baseline.json with a reason):"
   printf '  %s\n' "${new_uncovered[@]}"
-  exit 1
+  fail=1
 fi
+[ "$fail" -eq 0 ] || exit 1
 covered=$(( ${#patterns[@]} - ${#baselined_uncovered[@]} ))
 echo "OK: ${covered}/${#patterns[@]} manifest endpoints exercised; ${#baselined_uncovered[@]} baselined."

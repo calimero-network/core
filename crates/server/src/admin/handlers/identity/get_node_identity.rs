@@ -33,11 +33,15 @@ use crate::AdminState;
 /// name a device no peer will admit and - for a paired node - an adopted account
 /// it no longer speaks for. So this falls back to the node's own root, which is
 /// the only account it can still honestly claim.
+///
+/// The trailing flags, in order: whether this node holds the root of the account
+/// it speaks for, and whether that account has certified this node's device.
 pub(crate) type NodeIdentityParts = (
     AccountId,
     PublicKey,
     Option<DeviceId>,
     Option<KemPublicKey>,
+    bool,
     bool,
 );
 
@@ -54,18 +58,25 @@ pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityPart
         let holds_root = devices
             .account_root()?
             .is_some_and(|root| root.account() == held.account);
+        // Certified either by a link this node applied, or by a certificate an
+        // offline root signed and an operator imported. A device minted by
+        // pair-init has neither until the holder completes the pairing.
+        let certified = devices.device_cert(held.device())?.is_some()
+            || devices.imported_certificate()?.is_some();
         return Ok(Some((
             held.account,
             held.genesis.root_sign_pk,
             Some(held.device()),
             Some(held.kem_public_key()),
             holds_root,
+            certified,
         )));
     }
     // No usable device: this node speaks only for itself, and a node with neither
     // a usable device nor a root has taken part in nothing at all. No device also
     // means no agreement key, which is the device's, and the account reported is its
-    // own root's - so it holds that root by construction.
+    // own root's - so it holds that root by construction, and has no device for
+    // anyone to have certified.
     Ok(devices.account_root()?.map(|root| {
         (
             root.account(),
@@ -73,6 +84,7 @@ pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityPart
             None,
             None,
             true,
+            false,
         )
     }))
 }
@@ -101,7 +113,15 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
     };
 
-    let Some((account, account_root_pk, device, agreement_key, holds_account_root)) = held else {
+    let Some((
+        account,
+        account_root_pk,
+        device,
+        agreement_key,
+        holds_account_root,
+        device_certified,
+    )) = held
+    else {
         return ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "this node holds neither a usable device nor an account root yet; \
@@ -157,6 +177,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 // this node's device without the node ever touching the root.
                 device_agreement_key: agreement_key,
                 holds_account_root,
+                device_certified,
             },
         },
     }
@@ -167,7 +188,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
 mod tests {
     use std::sync::Arc;
 
-    use calimero_account::AccountGenesis;
+    use calimero_account::{AccountGenesis, AccountProof, DeviceCert};
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{AccountBindingRepository, NamespaceRepository};
     use calimero_primitives::identity::PrivateKey;
@@ -206,7 +227,7 @@ mod tests {
             .ensure_enrolled(&NS.into())
             .expect("mint this node's device");
 
-        let (account, root_pk, device, _agreement, _holds) = node_identity(&store)
+        let (account, root_pk, device, ..) = node_identity(&store)
             .expect("read")
             .expect("an enrolled node has an identity");
 
@@ -247,7 +268,7 @@ mod tests {
             .apply_revocation(&NS.into(), adopted.device())
             .expect("tombstone this node's device");
 
-        let (account, _root_pk, device, _agreement, _holds) = node_identity(&store)
+        let (account, _root_pk, device, ..) = node_identity(&store)
             .expect("read")
             .expect("the node still has its own root to fall back on");
         assert_eq!(account, own_root);
@@ -286,7 +307,8 @@ mod tests {
         let _root = devices.provision_account_root().expect("root");
         let held = devices.ensure_enrolled(&NS.into()).expect("mint");
 
-        let (account, .., holds_root) = node_identity(&store).expect("read").expect("present");
+        let (account, .., holds_root, _certified) =
+            node_identity(&store).expect("read").expect("present");
         assert_eq!(account, held.account);
         assert!(holds_root);
     }
@@ -307,7 +329,8 @@ mod tests {
             .expect("adopt");
         assert_ne!(adopted.account, own, "the fixture has to make them differ");
 
-        let (account, .., holds_root) = node_identity(&store).expect("read").expect("present");
+        let (account, .., holds_root, _certified) =
+            node_identity(&store).expect("read").expect("present");
         assert_eq!(
             account, adopted.account,
             "it speaks for the account it adopted"
@@ -316,6 +339,78 @@ mod tests {
             !holds_root,
             "it holds a root, but not the one the account it speaks for is derived from"
         );
+    }
+
+    /// The signal `holds_account_root` cannot give. Pair-init mints this node's
+    /// device and publishes nothing, so the device stays uncertified - and holds no
+    /// root either - until the account holder completes the pairing.
+    #[test]
+    fn a_paired_device_is_uncertified_until_the_holder_certifies_it() {
+        let store = a_node_taking_part_somewhere();
+        let devices = NodeDeviceRepository::new(&store);
+        let holder_root = PrivateKey::from([0x55; 32]);
+        let adopted = devices
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS)],
+                AccountGenesis::new(holder_root.public_key()),
+            )
+            .expect("pair-init mints this node's device");
+
+        let (.., holds_root, certified) = node_identity(&store).expect("read").expect("present");
+        assert!(!holds_root);
+        assert!(
+            !certified,
+            "pair-init mints the device, it does not certify it"
+        );
+
+        // What pair-complete signs, as this node learns it: by applying the link.
+        let cert = DeviceCert::sign(
+            &holder_root,
+            adopted.account,
+            adopted.device(),
+            &PrivateKey::from([0x56; 32]).public_key(),
+            &adopted.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("the account root certifies the device");
+        devices
+            .remember_device_cert(
+                &AccountProof {
+                    genesis: adopted.genesis,
+                    chain: vec![],
+                    statement: cert,
+                },
+                &[],
+            )
+            .expect("apply the link");
+
+        let (.., certified) = node_identity(&store).expect("read").expect("present");
+        assert!(certified);
+    }
+
+    /// The offline route to the same answer: an operator imported the certificate a
+    /// cold account root signed for this device, so no link was ever applied.
+    #[test]
+    fn an_imported_certificate_certifies_a_root_free_device() {
+        let store = a_node_taking_part_somewhere();
+        let devices = NodeDeviceRepository::new(&store);
+        let _adopted = devices
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS)],
+                AccountGenesis::new(PrivateKey::from([0x57; 32]).public_key()),
+            )
+            .expect("adopt");
+
+        let (.., certified) = node_identity(&store).expect("read").expect("present");
+        assert!(!certified);
+
+        devices
+            .store_imported_certificate(&[0x01; 32])
+            .expect("import the certificate signed elsewhere");
+
+        let (.., certified) = node_identity(&store).expect("read").expect("present");
+        assert!(certified);
     }
 
     /// A node that holds no root at all can certify nothing.
@@ -329,7 +424,8 @@ mod tests {
             )
             .expect("adopt");
 
-        let (account, .., holds_root) = node_identity(&store).expect("read").expect("present");
+        let (account, .., holds_root, _certified) =
+            node_identity(&store).expect("read").expect("present");
         assert_eq!(account, adopted.account);
         assert!(!holds_root);
     }

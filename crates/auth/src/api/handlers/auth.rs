@@ -109,6 +109,7 @@ pub async fn login_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse
 
 /// Base token request with common fields
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct BaseTokenRequest {
     /// Authentication method
     #[validate(length(min = 1, message = "Authentication method is required"))]
@@ -338,6 +339,7 @@ pub async fn token_handler(
 
 /// Refresh token request
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct RefreshTokenRequest {
     /// Access token
     #[validate(length(min = 1, message = "Access token is required"))]
@@ -828,6 +830,7 @@ pub async fn callback_handler(
 
 /// Revoke token request
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct RevokeTokenRequest {
     /// Client ID to revoke
     #[validate(length(min = 1, message = "Client ID cannot be empty"))]
@@ -898,6 +901,7 @@ pub async fn revoke_token_handler(
 /// Mock token request for CI and testing
 #[cfg(debug_assertions)]
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct MockTokenRequest {
     /// Client name for identification
     #[validate(length(min = 1, message = "Client name is required"))]
