@@ -6088,7 +6088,7 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
     use crate::group_keys::GroupKeyring;
     use crate::{build_group_key_delivery, namespace_groups_awaiting_key};
     use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
-    use calimero_store::rand::UnwrapErr;
+    use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
     let mut rng = UnwrapErr(SysRng);
@@ -6105,10 +6105,9 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
     let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
-    let joiner_account = crate::test_fixtures::account_for(&joiner_pk);
 
     let joiner_store = test_store();
-    let (joiner_credential, joiner_device) =
+    let (joiner_account, joiner_device, joiner_credential) =
         crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
 
     let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
