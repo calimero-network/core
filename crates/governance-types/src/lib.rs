@@ -744,8 +744,31 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         | RootOp::MemberJoinedAt { .. }
         | RootOp::MemberJoinedOpen { .. }
         | RootOp::MemberJoinedViaTeeAttestation { .. } => false,
-        // How the key arrives; sealing it under that key is unsatisfiable, and
-        // its payload is already sealed to the recipient in `KeyEnvelope`.
+        // How the key arrives. Not for the reason it looks like: the publisher
+        // is an admin or member who DOES hold the namespace key, so sealing
+        // would encrypt fine, and the payload is separately sealed to the
+        // recipient in `KeyEnvelope` so cleartext costs no key confidentiality.
+        //
+        // The reason is CAUSAL ORDERING. Read off the DAG, this op hands the
+        // recipient the key at its own position in the causal order, which is
+        // what lets `retry_encrypted_ops_for_group` then fold the encrypted
+        // ops that were buffered waiting for it -- above all the
+        // `AccountDeviceLinked` that a device's own authority depends on. Seal
+        // it and a keyless recipient cannot read it, so the key has to arrive
+        // out of band via the direct-stream pull instead
+        // (`recover_missing_group_keys`), and that pull is ordered against
+        // nothing: it can complete before the op it is supposed to unblock has
+        // even been received, and the re-drive only retries what is already
+        // buffered.
+        //
+        // Measured, not assumed. Sealing this was tried and reverted: on
+        // `shared-storage-account-writers-two-devices` and
+        // `account-device-revoke-lockout` a freshly paired node logged
+        // "received group key via direct delivery" and then failed
+        // `join_context` 0.2ms later with "is bound to no account in the
+        // namespace owning group", because the link op had not folded. The
+        // metadata this leaks -- that a key went to some account at some
+        // causal position -- is the accepted cost of that ordering.
         RootOp::KeyDelivery { .. } => false,
         // Genesis, before any key exists.
         RootOp::NamespaceCreated { .. } => false,

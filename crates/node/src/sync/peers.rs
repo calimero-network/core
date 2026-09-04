@@ -242,26 +242,6 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     }))
 }
 
-/// Stable-partition `peers` so peers with an observed trusted-anchor
-/// identity come first while preserving the relative order within each
-/// partition. Returns the index at which non-anchor peers start (i.e.
-/// the count of anchor peers).
-///
-/// A peer is an anchor if at least one identity recorded in
-/// `peer_identities` for that peer appears in `anchors`. An empty
-/// `anchors` set returns 0 immediately — no point sorting if every
-/// peer is going to be non-anchor.
-///
-/// The anchor predicate is materialised into a `Vec<bool>` keyed by
-/// the peer's original index before sorting. This avoids reacquiring
-/// the `peer_identities` lock O(n log n) times during `sort_by_key`'s
-/// comparisons, and prevents a concurrent cache mutation from causing
-/// the post-sort anchor count to disagree with the actual partition
-/// boundary — both `sort_by_key` and the count read from the same
-/// snapshot.
-///
-/// Free function (not a method) so it can be unit-tested against
-/// synthetic inputs without spinning up a sync manager.
 /// How many of an anchor-first-ordered candidate list may serve a group key.
 ///
 /// A group key is the one thing on the sync paths a peer is trusted for by
@@ -307,6 +287,26 @@ pub(crate) fn key_servers_allowed(
     Some(anchor_count)
 }
 
+/// Stable-partition `peers` so peers with an observed trusted-anchor
+/// identity come first while preserving the relative order within each
+/// partition. Returns the index at which non-anchor peers start (i.e.
+/// the count of anchor peers).
+///
+/// A peer is an anchor if at least one identity recorded in
+/// `peer_identities` for that peer appears in `anchors`. An empty
+/// `anchors` set returns 0 immediately — no point sorting if every
+/// peer is going to be non-anchor.
+///
+/// The anchor predicate is materialised into a `Vec<bool>` keyed by
+/// the peer's original index before sorting. This avoids reacquiring
+/// the `peer_identities` lock O(n log n) times during `sort_by_key`'s
+/// comparisons, and prevents a concurrent cache mutation from causing
+/// the post-sort anchor count to disagree with the actual partition
+/// boundary — both `sort_by_key` and the count read from the same
+/// snapshot.
+///
+/// Free function (not a method) so it can be unit-tested against
+/// synthetic inputs without spinning up a sync manager.
 pub(crate) fn partition_peers_anchor_first(
     peers: &mut [PeerId],
     state_access: &dyn SyncStateAccess,
