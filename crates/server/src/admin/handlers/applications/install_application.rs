@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_app_downloader::RegistryMode;
 use calimero_server_primitives::admin::{InstallApplicationRequest, InstallApplicationResponse};
 use tracing::{error, info};
 
@@ -29,16 +30,12 @@ pub async fn handler(
             }
             .into_response()
         }
-        // Not this node's fault and not the caller's: the source it is
-        // configured with has nothing published there yet.
+        // Not this node's fault and not the caller's: the configured source
+        // could not resolve these coordinates.
         Ok(None) => {
             let mode = state.node_client.registry_config().mode;
             error!(%coords, ?mode, "Application not published at these coordinates");
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("the configured {mode:?} source has no application published at {coords}"),
-            )
-                .into_response()
+            (StatusCode::BAD_GATEWAY, not_found_message(mode, &coords)).into_response()
         }
         Err(err) => {
             error!(%coords, error=?err, "Failed to install application");
@@ -47,13 +44,48 @@ pub async fn handler(
     }
 }
 
+/// `Http` looked and found nothing; `Dht` never resolves bare coordinates,
+/// since the peer route authorizes by context membership.
+fn not_found_message(mode: RegistryMode, coords: &str) -> String {
+    match mode {
+        RegistryMode::Http => {
+            format!("the configured Http source has no application published at {coords}")
+        }
+        RegistryMode::Dht => "this node is in dht registry mode, which cannot install by \
+                               package@version; install from a local .mpk bundle or via \
+                               governance instead"
+            .to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use calimero_app_downloader::RegistryMode;
     use calimero_server_primitives::admin::InstallApplicationRequest;
     use calimero_server_primitives::validation::Validate;
 
+    use super::not_found_message;
+
     fn parse(json: &str) -> Result<InstallApplicationRequest, serde_json::Error> {
         serde_json::from_str(json)
+    }
+
+    #[test]
+    fn http_mode_message_names_the_coordinates() {
+        let message = not_found_message(RegistryMode::Http, "com.example.app@1.0.0");
+        assert!(message.contains("com.example.app@1.0.0"), "got: {message}");
+        assert!(message.contains("Http"), "got: {message}");
+    }
+
+    #[test]
+    fn dht_mode_message_explains_coordinates_are_unsupported() {
+        let message = not_found_message(RegistryMode::Dht, "com.example.app@1.0.0");
+        assert!(message.contains("dht"), "got: {message}");
+        assert!(
+            !message.contains("has no application published"),
+            "Dht mode never resolves by coordinates, so must not imply it looked and \
+             found nothing; got: {message}"
+        );
     }
 
     /// The point of the break: a body naming a URL must fail loudly at
