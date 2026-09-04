@@ -4,23 +4,9 @@
 //! The second half of pairing, run on the device holding the account. Publishes
 //! two ops: `AccountDeviceLinked` (encrypted, carries the root-signed certificate
 //! and confers authority) and `RootOp::KeyDelivery` (the current scope key wrapped
-//! to the device).
-//!
-//! The delivery is a SEALED root op, and the paired device is not expected to read
-//! it. It holds no scope key, so it could not: what it does instead is what any
-//! participant holding no governance state does, which is pull the key from a peer
-//! over the direct-stream path. The readiness-beacon handler drives that for a
-//! stranded participant (`SyncManager::recover_missing_group_keys`), and the
-//! `account-pairing-missed-publish` scenario has exercised it since before the
-//! delivery was sealed - a device that missed this publish entirely already
-//! recovered through it without a restart.
-//!
-//! That path is the stronger of the two. A cleartext envelope in the DAG is
-//! authenticated only by its publisher's signature, while the pull verifies the
-//! served key against the `key_id` a signed op names and, where it cannot, accepts
-//! one only from a trusted anchor. Sealing therefore costs the fast path and keeps
-//! the delivery metadata - which account, at which causal position - off the
-//! namespace topic.
+//! to the device). Delivery must be a cleartext root op - the pairing device holds
+//! no scope key, so an encrypted envelope would be unreadable by its only
+//! recipient.
 //!
 //! Only the current key is delivered, so a paired device converges on forward
 //! state and cannot read ops sealed under retired epochs. Scope is chosen by

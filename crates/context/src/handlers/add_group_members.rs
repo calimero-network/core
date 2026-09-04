@@ -4,7 +4,7 @@ use std::sync::Arc;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::AccountId;
 use calimero_context_client::group::AddGroupMembersRequest;
-use calimero_context_client::local_governance::{GroupOp, KeyEnvelope, RootOp};
+use calimero_context_client::local_governance::{GroupOp, KeyEnvelope, NamespaceOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -69,20 +69,13 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     .await?;
                     report.observe("add_group_members", "MemberAdded");
 
-                    // Admin-initiated key delivery: record the group key for
-                    // the just-added member, ECDH-wrapped. This is a ONE-SHOT
-                    // publish per add (not the removed receiver-side re-publish
-                    // that caused #2319).
-                    //
-                    // Sealed under the NAMESPACE key, which splits the two adds
-                    // this path serves. Adding an existing namespace member to a
-                    // SUBGROUP still delivers end to end: that member holds the
-                    // namespace key, so it opens the seal and unwraps the
-                    // subgroup key inside. Adding a member to the namespace ROOT
-                    // does not: the recipient holds nothing yet and cannot open
-                    // the seal, so for that add the transfer is the joiner-side
-                    // pull (`recover_missing_group_keys`) and this op is only the
-                    // members-only causal record of the delivery.
+                    // Admin-initiated key delivery: proactively push the
+                    // group key to the just-added member, ECDH-wrapped, so
+                    // it can decrypt its `MemberAdded` and the group's ops
+                    // promptly. This is a ONE-SHOT publish per add (not the
+                    // removed receiver-side re-publish that caused #2319).
+                    // The joiner-side pull (`recover_missing_group_keys`) is
+                    // the durable fallback if this delivery is missed.
                     if let Some((_key_id, group_key)) =
                         GroupKeyring::new(&datastore, group_id).load_current_key()?
                     {
@@ -98,27 +91,14 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                             warn!(%member_account, "no group key was delivered to the added member; it must pull the key itself");
                         }
                         for (envelope, recipient) in deliveries {
-                            let delivery_op =
-                                match calimero_governance_store::seal_root_op_for_publish(
-                                    &datastore,
-                                    ns_id.to_bytes().into(),
-                                    RootOp::KeyDelivery {
-                                        group_id: group_id.to_bytes().into(),
-                                        envelope,
-                                    },
-                                ) {
-                                    Ok(op) => op,
-                                    Err(e) => {
-                                        warn!(?e, %recipient, "could not seal KeyDelivery for added member; it must pull the key itself");
-                                        continue;
-                                    }
-                                };
-                            // `required_signers` is None. It used to name the
-                            // recipient, but a recipient that holds no namespace
-                            // key cannot apply a sealed op, so on a root add the
-                            // ack could never arrive and every successful add
-                            // logged a failure. The pull is the confirmation
-                            // path for that case.
+                            let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
+                                group_id: group_id.to_bytes().into(),
+                                envelope,
+                            });
+                            // Recipient-specific: pass
+                            // `required_signers = Some([recipient])` so the
+                            // report's `acked_by` cleanly reflects whether the
+                            // recipient applied and acked.
                             if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
                                 &datastore,
                                 &node_client,
@@ -126,7 +106,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                 ns_id.to_bytes().into(),
                                 &sk,
                                 delivery_op,
-                                None,
+                                Some(vec![recipient]),
                             )
                             .await
                             {
@@ -148,8 +128,8 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
     }
 }
 
-/// The wrapped group key per recipient, paired with the key that identifies the
-/// recipient in the log line for that delivery.
+/// The wrapped group key per recipient, paired with the key whose ack confirms
+/// the delivery landed.
 ///
 /// An account is addressed through its live devices, the same device-first rule
 /// the scope-key fan-out follows, so a revoked device cannot be handed the key.
