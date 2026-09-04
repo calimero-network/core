@@ -1916,22 +1916,12 @@ impl SyncManager {
         }
 
         for (group_id, key_id) in requests {
-            // Anchors first, per group. A group key is the one thing on the
-            // sync paths a peer is trusted for by content rather than by
-            // signature: an op is verified before it mutates anything, but an
-            // unwrapped key is just bytes. Where `key_id` is known the hash
-            // check below settles it and the ordering is only efficiency;
-            // where it is `None` — a group we are a keyless member of, with no
-            // op naming a key yet, which is the cold-start case — preference
-            // for an Admin or `ReadOnlyTee` anchor is the only thing standing
-            // between a cold node and a key chosen by any member who answers.
-            //
-            // A preference, not a requirement: plain members are still tried
-            // after the anchors. Making it a requirement would trade a
-            // confidentiality risk for a liveness one — no anchor online, no
-            // key, no join — and that is a call for the operator, not this
-            // loop. Anchors are resolved per group because `trusted_anchors`
-            // is per group; the candidate pool is the namespace mesh.
+            // Anchors first, per group — `trusted_anchors` is per group, while
+            // the candidate pool is the namespace mesh. Whether the ordering is
+            // merely a preference or a hard restriction is decided by
+            // `key_servers_allowed`, which documents the reasoning: any
+            // candidate may serve a key the hash can check, and only an anchor
+            // may serve one it cannot.
             let mut ordered = candidates.clone();
             let anchors = {
                 let store = self.context_client.datastore_handle().into_inner();
@@ -1945,12 +1935,43 @@ impl SyncManager {
                 &*self.state_access,
                 &anchors,
             );
+            // How many of those may actually serve this request. Anchor-only
+            // when the key cannot be checked; any candidate when it can.
+            let Some(allowed) = crate::sync::peers::key_servers_allowed(
+                ordered.len(),
+                anchor_count,
+                !anchors.is_empty(),
+                key_id.is_some(),
+            ) else {
+                if anchors.is_empty() {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        candidate_count = ordered.len(),
+                        "group-key recovery refused: this key cannot be verified \
+                         against a signed op and no trusted anchor can be \
+                         identified for the group, so there is nobody it is safe \
+                         to accept it from; retrying once governance state names \
+                         an Admin or ReadOnlyTee"
+                    );
+                } else {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        candidate_count = ordered.len(),
+                        "group-key recovery refused: this key cannot be verified \
+                         against a signed op and no trusted anchor is reachable; \
+                         retrying rather than accepting an unverifiable key from \
+                         a non-anchor peer"
+                    );
+                }
+                continue;
+            };
+            ordered.truncate(allowed);
             debug!(
                 group_id = %hex::encode(group_id),
                 anchor_peer_count = anchor_count,
-                candidate_count = ordered.len(),
+                allowed_servers = allowed,
                 verifiable = key_id.is_some(),
-                "group-key recovery: preferring anchor peers"
+                "group-key recovery: candidate peers selected"
             );
 
             for peer in &ordered {
