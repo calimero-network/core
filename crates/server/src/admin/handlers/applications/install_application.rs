@@ -44,9 +44,8 @@ pub async fn handler(
     }
 }
 
-/// The 502 body for `Ok(None)`, per mode: `Http` failed to find a publish,
-/// while `Dht` never resolves coordinates at all (no context to authorize
-/// the lookup against).
+/// `Http` looked and found nothing; `Dht` never resolves bare coordinates,
+/// since the peer route authorizes by context membership.
 fn not_found_message(mode: RegistryMode, coords: &str) -> String {
     match mode {
         RegistryMode::Http => {
