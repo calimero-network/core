@@ -1030,6 +1030,7 @@ jobs:
       # Nodes fetch bundles from here rather than from each other. The URL is
       # discovered on this runner, so it is stamped in rather than prebuilt.
       - name: Serve app bundles from a fixture registry
+        if: matrix.image != 'merod:local-dht'
         run: |
           url=$(./scripts/e2e-fixture-registry.sh)
           ./scripts/set-registry-mode.sh merod:local http "$url"
