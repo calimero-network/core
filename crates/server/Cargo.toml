@@ -37,6 +37,7 @@ borsh.workspace = true
 sha2.workspace = true
 
 calimero-account.workspace = true
+calimero-app-downloader.workspace = true
 calimero-context.workspace = true
 calimero-governance-store.workspace = true
 calimero-context-config.workspace = true
