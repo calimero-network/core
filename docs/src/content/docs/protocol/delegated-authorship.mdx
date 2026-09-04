@@ -101,14 +101,31 @@ Note the subject: an **account**, not a key. That is what lets the relay rotate 
 
 ## Discovery: what the author has to be told first
 
-Every input to a warrant is something the author already holds, with one exception. `executor` names the *relay's* account, which is a content address the client cannot derive, and whether that relay may act in this context is a row in the owning group's capabilities the client cannot read. So the relay answers both, on the path the intent will be presented to:
+Every input to a warrant is something the author already holds, with one exception. `executor` names the *relay's* account, which is a content address the client cannot derive, and whether that relay may execute a delegated write here is a row in the owning group's capabilities the client cannot read. So the relay answers both, on the path the intent will be presented to:
 
 ```http
 GET /admin-api/contexts/:context_id/intents
-→ { "data": { "executorAccount": "…", "canAuthorOnBehalf": true, "groupId": "…" } }
+→ { "data": {
+      "executorAccount": "…",
+      "canAuthorOnBehalf": false,
+      "groupId": "…",
+      "grantedOnGroupId": "…"   // optional
+  } }
 ```
 
-`canAuthorOnBehalf: false` is not an error and not permanent — it is the state of every context no admin has opened yet, so it has to come back as an *answer*. A client reads it to tell "ask an admin of `groupId`" from "retry later", and reads `executorAccount` to know whom that admin must grant it to.
+`canAuthorOnBehalf` answers one question: **may this node execute a delegated write in the group owning this context?** It is a fact about the node, not about admin — an admin is simply who can change it. `false` is not an error and not permanent: it is the state of every context no admin has opened yet, since the capability is implied by neither membership nor admin and is not propagated by the subgroup cascade.
+
+`grantedOnGroupId` says *where* a grant lives, which is what makes a refusal actionable — because the two ways of being refused need opposite things from the caller:
+
+| `grantedOnGroupId` | Means | What to do |
+| --- | --- | --- |
+| absent | no group reachable from here carries the grant | ask an admin to grant it on `groupId` |
+| `== groupId` | granted right here | nothing — paired with `canAuthorOnBehalf: true` |
+| `!= groupId` | granted on an ancestor this node inherits membership through, not on this context's own group | grant it on `groupId`; nothing is missing upstream |
+
+That third row is the one worth having. Contexts routinely live in subgroups while a TEE fleet node is admitted once at the namespace root, and the grant does not travel down the tree — so a namespace-wide grant leaves a subgroup context refused. A client seeing only `false` would send someone to re-grant a capability they had already granted, at the level they already granted it.
+
+It reports where a grant *lives*, never what is *permitted*: `canAuthorOnBehalf` remains the only authorization answer, and a client must not read an ancestor as permission.
 
 Asking before signing is not politeness. A nonce is spent from a monotonic per-device sequence to mint a warrant, and one naming the wrong executor is unspendable: the number is gone and the write never happened.
 
