@@ -25,7 +25,7 @@ const MAX_MANIFEST_SCAN_BYTES: u64 = 8 * 1024 * 1024;
 
 /// How far any one archive walk may decompress. Every read walks the whole
 /// archive, so this bounds a bundle's total decompressed size.
-const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Bounds total decompressed bytes. `tar` buffers GNU long-name, long-link and
 /// pax members with an unbounded read inside `entries()`, before any `Entry` is
