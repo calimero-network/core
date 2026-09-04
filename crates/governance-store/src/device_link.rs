@@ -7,7 +7,7 @@
 
 use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId};
 use calimero_context_client::group::BindOutcome;
-use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
 use calimero_node_primitives::client::NodeClient;
@@ -122,19 +122,33 @@ async fn publish_link_and_key(
         "linked a device of this account"
     );
 
-    // `required_signers` is None because the device is not a member and so is not
-    // among the acking set.
+    // Sealed under the namespace key, so this op is NOT how the paired device
+    // gets the key: it holds no namespace key and cannot open the seal. It pulls
+    // the key from a peer instead, which the readiness beacon drives for a
+    // participant holding no governance state
+    // (`SyncManager::recover_missing_group_keys`), and which the
+    // `account-pairing-missed-publish` scenario has covered since before this was
+    // sealed -- a device that missed the publish entirely already recovered
+    // through it without a restart.
     //
-    // Its receipt no longer shows up as the device reading this op either: the
-    // delivery is sealed, and a device holding no scope key cannot open it. The
-    // device acquires the key by pulling it from a peer instead, which the
-    // readiness beacon drives for a participant holding no governance state. This
-    // op remains the members-only record of WHEN the key was delivered, which is
-    // what orders key epochs against membership.
-    let delivery = NamespaceOp::Root(RootOp::KeyDelivery {
-        group_id: namespace.to_bytes().into(),
-        envelope,
-    });
+    // What the op still does is order the delivery against membership for the
+    // members who CAN read it: it is the causal record of when this device was
+    // handed the scope key. Sealing keeps that record -- which account, at which
+    // position -- off the namespace topic, and the pull is the stronger transfer
+    // anyway: it checks the served key against the `key_id` a signed op names,
+    // and where it cannot, takes one only from a trusted anchor.
+    //
+    // `required_signers` is None, and now for two reasons: the device is not a
+    // member and so is not in the acking set, and it could not ack a sealed op
+    // regardless.
+    let delivery = crate::seal_root_op_for_publish(
+        store,
+        namespace.to_bytes().into(),
+        RootOp::KeyDelivery {
+            group_id: namespace.to_bytes().into(),
+            envelope,
+        },
+    )?;
     if let Err(err) = crate::sign_and_publish_namespace_op(
         store,
         node_client,
