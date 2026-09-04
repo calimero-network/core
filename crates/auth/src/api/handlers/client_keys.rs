@@ -16,6 +16,7 @@ use crate::storage::models::{Key, KeyType};
 
 /// Client key generation request
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct GenerateClientKeyRequest {
     /// Context ID selected by user
     pub context_id: Option<String>,
