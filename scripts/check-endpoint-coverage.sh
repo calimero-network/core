@@ -8,15 +8,16 @@
 #   $2  covered-endpoints.json   what the SDK e2e recorded: either {"route": "METHOD /path",
 #                                "status": 200} objects, or bare "METHOD /path" strings from an
 #                                older recorder (status unknown, taken as a hit)
-#   $3  coverage-baseline.json   (optional) accepted-uncovered routes — known gaps
-#                                that don't fail the build (the ratchet). A new
-#                                uncovered route NOT in the baseline fails.
+#   $3  coverage-baseline.json   (optional) accepted gaps that don't fail the build
+#                                (the ratchet): routes with no test, and routes a
+#                                single CI node can only ever refuse. A route NOT
+#                                in the baseline fails either way.
 #
 # Entries are method-aware "METHOD /path". A recorded "METHOD /concrete" covers a
 # manifest "METHOD /pattern" when the methods match, the path matches the pattern
 # ("{seg}" -> one segment, "{*rest}" -> anything), and the response was under 400.
-# Query strings are ignored. The baseline excuses a route with no test, never one
-# whose every call was refused - that is a broken test, not a missing one.
+# Query strings are ignored. A baselined route that was only refused is still
+# printed with its statuses, so the gap stays visible while it is excused.
 set -euo pipefail
 
 MANIFEST="${1:?usage: check-endpoint-coverage.sh <endpoints.json> <covered-endpoints.json> [baseline.json]}"
@@ -67,8 +68,8 @@ for pattern in "${patterns[@]}"; do
     case " $refused " in *" ${hit_status[$i]} "*) ;; *) refused="${refused:+$refused }${hit_status[$i]}" ;; esac
   done
   if [ "$matched" -eq 0 ]; then
-    if [ -n "$refused" ]; then refused_only+=("$pattern (status $refused)")
-    elif is_baselined "$pattern"; then baselined_uncovered+=("$pattern")
+    if is_baselined "$pattern"; then baselined_uncovered+=("$pattern${refused:+ (status $refused)}")
+    elif [ -n "$refused" ]; then refused_only+=("$pattern (status $refused)")
     else new_uncovered+=("$pattern"); fi
   fi
 done
@@ -80,7 +81,7 @@ fi
 
 fail=0
 if [ "${#refused_only[@]}" -gt 0 ]; then
-  echo "Endpoint(s) exercised but every call was refused (the baseline does not excuse these - fix the SDK call or the route):"
+  echo "Endpoint(s) exercised but every call was refused (fix the SDK call or the route, or baseline it with a reason):"
   printf '  %s\n' "${refused_only[@]}"
   fail=1
 fi

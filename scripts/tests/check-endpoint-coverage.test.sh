@@ -71,9 +71,9 @@ run "an untested route is excused by the baseline" 0 \
   "$ONE" "$EMPTY" '["GET /admin-api/contexts"]'
 run "an untested route absent from the baseline fails" 1 \
   "$ONE" "$EMPTY" "$EMPTY" "no SDK e2e coverage"
-run "the baseline does not excuse an all-4xx route" 1 \
+run "the baseline excuses an all-4xx route but still prints its statuses" 0 \
   "$ONE" '[{"route": "GET /admin-api/contexts", "status": 400}]' '["GET /admin-api/contexts"]' \
-  "every call was refused"
+  "GET /admin-api/contexts (status 400)"
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -215,7 +215,7 @@ jobs:
           chmod +x scripts/check-endpoint-coverage.sh
           if [ -f "$COVERED" ]; then
             # A route with no call under 400 fails: never requested, or requested
-            # and refused every time. coverage-baseline.json excuses the former only.
+            # and refused every time. coverage-baseline.json lists the accepted gaps.
             scripts/check-endpoint-coverage.sh \
               crates/server/endpoints.json "$COVERED" crates/server/coverage-baseline.json
           else
