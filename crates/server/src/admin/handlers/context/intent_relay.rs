@@ -123,12 +123,35 @@ pub async fn handler(
         }
     };
 
+    // Where the grant lives, which is a different question from whether it
+    // applies. Read separately from the gate above on purpose: the gate answers
+    // only for this context's group, so a namespace-level grant leaves
+    // `can_author_on_behalf` false while this reports the namespace — and that
+    // pair is the whole point. "Granted upstream, not here" and "granted nowhere"
+    // need opposite things from the caller, and a bare `false` conflates them.
+    let granted_on = match calimero_governance_store::warrant_gate::authorship_grant_source(
+        store,
+        &group_id,
+        executor_account,
+    ) {
+        Ok(source) => source,
+        Err(err) => {
+            error!(error = ?err, %context_id, "Failed to locate this node's authorship grant");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to locate this node's authorship grant".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: IntentRelayApiResponse {
             data: IntentRelayApiResponseData {
                 executor_account: hex::encode(executor_account.as_bytes()),
                 can_author_on_behalf,
                 group_id: hex::encode(group_id.to_bytes()),
+                granted_on_group_id: granted_on.map(|g| hex::encode(g.to_bytes())),
             },
         },
     }

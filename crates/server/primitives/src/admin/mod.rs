@@ -1373,16 +1373,41 @@ pub struct IntentRelayApiResponseData {
     /// An account, not this node's signing key: one of the relay's processes
     /// re-keying must not void warrants already issued to it.
     pub executor_account: String,
-    /// Whether this node holds `CAN_AUTHOR_ON_BEHALF` on the group owning this
-    /// context.
+    /// Whether this node may execute a delegated write in the group owning this
+    /// context — the same question `POST .../intents` and every peer asks.
     ///
-    /// `false` is not an error and not permanent — it is the state of a context
-    /// no admin has opened to delegated execution yet, which is every context by
-    /// default. A client reads it to tell "ask an admin" from "retry later".
+    /// `false` is not an error and not permanent: it is the state of a context no
+    /// admin has opened to delegated execution yet, which is every context by
+    /// default, since `CAN_AUTHOR_ON_BEHALF` is implied by neither membership nor
+    /// admin and is not propagated by the subgroup cascade. Read it together with
+    /// `grantedOnGroupId` below, which says whether the answer is "nowhere" or
+    /// "not here".
     pub can_author_on_behalf: bool,
-    /// The group owning this context, hex — the group whose admin must grant the
-    /// capability, so a refusal can name where to go.
+    /// The group owning this context, hex.
     pub group_id: String,
+    /// The group whose capability row carries the grant, hex — or absent when no
+    /// group reachable from here carries it.
+    ///
+    /// This is what turns a bare `false` into an actionable answer, because the
+    /// two ways of being refused need opposite things from the caller:
+    ///
+    /// * **absent** — nobody has granted this node authorship anywhere it can
+    ///   reach. Someone must grant it, on `groupId`.
+    /// * **equal to `groupId`** — granted right here. Paired with
+    ///   `canAuthorOnBehalf: true`.
+    /// * **different from `groupId`** — granted on an ancestor this node inherits
+    ///   membership through, but not on this context's own group. Nothing is
+    ///   missing upstream; this group needs its own entry. A client that only saw
+    ///   `false` would send someone to re-grant a capability they already
+    ///   granted, at the level where they already granted it.
+    ///
+    /// It reports where a grant *lives*, never what is *permitted*:
+    /// `canAuthorOnBehalf` remains the only authorization answer, so a client
+    /// must not read an ancestor here as permission. Should the gate later widen
+    /// to honour an inherited grant, `canAuthorOnBehalf` becomes `true` in that
+    /// third case and this field is unchanged — the shape survives that change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_on_group_id: Option<String>,
 }
 
 /// Wrapped in `data` like every neighbouring response.
@@ -3505,6 +3530,14 @@ pub struct NodeIdentityApiResponseData {
     /// Defaulted, so a response from a node predating the field still deserializes.
     #[serde(default)]
     pub holds_account_root: bool,
+
+    /// Whether this node's device is certified into the account it speaks for.
+    /// Pair-init mints the device and only pair-complete certifies it, and
+    /// `holds_account_root` is false across both - this separates them.
+    ///
+    /// Defaulted, so a response from a node predating the field still deserializes.
+    #[serde(default)]
+    pub device_certified: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
