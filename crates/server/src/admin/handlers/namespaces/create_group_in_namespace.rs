@@ -14,7 +14,7 @@ use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateGroupInNamespaceBody {
     pub group_name: Option<String>,
     /// Optional subgroup visibility at birth (#2771): `"open"` or
@@ -215,5 +215,20 @@ pub async fn handler(
             error!(?err, "Failed to create group in namespace");
             parse_api_error(err).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateGroupInNamespaceBody;
+
+    #[test]
+    fn a_body_with_an_unknown_field_is_refused() {
+        let err = serde_json::from_str::<CreateGroupInNamespaceBody>(r#"{"bogus":1}"#)
+            .expect_err("an unknown field must not deserialize");
+        assert!(
+            err.to_string().contains("unknown field `bogus`"),
+            "got: {err}"
+        );
     }
 }

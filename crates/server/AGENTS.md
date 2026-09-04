@@ -221,3 +221,4 @@ Authentication handled via middleware in `src/auth.rs`:
 - WebSocket requires context subscription
 - SSE streams are per-context
 - All responses use consistent error format
+- Every request body is `deny_unknown_fields`; add a new request type to the list in `primitives/tests/deny_unknown_fields.rs`
