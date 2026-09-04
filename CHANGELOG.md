@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`GET admin-api/contexts/:context_id/intents`** — the relay descriptor a
+  keyholder needs *before* minting a warrant: `executorAccount` (whom the
+  warrant's `executor` must name), `canAuthorOnBehalf` (whether this node holds
+  the grant on the owning group) and `groupId` (whose admin grants it).
+  Both facts belong to the node, so a client could not compose them, and asking
+  after the fact is too late: minting a warrant spends a nonce from a monotonic
+  per-device sequence, and one naming the wrong executor is unspendable.
+  `canAuthorOnBehalf: false` is an answer rather than an error — it is the
+  default state of every context, since the capability is implied by neither
+  membership nor admin.
+
+- **`--can-author-on-behalf`** on `meroctl group members set-capabilities`, and
+  the same row in `check-access`. The capability existed and was enforced
+  everywhere, but no CLI could grant it, so delegated execution could not be
+  turned on at all. Note the mask is replaced, not merged.
+
+- **`Client::get_intent_relay`** in `calimero-client`, and `meroctl context
+  intent` now uses it. The command previously took `executor` from
+  `GET admin-api/identity`, which needs a credential on the relay — so on the
+  relay the feature exists for, the credential-free one, it could not read it at
+  all — and which does not report the grant, so it signed and spent `--nonce`
+  before learning the write would be refused. It now reads both from the
+  descriptor and refuses beforehand when the grant is missing, naming the group
+  and the account in the `set-capabilities` command to ask an admin for.
+
+- **`server.admin.public_intents`** (and `merod init --public-intents`): serve
+  the two delegated-execution routes above without a node credential. **Off by
+  default.** It opens exactly those two and nothing else, because they carry
+  their own credential — the warrant commits to this context, method and
+  arguments, is single-use, and is refused before execution unless the node
+  holds `CAN_AUTHOR_ON_BEHALF`. A node token proves none of that, and requiring
+  one makes the feature unreachable for the callers it exists for: a browser
+  tab or an agent holding one signing key and no relationship with the relay.
+  This is the write half of the known gap recorded in
+  [direct admission](docs/src/content/docs/protocol/direct-admission.mdx);
+  `/admit` is still behind the guard.
+
+  **Breaking** for `calimero-server`: `AdminConfig::new` now takes
+  `(enabled, public_intents)`. One constructor rather than a defaulting one,
+  because this flag decides whether a node exposes a write path to callers
+  holding no credential on it, and a convenience default is how a relay ships
+  with the posture nobody intended — in either direction.
+
 ### Removed
 
 - **`upgradePolicy`** from the namespace and group-info responses (`GET

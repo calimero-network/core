@@ -42,6 +42,14 @@ pub const EXAMPLES: &str = r"
   # List members of a group
   $ meroctl --node node1 group members list <group_id>
 
+  # Let a relay write on members' behalf (delegated execution). The mask is
+  # REPLACED, not merged — re-pass any flag the member already holds.
+  $ meroctl --node node1 group members set-capabilities <group_id> <relay_account> \
+      --can-author-on-behalf
+
+  # Show an account's role and every capability it holds, decoded
+  $ meroctl --node node1 group members check-access <group_id> <account>
+
   # List contexts in a group
   $ meroctl --node node1 group contexts list <group_id>
 ";

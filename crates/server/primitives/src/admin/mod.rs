@@ -1352,6 +1352,46 @@ pub struct PerformIntentApiResponse {
     pub data: PerformIntentApiResponseData,
 }
 
+/// What a keyholder needs to know before it mints a warrant for this node.
+///
+/// A warrant binds `executor` to an **account**, and that account is the one
+/// thing a client cannot derive: it is this node's, not the caller's, and it is a
+/// content address rather than a key on any wire the client already reads. Making
+/// the client ask `/admin-api/identity` separately and then guess whether the
+/// grant exists is two round trips to answer one question — "can this relay run
+/// my intent, and whose name do I put in the warrant?"
+///
+/// Answering both together is also what lets a client fail *before* signing.
+/// A warrant naming the wrong executor, or a relay with no grant, is refused at
+/// `POST .../intents` — after the author has spent a nonce from its monotonic
+/// sequence on a warrant no relay will ever accept.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentRelayApiResponseData {
+    /// The account a warrant for this node must name as its `executor`, hex.
+    ///
+    /// An account, not this node's signing key: one of the relay's processes
+    /// re-keying must not void warrants already issued to it.
+    pub executor_account: String,
+    /// Whether this node holds `CAN_AUTHOR_ON_BEHALF` on the group owning this
+    /// context.
+    ///
+    /// `false` is not an error and not permanent — it is the state of a context
+    /// no admin has opened to delegated execution yet, which is every context by
+    /// default. A client reads it to tell "ask an admin" from "retry later".
+    pub can_author_on_behalf: bool,
+    /// The group owning this context, hex — the group whose admin must grant the
+    /// capability, so a refusal can name where to go.
+    pub group_id: String,
+}
+
+/// Wrapped in `data` like every neighbouring response.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentRelayApiResponse {
+    pub data: IntentRelayApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddGroupMembersApiRequest {
