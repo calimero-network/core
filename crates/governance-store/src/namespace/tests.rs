@@ -5843,6 +5843,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
+        None,
     )
     .unwrap();
 
@@ -5895,6 +5896,7 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
+        None,
     )
     .unwrap();
     assert!(divergence.is_none());
@@ -6065,6 +6067,183 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     );
 }
 
+/// **The security property.** A member that holds a group key can wrap a key of
+/// its OWN choosing for a joiner, and the authenticated-sender gate does not
+/// stop it: that gate binds WHO wrapped the envelope, not WHAT is inside.
+///
+/// Left unchecked this is not merely a failed join. The joiner stores the
+/// attacker's key as current (a directly-delivered key lands at epoch 0, and a
+/// cold joiner holds nothing to outrank it), then seals its own subsequent
+/// writes under it — readable by whoever chose it — while the group's real ops
+/// stay undecodable.
+///
+/// `key_id` is `SHA256(group_key)`, and a buffered op names the id it is waiting
+/// for, so the joiner can settle this without trusting the responder at all.
+///
+/// Mutation check: drop the `expected_key_id` comparison in
+/// `apply_received_group_key_envelope` and this test fails while the honest
+/// round-trip beside it still passes.
+#[test]
+fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, namespace_groups_awaiting_key};
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let namespace_id = [0xF4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xF5u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    // The key the group actually uses, and the one a hostile member substitutes.
+    let real_key = [0x6Cu8; 32];
+    let hostile_key = [0xADu8; 32];
+    let real_key_id = GroupKeyring::key_id_for(&real_key);
+    assert_ne!(real_key_id, GroupKeyring::key_id_for(&hostile_key));
+
+    let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let joiner_sk = PrivateKey::from(joiner_sk_bytes);
+    let joiner_pk = joiner_sk.public_key();
+
+    let joiner_store = test_store();
+    let (joiner_account, joiner_device, joiner_credential) =
+        crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
+
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    // A member in good standing — this is an insider, not an outsider. It just
+    // keeps a different key in its keyring than the group's real one.
+    let responder_store = test_store();
+    crate::test_fixtures::record_credential(&responder_store, &ns_gid, &joiner_credential);
+    let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&responder_store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    NamespaceRepository::new(&responder_store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    MembershipRepository::new(&responder_store)
+        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&responder_store, subgroup_gid)
+        .store_key(&hostile_key)
+        .unwrap();
+
+    let (envelope_bytes, responder_identity) = build_group_key_delivery(
+        &responder_store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: joiner_pk,
+            device: Some(joiner_device),
+        },
+        None,
+    )
+    .unwrap();
+    assert!(
+        !envelope_bytes.is_empty(),
+        "precondition: the hostile member produces a well-formed, correctly \
+         addressed envelope — nothing about its shape is wrong"
+    );
+
+    // Cold joiner: no key at all, and a buffered op naming the REAL key's id.
+    NamespaceRepository::new(&joiner_store)
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes)
+        .unwrap();
+    let buffered = SignedNamespaceOp::sign(
+        &responder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: subgroup_id.into(),
+            key_id: real_key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&joiner_store, namespace_id.into())
+        .store_signed_operation(&buffered)
+        .unwrap();
+    assert_eq!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into()).unwrap(),
+        vec![subgroup_id],
+        "precondition: the joiner awaits this group's key and holds none"
+    );
+
+    // The refusal. Benign shape on purpose: the joiner tries the next peer
+    // rather than failing the round, so one dishonest member cannot deny it.
+    let divergence = apply_received_group_key(
+        &joiner_store,
+        namespace_id.into(),
+        subgroup_id,
+        &envelope_bytes,
+        responder_identity,
+        Some(real_key_id),
+    )
+    .unwrap();
+    assert!(divergence.is_none());
+    assert!(
+        GroupKeyring::new(&joiner_store, subgroup_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "a key that is not the awaited one must not be stored — storing it would \
+         make it current for a cold joiner and seal that node's own writes under \
+         a key an attacker picked"
+    );
+    assert_eq!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into()).unwrap(),
+        vec![subgroup_id],
+        "and the joiner still awaits the real key, so the next peer is tried"
+    );
+
+    // The control: the SAME call with the real key is accepted. Without this the
+    // test would pass just as happily against a gate that refused everything.
+    GroupKeyring::new(&responder_store, subgroup_gid)
+        .store_key(&real_key)
+        .unwrap();
+    let (honest_bytes, honest_identity) = build_group_key_delivery(
+        &responder_store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: joiner_pk,
+            device: Some(joiner_device),
+        },
+        None,
+    )
+    .unwrap();
+    apply_received_group_key(
+        &joiner_store,
+        namespace_id.into(),
+        subgroup_id,
+        &honest_bytes,
+        honest_identity,
+        Some(real_key_id),
+    )
+    .unwrap();
+    assert_eq!(
+        GroupKeyring::new(&joiner_store, subgroup_gid)
+            .load_current_key()
+            .unwrap()
+            .map(|(id, _)| id),
+        Some(real_key_id),
+        "the awaited key is accepted, so the check discriminates rather than refusing all"
+    );
+}
+
 #[test]
 fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     // The cross-node exchange minus the libp2p transport: a key-holding
@@ -6184,6 +6363,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
+        None,
     )
     .unwrap();
 
@@ -6322,6 +6502,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
+        None,
     )
     .unwrap();
 
