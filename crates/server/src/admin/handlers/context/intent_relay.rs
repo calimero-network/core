@@ -124,11 +124,15 @@ pub async fn handler(
     };
 
     // Where the grant lives, which is a different question from whether it
-    // applies. Read separately from the gate above on purpose: the gate answers
-    // only for this context's group, so a namespace-level grant leaves
-    // `can_author_on_behalf` false while this reports the namespace — and that
-    // pair is the whole point. "Granted upstream, not here" and "granted nowhere"
-    // need opposite things from the caller, and a bare `false` conflates them.
+    // applies — though the two now resolve through the same function, so this
+    // being `Some` and `can_author_on_behalf` cannot disagree.
+    //
+    // Still read separately, rather than derived as `granted_on.is_some()`,
+    // because `account_may_author` is what the gate and every applying peer
+    // actually call. Deriving the bool would make this endpoint report the
+    // descriptor's opinion of the gate; calling it reports the gate. If the two
+    // are ever made to differ again, the endpoint should tell the truth about
+    // the one that decides.
     let granted_on = match calimero_governance_store::warrant_gate::authorship_grant_source(
         store,
         &group_id,

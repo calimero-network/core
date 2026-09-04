@@ -97,6 +97,8 @@ meroctl --node node1 group members set-capabilities <GROUP_ID> <RELAY_ACCOUNT> \
 
 The mask is **replaced**, not merged, so re-pass any other flag the member already holds. `meroctl group members check-access <GROUP_ID> <ACCOUNT>` prints the decoded set, `CAN_AUTHOR_ON_BEHALF` included.
 
+`<GROUP_ID>` may be the namespace root rather than each context's own group. The gate honours a grant found at the ancestor the relay inherits its membership through, so a relay fleet needs **one** grant and not one per channel. A `Restricted` subgroup is a wall here as it is everywhere: it required its own admission, so it needs its own grant.
+
 Note the subject: an **account**, not a key. That is what lets the relay rotate the key one of its processes signs with without the grant — or any warrant already issued against it — having to be reissued.
 
 ## Discovery: what the author has to be told first
@@ -113,19 +115,21 @@ GET /admin-api/contexts/:context_id/intents
   } }
 ```
 
-`canAuthorOnBehalf` answers one question: **may this node execute a delegated write in the group owning this context?** It is a fact about the node, not about admin — an admin is simply who can change it. `false` is not an error and not permanent: it is the state of every context no admin has opened yet, since the capability is implied by neither membership nor admin and is not propagated by the subgroup cascade.
+`canAuthorOnBehalf` answers one question: **may this node execute a delegated write in the group owning this context?** It is a fact about the node, not about admin — an admin is simply who can change it. `false` is not an error and not permanent: it is the state of every context no admin has opened yet, since the capability is implied by neither membership nor admin and is never granted implicitly.
 
-`grantedOnGroupId` says *where* a grant lives, which is what makes a refusal actionable — because the two ways of being refused need opposite things from the caller:
+`grantedOnGroupId` says *where* the grant lives. `canAuthorOnBehalf` is that answer collapsed to a bool, so the two are never in conflict; the group is what tells a caller which group to ask, or later to edit:
 
 | `grantedOnGroupId` | Means | What to do |
 | --- | --- | --- |
-| absent | no group reachable from here carries the grant | ask an admin to grant it on `groupId` |
-| `== groupId` | granted right here | nothing — paired with `canAuthorOnBehalf: true` |
-| `!= groupId` | granted on an ancestor this node inherits membership through, not on this context's own group | grant it on `groupId`; nothing is missing upstream |
+| absent | no group reachable from here carries the grant | ask an admin to grant it — on `groupId`, or once on an ancestor this node inherits membership through |
+| `== groupId` | granted on this context's own group | nothing — paired with `canAuthorOnBehalf: true` |
+| `!= groupId` | granted on an ancestor, and honoured here | nothing — but that group, not `groupId`, is what a later revoke or narrow has to edit |
 
-That third row is the one worth having. Contexts routinely live in subgroups while a TEE fleet node is admitted once at the namespace root, and the grant does not travel down the tree — so a namespace-wide grant leaves a subgroup context refused. A client seeing only `false` would send someone to re-grant a capability they had already granted, at the level they already granted it.
+That third row is the one worth having. Contexts routinely live in subgroups while a TEE fleet node is admitted once at the namespace root, so one grant at the root is what covers the whole fleet — and this field is the only way to see that it is a *root* grant doing the covering rather than a per-context one.
 
-It reports where a grant *lives*, never what is *permitted*: `canAuthorOnBehalf` remains the only authorization answer, and a client must not read an ancestor as permission.
+**A grant reaches wherever membership reaches, and no further.** An ancestor grant is honoured for a context in an `Open` subgroup the node inherits membership through, and refused across a boundary membership cannot cross: a `Restricted` subgroup required its own admission, so it requires its own grant, and a node deny-listed off an `Open` subgroup is refused there. That resolution is [the one documented exception](/protocol/capability-inheritance/#effective-capabilities-of-an-inherited-member) to capabilities being read from the target group alone.
+
+`canAuthorOnBehalf` remains the single authorization answer. `grantedOnGroupId` says where it came from — never something to read as permission in its own right.
 
 Asking before signing is not politeness. A nonce is spent from a monotonic per-device sequence to mint a warrant, and one naming the wrong executor is unspendable: the number is gone and the write never happened.
 

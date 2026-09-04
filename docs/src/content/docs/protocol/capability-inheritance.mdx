@@ -191,6 +191,7 @@ A member's capabilities are a `u32` bitfield, `MemberCapabilities`. The bits rel
 | 6 | `CAN_DELETE_SUBGROUP` | `1 << 6` | Non-admin deletion of a subgroup and its subtree (checked at the root). |
 | 7 | `CAN_MANAGE_VISIBILITY` | `1 << 7` | Flip a subgroup's `Open` ↔ `Restricted` without full admin. |
 | 8 | `CAN_MANAGE_METADATA` | `1 << 8` | Set group/member/context metadata without full admin. |
+| 9 | `CAN_AUTHOR_ON_BEHALF` | `1 << 9` | Execute a [delegated write](/protocol/delegated-authorship/) as another member. The one bit that resolves through the anchor — see the aside below. |
 
 `CAN_JOIN_OPEN_SUBGROUPS` is the bit that drives inheritance. Its design is a **deny-list**, not an allow-list: it is granted by default to non-admin members, and an admin *revokes* it per member when they want a specific user kept out of Open subgroups even though that user stays in the parent. So the common case is "everyone inherits"; clearing the bit is the deliberate exception.
 
@@ -249,6 +250,19 @@ pub fn effective_capabilities(&self, group_id, identity) -> EyreResult<Option<u3
 ```
 
 A direct member is never short-circuited by the deny-list here; only inherited membership is. An inherited member who has no explicit capability row in the target resolves to `0` — they are present in the audience, but hold no delegated rights at that subgroup unless something was written for them there.
+
+<Aside type="caution" title="One bit resolves through the anchor: CAN_AUTHOR_ON_BEHALF">
+[Delegated authorship](/protocol/delegated-authorship/) is the single documented exception to the paragraph above. `holds_authorship` — the check behind both `POST /admin-api/contexts/:context_id/intents` and the delegated-delta apply path — resolves in two steps:
+
+1. `effective_capabilities(target)`. A direct grant, or one written for an inherited member at the target subgroup, wins and is the answer.
+2. Otherwise, if the path is `Inherited { anchor, .. }`, read `member_capability(anchor)` and honour a `CAN_AUTHOR_ON_BEHALF` found there.
+
+Membership stays the outer bound. Step 2 is only reached once step 1 has already resolved the walk, so a `Restricted` wall and the target subgroup's deny-list refuse exactly as they do for every other bit: **a grant reaches wherever membership reaches, and no further.**
+
+Note the `Inherited` in step 2. A **direct** member of the target does not reach the ancestor grant — `check_path` short-circuits on a direct row and computes no anchor — so a group that admitted the node in its own right decides for itself. The fleet path never lands there: a TEE admission into an `Open` subgroup runs through `admit_member_if_absent`, which gates on the inheritance-aware `is_member` and writes no row for a node that already inherits. A node that *did* need its own admission is exactly the node that needs its own grant.
+
+The exception exists because of the shape a TEE relay fleet actually has — admitted once at the namespace root, executing for contexts that live in subgroups. Under the general rule a namespace-wide grant authorized nothing below it, and there is no row to write for an inherited member short of admitting the node directly to every subgroup. No other bit resolves this way. `CAN_JOIN_OPEN_SUBGROUPS` may look similar, but it is read at the anchor by construction — it is the bit that decides the walk — not by exception to it.
+</Aside>
 
 ## Visibility of subgroups in listings
 
