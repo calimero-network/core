@@ -89,3 +89,22 @@ pub async fn handler(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_server_primitives::admin::InstallDevApplicationRequest;
+
+    /// The pre-bundle body carried `metadata`; ignoring it would let a stale
+    /// client install while silently dropping what it sent.
+    #[test]
+    fn a_legacy_body_with_metadata_is_refused() {
+        let err = serde_json::from_str::<InstallDevApplicationRequest>(
+            r#"{"path":"/tmp/app.mpk","metadata":[]}"#,
+        )
+        .expect_err("a legacy body must not deserialize");
+        assert!(
+            err.to_string().contains("unknown field `metadata`"),
+            "got: {err}"
+        );
+    }
+}
