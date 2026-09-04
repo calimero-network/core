@@ -341,6 +341,12 @@ impl<'a> NamespaceGovernance<'a> {
                             group_id.to_bytes(),
                             envelope,
                             op.signer,
+                            // `None`: a `KeyDelivery` carries no `key_id` to
+                            // check against, and needs none — the op is signed
+                            // and the envelope's sender is pinned to that
+                            // signer, so provenance is already established by
+                            // the DAG rather than by a hash comparison.
+                            None,
                         ) {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
@@ -1316,6 +1322,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope_bytes: &[u8],
         responder_identity: PublicKey,
+        expected_key_id: Option<[u8; 32]>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let envelope: KeyEnvelope = match borsh::from_slice(envelope_bytes) {
             Ok(env) => env,
@@ -1324,7 +1331,12 @@ impl<'a> NamespaceGovernance<'a> {
                 return Ok(None);
             }
         };
-        self.apply_received_group_key_envelope(group_id, &envelope, responder_identity)
+        self.apply_received_group_key_envelope(
+            group_id,
+            &envelope,
+            responder_identity,
+            expected_key_id,
+        )
     }
 
     /// Like [`apply_received_group_key`](Self::apply_received_group_key) but
@@ -1336,6 +1348,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope: &KeyEnvelope,
         responder_identity: PublicKey,
+        expected_key_id: Option<[u8; 32]>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let ns_id = ContextGroupId::from(self.namespace_id.to_bytes());
         let gid = ContextGroupId::from(group_id);
@@ -1427,6 +1440,35 @@ impl<'a> NamespaceGovernance<'a> {
                 return Ok(None);
             }
         };
+
+        // Bind the key to what a signed op said it would be.
+        //
+        // The gate above authenticates WHO wrapped this envelope, not WHAT is
+        // inside it: any key-holding member of the group can mint a valid wrap
+        // around a key of its own choosing. That is enough to matter, because a
+        // node that stores a chosen key seals its own subsequent writes under it
+        // — readable by whoever chose it — and cannot decode the group's real
+        // ops. `key_id` is `SHA256(group_key)`, so when the caller knows which
+        // id it is waiting for (a governance op referenced it, and that op is
+        // signed) the hash decides, and the responder stops being trusted for
+        // content at all.
+        //
+        // Rejection is `Ok(None)`, the same benign shape as an envelope
+        // addressed elsewhere: the joiner moves on to the next peer rather than
+        // failing the round, so one dishonest member cannot deny the key.
+        if let Some(expected) = expected_key_id {
+            let served = GroupKeyring::key_id_for(&group_key);
+            if served != expected {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id),
+                    responder = %responder_identity,
+                    expected_key_id = %hex::encode(expected),
+                    served_key_id = %hex::encode(served),
+                    "rejecting received group key: it is not the key the awaiting op names"
+                );
+                return Ok(None);
+            }
+        }
 
         let key_id = GroupKeyring::new(self.store, gid)
             .store_key(&group_key)
@@ -2318,11 +2360,13 @@ pub fn apply_received_group_key(
     group_id: [u8; 32],
     envelope_bytes: &[u8],
     responder_identity: PublicKey,
+    expected_key_id: Option<[u8; 32]>,
 ) -> EyreResult<Option<super::super::DivergenceReport>> {
     NamespaceGovernance::new(store, namespace_id).apply_received_group_key(
         group_id,
         envelope_bytes,
         responder_identity,
+        expected_key_id,
     )
 }
 /// Prepare a root op for publishing, resolving this namespace's key here.

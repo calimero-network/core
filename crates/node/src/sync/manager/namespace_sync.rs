@@ -1916,7 +1916,44 @@ impl SyncManager {
         }
 
         for (group_id, key_id) in requests {
-            for peer in &candidates {
+            // Anchors first, per group. A group key is the one thing on the
+            // sync paths a peer is trusted for by content rather than by
+            // signature: an op is verified before it mutates anything, but an
+            // unwrapped key is just bytes. Where `key_id` is known the hash
+            // check below settles it and the ordering is only efficiency;
+            // where it is `None` — a group we are a keyless member of, with no
+            // op naming a key yet, which is the cold-start case — preference
+            // for an Admin or `ReadOnlyTee` anchor is the only thing standing
+            // between a cold node and a key chosen by any member who answers.
+            //
+            // A preference, not a requirement: plain members are still tried
+            // after the anchors. Making it a requirement would trade a
+            // confidentiality risk for a liveness one — no anchor online, no
+            // key, no join — and that is a call for the operator, not this
+            // loop. Anchors are resolved per group because `trusted_anchors`
+            // is per group; the candidate pool is the namespace mesh.
+            let mut ordered = candidates.clone();
+            let anchors = {
+                let store = self.context_client.datastore_handle().into_inner();
+                crate::sync::anchor_device_keys(
+                    &store,
+                    &calimero_context_config::types::ContextGroupId::from(group_id),
+                )
+            };
+            let anchor_count = crate::sync::peers::partition_peers_anchor_first(
+                &mut ordered,
+                &*self.state_access,
+                &anchors,
+            );
+            debug!(
+                group_id = %hex::encode(group_id),
+                anchor_peer_count = anchor_count,
+                candidate_count = ordered.len(),
+                verifiable = key_id.is_some(),
+                "group-key recovery: preferring anchor peers"
+            );
+
+            for peer in &ordered {
                 let Some((envelope_bytes, responder_identity)) = self
                     .request_group_key_from_peer(*peer, namespace_id, group_id, requester, key_id)
                     .await
@@ -1934,6 +1971,11 @@ impl SyncManager {
                     group_id,
                     &envelope_bytes,
                     responder_identity,
+                    // What we asked this peer for. `Some` whenever a governance
+                    // op is awaiting a specific key, which is what makes the
+                    // responder untrusted for content rather than merely
+                    // less-preferred.
+                    key_id,
                 );
                 drop(store);
                 match outcome {
