@@ -24,9 +24,7 @@ use tracing::{debug, warn};
 const MAX_MANIFEST_SCAN_BYTES: u64 = 8 * 1024 * 1024;
 
 /// How far any one archive walk may decompress. Every read walks the whole
-/// archive, so this bounds a bundle's total decompressed size. Also the cap
-/// `install_application_from_path` checks a file's size against before
-/// reading it into memory.
+/// archive, so this bounds a bundle's total decompressed size.
 pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Bounds total decompressed bytes. `tar` buffers GNU long-name, long-link and
