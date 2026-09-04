@@ -123,8 +123,14 @@ async fn publish_link_and_key(
     );
 
     // `required_signers` is None because the device is not a member and so is not
-    // among the acking set - its receipt shows up as the device being able to
-    // read, not as an ack.
+    // among the acking set.
+    //
+    // Its receipt no longer shows up as the device reading this op either: the
+    // delivery is sealed, and a device holding no scope key cannot open it. The
+    // device acquires the key by pulling it from a peer instead, which the
+    // readiness beacon drives for a participant holding no governance state. This
+    // op remains the members-only record of WHEN the key was delivered, which is
+    // what orders key epochs against membership.
     let delivery = NamespaceOp::Root(RootOp::KeyDelivery {
         group_id: namespace.to_bytes().into(),
         envelope,

@@ -711,11 +711,9 @@ pub enum NamespaceOp {
 
 /// Whether a [`RootOp`] is published sealed.
 ///
-/// Five of the eleven variants are. The four `MemberJoined*` are published by a
-/// principal that does not hold the key yet; `KeyDelivery` is how the key
-/// arrives, so sealing it under that key is unsatisfiable — and it needs no
-/// sealing, since its payload is already sealed to the recipient inside
-/// `KeyEnvelope`; `NamespaceCreated` is genesis, before any key exists.
+/// Six of the eleven variants are. The four `MemberJoined*` are published by a
+/// principal that does not hold the key yet; `NamespaceCreated` is genesis,
+/// before any key exists.
 ///
 /// What remains is published by an admin who already holds the key and read by
 /// members who already hold it, so nothing about it needs to be legible to a
@@ -744,9 +742,29 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         | RootOp::MemberJoinedAt { .. }
         | RootOp::MemberJoinedOpen { .. }
         | RootOp::MemberJoinedViaTeeAttestation { .. } => false,
-        // How the key arrives; sealing it under that key is unsatisfiable, and
-        // its payload is already sealed to the recipient in `KeyEnvelope`.
-        RootOp::KeyDelivery { .. } => false,
+        // Published by an admin or member who holds the key, like the five
+        // above. It reads as an exception because its RECIPIENT does not hold
+        // the key — but the recipient was never meant to read it from here.
+        //
+        // The payload is already sealed to the recipient inside `KeyEnvelope`,
+        // so sealing the op adds no confidentiality for the key itself. What it
+        // removes is the metadata: unsealed, every peer on the namespace topic —
+        // member or not — could read that a key went to a particular account or
+        // device, and at which point in the causal order.
+        //
+        // Acquisition moved off this op. A participant holding no key pulls it
+        // from a peer over the direct-stream path
+        // (`SyncManager::recover_missing_group_keys`), which the readiness
+        // beacon drives for a stranded participant, and which now verifies the
+        // served key against the `key_id` a signed op names and requires a
+        // trusted anchor when it cannot. That is a stronger guarantee than this
+        // op ever gave: a cleartext envelope in the DAG is authenticated only by
+        // its publisher's signature, while the pull is authenticated by content.
+        //
+        // So this op is now a members-only record of WHEN a key was delivered,
+        // which is what the causal ordering of key epochs against membership
+        // needs, and no longer the transport.
+        RootOp::KeyDelivery { .. } => true,
         // Genesis, before any key exists.
         RootOp::NamespaceCreated { .. } => false,
     }

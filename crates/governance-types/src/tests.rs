@@ -2454,7 +2454,7 @@ fn a_sealed_root_op_is_distinguishable_from_a_group_op() {
 ///
 /// `root_op_is_sealable` is an exhaustive match, so a twelfth variant fails to
 /// compile until it is classified. This test states what the classification has
-/// to be for the five that carry no bootstrap constraint, so a future edit that
+/// to be for the six that carry no bootstrap constraint, so a future edit that
 /// reclassifies one has to argue with a test rather than only with a reviewer.
 #[test]
 fn only_the_admin_published_variants_are_sealable() {
@@ -2480,10 +2480,34 @@ fn only_the_admin_published_variants_are_sealable() {
         admin: calimero_account::AccountId::from([4u8; 32]),
     }));
 
+    // Published by a key-holder like the five above, so it seals. The variant
+    // that looks least sealable, because its RECIPIENT holds no key — but the
+    // recipient no longer reads it from the DAG: a participant with no key
+    // pulls one over the direct-stream path, which authenticates the key by
+    // content rather than trusting a publisher's signature. Sealing it keeps
+    // the delivery metadata (which account, at which causal position) off the
+    // namespace topic.
+    assert!(root_op_is_sealable(&RootOp::KeyDelivery {
+        group_id: ContextGroupId::from([6u8; 32]),
+        envelope: KeyEnvelope {
+            // Member-addressed: the bootstrap form, which `EnvelopeRecipient`
+            // documents as un-retirable because a device link is itself an
+            // encrypted op. Sealing the carrier does not change the addressing.
+            recipient: EnvelopeRecipient::Member {
+                identity: PublicKey::from([7u8; 32]),
+                ephemeral_pk: PublicKey::from([8u8; 32]),
+            },
+            sender: PublicKey::from([9u8; 32]),
+            nonce: [0u8; 12],
+            ciphertext: vec![1, 2, 3],
+            signature: [0u8; 64],
+        },
+    }));
+
     // `NamespaceCreated` is genesis: there is no namespace key yet to seal it
     // under, and this op's own apply is what establishes the founder. Asserted
-    // because it is the variant most likely to look sealable to a future reader
-    // — it is admin-published, like the five, and differs only in when it runs.
+    // because it is now the ONLY admin-published variant that does not seal,
+    // and so the one most likely to look sealable to a future reader.
     assert!(!root_op_is_sealable(&RootOp::NamespaceCreated {
         founder: calimero_account::AccountId::from([5u8; 32]),
         account: deterministic_credential(),
