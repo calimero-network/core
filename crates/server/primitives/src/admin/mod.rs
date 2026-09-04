@@ -3505,6 +3505,14 @@ pub struct NodeIdentityApiResponseData {
     /// Defaulted, so a response from a node predating the field still deserializes.
     #[serde(default)]
     pub holds_account_root: bool,
+
+    /// Whether this node's device is certified into the account it speaks for.
+    /// Pair-init mints the device and only pair-complete certifies it, and
+    /// `holds_account_root` is false across both - this separates them.
+    ///
+    /// Defaulted, so a response from a node predating the field still deserializes.
+    #[serde(default)]
+    pub device_certified: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

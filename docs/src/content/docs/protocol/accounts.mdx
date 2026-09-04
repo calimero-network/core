@@ -315,6 +315,10 @@ which one it writes as:
 meroctl account show                    # GET /admin-api/identity
 ```
 
+Two flags on the answer separate a half-finished pairing from a delegate device.
+`holdsAccountRoot` says whether this node can certify another device into the account, and `deviceCertified` says whether the account holder has certified *this* node's device.
+Pair-init makes the first false and leaves the second false; only pair-complete - or an imported certificate - flips the second.
+
 The answer does not change at enrollment, and that is deliberate. The id is the
 content address of the account root, so it exists as soon as the node has a root —
 before it has joined anything, and identically in every namespace. What enrollment
