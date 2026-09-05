@@ -4,9 +4,28 @@
 //! The second half of pairing, run on the device holding the account. Publishes
 //! two ops: `AccountDeviceLinked` (encrypted, carries the root-signed certificate
 //! and confers authority) and `RootOp::KeyDelivery` (the current scope key wrapped
-//! to the device). Delivery must be a cleartext root op - the pairing device holds
-//! no scope key, so an encrypted envelope would be unreadable by its only
-//! recipient.
+//! to the device).
+//!
+//! The delivery is a SEALED root op, and the paired device is not expected to read
+//! it. It holds no scope key, so it could not: what it does instead is what any
+//! participant holding no governance state does, which is pull the key from a peer
+//! over the direct-stream path, driven for a stranded participant by the
+//! readiness-beacon handler (`SyncManager::recover_missing_group_keys`).
+//!
+//! That transfer is the stronger one. A cleartext envelope in the DAG is
+//! authenticated only by its publisher's signature, while the pull verifies the
+//! served key against the `key_id` a signed op names and, where it cannot, accepts
+//! one only from a trusted anchor. Sealing keeps the delivery metadata - which
+//! account, at which causal position - off the namespace topic.
+//!
+//! What it costs is ORDERING, and that cost is paid at the join. Cleartext, this
+//! op handed the device its key at its own position in the causal order, so the
+//! `AccountDeviceLinked` published just above it was always folded by the time
+//! anything asked. The pull is ordered against nothing, so `join_context` waits
+//! for the binding (`await_joiner_account`) rather than asking once. The first
+//! attempt at this sealing (#3846) lacked that wait and was reverted when
+//! `shared-storage-account-writers-two-devices` and
+//! `account-device-revoke-lockout` failed on exactly that gap.
 //!
 //! Only the current key is delivered, so a paired device converges on forward
 //! state and cannot read ops sealed under retired epochs. Scope is chosen by

@@ -3919,10 +3919,6 @@ impl super::driver::SyncDriverDispatch for SyncManager {
     }
 }
 
-// `partition_peers_anchor_first` moved to `sync::peers` as Phase 1 of
-// `SyncManager` decomposition. Call sites use
-// `super::peers::partition_peers_anchor_first`.
-
 impl SyncManager {
     /// Whether a stage attempt for `(context, blob)` is due — records the
     /// attempt when it is. A failed stage retries only after the backoff,

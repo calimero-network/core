@@ -35,6 +35,97 @@ const FALLBACK_POLL: Duration = Duration::from_millis(200);
 /// every 200ms for its whole 30s budget.
 const MAX_RESYNC_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Budget for the caller's OWN account binding to land locally.
+///
+/// Deliberately the same budget as [`GROUP_LOOKUP_TIMEOUT`], and named
+/// separately only so the two can be reasoned about apart. Both wait on one
+/// governance op reaching this node, and both are bounded by the same
+/// peer-discovery worst case.
+const BINDING_LOOKUP_TIMEOUT: Duration = GROUP_LOOKUP_TIMEOUT;
+
+/// The account `joiner_identity` speaks for, waiting for the binding to arrive
+/// if it is not here yet.
+///
+/// `member_account::require` answers from a **binding row**, and for a paired
+/// device that row is written by folding `GroupOp::AccountDeviceLinked` — an
+/// encrypted op that cannot be folded until the scope key arrives. So it is
+/// late-arriving state, exactly like the context→group mapping this handler
+/// already waits for a few lines above, and asking once was the only reason
+/// pair-then-immediately-join worked by luck rather than by construction.
+///
+/// The apply path already reasons this way about the same row: `endorser_is_member`
+/// treats "bound to no account" as possibly meaning "the link simply has not
+/// arrived", and parks instead of refusing. This is the join-side counterpart.
+///
+/// What this is NOT: the fallback `member_account::require`'s own docs forbid is a
+/// *key-derived stand-in* — inventing an account so the request can proceed. This
+/// invents nothing. It waits for the real row and then asks the same question, so
+/// a caller that times out gets `require`'s own diagnosis rather than a generic
+/// timeout.
+///
+/// Poll-only, no notifier. The mapping wait pairs its poll with
+/// `registration_notify` because it polled **once** after a sync and a 1-2ms
+/// apply lag deterministically missed the window. A loop cannot miss an edge —
+/// a late signal costs latency, not correctness — so a notifier here would buy
+/// only the sub-poll-interval difference, at the price of a new `OpEvent`
+/// variant and an emit site.
+async fn await_joiner_account(
+    datastore: &calimero_store::Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    group_id: &ContextGroupId,
+    joiner_identity: &calimero_primitives::identity::PublicKey,
+) -> eyre::Result<calimero_account::AccountId> {
+    if let Some(account) = calimero_governance_store::member_account_in_namespace(
+        datastore,
+        group_id,
+        joiner_identity,
+    )? {
+        return Ok(account);
+    }
+
+    warn!(
+        %joiner_identity,
+        ?group_id,
+        "joiner is bound to no account locally yet; waiting for the link to arrive"
+    );
+
+    let started = tokio::time::Instant::now();
+    let deadline = started + BINDING_LOOKUP_TIMEOUT;
+    let mut resync_backoff = FALLBACK_POLL;
+    let mut last_resync = tokio::time::Instant::now();
+    loop {
+        tokio::time::sleep(FALLBACK_POLL).await;
+        if let Some(account) = calimero_governance_store::member_account_in_namespace(
+            datastore,
+            group_id,
+            joiner_identity,
+        )? {
+            info!(
+                %joiner_identity,
+                ?group_id,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "resolved the joiner's account once its link landed"
+            );
+            return Ok(account);
+        }
+        let now = tokio::time::Instant::now();
+        if now.duration_since(last_resync) >= resync_backoff {
+            // Same throttle as the mapping wait: the local recheck is cheap, a
+            // namespace sync is not.
+            sync_known_namespaces(datastore, node_client).await;
+            last_resync = tokio::time::Instant::now();
+            resync_backoff = (resync_backoff * 2).min(MAX_RESYNC_BACKOFF);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+
+    // Out of budget. Ask the real question so the error says what is actually
+    // wrong with this identity, not merely that we gave up waiting.
+    crate::member_account::require(datastore, group_id, joiner_identity)
+}
+
 impl Handler<JoinContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinContextRequest as Message>::Result>;
 
@@ -164,7 +255,8 @@ impl Handler<JoinContextRequest> for ContextManager {
                     bail!("group not found");
                 }
                 let joiner_account =
-                    crate::member_account::require(&datastore, &group_id, &joiner_identity)?;
+                    await_joiner_account(&datastore, &node_client, &group_id, &joiner_identity)
+                        .await?;
                 let membership_path =
                     MembershipRepository::new(&datastore).check_path(&group_id, &joiner_account)?;
                 let mut was_inherited = false;

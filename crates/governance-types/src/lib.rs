@@ -711,11 +711,9 @@ pub enum NamespaceOp {
 
 /// Whether a [`RootOp`] is published sealed.
 ///
-/// Five of the eleven variants are. The four `MemberJoined*` are published by a
-/// principal that does not hold the key yet; `KeyDelivery` is how the key
-/// arrives, so sealing it under that key is unsatisfiable — and it needs no
-/// sealing, since its payload is already sealed to the recipient inside
-/// `KeyEnvelope`; `NamespaceCreated` is genesis, before any key exists.
+/// Six of the eleven variants are. The four `MemberJoined*` are published by a
+/// principal that does not hold the key yet; `NamespaceCreated` is genesis,
+/// before any key exists.
 ///
 /// What remains is published by an admin who already holds the key and read by
 /// members who already hold it, so nothing about it needs to be legible to a
@@ -744,9 +742,47 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         | RootOp::MemberJoinedAt { .. }
         | RootOp::MemberJoinedOpen { .. }
         | RootOp::MemberJoinedViaTeeAttestation { .. } => false,
-        // How the key arrives; sealing it under that key is unsatisfiable, and
-        // its payload is already sealed to the recipient in `KeyEnvelope`.
-        RootOp::KeyDelivery { .. } => false,
+        // Published by an admin or member who holds the key, like the five
+        // above. It reads as an exception because its RECIPIENT does not hold
+        // the key -- but the recipient is no longer meant to read it from here.
+        //
+        // The payload is already sealed to the recipient inside `KeyEnvelope`,
+        // so sealing the op adds no confidentiality for the key itself. What it
+        // removes is the metadata: unsealed, every peer on the namespace topic --
+        // member or not -- could read that a key went to a particular account or
+        // device, and at which point in the causal order.
+        //
+        // What sealing genuinely costs, and what makes it safe anyway:
+        //
+        // Cleartext, this op handed a keyless recipient the key AT ITS OWN
+        // POSITION in the causal order, and `retry_encrypted_ops_for_group` then
+        // folded whatever had been buffered waiting for it -- above all the
+        // `AccountDeviceLinked` a paired device's authority depends on. Sealed,
+        // the recipient cannot read it, so the key arrives out of band through
+        // the direct-stream pull (`recover_missing_group_keys`) instead, and
+        // that pull is ordered against nothing: it can complete before the op it
+        // unblocks has even been received.
+        //
+        // The first attempt at this sealing (#3846) was reverted for exactly
+        // that: `shared-storage-account-writers-two-devices` and
+        // `account-device-revoke-lockout` had a freshly paired node log
+        // "received group key via direct delivery" and then fail `join_context`
+        // 0.2ms later with "is bound to no account in the namespace owning
+        // group". The fold machinery was never the problem -- see
+        // `the_key_arrival_redrive_folds_a_buffered_account_device_linked`,
+        // which proves the re-drive folds that op once the key lands. The
+        // problem was that `join_context` asked for the binding once and failed
+        // on the first miss, while waiting patiently for the context->group
+        // mapping a few lines earlier.
+        //
+        // So sealing is safe only alongside `await_joiner_account`, which gives
+        // the binding the same readiness treatment the mapping already had. The
+        // pull is the transport now, and it is the better one: a cleartext
+        // envelope in the DAG is authenticated only by its publisher's
+        // signature, while the pull verifies the served key against the `key_id`
+        // a signed op names (#3844) and requires a trusted anchor where it
+        // cannot (#3845).
+        RootOp::KeyDelivery { .. } => true,
         // Genesis, before any key exists.
         RootOp::NamespaceCreated { .. } => false,
     }

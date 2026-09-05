@@ -1916,7 +1916,61 @@ impl SyncManager {
         }
 
         for (group_id, key_id) in requests {
-            for peer in &candidates {
+            // Anchors first, per group — `trusted_anchors` is per group, while
+            // the candidate pool is the namespace mesh. Whether the ordering is
+            // merely a preference or a hard restriction is decided by
+            // `key_servers_allowed`, which documents the reasoning: any
+            // candidate may serve a key the hash can check, and only an anchor
+            // may serve one it cannot.
+            let mut ordered = candidates.clone();
+            let anchors = self.anchor_identities_for_group(
+                &calimero_context_config::types::ContextGroupId::from(group_id),
+            );
+            let anchor_count = crate::sync::peers::partition_peers_anchor_first(
+                &mut ordered,
+                &*self.state_access,
+                &anchors,
+            );
+            // How many of those may actually serve this request. Anchor-only
+            // when the key cannot be checked; any candidate when it can.
+            let Some(allowed) = crate::sync::peers::key_servers_allowed(
+                ordered.len(),
+                anchor_count,
+                !anchors.is_empty(),
+                key_id.is_some(),
+            ) else {
+                if anchors.is_empty() {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        candidate_count = ordered.len(),
+                        "group-key recovery refused: this key cannot be verified \
+                         against a signed op and no trusted anchor can be \
+                         identified for the group, so there is nobody it is safe \
+                         to accept it from; retrying once governance state names \
+                         an Admin or ReadOnlyTee"
+                    );
+                } else {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        candidate_count = ordered.len(),
+                        "group-key recovery refused: this key cannot be verified \
+                         against a signed op and no trusted anchor is reachable; \
+                         retrying rather than accepting an unverifiable key from \
+                         a non-anchor peer"
+                    );
+                }
+                continue;
+            };
+            ordered.truncate(allowed);
+            debug!(
+                group_id = %hex::encode(group_id),
+                anchor_peer_count = anchor_count,
+                allowed_servers = allowed,
+                verifiable = key_id.is_some(),
+                "group-key recovery: candidate peers selected"
+            );
+
+            for peer in &ordered {
                 let Some((envelope_bytes, responder_identity)) = self
                     .request_group_key_from_peer(*peer, namespace_id, group_id, requester, key_id)
                     .await
@@ -1934,6 +1988,11 @@ impl SyncManager {
                     group_id,
                     &envelope_bytes,
                     responder_identity,
+                    // What we asked this peer for. `Some` whenever a governance
+                    // op is awaiting a specific key, which is what makes the
+                    // responder untrusted for content rather than merely
+                    // less-preferred.
+                    key_id,
                 );
                 drop(store);
                 match outcome {

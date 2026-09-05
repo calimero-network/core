@@ -60,6 +60,60 @@ fn seal_for_test(
         .expect("seal a root op for a test")
 }
 
+/// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
+/// comes back SEALED, so the delivery metadata — which account, at which causal
+/// position — no longer reaches every peer on the namespace topic.
+///
+/// This is asserted at `seal_root_op_for_publish` and not through
+/// `root_op_is_sealable` alone, because the predicate is not where the change
+/// takes effect: every other test in this crate hand-builds
+/// `NamespaceOp::Root(RootOp::KeyDelivery { .. })` and applies it directly,
+/// which bypasses the publish helper entirely and would pass whatever the
+/// classification said. This is the one local test that crosses the boundary the
+/// change actually moved.
+///
+/// What it deliberately does NOT assert is that a keyless recipient recovers the
+/// key anyway. That path is the readiness beacon driving
+/// `SyncManager::recover_missing_group_keys` across two nodes and a partition,
+/// which is a merobox scenario (`account-pairing-missed-publish`) rather than
+/// anything a single store can show.
+#[test]
+fn a_key_delivery_is_sealed_at_the_publish_boundary() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_governance_types::{EnvelopeRecipient, KeyEnvelope};
+
+    let store = test_store();
+    let namespace_id = [0xE1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let delivery = RootOp::KeyDelivery {
+        group_id: ns_gid,
+        envelope: KeyEnvelope {
+            // Member-addressed: the bootstrap form. Sealing the carrier does not
+            // change who the envelope inside is addressed to.
+            recipient: EnvelopeRecipient::Member {
+                identity: PublicKey::from([0xE2u8; 32]),
+                ephemeral_pk: PublicKey::from([0xE3u8; 32]),
+            },
+            sender: PublicKey::from([0xE4u8; 32]),
+            nonce: [0u8; 12],
+            ciphertext: vec![9, 9, 9],
+            signature: [0u8; 64],
+        },
+    };
+
+    let published = seal_for_test(&store, ns_gid, delivery);
+
+    match published {
+        NamespaceOp::RootSealed { .. } => {}
+        NamespaceOp::Root(op) => panic!(
+            "a KeyDelivery must not reach the topic in the clear; the publish \
+             helper returned an unsealed {op:?}"
+        ),
+        other => panic!("unexpected published shape: {other:?}"),
+    }
+}
+
 /// A genesis whose founder credential is inadmissible establishes nothing.
 ///
 /// Two layers enforce it and this pins the property, not either one.
@@ -5843,6 +5897,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
+        None,
     )
     .unwrap();
 
@@ -5895,6 +5950,7 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
+        None,
     )
     .unwrap();
     assert!(divergence.is_none());
@@ -6065,6 +6121,183 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     );
 }
 
+/// **The security property.** A member that holds a group key can wrap a key of
+/// its OWN choosing for a joiner, and the authenticated-sender gate does not
+/// stop it: that gate binds WHO wrapped the envelope, not WHAT is inside.
+///
+/// Left unchecked this is not merely a failed join. The joiner stores the
+/// attacker's key as current (a directly-delivered key lands at epoch 0, and a
+/// cold joiner holds nothing to outrank it), then seals its own subsequent
+/// writes under it — readable by whoever chose it — while the group's real ops
+/// stay undecodable.
+///
+/// `key_id` is `SHA256(group_key)`, and a buffered op names the id it is waiting
+/// for, so the joiner can settle this without trusting the responder at all.
+///
+/// Mutation check: drop the `expected_key_id` comparison in
+/// `apply_received_group_key_envelope` and this test fails while the honest
+/// round-trip beside it still passes.
+#[test]
+fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, namespace_groups_awaiting_key};
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let namespace_id = [0xF4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xF5u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    // The key the group actually uses, and the one a hostile member substitutes.
+    let real_key = [0x6Cu8; 32];
+    let hostile_key = [0xADu8; 32];
+    let real_key_id = GroupKeyring::key_id_for(&real_key);
+    assert_ne!(real_key_id, GroupKeyring::key_id_for(&hostile_key));
+
+    let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let joiner_sk = PrivateKey::from(joiner_sk_bytes);
+    let joiner_pk = joiner_sk.public_key();
+
+    let joiner_store = test_store();
+    let (joiner_account, joiner_device, joiner_credential) =
+        crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
+
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    // A member in good standing — this is an insider, not an outsider. It just
+    // keeps a different key in its keyring than the group's real one.
+    let responder_store = test_store();
+    crate::test_fixtures::record_credential(&responder_store, &ns_gid, &joiner_credential);
+    let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&responder_store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    NamespaceRepository::new(&responder_store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    MembershipRepository::new(&responder_store)
+        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&responder_store, subgroup_gid)
+        .store_key(&hostile_key)
+        .unwrap();
+
+    let (envelope_bytes, responder_identity) = build_group_key_delivery(
+        &responder_store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: joiner_pk,
+            device: Some(joiner_device),
+        },
+        None,
+    )
+    .unwrap();
+    assert!(
+        !envelope_bytes.is_empty(),
+        "precondition: the hostile member produces a well-formed, correctly \
+         addressed envelope — nothing about its shape is wrong"
+    );
+
+    // Cold joiner: no key at all, and a buffered op naming the REAL key's id.
+    NamespaceRepository::new(&joiner_store)
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes)
+        .unwrap();
+    let buffered = SignedNamespaceOp::sign(
+        &responder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: subgroup_id.into(),
+            key_id: real_key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&joiner_store, namespace_id.into())
+        .store_signed_operation(&buffered)
+        .unwrap();
+    assert_eq!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into()).unwrap(),
+        vec![subgroup_id],
+        "precondition: the joiner awaits this group's key and holds none"
+    );
+
+    // The refusal. Benign shape on purpose: the joiner tries the next peer
+    // rather than failing the round, so one dishonest member cannot deny it.
+    let divergence = apply_received_group_key(
+        &joiner_store,
+        namespace_id.into(),
+        subgroup_id,
+        &envelope_bytes,
+        responder_identity,
+        Some(real_key_id),
+    )
+    .unwrap();
+    assert!(divergence.is_none());
+    assert!(
+        GroupKeyring::new(&joiner_store, subgroup_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "a key that is not the awaited one must not be stored — storing it would \
+         make it current for a cold joiner and seal that node's own writes under \
+         a key an attacker picked"
+    );
+    assert_eq!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into()).unwrap(),
+        vec![subgroup_id],
+        "and the joiner still awaits the real key, so the next peer is tried"
+    );
+
+    // The control: the SAME call with the real key is accepted. Without this the
+    // test would pass just as happily against a gate that refused everything.
+    GroupKeyring::new(&responder_store, subgroup_gid)
+        .store_key(&real_key)
+        .unwrap();
+    let (honest_bytes, honest_identity) = build_group_key_delivery(
+        &responder_store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: joiner_pk,
+            device: Some(joiner_device),
+        },
+        None,
+    )
+    .unwrap();
+    apply_received_group_key(
+        &joiner_store,
+        namespace_id.into(),
+        subgroup_id,
+        &honest_bytes,
+        honest_identity,
+        Some(real_key_id),
+    )
+    .unwrap();
+    assert_eq!(
+        GroupKeyring::new(&joiner_store, subgroup_gid)
+            .load_current_key()
+            .unwrap()
+            .map(|(id, _)| id),
+        Some(real_key_id),
+        "the awaited key is accepted, so the check discriminates rather than refusing all"
+    );
+}
+
 #[test]
 fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     // The cross-node exchange minus the libp2p transport: a key-holding
@@ -6184,6 +6417,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
+        None,
     )
     .unwrap();
 
@@ -6322,6 +6556,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
+        None,
     )
     .unwrap();
 
@@ -8142,4 +8377,396 @@ fn provisioning_the_signing_key_joins_nothing() {
     // The namespace-gated reader still answers None: "who am I here" is not yet a
     // question this node can answer, even though it has a key.
     assert!(repo.identity_record(&ns).expect("read").is_none());
+}
+
+/// Does the key-arrival re-drive fold a buffered `AccountDeviceLinked`, writing
+/// the device's binding row?
+///
+/// This is the question sealing `RootOp::KeyDelivery` turned on, and #3846
+/// reverted that sealing without settling it. E2E showed a freshly paired node
+/// receiving its key by direct pull and then failing `join_context` with "is
+/// bound to no account in the namespace owning group" — but a log cannot
+/// distinguish "the re-drive does not handle this op" from "the op had not
+/// arrived yet", and those have opposite fixes. In-process, arrival is not a
+/// variable: the op is definitely in the log before the key lands.
+///
+/// So a PASS here localises the E2E failure to arrival timing, which is a
+/// readiness problem at the caller. A FAIL would mean the re-drive itself has a
+/// gap for this op, which would be a live bug on cleartext master too.
+#[test]
+fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
+    use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xD1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The holder: an admin that already holds the key and publishes the link.
+    let holder_sk = PrivateKey::from([0x11u8; 32]);
+    let holder_pk = holder_sk.public_key();
+    // `enrol_member`, not a bare `add_member`: the apply gate resolves the
+    // endorser's SIGNING KEY to an account through a binding row, and
+    // `add_member` writes only the membership row that is keyed by account. An
+    // endorser with no binding vouches for nobody.
+    let holder_account = enrol_member(&store, &ns_gid, &holder_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(holder_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &holder_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The receiver's own namespace identity, distinct from the holder's so the
+    // re-drive's own-signed skip does not swallow the op under test.
+    let receiver_sk = PrivateKey::from([0x22u8; 32]);
+    let receiver_pk = receiver_sk.public_key();
+    NamespaceRepository::new(&store)
+        .replace_identity(&ns_gid, &receiver_pk, receiver_sk.as_bytes())
+        .unwrap();
+
+    // The account whose device is being linked has to be a member already: a
+    // device links into an account's existing membership, it does not create one.
+    let root = crate::NodeDeviceRepository::new(&store)
+        .provision_account_root()
+        .unwrap();
+    let linked_account = root.account();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &linked_account, GroupMemberRole::Member)
+        .unwrap();
+
+    // The device's signing key — what `member_account_in_namespace` must resolve.
+    let device_sign_pk = PrivateKey::from([0x33u8; 32]).public_key();
+    let device = calimero_account::DeviceId::mint(linked_account, [0x44u8; 16]);
+    let cert = DeviceCert::sign(
+        root.signing_key(),
+        linked_account,
+        device,
+        &device_sign_pk,
+        &KemPublicKey::from([0x55u8; 32]),
+        0,
+        0,
+    )
+    .unwrap();
+
+    let link = GroupOp::AccountDeviceLinked {
+        genesis: root.genesis(),
+        chain: vec![],
+        cert,
+        endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+    };
+
+    // Encrypted under the namespace key, exactly as `publish_link_and_key` sends
+    // it, and signed by the holder.
+    let namespace_key = [0x66u8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let encrypted = GroupKeyring::encrypt_op(&namespace_key, &link).unwrap();
+    let signed = SignedNamespaceOp::sign(
+        &holder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id.into(),
+            key_id: key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    // Applied with no key held: must buffer rather than fail, the same
+    // contract a sealed root op has.
+    apply_signed_namespace_op(&store, &signed)
+        .expect("an encrypted group op with no key must buffer, not fail");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &device_sign_pk).unwrap(),
+        None,
+        "the binding must not exist while the link is unreadable"
+    );
+
+    // The key arrives — by pull, in the sealed world; by KeyDelivery today.
+    // Either way this is the state transition the re-drive hangs off.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+    retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id).unwrap();
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &device_sign_pk).unwrap(),
+        Some(linked_account),
+        "the buffered AccountDeviceLinked must fold once the key is held, binding \
+         the device's signing key to its account"
+    );
+}
+
+/// Control for `the_key_arrival_redrive_folds_a_buffered_account_device_linked`:
+/// the SAME op, the SAME fixture, but the key is held before it is applied, so
+/// the live path folds it instead of the re-drive.
+///
+/// Without this the buffered test proves nothing — a fixture missing a
+/// precondition would fail it for reasons that have nothing to do with the
+/// re-drive. This isolates that variable and nothing else.
+#[test]
+fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
+    use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xD1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let holder_sk = PrivateKey::from([0x11u8; 32]);
+    let holder_pk = holder_sk.public_key();
+    // `enrol_member`, not a bare `add_member`: the apply gate resolves the
+    // endorser's SIGNING KEY to an account through a binding row, and
+    // `add_member` writes only the membership row that is keyed by account. An
+    // endorser with no binding vouches for nobody.
+    let holder_account = enrol_member(&store, &ns_gid, &holder_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(holder_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &holder_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let receiver_sk = PrivateKey::from([0x22u8; 32]);
+    let receiver_pk = receiver_sk.public_key();
+    NamespaceRepository::new(&store)
+        .replace_identity(&ns_gid, &receiver_pk, receiver_sk.as_bytes())
+        .unwrap();
+
+    let root = crate::NodeDeviceRepository::new(&store)
+        .provision_account_root()
+        .unwrap();
+    let linked_account = root.account();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &linked_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let device_sign_pk = PrivateKey::from([0x33u8; 32]).public_key();
+    let device = calimero_account::DeviceId::mint(linked_account, [0x44u8; 16]);
+    let cert = DeviceCert::sign(
+        root.signing_key(),
+        linked_account,
+        device,
+        &device_sign_pk,
+        &KemPublicKey::from([0x55u8; 32]),
+        0,
+        0,
+    )
+    .unwrap();
+
+    let link = GroupOp::AccountDeviceLinked {
+        genesis: root.genesis(),
+        chain: vec![],
+        cert,
+        endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+    };
+
+    let namespace_key = [0x66u8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let encrypted = GroupKeyring::encrypt_op(&namespace_key, &link).unwrap();
+    let signed = SignedNamespaceOp::sign(
+        &holder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id.into(),
+            key_id: key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    // The only difference from the buffered test: the key is here first.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    apply_signed_namespace_op(&store, &signed).expect("apply with the key held");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &device_sign_pk).unwrap(),
+        Some(linked_account),
+        "with the key held on arrival the link folds and the binding is written"
+    );
+}
+
+/// A member added to a subgroup, holding no binding in the owning namespace,
+/// is served nothing by the pull either — so it has no way to get the key at all.
+///
+/// `add_group_members` already knows the push cannot reach this account:
+/// `key_deliveries` scans the namespace's binding column, finds none, and the
+/// handler logs *"no group key was delivered to the added member; it must pull
+/// the key itself"*. This pins what that advice is worth **at the moment it is
+/// logged**: nothing. The pull resolves a requester through the same binding
+/// column (`member_account_in_namespace`), so an account the push could not
+/// address is an account the pull cannot authorise either — both doors are the
+/// same door.
+///
+/// Deliberately NOT claiming this is permanent. Naming an account the namespace
+/// has not converged on is an allowed and documented move (see
+/// `member_account::resolve`'s note on the ambiguity it accepts), and the moment
+/// a binding for this account does land the pull starts working — that is the
+/// sibling test below. What is unproven, and what an issue should settle, is
+/// whether a member added ONLY to a subgroup has any path to acquiring that
+/// binding: the writers are namespace joins and device links, and a member that
+/// never joins the namespace reaches neither on its own.
+///
+/// This is NOT a consequence of sealing `RootOp::KeyDelivery`. The push was
+/// already empty for this account before sealing — there was nothing to seal.
+/// Pinning it here so the boundary is a decision rather than a surprise, and so
+/// the sibling test below cannot be misread as covering it.
+#[test]
+fn an_added_member_with_no_namespace_binding_is_served_nothing_by_the_pull() {
+    let namespace_id = [0xC1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xC2u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    let group_key = [0x7Au8; 32];
+
+    let admin_sk = PrivateKey::from([0x31u8; 32]);
+    let admin_pk = admin_sk.public_key();
+
+    let store = test_store();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, admin_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // The added member: a real account with a real key, but never enrolled in
+    // this namespace, so no binding row names it. An admin may still add it —
+    // `member_added` gates only on the SIGNER's `require_manage_members` and
+    // never asks whether the added account is known here.
+    let stranger_sk = PrivateKey::from([0x32u8; 32]);
+    let stranger_pk = stranger_sk.public_key();
+    let stranger_account = crate::test_fixtures::account_for(&stranger_pk);
+    MembershipRepository::new(&store)
+        .add_member(&subgroup_gid, &stranger_account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&subgroup_gid, &stranger_account)
+            .unwrap(),
+        "precondition: the add landed, so this is a genuine member of the subgroup"
+    );
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &stranger_pk).unwrap(),
+        None,
+        "precondition: and it holds no binding in the owning namespace"
+    );
+
+    let (envelope_bytes, _responder) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: stranger_pk,
+            device: None,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        envelope_bytes.is_empty(),
+        "a member the binding column cannot resolve is served nothing, so at the \
+         point the push gives up the pull is not yet a fallback"
+    );
+}
+
+/// The case sealing DID change: a subgroup member that is not a member of the
+/// owning namespace root, and so cannot open a `KeyDelivery` sealed under the
+/// namespace key. The pull has to carry it, and this is what says it does.
+///
+/// `responder_delivery_round_trips_key_to_read_only_tee_joiner` covers the same
+/// shape for a `ReadOnlyTee`; this is the plain `Member` case, which is the one
+/// an ordinary `add_group_members` to a Restricted subgroup produces. The
+/// difference that matters is not the role — the responder gate is
+/// role-agnostic — but that this member holds a namespace BINDING while holding
+/// no namespace MEMBERSHIP, which is exactly the combination the sealed push
+/// leaves stranded.
+#[test]
+fn a_subgroup_member_outside_the_namespace_root_is_still_served_by_the_pull() {
+    let namespace_id = [0xC3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xC4u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    let group_key = [0x7Bu8; 32];
+
+    let admin_sk = PrivateKey::from([0x41u8; 32]);
+    let admin_pk = admin_sk.public_key();
+
+    let store = test_store();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, admin_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // Bound in the namespace (so it is resolvable) but a member ONLY of the
+    // subgroup — never added at the root.
+    let member_sk = PrivateKey::from([0x42u8; 32]);
+    let member_pk = member_sk.public_key();
+    let member_store = test_store();
+    let (member_account, member_device, member_credential) =
+        crate::test_fixtures::enrol_local_device(&member_store, &ns_gid, &member_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &member_credential);
+    MembershipRepository::new(&store)
+        .add_member(&subgroup_gid, &member_account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member_account)
+            .unwrap(),
+        "precondition: this member is NOT in the namespace root, so it holds no \
+         namespace key and cannot open a sealed KeyDelivery"
+    );
+
+    let (envelope_bytes, _responder) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: member_pk,
+            device: Some(member_device),
+        },
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        !envelope_bytes.is_empty(),
+        "the pull must carry a subgroup member that the sealed push cannot reach, \
+         or sealing KeyDelivery locked this member out of its own subgroup"
+    );
 }

@@ -6,20 +6,19 @@
 
 - **`grantedOnGroupId` on the relay descriptor** (`GET admin-api/contexts/:id/intents`),
   optional. `canAuthorOnBehalf` answers whether this node may execute a delegated
-  write in the group owning this context; this says **where** a grant lives, which
-  is what makes a refusal actionable — the two ways of being refused need opposite
-  things from the caller. Absent means no group reachable from here carries it, so
-  someone must grant it on `groupId`. Equal to `groupId` means granted here.
+  write in the group owning this context; this says **where** the grant lives,
+  which is what makes both a refusal and a later revoke actionable. Absent means
+  no group reachable from here carries it, so someone must grant it — on
+  `groupId`, or once on an ancestor. Equal to `groupId` means granted here.
   *Different* from `groupId` means granted on an ancestor this node inherits
-  membership through but not on this context's own group — and that case is the
-  reason the field exists: contexts routinely live in subgroups while a TEE fleet
-  node is admitted once at the namespace root, and the grant does not travel down
-  the tree, so a namespace-wide grant leaves a subgroup context refused. A client
-  seeing only `false` would send someone to re-grant a capability they had already
-  granted, at the level they already granted it.
+  membership through — honoured there, and the case the field exists for:
+  contexts routinely live in subgroups while a TEE fleet node is admitted once at
+  the namespace root, so one root grant covers the fleet and this is the only way
+  to see that a *root* grant is what is covering it. A revoke or a narrowing has
+  to edit the group named here, not `groupId`.
 
   Reports where a grant *lives*, never what is *permitted*: `canAuthorOnBehalf`
-  remains the only authorization answer and a client must not read an ancestor as
+  remains the only authorization answer and a client must not read this field as
   permission. Backed by `warrant_gate::authorship_grant_source`, which defers to
   `MembershipRepository::effective_capabilities` and `check_path` rather than
   re-deriving the traversal — so it cannot report a grant across a boundary the
@@ -27,11 +26,6 @@
   admission, so it requires its own grant), and cannot report one for a node
   deny-listed off an Open subgroup. Both properties are pinned by tests verified
   through mutation.
-
-  Should the gate later widen to honour an inherited grant, `canAuthorOnBehalf`
-  becomes `true` in that third case and this field is unchanged — the shape
-  survives that change, which is why it is worth fixing now rather than after the
-  DTO ships.
 
 - **`GET admin-api/contexts/:context_id/intents`** — the relay descriptor a
   keyholder needs *before* minting a warrant: `executorAccount` (whom the
@@ -144,6 +138,56 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **An authorship grant now reaches wherever membership reaches, and nodes must
+  be upgraded together.** `CAN_AUTHOR_ON_BEHALF` is resolved by the delegated-write
+  gate on the group owning the context and, failing that, on that group's
+  membership *anchor* — the ancestor the relay inherits its membership through.
+  It previously read the row on the owning group and nothing else.
+
+  This is the shape a relay fleet actually has. A TEE node is admitted once at
+  the namespace root while contexts live in subgroups (channels, DMs, per-team
+  groups), and a capability is not copied down the tree — so a namespace-wide
+  grant authorized nothing, and there was no row to write for an inherited member
+  short of admitting the relay directly to every subgroup. `grantedOnGroupId`
+  reported the root grant while the gate refused it, which was the descriptor
+  telling a caller where the grant was and the node then turning it away.
+
+  Two directions, and both are authorization evaluated at the cut:
+
+  - **Widening.** An ancestor grant now counts, for an *inherited* member. Bounded
+    by membership: a `Restricted` subgroup is still a wall (it required its own
+    admission, so it requires its own grant), a node deny-listed off an `Open`
+    subgroup is still refused there, and a **direct** member of the target does
+    not reach the ancestor at all — a group that admitted the node in its own
+    right decides for itself. The fleet path is the inherited one: a TEE
+    admission into an `Open` subgroup runs through `admit_member_if_absent`,
+    which writes no row for a node that already inherits. The cost, stated
+    rather than hidden: a root grant also reaches `Open` subgroups created
+    *after* it. The scoping did not disappear, it moved to where the admin
+    writes the grant.
+  - **Narrowing.** A bare capability row with no membership behind it no longer
+    authorizes. No writer produces that state deliberately — `MemberCapabilitySet`
+    bails unless the account is already a direct member, and `remove_member`
+    deletes the capability row with the member row — but those deletes are not
+    atomic, so it is reachable, and the gate's answer is now one deny-list-aware
+    predicate instead of two that can drift.
+
+  **Upgrade together.** A node running this and a node running the old read
+  disagree about whether the same delegated delta is authorized, and would then
+  hold different state. There is no wire-format change and no migration; the
+  divergence is in the verdict.
+
+  Determinism is unchanged, and for a stronger reason than the owning-group read
+  gave: resolving the membership already reads the anchor's own state —
+  `check_path` consults `CAN_JOIN_OPEN_SUBGROUPS` in exactly the capability row
+  this bit lives in. A peer that cannot read the anchor cannot resolve the
+  membership either, and refuses the delta a step earlier.
+
+  Pinned by tests verified through mutation: restoring the old one-row read fails
+  the widening case, the deny-list revocation and the narrowing case, and leaves
+  every other test in the file green. The `Restricted`-boundary test passes either
+  way, which is the point — it is the invariant the widening must not break.
 
 - **Storage wire formats changed in six ways, and nodes should be upgraded
   together.** App-defined merge now actually runs for a custom type stored in a

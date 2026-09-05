@@ -2057,6 +2057,16 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
     // Wrap the subgroup key for the receiver's namespace identity (member_pk),
     // exactly as `admit_tee_node` / `add_group_members` would.
+    //
+    // The namespace key production mints at group creation; this fixture builds
+    // its rows directly, so it mints one here -- ahead of the delivery rather
+    // than ahead of the `GroupCreated` in step 3, because both are sealed under
+    // it now and this one comes first. Only the NAMESPACE key: the op under test
+    // stays buffered on the SUBGROUP key, which arrives with this delivery, so
+    // step 1's assertions are untouched.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("mint the namespace key");
     let envelope =
         GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
             .expect("wrap subgroup key for receiver");
@@ -2066,10 +2076,15 @@ async fn restricted_ctx_redriven_after_group_created() {
         namespace_id.into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes().into(),
-            envelope,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .expect("seal the KeyDelivery"),
     )
     .expect("sign KeyDelivery");
 
@@ -2098,11 +2113,6 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 3: GroupCreated for the subgroup applies LAST ------------------
     // On master this does NOT re-drive the stranded op. The #2848 fix makes
     // GroupCreated re-trigger the buffered-op retry.
-    // The namespace key production mints at creation; this fixture builds
-    // its rows directly and would otherwise have nothing to seal under.
-    let _ = GroupKeyring::new(&store, ns_gid)
-        .store_key(&[0x5Au8; 32])
-        .expect("mint the namespace key");
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),
@@ -2706,10 +2716,15 @@ async fn tee_matrix_restricted_late_join() {
         namespace_id.into(),
         vec![],
         3,
-        NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes().into(),
-            envelope,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .expect("seal the KeyDelivery"),
     )
     .expect("sign KeyDelivery");
     apply_signed_namespace_op(&store, &key_delivery_op).expect("apply KeyDelivery");

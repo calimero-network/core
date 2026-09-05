@@ -1379,33 +1379,32 @@ pub struct IntentRelayApiResponseData {
     /// `false` is not an error and not permanent: it is the state of a context no
     /// admin has opened to delegated execution yet, which is every context by
     /// default, since `CAN_AUTHOR_ON_BEHALF` is implied by neither membership nor
-    /// admin and is not propagated by the subgroup cascade. Read it together with
-    /// `grantedOnGroupId` below, which says whether the answer is "nowhere" or
-    /// "not here".
+    /// admin and is never granted implicitly. Read it together with
+    /// `grantedOnGroupId` below, which says which group a grant would have to be
+    /// revoked on — or asked for.
     pub can_author_on_behalf: bool,
     /// The group owning this context, hex.
     pub group_id: String,
     /// The group whose capability row carries the grant, hex — or absent when no
     /// group reachable from here carries it.
     ///
-    /// This is what turns a bare `false` into an actionable answer, because the
-    /// two ways of being refused need opposite things from the caller:
+    /// It says *where*, while `can_author_on_behalf` says *whether*, and the two
+    /// are computed from one source so they cannot contradict each other:
     ///
     /// * **absent** — nobody has granted this node authorship anywhere it can
-    ///   reach. Someone must grant it, on `groupId`.
-    /// * **equal to `groupId`** — granted right here. Paired with
-    ///   `canAuthorOnBehalf: true`.
-    /// * **different from `groupId`** — granted on an ancestor this node inherits
-    ///   membership through, but not on this context's own group. Nothing is
-    ///   missing upstream; this group needs its own entry. A client that only saw
-    ///   `false` would send someone to re-grant a capability they already
-    ///   granted, at the level where they already granted it.
+    ///   reach, and it is refused. Someone must grant it: on `groupId`, or once
+    ///   on an ancestor this node inherits membership through.
+    /// * **equal to `groupId`** — granted on this context's own group. Paired
+    ///   with `canAuthorOnBehalf: true`.
+    /// * **different from `groupId`** — granted on an ancestor and honoured
+    ///   here, so also paired with `canAuthorOnBehalf: true`. The distinction is
+    ///   what a caller needs in order to *change* it: a revoke or a narrowing
+    ///   has to edit the group named here, not `groupId`, and one root grant of
+    ///   this kind is typically covering an entire relay fleet.
     ///
-    /// It reports where a grant *lives*, never what is *permitted*:
-    /// `canAuthorOnBehalf` remains the only authorization answer, so a client
-    /// must not read an ancestor here as permission. Should the gate later widen
-    /// to honour an inherited grant, `canAuthorOnBehalf` becomes `true` in that
-    /// third case and this field is unchanged — the shape survives that change.
+    /// It still reports where a grant lives, never what is permitted:
+    /// `canAuthorOnBehalf` remains the single authorization answer, and a client
+    /// must not infer permission from this field alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub granted_on_group_id: Option<String>,
 }
