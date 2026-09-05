@@ -338,21 +338,36 @@ merod account revoke-proof --device <64-hex DeviceId> --from ./phrase.txt
 
 ### device
 
-Print this node's device id and public keys, or with `--reset` drop the device row so
-the next pairing or namespace join mints a fresh one.
-Revocation is terminal: once a device is tombstoned its id can never be linked again,
-so a node revoked while it was offline keeps presenting a spent id and every peer
-refuses the certificates minted for it.
-The stored row is normally released automatically once the tombstone arrives, and
-`--reset` is the handle for forcing that decision offline instead of waiting for a sync
-round to reach the namespace holding it.
-It applies the same rule the enrolment path does and refuses while the device still
-serves a namespace this node takes part in, because a live device's id is the replica
-the node's CRDT state is held under.
-Like `export` and `import` it opens the datastore directly, so the node must be stopped.
+Print this node's device id and public keys.
+
+`--reset` drops the stored device row so the next pairing or namespace join mints
+a fresh one.
+It drops a row that is revoked in any namespace this node takes part in, or that
+no namespace ever certified: neither can ever serve again, because revocation is
+terminal and an uncertified id authorises nobody.
+It refuses a row that is certified somewhere and that no revocation has reached,
+because as far as this store can tell that device is live, and its id is the
+replica lineage the node's CRDT state is held under - dropping it would strand
+that state with nothing able to author there again.
+
+An online node normally never needs the command.
+When its device is revoked the group key rotates, the node strands on the new
+epoch, and the key-recovery pull releases the spent row and mints a fresh device
+on its own; pair-init releases a revoked or uncertified row the same way.
+
+`--force` overrides the one refusal, and exists for a device revoked while its
+node was offline: the tombstone never reached this store, so the guard sees a
+live device and the operator has to say otherwise.
+
+Like `export` and `import` it opens the datastore directly, so the node must be
+stopped.
 
 ```sh
 merod --node node1 account device --reset
+```
+
+```sh
+merod --node node1 account device --reset --force
 ```
 
 ### warrant

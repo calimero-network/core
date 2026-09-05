@@ -1124,22 +1124,20 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(self.revoked_in(held.device())?.is_empty().then_some(held))
     }
 
-    /// Drop this node's device identity so the next enrolment mints a fresh one.
+    /// Drop this node's device identity so the next pairing mints a fresh one.
     ///
-    /// The operator's forcing handle on the revocation lockout: a spent row keeps
-    /// being certified until some enrolment happens to consult the namespace that
-    /// holds the tombstone, and this runs that decision on demand instead.
-    ///
-    /// Gated on [`Self::stored_identity_still_serves`] rather than on a rule of its
-    /// own, across every namespace this node takes part in. A live device's id *is*
-    /// its replica lineage - counter slots and an HLC seed - so dropping a row the
-    /// enrolment path would have kept strands that state with nothing able to
-    /// author under it again.
+    /// A revoked row is spent everywhere, because one row serves every namespace
+    /// while a tombstone is per-namespace, and a row nobody certified holds no
+    /// replica state; both drop unconditionally. A certified row that no
+    /// revocation has reached is live as far as this node can tell, and its id
+    /// *is* the replica lineage its CRDT state is held under, so dropping that
+    /// takes `force` - only the operator knows of a revocation issued while this
+    /// node was offline, since the tombstone never reached this store.
     ///
     /// # Errors
-    /// If no device is stored, if the stored one still serves a namespace this node
-    /// takes part in, or the store read or write fails.
-    pub fn reset_device(&self) -> EyreResult<DeviceId> {
+    /// If no device is stored, if a certified one is dropped without `force`, or
+    /// the store read or write fails.
+    pub fn reset_device(&self, force: bool) -> EyreResult<DeviceId> {
         let _guard = NODE_DEVICE_MINT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1147,21 +1145,25 @@ impl<'a> NodeDeviceRepository<'a> {
         let Some(existing) = self.get()? else {
             eyre::bail!("this node holds no device identity, so there is nothing to reset");
         };
-        let account = existing.account;
+        let device = existing.device();
 
-        for namespace in NamespaceRepository::new(self.store).participating_namespaces()? {
-            if self.stored_identity_still_serves(&namespace, &existing, account)? {
-                eyre::bail!(
-                    "device {} still serves namespace {namespace:?}: it is neither revoked \
-                     nor unlinked, and dropping it would strand the replica state held under \
-                     it. Revoke the device first, then reset",
-                    hex::encode(existing.device().as_bytes())
-                );
+        if !force && self.revoked_in(device)?.is_empty() {
+            let bindings = crate::AccountBindingRepository::new(self.store);
+            for namespace in NamespaceRepository::new(self.store).participating_namespaces()? {
+                if bindings.is_device_linked(&namespace, device)? {
+                    eyre::bail!(
+                        "device {} is certified in namespace {namespace:?} and no revocation \
+                         of it has reached this node; dropping it would strand the replica \
+                         state authored under it. If it was revoked while this node was \
+                         offline, pass --force",
+                        hex::encode(device.as_bytes())
+                    );
+                }
             }
         }
 
         self.delete()?;
-        Ok(existing.device())
+        Ok(device)
     }
 
     /// Drop this node's device identity. Idempotent.
@@ -1349,8 +1351,8 @@ mod tests {
         );
     }
 
-    /// The operator's forcing handle: a revoked row is spent, so dropping it is
-    /// what lets the next pairing mint an id peers will admit.
+    /// A revoked row is spent, so dropping it is what lets the next pairing mint
+    /// an id peers will admit.
     #[test]
     fn resetting_drops_a_revoked_device() {
         let store = test_store();
@@ -1365,7 +1367,7 @@ mod tests {
             .apply_revocation(&ns, spent.device())
             .expect("tombstone the device");
 
-        assert_eq!(repo.reset_device().expect("reset"), spent.device());
+        assert_eq!(repo.reset_device(false).expect("reset"), spent.device());
         assert!(
             repo.get().expect("read").is_none(),
             "the row is gone, which is what releases the slot"
@@ -1377,31 +1379,119 @@ mod tests {
         );
     }
 
-    /// The guard. A live device's id is its replica lineage, so a reset the
-    /// enrolment rule would not have released has to be refused rather than
-    /// orphan the state held under it.
+    /// A row nobody certified holds no replica state anywhere, so there is
+    /// nothing a reset could strand: a pair-init the holder never completed, or
+    /// the own-account row key recovery mints once a paired device is revoked.
     #[test]
-    fn resetting_a_device_that_still_serves_is_refused() {
+    fn resetting_drops_a_device_nobody_certified() {
         let store = test_store();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
         NamespaceRepository::new(&store)
             .note_participation(&ns)
             .expect("take part in the namespace");
-        let held = repo.ensure_enrolled(&ns).expect("enroll");
+        let uncertified = repo.ensure_enrolled(&ns).expect("enroll");
+
+        assert_eq!(
+            repo.reset_device(false).expect("reset"),
+            uncertified.device()
+        );
+        assert!(repo.get().expect("read").is_none(), "the row is gone");
+    }
+
+    /// Certify this node's own device in `ns`, as applying its own join op would.
+    fn certify_own_device(store: &Store, ns: &ContextGroupId) -> NodeDevice {
+        let repo = NodeDeviceRepository::new(store);
+        let root = repo.account_root().expect("read").expect("provisioned");
+        let held = repo.ensure_enrolled(ns).expect("enroll");
+        let cert = calimero_account::DeviceCert::sign(
+            root.signing_key(),
+            held.account,
+            held.device(),
+            &PrivateKey::from([7u8; 32]).public_key(),
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(store)
+            .apply_link(ns, &held.genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+        held
+    }
+
+    /// The guard. A certified device that no revocation has reached is live as
+    /// far as this node can tell, and its id is the replica lineage its CRDT
+    /// state is held under, so an unforced reset refuses rather than strand it.
+    #[test]
+    fn resetting_a_certified_device_is_refused_without_force() {
+        let store = test_store();
+        let ns = test_group_id();
+        NamespaceRepository::new(&store)
+            .note_participation(&ns)
+            .expect("take part in the namespace");
+        let held = certify_own_device(&store, &ns);
+        let repo = NodeDeviceRepository::new(&store);
 
         let err = repo
-            .reset_device()
-            .expect_err("a device that still serves must be refused");
+            .reset_device(false)
+            .expect_err("a certified live device must be refused");
         assert!(
-            err.to_string().contains("still serves"),
+            err.to_string().contains("certified"),
             "the refusal must say why: {err}"
+        );
+        assert!(
+            err.to_string().contains("--force"),
+            "and name the override: {err}"
         );
         assert_eq!(
             repo.get().expect("read").expect("present").device(),
             held.device(),
             "and it must leave the row alone"
         );
+    }
+
+    /// The override, for a device revoked while this node was offline: the
+    /// tombstone never reached this store, so only the operator knows the id is
+    /// spent.
+    #[test]
+    fn force_drops_a_certified_device() {
+        let store = test_store();
+        let ns = test_group_id();
+        NamespaceRepository::new(&store)
+            .note_participation(&ns)
+            .expect("take part in the namespace");
+        let held = certify_own_device(&store, &ns);
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert_eq!(
+            repo.reset_device(true).expect("forced reset"),
+            held.device()
+        );
+        assert!(repo.get().expect("read").is_none(), "the row is gone");
+    }
+
+    /// One row serves every namespace while a tombstone is per-namespace, so a
+    /// device revoked anywhere is spent everywhere, however live it looks elsewhere.
+    #[test]
+    fn a_device_revoked_in_one_namespace_is_droppable_despite_a_certificate_in_another() {
+        let store = test_store();
+        let certified_in = test_group_id();
+        let revoked_in = ContextGroupId::from([0x42u8; 32]);
+        for ns in [&certified_in, &revoked_in] {
+            NamespaceRepository::new(&store)
+                .note_participation(ns)
+                .expect("take part in the namespace");
+        }
+        let held = certify_own_device(&store, &certified_in);
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&revoked_in, held.device())
+            .expect("tombstone the device elsewhere");
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert_eq!(repo.reset_device(false).expect("reset"), held.device());
+        assert!(repo.get().expect("read").is_none(), "the row is gone");
     }
 
     #[test]

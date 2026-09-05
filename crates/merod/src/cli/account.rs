@@ -1265,13 +1265,17 @@ impl RootCommand {
 pub struct DeviceCommand {
     /// Drop this node's device identity so the next pairing mints a fresh one.
     ///
-    /// For a device that was revoked while this node was offline: the stored id is
-    /// spent, every certificate minted for it is refused by every peer, and nothing
-    /// re-mints until an enrolment happens to consult the namespace holding the
-    /// tombstone. Refused while the device still serves a namespace this node takes
-    /// part in, because its id is the replica the node's CRDT state is held under.
+    /// A revoked row is spent everywhere and a row nobody certified holds no
+    /// replica state, so both drop. A certified row that no revocation has reached
+    /// is refused: it is live as far as this node can tell, and its id is the
+    /// replica the node's CRDT state is held under.
     #[arg(long, default_value_t = false)]
     reset: bool,
+
+    /// With `--reset`: drop the row even though it is certified and no revocation
+    /// has reached this node. For a device revoked while this node was offline.
+    #[arg(long, requires = "reset", default_value_t = false)]
+    force: bool,
 }
 
 impl DeviceCommand {
@@ -1284,7 +1288,7 @@ impl DeviceCommand {
         let store = open_store(root_args).await?;
 
         if self.reset {
-            let dropped = NodeDeviceRepository::new(&store).reset_device()?;
+            let dropped = NodeDeviceRepository::new(&store).reset_device(self.force)?;
             println!("Reset device {}", hex::encode(dropped.as_bytes()));
             println!("The next pairing or namespace join mints a fresh identity.");
             return Ok(());
