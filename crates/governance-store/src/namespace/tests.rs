@@ -8684,3 +8684,178 @@ fn signing_a_sealable_root_op_in_the_clear_is_refused_at_the_publisher() {
     super::governance::refuse_unsealed_sealable_root(&sealed)
         .expect("the sealed form of the same op must publish");
 }
+
+/// A member added to a subgroup, holding no binding in the owning namespace,
+/// is served nothing by the pull either — so it has no way to get the key at all.
+///
+/// `add_group_members` already knows the push cannot reach this account:
+/// `key_deliveries` scans the namespace's binding column, finds none, and the
+/// handler logs *"no group key was delivered to the added member; it must pull
+/// the key itself"*. This pins what that advice is worth **at the moment it is
+/// logged**: nothing. The pull resolves a requester through the same binding
+/// column (`member_account_in_namespace`), so an account the push could not
+/// address is an account the pull cannot authorise either — both doors are the
+/// same door.
+///
+/// Deliberately NOT claiming this is permanent. Naming an account the namespace
+/// has not converged on is an allowed and documented move (see
+/// `member_account::resolve`'s note on the ambiguity it accepts), and the moment
+/// a binding for this account does land the pull starts working — that is the
+/// sibling test below. What is unproven, and what an issue should settle, is
+/// whether a member added ONLY to a subgroup has any path to acquiring that
+/// binding: the writers are namespace joins and device links, and a member that
+/// never joins the namespace reaches neither on its own.
+///
+/// This is NOT a consequence of sealing `RootOp::KeyDelivery`. The push was
+/// already empty for this account before sealing — there was nothing to seal.
+/// Pinning it here so the boundary is a decision rather than a surprise, and so
+/// the sibling test below cannot be misread as covering it.
+#[test]
+fn an_added_member_with_no_namespace_binding_is_served_nothing_by_the_pull() {
+    let namespace_id = [0xC1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xC2u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    let group_key = [0x7Au8; 32];
+
+    let admin_sk = PrivateKey::from([0x31u8; 32]);
+    let admin_pk = admin_sk.public_key();
+
+    let store = test_store();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, admin_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // The added member: a real account with a real key, but never enrolled in
+    // this namespace, so no binding row names it. An admin may still add it —
+    // `member_added` gates only on the SIGNER's `require_manage_members` and
+    // never asks whether the added account is known here.
+    let stranger_sk = PrivateKey::from([0x32u8; 32]);
+    let stranger_pk = stranger_sk.public_key();
+    let stranger_account = crate::test_fixtures::account_for(&stranger_pk);
+    MembershipRepository::new(&store)
+        .add_member(&subgroup_gid, &stranger_account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&subgroup_gid, &stranger_account)
+            .unwrap(),
+        "precondition: the add landed, so this is a genuine member of the subgroup"
+    );
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &stranger_pk).unwrap(),
+        None,
+        "precondition: and it holds no binding in the owning namespace"
+    );
+
+    let (envelope_bytes, _responder) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: stranger_pk,
+            device: None,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        envelope_bytes.is_empty(),
+        "a member the binding column cannot resolve is served nothing, so at the \
+         point the push gives up the pull is not yet a fallback"
+    );
+}
+
+/// The case sealing DID change: a subgroup member that is not a member of the
+/// owning namespace root, and so cannot open a `KeyDelivery` sealed under the
+/// namespace key. The pull has to carry it, and this is what says it does.
+///
+/// `responder_delivery_round_trips_key_to_read_only_tee_joiner` covers the same
+/// shape for a `ReadOnlyTee`; this is the plain `Member` case, which is the one
+/// an ordinary `add_group_members` to a Restricted subgroup produces. The
+/// difference that matters is not the role — the responder gate is
+/// role-agnostic — but that this member holds a namespace BINDING while holding
+/// no namespace MEMBERSHIP, which is exactly the combination the sealed push
+/// leaves stranded.
+#[test]
+fn a_subgroup_member_outside_the_namespace_root_is_still_served_by_the_pull() {
+    let namespace_id = [0xC3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xC4u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    let group_key = [0x7Bu8; 32];
+
+    let admin_sk = PrivateKey::from([0x41u8; 32]);
+    let admin_pk = admin_sk.public_key();
+
+    let store = test_store();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, admin_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // Bound in the namespace (so it is resolvable) but a member ONLY of the
+    // subgroup — never added at the root.
+    let member_sk = PrivateKey::from([0x42u8; 32]);
+    let member_pk = member_sk.public_key();
+    let member_store = test_store();
+    let (member_account, member_device, member_credential) =
+        crate::test_fixtures::enrol_local_device(&member_store, &ns_gid, &member_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &member_credential);
+    MembershipRepository::new(&store)
+        .add_member(&subgroup_gid, &member_account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member_account)
+            .unwrap(),
+        "precondition: this member is NOT in the namespace root, so it holds no \
+         namespace key and cannot open a sealed KeyDelivery"
+    );
+
+    let (envelope_bytes, _responder) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: member_pk,
+            device: Some(member_device),
+        },
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        !envelope_bytes.is_empty(),
+        "the pull must carry a subgroup member that the sealed push cannot reach, \
+         or sealing KeyDelivery locked this member out of its own subgroup"
+    );
+}
