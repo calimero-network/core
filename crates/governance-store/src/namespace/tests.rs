@@ -380,26 +380,43 @@ async fn a_published_op_is_fed_to_the_local_apply_path() {
 /// second write path goes unfed.
 #[actix::test]
 async fn the_publish_only_path_also_feeds_the_local_apply_path() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_context_client::local_governance::RootOp;
     use calimero_node_primitives::messages::NodeMessage;
 
     let (store, node_client, ack_router, ns_id, sk, _tmp, mut node_msgs) =
         namespace_publish_fixture().await;
     // A `KeyDelivery` stands in for any publish-only op: it carries no local
     // mutation, so this path signs and publishes without applying first.
-    let op = NamespaceOp::Root(RootOp::KeyDelivery {
-        group_id: ns_id.to_bytes().into(),
-        envelope: calimero_context_client::local_governance::KeyEnvelope {
-            recipient: calimero_governance_types::EnvelopeRecipient::Member {
-                identity: sk.public_key(),
-                ephemeral_pk: sk.public_key(),
+    //
+    // Sealed, because `KeyDelivery` is sealable and the publisher now refuses
+    // the cleartext form — the same refusal every receiver has always made. The
+    // op is incidental to what this test is about (that the feed fires before
+    // the publish is awaited), but publishing it the way production does is not
+    // incidental: a fixture that publishes what nothing else can is a fixture
+    // that stops predicting anything.
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let namespace_key = [0x8Cu8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("mint the namespace key, as create_group does");
+    let op = crate::seal_root_op_for_publish(
+        &store,
+        ns_id,
+        RootOp::KeyDelivery {
+            group_id: ns_id.to_bytes().into(),
+            envelope: calimero_context_client::local_governance::KeyEnvelope {
+                recipient: calimero_governance_types::EnvelopeRecipient::Member {
+                    identity: sk.public_key(),
+                    ephemeral_pk: sk.public_key(),
+                },
+                sender: sk.public_key(),
+                nonce: [0u8; 12],
+                ciphertext: Vec::new(),
+                signature: [0u8; 64],
             },
-            sender: sk.public_key(),
-            nonce: [0u8; 12],
-            ciphertext: Vec::new(),
-            signature: [0u8; 64],
         },
-    });
+    )
+    .expect("seal the stand-in op");
 
     // The publish itself gathers no acks against the stub network; irrelevant
     // here — the feed fires before the publish is awaited, which is the point
@@ -8594,6 +8611,78 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
         Some(linked_account),
         "with the key held on arrival the link folds and the binding is written"
     );
+}
+
+/// The publish side refuses a sealable root op offered in the clear, the same
+/// shape the receive side refuses on arrival.
+///
+/// Without this the two sides disagree about when the mistake is visible. The
+/// receiver has always refused; the publisher signed and broadcast, so the only
+/// symptom was every peer silently dropping the op — a signal that never reaches
+/// the node that caused it. #3846 shipped exactly that and its local test run was
+/// green.
+///
+/// `KeyDelivery` is the subject because it is the variant that was got wrong.
+#[test]
+fn signing_a_sealable_root_op_in_the_clear_is_refused_at_the_publisher() {
+    let ns_gid = ContextGroupId::from([0xD7u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let signer_sk = PrivateKey::from([0x51u8; 32]);
+    let signer_pk = signer_sk.public_key();
+
+    let store = test_store();
+    let signer_account = enrol_member(&store, &ns_gid, &signer_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &signer_pk, signer_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
+        .unwrap();
+
+    use calimero_context_client::local_governance::RootOp;
+
+    let namespace_key = [0x52u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&signer_sk, &signer_pk, &ns_gid.to_bytes(), &namespace_key)
+            .unwrap();
+    let cleartext =
+        calimero_context_client::local_governance::NamespaceOp::Root(RootOp::KeyDelivery {
+            group_id: namespace_id.into(),
+            envelope,
+        });
+
+    let err = super::governance::refuse_unsealed_sealable_root(&cleartext)
+        .expect_err("a cleartext sealable root op must not reach the signer");
+    let err = format!("{err:#}");
+    assert!(
+        err.contains("seal_root_op_for_publish"),
+        "the refusal must name the fix, not just the fault: {err}"
+    );
+
+    // And the sealed form of the very same op passes, so the guard rejects the
+    // MISTAKE rather than the variant.
+    let sealed = crate::seal_root_op_for_publish(
+        &store,
+        namespace_id.into(),
+        RootOp::KeyDelivery {
+            group_id: namespace_id.into(),
+            envelope: GroupKeyring::wrap_for_member(
+                &signer_sk,
+                &signer_pk,
+                &ns_gid.to_bytes(),
+                &namespace_key,
+            )
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    super::governance::refuse_unsealed_sealable_root(&sealed)
+        .expect("the sealed form of the same op must publish");
 }
 
 /// A member added to a subgroup, holding no binding in the owning namespace,

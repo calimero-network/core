@@ -658,6 +658,7 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
+        refuse_unsealed_sealable_root(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -871,6 +872,7 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
+        refuse_unsealed_sealable_root(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -2534,6 +2536,38 @@ pub async fn sign_apply_and_publish_namespace_op_returning_op(
     NamespaceGovernance::new(store, namespace_id)
         .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op, endorsement)
         .await
+}
+
+/// Refuse to sign a sealable root op that reached the publisher in the clear.
+///
+/// The publish-side counterpart to the gate in `apply_signed_namespace_op`, which
+/// refuses the same shape on arrival. That gate is what makes sealing a rule
+/// rather than a convention, but it only ever fires on somebody ELSE's node: a
+/// publisher that forgets `seal_root_op_for_publish` signs happily, broadcasts,
+/// and every peer drops the op. The failure is total and it is invisible from the
+/// side that caused it.
+///
+/// #3846 is the worked example. Flipping `KeyDelivery` to sealable without routing
+/// its three publishers through the helper looked like a no-op locally — the
+/// classification changed a match arm, and 653 tests that hand-build the op and
+/// apply it directly did not care. What it actually produced was three publishers
+/// emitting ops no peer would accept. Nothing said so at the point of the mistake.
+///
+/// So this answers the same question the receiver answers, at the moment the
+/// mistake is made, naming the fix. It cannot break a working publisher: an op it
+/// refuses is an op every receiver already refuses.
+pub(super) fn refuse_unsealed_sealable_root(op: &NamespaceOp) -> EyreResult<()> {
+    if let NamespaceOp::Root(root) = op {
+        if calimero_governance_types::root_op_is_sealable(root) {
+            eyre::bail!(
+                "refusing to publish a sealable root op in the clear: this variant is \
+                 published under the namespace key and every peer refuses the cleartext \
+                 form, so signing it here would broadcast an op nothing accepts. Route it \
+                 through `seal_root_op_for_publish`."
+            );
+        }
+    }
+    Ok(())
 }
 
 pub async fn sign_and_publish_namespace_op(
