@@ -626,6 +626,9 @@ jobs:
           - workflow: account-device-revoke-lockout
             file: workflows/account-device-revoke-lockout.yml
             app: scaffolding-e2e
+          - workflow: account-device-reset-offline
+            file: workflows/account-device-reset-offline.yml
+            app: scaffolding-e2e
           - workflow: account-facts-cross-namespace
             file: workflows/account-facts-cross-namespace.yml
             app: scaffolding-e2e

@@ -1,0 +1,378 @@
+name: E2E KV Store - Reset a Device Revoked While Its Node Was Offline
+description: >
+  The operator exit from a device lockout, for the one case where the node cannot
+  get out on its own.
+
+  `account-device-revoke-lockout.yml` covers the ordinary shape: a revoked node
+  that is ONLINE needs no command at all, because the tombstone reaches it, the
+  key rotation strands it on an epoch it cannot read, and the key-recovery pull
+  releases the spent row and mints a fresh device under the node's own account
+  root. This scenario removes exactly that: the device is revoked while its node
+  is stopped, so the tombstone never lands in its store and no sync round will
+  ever tell it that its id is spent.
+
+  What it pins, and why each step is load-bearing:
+
+    1. Alice's phone (node-3) is paired onto her account from her laptop
+       (node-2) and writes into the context, so what gets revoked is a proven
+       replica rather than a stored row. node-1 is the admin and the reader.
+
+    2. The phone is STOPPED before the revocation. That ordering is the whole
+       scenario: nodes 1 and 2 apply the tombstone, node-3's store never sees
+       it, and that gap is the only state the reset exists for.
+
+    3. `account device --reset` is REFUSED on the stopped node. Its store says
+       the device is certified in the namespace and carries no revocation, so
+       the guard cannot tell it from a live one - and dropping a live device id
+       would strand the CRDT state held under it with nothing able to author
+       there again.
+
+    4. `--force` overrides that one refusal, and drops exactly the id that was
+       revoked - asserted against the id the pairing minted, not merely against
+       "something was dropped". The slot is then empty, so a plain
+       `account device` has nothing left to print.
+
+    5. The node comes back up, re-pairs, and writes again. The new device id
+       differs from the revoked one, the account is unchanged, and the write
+       reaches node-1 - so the reset produced a working replica rather than an
+       empty row.
+
+  User-visible failure mode this guards against: "I revoked my phone while it
+  was switched off, and now it will not come back onto my account."
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: device-reset-node
+
+steps:
+  - name: Login on device-reset-node-1
+    type: login
+    node: device-reset-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on device-reset-node-2
+    type: login
+    node: device-reset-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on device-reset-node-3
+    type: login
+    node: device-reset-node-3
+    username: dev
+    password: dev-password
+
+  # ── Phase 1: namespace, membership, context ───────────────────────
+  #
+  # node-2 is the only member of the three. node-3 never joins the namespace:
+  # its right to participate comes entirely from being a device of Alice's
+  # account, which is what makes the revocation the only thing that cuts it off.
+
+  - name: Install application on node-1
+    type: install_application
+    node: device-reset-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: device-reset-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: device-reset-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: device-reset-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  - name: Node-1 creates the context
+    type: create_context
+    node: device-reset-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: device-reset-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle
+    type: wait_for_sync
+    nodes:
+      - device-reset-node-1
+      - device-reset-node-2
+    context_id: '{{context_id}}'
+
+  # The join enrolled node-2's device for it, so this reads back the account it
+  # created. The root key is what lets node-2 certify the phone below.
+  - name: What node-2 enrolled as
+    type: node_identity
+    node: device-reset-node-2
+    outputs:
+      alice_account: accountId
+      root_key: accountRootPublicKey
+
+  - name: Settle after the link op
+    type: wait_for_sync
+    nodes:
+      - device-reset-node-1
+      - device-reset-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 2: pair the phone and prove it is a working replica ─────
+  #
+  # The revocation later has to cut off something that was demonstrably live.
+  # A paired-but-never-used device would make every assertion after it vacuous.
+
+  - name: Pair node-3 onto Alice's account
+    type: account_pair
+    node: device-reset-node-3
+    holder: device-reset-node-2
+    root_key: '{{root_key}}'
+    namespaces:
+      - '{{namespace_id}}'
+    outputs:
+      key_delivered: keyDelivered
+
+  # node-3 holds no scope key of its own, so its write below only works if the
+  # on-link backfill wrapped the current keys for it.
+  - name: The pairing delivered a scope key
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+
+  # `paired_device` is the id everything downstream turns on: it is what gets
+  # revoked, what `--force` must drop, and what the re-paired id must differ from.
+  - name: What node-3 speaks as, now that it is paired
+    type: node_identity
+    node: device-reset-node-3
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+
+  - name: The phone adopted Alice's account rather than one of its own
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+
+  - name: Node-3 follows the context as a device of Alice's account
+    type: join_context
+    node: device-reset-node-3
+    context_id: '{{context_id}}'
+
+  # node-3 is listed because the next step has it write, which only succeeds once
+  # node-2's KeyDelivery has actually reached and been applied there.
+  - name: Settle after pairing
+    type: wait_for_sync
+    nodes:
+      - device-reset-node-1
+      - device-reset-node-2
+      - device-reset-node-3
+    context_id: '{{context_id}}'
+    trigger_sync: true
+
+  - name: Node-3 (paired device) writes
+    type: call
+    node: device-reset-node-3
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-phone
+      value: phone-wrote-this
+
+  - name: Settle so the paired device's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - device-reset-node-1
+      - device-reset-node-2
+      - device-reset-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the paired device's write
+    type: call
+    node: device-reset-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-phone
+    outputs:
+      phone_value: result
+
+  - name: The phone was a working replica before it was revoked
+    type: json_assert
+    statements:
+      - 'json_equal({{phone_value}}, {"output": "phone-wrote-this"})'
+
+  # The guard below turns on node-3's own store holding the certificate for this
+  # device. The link op reaches it by namespace sync, so pin that it has landed
+  # before the node goes down, or a slow sync would read as the guard failing.
+  - name: What node-3's own store says about its device
+    type: node_identity
+    node: device-reset-node-3
+    outputs:
+      phone_certified: deviceCertified
+
+  - name: The phone holds its own certificate before it goes offline
+    type: json_assert
+    statements:
+      - 'json_equal({{phone_certified}}, true)'
+
+  # ── Phase 3: revoked while offline ────────────────────────────────
+  #
+  # The stop comes FIRST, which is the whole construction. The tombstone lands on
+  # nodes 1 and 2 only; node-3's store never sees it, and that is the one state
+  # the reset exists for.
+
+  - name: The phone goes offline before it is revoked
+    type: stop_node
+    nodes: device-reset-node-3
+
+  - name: The account holder revokes the offline device
+    type: account_revoke
+    node: device-reset-node-2
+    namespace_id: '{{namespace_id}}'
+    device_id: '{{paired_device}}'
+
+  - name: Settle the revocation across the nodes that are up
+    type: wait_for_sync
+    nodes:
+      - device-reset-node-1
+      - device-reset-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 4: the guard, and its override ──────────────────────────
+
+  # Certified here, and no tombstone here, so from this store's point of view the
+  # device is indistinguishable from a live one and the guard refuses it. That
+  # refusal is the feature: a device id is the replica lineage the node's CRDT
+  # state is held under.
+  - name: Resetting looks like resetting a live device, so it is refused
+    type: node_exec
+    node: device-reset-node-3
+    args: [account, device, --reset]
+    expected_failure: true
+
+  - name: Force the reset, which is what the offline case needs
+    type: node_exec
+    node: device-reset-node-3
+    args: [account, device, --reset, --force]
+    capture:
+      reset_device: '^Reset device ([0-9a-f]{64})$'
+    outputs:
+      reset_device: reset_device
+
+  # Compared against the id the pairing minted, not merely against "something was
+  # dropped" - a force that cleared the wrong row would pass the weaker check.
+  - name: The force dropped exactly the device that was revoked
+    type: json_assert
+    statements:
+      - 'json_equal({{reset_device}}, {{paired_device}})'
+
+  # The direct observation of the empty slot. Without it the re-pair below proves
+  # only that pairing works, since pair-init re-mints on its own.
+  - name: The node now holds no device at all
+    type: node_exec
+    node: device-reset-node-3
+    args: [account, device]
+    expected_failure: true
+
+  # ── Phase 5: back online, re-paired, writing again ────────────────
+
+  - name: The reset node comes back up
+    type: start_node
+    nodes: device-reset-node-3
+
+  - name: Log back in to node-3
+    type: login
+    node: device-reset-node-3
+    username: dev
+    password: dev-password
+
+  - name: Re-pair node-3 onto Alice's account
+    type: account_pair
+    node: device-reset-node-3
+    holder: device-reset-node-2
+    root_key: '{{root_key}}'
+    namespaces:
+      - '{{namespace_id}}'
+
+  - name: What node-3 speaks as after the re-pair
+    type: node_identity
+    node: device-reset-node-3
+    outputs:
+      repaired_account: accountId
+      repaired_device: deviceId
+
+  # A fresh replica under the same account: the account survived the revocation,
+  # the device id did not.
+  - name: The re-pair minted a fresh device under the same account
+    type: json_assert
+    statements:
+      - 'json_not_equal({{repaired_device}}, {{paired_device}})'
+      - 'json_equal({{repaired_account}}, {{alice_account}})'
+
+  # The assertion that makes the reset load-bearing rather than cosmetic: the new
+  # row is not just present, it authors and converges.
+  - name: Node-3 writes again from its fresh device
+    type: call
+    node: device-reset-node-3
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-phone
+      value: phone-is-back
+
+  - name: Settle so the fresh device's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - device-reset-node-1
+      - device-reset-node-2
+      - device-reset-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the fresh device's write
+    type: call
+    node: device-reset-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-phone
+    outputs:
+      back_value: result
+
+  - name: The re-paired phone is a working replica again
+    type: json_assert
+    statements:
+      - 'json_equal({{back_value}}, {"output": "phone-is-back"})'
+
+# ── Wiring ─────────────────────────────────────────────────────────
+#
+# Wired into `.github/workflows/e2e-rust-apps.yml`.
+#
+# `node_identity`, `account_pair`, `account_revoke`, `node_exec`, `stop_node` and
+# `start_node` are all native merobox steps. `stop_node` removes the container and
+# `start_node` recreates it over the same data dir, which is why node-3 has to log
+# in again before it can be driven over the admin api.
