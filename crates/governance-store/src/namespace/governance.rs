@@ -427,19 +427,21 @@ impl<'a> NamespaceGovernance<'a> {
                         // never replicate to peers — symptom: post-rejoin
                         // sync diverges in the kick/leave-rejoin e2e.
                         // Idempotent on a member who was never denied.
-                        DenyListRepository::new(self.store).clear(&group_id_typed, member)?;
-                        // Local rejoiner recovery: re-create the per-context
-                        // `ContextIdentity` membership marker that a prior
-                        // `MemberLeft` cascade deleted. The marker is keyless —
-                        // the signer is resolved live from the node's namespace
-                        // identity — and the scope gate inside
+                        //
+                        // Local rejoiner recovery goes with it: re-create the
+                        // per-context `ContextIdentity` membership marker that a
+                        // prior `MemberLeft` cascade deleted. The marker is
+                        // keyless — the signer is resolved live from the node's
+                        // namespace identity — and the scope gate inside
                         // `restore_member_context_identities` makes it a no-op on
                         // peers whose namespace identity differs from `member`.
                         // With the marker present the joiner can author state-DAG
-                        // ops as soon as `KeyDelivery` populates the group key
-                        // (GroupKeyring). Idempotent: an existing row is left
-                        // untouched.
-                        restore_member_context_identities(self.store, &group_id_typed, member)?;
+                        // ops as soon as the group key lands. Idempotent: an
+                        // existing row is left untouched.
+                        //
+                        // Both live in a named helper because the sealed-root
+                        // retry has to run them too — see its call site.
+                        self.member_joined_open_side_effects(&group_id_typed, member)?;
                     }
                     RootOp::GroupCreated { group_id, .. } => {
                         // #2848: GroupCreated just wrote this subgroup's meta +
@@ -1591,6 +1593,29 @@ impl<'a> NamespaceGovernance<'a> {
                 Ok(_events) => {
                     applied += 1;
                     record_namespace_retry_event("sealed_root_applied");
+                    // `apply_root_op` is only half of what the fresh-arrival path
+                    // does: the rest of each variant's effects live in
+                    // `apply_signed_op`'s match, which this walk does not run.
+                    // `MemberJoinedOpen` is handled here because this is where
+                    // a buffered join lands; `KeyDelivery`'s envelope unwrap and
+                    // `GroupCreated`'s buffered-op re-drive are still skipped on
+                    // replay, and both re-enter this same retry, so wiring them
+                    // in needs a recursion bound rather than another call.
+                    if let RootOp::MemberJoinedOpen {
+                        ref member,
+                        ref group_id,
+                        ..
+                    } = root
+                    {
+                        if let Err(e) = self.member_joined_open_side_effects(group_id, member) {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                error = %format!("{e:#}"),
+                                "a replayed MemberJoinedOpen folded but its deny-list clear \
+                                 did not; peers may keep dropping this member's deltas"
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -2275,6 +2300,27 @@ impl<'a> NamespaceGovernance<'a> {
         nonce_window.record(nonce);
         store_nonce_window(self.store, group_id, signer, &nonce_window)?;
         Ok(divergence)
+    }
+
+    /// What a `MemberJoinedOpen` does beyond folding its own state.
+    ///
+    /// These live outside [`Self::apply_root_op`], in `apply_signed_op`'s match,
+    /// and the sealed-root retry runs only the former — so a join folded on
+    /// replay would leave the rejoiner deny-stamped on every peer, with peers
+    /// dropping its state deltas at the receive filter, and without the context
+    /// marker it needs to author at all. Named so both callers run the same
+    /// thing rather than one of them running half of it.
+    ///
+    /// # Errors
+    ///
+    /// When the deny-list clear or the marker restore cannot be written.
+    fn member_joined_open_side_effects(
+        &self,
+        group_id: &ContextGroupId,
+        member: &calimero_account::AccountId,
+    ) -> EyreResult<()> {
+        DenyListRepository::new(self.store).clear(group_id, member)?;
+        restore_member_context_identities(self.store, group_id, member)
     }
 
     fn apply_root_op(
