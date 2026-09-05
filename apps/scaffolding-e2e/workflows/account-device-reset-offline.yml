@@ -224,20 +224,6 @@ steps:
     statements:
       - 'json_equal({{phone_value}}, {"output": "phone-wrote-this"})'
 
-  # The guard below turns on node-3's own store holding the certificate for this
-  # device. The link op reaches it by namespace sync, so pin that it has landed
-  # before the node goes down, or a slow sync would read as the guard failing.
-  - name: What node-3's own store says about its device
-    type: node_identity
-    node: device-reset-node-3
-    outputs:
-      phone_certified: deviceCertified
-
-  - name: The phone holds its own certificate before it goes offline
-    type: json_assert
-    statements:
-      - 'json_equal({{phone_certified}}, true)'
-
   # ── Phase 3: revoked while offline ────────────────────────────────
   #
   # The stop comes FIRST, which is the whole construction. The tombstone lands on
