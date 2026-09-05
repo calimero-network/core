@@ -28,14 +28,20 @@
 //! the account was resolved inside the execute handler rather than passed down
 //! from the RPC layer — and it survives unchanged here.
 //!
-//! It also does not yet allow the principal and the signer to differ. Every
-//! construction site still derives both from this node's own identity, so
-//! behaviour is identical. Letting them diverge needs the delta envelope to
-//! carry a warrant, because the sync path already refuses a `User` leaf whose
-//! owner is not its author's account — `user_leaf_author_is_its_owner` in
-//! `calimero-node`. Without that, a change attributed to a member but signed by
-//! a relay would apply on the gossip path and be dropped on hash-comparison,
-//! which is silent divergence rather than a partial feature.
+//! The principal and the signer DO differ, on exactly one path: a delegated
+//! execution reads both halves off the warrant
+//! (`Principal::new(warrant.author_account, warrant.author_device_key)`), while
+//! the envelope is signed by this node's own key. Every other construction site
+//! still derives both from the node's identity.
+//!
+//! That divergence had a precondition, and it is why it waited for delegated
+//! authorship rather than landing on its own: the sync path refuses a `User` leaf
+//! whose owner is not its author's account — `user_leaf_author_is_its_owner` in
+//! `calimero-node`. Both halves coming from the same warrant is what satisfies
+//! it. Take the account from the warrant and the device from the node and the
+//! leaf's owner stops matching its author: the change applies on the gossip path
+//! and is dropped on hash-comparison, which is silent divergence rather than a
+//! partial feature.
 
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
