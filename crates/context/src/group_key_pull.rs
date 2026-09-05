@@ -53,8 +53,8 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::VisibilityMode;
     use calimero_governance_store::{
-        CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-        NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
+        CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
@@ -129,6 +129,15 @@ mod tests {
     /// The apply gate resolves the membership path from the unified op-store at
     /// the op's causal cut, so re-driving only the live plane leaves the gate
     /// reading the frozen `Noop` and still rejecting the join.
+    ///
+    /// Both the join and the visibility flip it depends on are sealed under the
+    /// namespace key, so this node -- which does not hold it -- reads neither.
+    /// That makes the pre-key state a PARK rather than a verdict: answering "no
+    /// membership path" from a fold that is missing the flip would be a decision
+    /// about a history this node cannot see, and a keyed peer would contradict
+    /// it. The recovery has to fold the flip and THEN the join, in that order,
+    /// which is the ordering `retry_encrypted_ops_for_group` closes by running
+    /// its sealed-root pass on both sides of the group phase.
     #[test]
     fn a_pulled_key_unwedges_another_members_open_subgroup_join() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -231,40 +240,62 @@ mod tests {
             "precondition: the flip is invisible while the key is absent"
         );
 
+        // The state a kick or a leave leaves behind, and the one thing this
+        // op's apply -- and nothing else here -- undoes. Membership itself is
+        // no use as a signal: it is DERIVED from the anchor row and the
+        // subgroup's visibility, so folding the flip alone would make
+        // `is_member` true and the assertion would hold with the join never
+        // applied at all.
+        DenyListRepository::new(&store)
+            .mark(&sub, &joiner_account)
+            .expect("stamp the joiner as previously denied in the subgroup");
+
+        // Sealed, because `root_op_is_sealable` says this variant is published
+        // that way: its publisher is an inherited member that already holds the
+        // namespace key. Built by hand rather than through
+        // `seal_root_op_for_publish`, which reads the key from the store this
+        // fixture deliberately keeps empty.
         let join = SignedNamespaceOp::sign(
             &joiner_sk,
             namespace_id.into(),
             vec![flip_id],
             4,
-            NamespaceOp::Root(RootOp::MemberJoinedOpen {
-                member: joiner_account,
-                group_id: sub.to_bytes().into(),
-                account: crate::test_support::credential(&joiner),
-            }),
+            NamespaceOp::RootSealed {
+                key_id: GroupKeyring::key_id_for(&ns_key).into(),
+                encrypted: GroupKeyring::encrypt_root_op(
+                    &ns_key,
+                    &RootOp::MemberJoinedOpen {
+                        member: joiner_account,
+                        group_id: sub.to_bytes().into(),
+                        account: crate::test_support::credential(&joiner),
+                    },
+                )
+                .unwrap(),
+            },
         )
         .unwrap();
-        let apply = |store: &Store| {
-            calimero_governance_store::apply_signed_namespace_op_at_cut(
-                store,
-                &join,
-                &[flip_id],
-                &crate::apply_authorizer::EphemeralProjectionAuthorizer::new(store),
-            )
-        };
 
-        // The wedge is an ABSTENTION, not a rejection, and the difference matters.
-        // The flip sits in this cut unreadable, so the node does not know whether
-        // the subgroup is Open; a node holding the key does and would accept this
-        // join. Answering "no membership path" from a fold that is missing the
-        // flip is a verdict about a history this node cannot see, and it is the
-        // verdict the other node contradicts. Parking until the key arrives is
-        // what converges — and the rest of this test is precisely that arrival.
-        let wedged = apply(&store).expect_err("the subgroup still reads Restricted");
-        let wedged = format!("{wedged:#}");
+        // Parked, not rejected: with no key the node cannot open the join at
+        // all, so it reports the miss and leaves the op in the log for the
+        // retry pass. An error here would drop an op this node applies a moment
+        // later.
+        let parked = calimero_governance_store::apply_signed_namespace_op_at_cut(
+            &store,
+            &join,
+            &[flip_id],
+            &crate::apply_authorizer::EphemeralProjectionAuthorizer::new(&store),
+        )
+        .expect("a sealed root op whose key is absent must park, not fail");
         assert!(
-            wedged.contains("has not folded the ancestry"),
-            "the wedge must be an abstention that retries, not a decision taken \
-             over an unreadable ancestor, got: {wedged}"
+            !parked.key_unwrap_failures.is_empty(),
+            "the parked join must be reported as a key-unwrap miss so the retry \
+             pass has something to pick up"
+        );
+        assert!(
+            DenyListRepository::new(&store)
+                .is_denied(&sub, &joiner_account)
+                .unwrap(),
+            "precondition: the join has not been folded while its key is absent"
         );
 
         // `load_scope_ops` returns the rows in any order, so compare as sets.
@@ -305,7 +336,22 @@ mod tests {
             VisibilityMode::Open,
             "the re-drive must apply the buffered flip to the live store"
         );
-        apply(&store).expect("the backfilled join must apply once the flip is readable");
+        // The whole point. The sealed join is only admissible once the flip it
+        // parents onto has been folded, so a single sealed-root pass that ran
+        // before the group phase would have refused it and logged the refusal —
+        // leaving this node the only one that does not see the joiner.
+        //
+        // Read through the deny list rather than `is_member`, which would pass
+        // whether or not the join applied: an inherited membership is DERIVED
+        // from the anchor row plus the now-`Open` visibility, so the flip alone
+        // is enough to make it true. Clearing the deny stamp is something only
+        // this op's apply does.
+        assert!(
+            !DenyListRepository::new(&store)
+                .is_denied(&sub, &joiner_account)
+                .unwrap(),
+            "the buffered join must fold once the flip it depends on is readable"
+        );
 
         // Both recoveries are best-effort, so the key-delivery and startup sweeps
         // re-run them on a key this path already adopted.
@@ -328,6 +374,12 @@ mod tests {
                 .unwrap(),
             VisibilityMode::Open,
             "a replayed adopt must not disturb the recovered live state"
+        );
+        assert!(
+            !DenyListRepository::new(&store)
+                .is_denied(&sub, &joiner_account)
+                .unwrap(),
+            "a replayed adopt must not undo the folded join"
         );
     }
 }

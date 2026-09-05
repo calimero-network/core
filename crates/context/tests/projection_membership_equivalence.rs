@@ -54,6 +54,33 @@ fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
 
+/// Ingest-shaped op for a signed namespace op, opening it first when it is
+/// sealed.
+///
+/// The projection folds the OPENED root: `scope_projection` decrypts a
+/// `RootSealed` and passes the inner op alongside the envelope. Feeding it the
+/// envelope alone folds a `Noop`, so a test doing that would assert over a
+/// projection that never saw the op it just built.
+fn opened_op(
+    store: &Store,
+    ns: &ContextGroupId,
+    signed: &SignedNamespaceOp,
+    id: [u8; 32],
+    hlc: HybridTimestamp,
+    parents: &[[u8; 32]],
+) -> calimero_op::Op {
+    let opened = calimero_context::test_support::opened_root(store, ns, signed);
+    calimero_governance_store::op_from_namespace_op_with_binding(
+        signed,
+        None,
+        opened.as_ref(),
+        None,
+        id,
+        hlc,
+        parents,
+    )
+}
+
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
@@ -293,16 +320,20 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         ns.to_bytes().into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_context::test_support::account_for(&joiner),
-            group_id: subgroup.to_bytes().into(),
-            account: test_join_account_for(&joiner),
-        }),
+        calimero_context::test_support::published_root(
+            &store,
+            &ns,
+            RootOp::MemberJoinedOpen {
+                member: calimero_context::test_support::account_for(&joiner),
+                group_id: subgroup.to_bytes().into(),
+                account: test_join_account_for(&joiner),
+            },
+        ),
     )
     .expect("sign join_sub");
     calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
     let id2 = [0xA2; 32];
-    proj.ingest_op(&op_from_namespace_op(&join_sub, None, id2, hlc(2), &[id1]));
+    proj.ingest_op(&opened_op(&store, &ns, &join_sub, id2, hlc(2), &[id1]));
 
     // After the joins: both authorities must see the joiner in the subgroup
     // (live by inheritance walk; projection likewise).
@@ -476,17 +507,22 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         ns.to_bytes().into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_context::test_support::account_for(&joiner),
-            group_id: subgroup.to_bytes().into(),
-            account: test_join_account_for(&joiner),
-        }),
+        calimero_context::test_support::published_root(
+            &store,
+            &ns,
+            RootOp::MemberJoinedOpen {
+                member: calimero_context::test_support::account_for(&joiner),
+                group_id: subgroup.to_bytes().into(),
+                account: test_join_account_for(&joiner),
+            },
+        ),
     )
     .unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
-    proj.ingest_op(&op_from_namespace_op(
+    proj.ingest_op(&opened_op(
+        &store,
+        &ns,
         &join_sub,
-        None,
         [0xB2; 32],
         hlc(2),
         &[[0xB1; 32]],
@@ -667,11 +703,15 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         ns.to_bytes().into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_context::test_support::account_for(&joiner),
-            group_id: subgroup.to_bytes().into(),
-            account: test_join_account_for(&joiner),
-        }),
+        calimero_context::test_support::published_root(
+            &store,
+            &ns,
+            RootOp::MemberJoinedOpen {
+                member: calimero_context::test_support::account_for(&joiner),
+                group_id: subgroup.to_bytes().into(),
+                account: test_join_account_for(&joiner),
+            },
+        ),
     )
     .unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
@@ -799,11 +839,15 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         ns.to_bytes().into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_context::test_support::account_for(&joiner),
-            group_id: subgroup.to_bytes().into(),
-            account: test_join_account_for(&joiner),
-        }),
+        calimero_context::test_support::published_root(
+            &store,
+            &ns,
+            RootOp::MemberJoinedOpen {
+                member: calimero_context::test_support::account_for(&joiner),
+                group_id: subgroup.to_bytes().into(),
+                account: test_join_account_for(&joiner),
+            },
+        ),
     )
     .unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
@@ -823,9 +867,10 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         [0x50; 32],
         [0x5F; 32],
     );
-    proj.ingest_op(&op_from_namespace_op(
+    proj.ingest_op(&opened_op(
+        &store,
+        &ns,
         &join_sub,
-        None,
         id_sub_join,
         hlc(2),
         &[id_root_join], // parent is the root join — deliberately not folded yet
@@ -1048,15 +1093,19 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         ns.to_bytes().into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_context::test_support::account_for(&joiner),
-            group_id: subgroup.to_bytes().into(),
-            account: real_join_account_for(&joiner, [0x3F; 32]),
-        }),
+        calimero_context::test_support::published_root(
+            &store,
+            &ns,
+            RootOp::MemberJoinedOpen {
+                member: calimero_context::test_support::account_for(&joiner),
+                group_id: subgroup.to_bytes().into(),
+                account: real_join_account_for(&joiner, [0x3F; 32]),
+            },
+        ),
     )
     .expect("sign join_sub");
     let id2 = [0xB2; 32];
-    proj.ingest_op(&op_from_namespace_op(&join_sub, None, id2, hlc(2), &[id1]));
+    proj.ingest_op(&opened_op(&store, &ns, &join_sub, id2, hlc(2), &[id1]));
 
     assert_eq!(
         proj.member_at_cut(&store, subgroup, &admin, &[id2]),
@@ -1345,6 +1394,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
 /// assertion could pass for the wrong reason.
 #[test]
 fn a_join_is_attributed_to_the_account_its_certificate_names() {
+    let store = store();
     let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
     let ns = ContextGroupId::from([0x21; 32]);
@@ -1359,15 +1409,19 @@ fn a_join_is_attributed_to_the_account_its_certificate_names() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: certified_account,
-            group_id: group.to_bytes().into(),
-            account: credential,
-        }),
+        calimero_context::test_support::published_root(
+            &store,
+            &ns,
+            RootOp::MemberJoinedOpen {
+                member: certified_account,
+                group_id: group.to_bytes().into(),
+                account: credential,
+            },
+        ),
     )
     .expect("sign the join");
 
-    let op = op_from_namespace_op(&join, None, [0x9C; 32], hlc(1), &[]);
+    let op = opened_op(&store, &ns, &join, [0x9C; 32], hlc(1), &[]);
 
     assert_eq!(
         op.author(),

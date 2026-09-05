@@ -45,7 +45,11 @@ fn backfill_op_kinds(deltas: &[([u8; 32], Vec<u8>)]) -> String {
                         .to_owned()
                 }
                 // Encrypted; the inner kind is not readable without the key,
-                // which is frequently the very thing that is missing.
+                // which is frequently the very thing that is missing. Most root
+                // ops are sealed too, so without this arm a backfill of ordinary
+                // governance reads as a list of "Unknown" — which is what this
+                // whole function exists to avoid.
+                NamespaceOp::RootSealed { .. } => "Root(sealed)".to_owned(),
                 NamespaceOp::Group { .. } => "Group(encrypted)".to_owned(),
                 _ => "Unknown".to_owned(),
             },
@@ -1669,6 +1673,9 @@ impl SyncManager {
                                     let op_kind = match &op.op {
                                         calimero_context_client::local_governance::NamespaceOp::Root(r) => {
                                             format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                        }
+                                        calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
+                                            "RootSealed".to_owned()
                                         }
                                         calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
                                             "Group".to_owned()

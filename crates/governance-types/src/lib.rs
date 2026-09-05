@@ -668,13 +668,17 @@ impl GroupOp {
 /// Top-level operation in the single namespace governance DAG.
 ///
 /// Every delta in the DAG carries exactly one `NamespaceOp`:
-/// - `Root` ops are cleartext and visible to all namespace members.
+/// - `Root` ops are cleartext and visible to anyone on the namespace topic.
+///   Only the three variants [`root_op_is_sealable`] cannot seal travel this
+///   way; everything else is a `RootSealed`.
+/// - `RootSealed` ops are the same root ops encrypted under the namespace key.
 /// - `Group` ops have a cleartext `group_id` tag (for topic routing and
 ///   skeleton storage) but the actual mutation is encrypted.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 pub enum NamespaceOp {
-    /// Cleartext namespace-wide administrative operation.
+    /// Cleartext namespace-wide administrative operation. Reserved for the
+    /// variants that cannot be sealed; see [`root_op_is_sealable`].
     Root(RootOp),
     /// Encrypted group-scoped operation. The `group_id` and `key_id` are
     /// cleartext so non-members can store the skeleton; the payload is only
@@ -701,7 +705,7 @@ pub enum NamespaceOp {
     /// rotation the receiver holds more than one namespace key, and resolving by
     /// id is the difference between decrypting the op and guessing.
     ///
-    /// Only the five admin-published variants reach here; see
+    /// Which root ops reach here is decided in one place; see
     /// [`root_op_is_sealable`].
     RootSealed {
         key_id: KeyId,
@@ -711,13 +715,19 @@ pub enum NamespaceOp {
 
 /// Whether a [`RootOp`] is published sealed.
 ///
-/// Six of the eleven variants are. The four `MemberJoined*` are published by a
-/// principal that does not hold the key yet; `NamespaceCreated` is genesis,
-/// before any key exists.
+/// Eight of the eleven variants are. Three are not, and the reasons differ:
 ///
-/// What remains is published by an admin who already holds the key and read by
-/// members who already hold it, so nothing about it needs to be legible to a
-/// non-member.
+/// * `MemberJoined` and `MemberJoinedAt` are published by the JOINER, which
+///   holds no namespace key yet and in fact obtains one *because* the op is
+///   published. See their arm.
+/// * `NamespaceCreated` is genesis. The namespace key does not exist until this
+///   op's own effect mints it, so there is nothing to seal under and no peer
+///   could ever open the result.
+///
+/// Everything else is published by a principal that already holds the namespace
+/// key -- an admin, an admitter, or a member joining inward from a group it is
+/// already in -- and read by members who hold it too, so none of it needs to be
+/// legible to a non-member.
 ///
 /// This is the single place that decision lives. A publisher that seals by its
 /// own judgement can disagree with the receiver about which ops are sealed, and
@@ -737,12 +747,41 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         | RootOp::GroupDeleted { .. }
         | RootOp::AdminChanged { .. }
         | RootOp::PolicyUpdated { .. } => true,
-        // Published by a principal that does not hold the key yet.
-        RootOp::MemberJoined { .. }
-        | RootOp::MemberJoinedAt { .. }
-        | RootOp::MemberJoinedOpen { .. }
-        | RootOp::MemberJoinedViaTeeAttestation { .. } => false,
-        // Published by an admin or member who holds the key, like the five
+        // The two joins whose PUBLISHER already holds the namespace key, which is
+        // what sealing needs. Their JOINER's key state is what makes them look
+        // like exceptions, and it is not the question.
+        //
+        // `MemberJoinedOpen` is published by an INHERITED member joining an Open
+        // subgroup (`join_context`, `join_subgroup_inheritance`). It lacks the
+        // SUBGROUP key -- that is what the op asks a peer for -- but it holds the
+        // namespace key, which is what the seal uses. `MemberJoinedViaTeeAttestation`
+        // is published by the ADMITTER (`admit_tee_node`), never by the TEE node.
+        RootOp::MemberJoinedOpen { .. } | RootOp::MemberJoinedViaTeeAttestation { .. } => true,
+        // The two joins that CANNOT be sealed, and not for want of trying.
+        //
+        // Both are published BY THE JOINER, and the joiner is the party that
+        // holds no namespace key. In `join_group` the line directly above the
+        // publish is
+        // `let needs_key_wait = GroupKeyring::new(..).load_current_key()?.is_none()`,
+        // which exists precisely because that is the normal case. Worse, the op
+        // is what CAUSES the key to arrive: an admin sees it and answers with a
+        // `KeyDelivery`. Sealing it under a key the publisher only obtains BY
+        // publishing it is a circular dependency, and the failure is not partial
+        // -- `seal_root_op_for_publish` refuses, nothing is published, no admin
+        // ever learns of the join, and nobody can join a namespace at all.
+        //
+        // `MemberJoined` is the same op without an expiry, and it is NOT
+        // publisher-less: `signMemberJoinOp` in mero-js emits it whenever the
+        // invitation's `expiration_timestamp` is 0, and `MemberJoinedAt` when it
+        // is not. A browser client holds no namespace key at that point either,
+        // so sealing this one locks out exactly the joiners with non-expiring
+        // invitations -- and only them, which is the kind of partial break that
+        // reads as a client bug.
+        //
+        // Sealing either therefore needs a different publisher (the admitter,
+        // who already endorses the join and does hold the key), not a flag flip.
+        RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. } => false,
+        // Published by an admin or member who holds the key, like the ones
         // above. It reads as an exception because its RECIPIENT does not hold
         // the key -- but the recipient is no longer meant to read it from here.
         //
@@ -788,7 +827,11 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
     }
 }
 
-/// Cleartext administrative operations that affect the entire namespace.
+/// Administrative operations that affect the entire namespace.
+///
+/// Most are published SEALED under the namespace key, as
+/// [`NamespaceOp::RootSealed`]; [`root_op_is_sealable`] says which, and why the
+/// three that travel in the clear cannot.
 // Intentionally NOT #[non_exhaustive]: `RootOp` is dispatched by a central
 // exhaustive `match root` (governance op-apply) that must fail to compile when
 // a variant is added so the new op gets a handler, rather than silently
@@ -1071,7 +1114,7 @@ impl NamespaceOp {
         match self {
             // Sealed ops collapse to one label: the kind is inside the
             // ciphertext. Metrics broken down by root-op kind lose that
-            // breakdown for the five sealed variants, which is a real cost of
+            // breakdown for the sealed variants, which is a real cost of
             // sealing them and not an oversight here.
             NamespaceOp::RootSealed { .. } => "root_sealed",
             NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
@@ -1103,13 +1146,12 @@ impl NamespaceOp {
 /// [`NamespaceOp::Group`] does for a group op, so rotation stays resolvable by
 /// `load_key_by_id` rather than by guessing the current key.
 ///
-/// **Not every root op can be sealed.** The four `MemberJoined*` variants are
-/// published by a principal that does not hold the key yet; `KeyDelivery` is how
-/// the key arrives, so sealing it under that key is unsatisfiable; and
-/// `NamespaceCreated` is genesis, before any key exists. What remains —
-/// `GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`,
-/// `PolicyUpdated` — is published by an admin who is already a member, so no
-/// non-member has any business reading it.
+/// **Three root ops still cannot be sealed**, and [`root_op_is_sealable`] is
+/// where that is decided: `MemberJoined` and `MemberJoinedAt` are published by
+/// the joiner, who obtains the namespace key *because* the op is published, and
+/// `NamespaceCreated` is genesis, before any key exists. Everything else is
+/// published by a principal that already holds the key, so no non-member has any
+/// business reading it.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct EncryptedRootOp {
     /// 12-byte AES-GCM nonce.

@@ -2454,10 +2454,30 @@ fn a_sealed_root_op_is_distinguishable_from_a_group_op() {
 ///
 /// `root_op_is_sealable` is an exhaustive match, so a twelfth variant fails to
 /// compile until it is classified. This test states what the classification has
-/// to be for the six that carry no bootstrap constraint, so a future edit that
-/// reclassifies one has to argue with a test rather than only with a reviewer.
+/// to be, so a future edit that reclassifies one has to argue with a test rather
+/// than only with a reviewer.
 #[test]
-fn only_the_admin_published_variants_are_sealable() {
+fn only_the_two_bootstrap_variants_travel_in_the_clear() {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    let invitation = SignedGroupOpenInvitation {
+        inviter_account: None,
+        invitation: GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from([0u8; 32]),
+            group_id: ContextGroupId::from([0u8; 32]),
+            expiration_timestamp: 0,
+            invitation_nonce: [0u8; 32],
+            invited_role: 1,
+            admitters: Vec::new(),
+        },
+        inviter_signature: String::new(),
+        admitter_addrs: Vec::new(),
+        application_id: None,
+        bytecode_id: None,
+    };
+
     assert!(root_op_is_sealable(&RootOp::AdminChanged {
         new_admin: calimero_account::AccountId::from([1u8; 32]),
     }));
@@ -2504,10 +2524,60 @@ fn only_the_admin_published_variants_are_sealable() {
         },
     }));
 
+    // The joins whose PUBLISHER holds the namespace key, which is what sealing
+    // needs -- not the joiner's own key state, which is what makes them read
+    // like exceptions.
+    //
+    // `MemberJoinedOpen` is published by an inherited member reaching into an
+    // Open subgroup: it lacks the SUBGROUP key, which is the whole point of the
+    // op, and holds the namespace key the seal uses.
+    // `MemberJoinedViaTeeAttestation` is published by the ADMITTER, never by the
+    // attested node.
+    assert!(root_op_is_sealable(&RootOp::MemberJoinedOpen {
+        member: calimero_account::AccountId::from([5u8; 32]),
+        group_id: ContextGroupId::from([6u8; 32]),
+        account: deterministic_credential(),
+    }));
+    assert!(root_op_is_sealable(
+        &RootOp::MemberJoinedViaTeeAttestation {
+            group_id: ContextGroupId::from([6u8; 32]),
+            member: PublicKey::from([7u8; 32]),
+            quote_hash: [0u8; 32],
+            mrtd: String::new(),
+            rtmr0: String::new(),
+            rtmr1: String::new(),
+            rtmr2: String::new(),
+            rtmr3: String::new(),
+            tcb_status: String::new(),
+            role: calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
+            account: deterministic_credential(),
+        }
+    ));
+
+    // The three that cannot be sealed, for two different reasons.
+    //
+    // The invitation joins are published by the JOINER, before any key has
+    // reached it -- and publishing one is what causes an admin to send a key.
+    // Sealing them under a key the publisher obtains BY publishing them is
+    // circular, and the failure is total: the publish is refused, no admin ever
+    // learns of the join, and nobody joins a namespace at all. `MemberJoined` is
+    // the non-expiring form and is emitted by mero-js's `signMemberJoinOp`, so
+    // sealing it locks out browser clients holding a non-expiring invitation.
+    // Sealing either needs a different publisher, not a reclassification here.
+    assert!(!root_op_is_sealable(&RootOp::MemberJoined {
+        member: calimero_account::AccountId::from([5u8; 32]),
+        signed_invitation: invitation.clone(),
+        account: deterministic_credential(),
+    }));
+    assert!(!root_op_is_sealable(&RootOp::MemberJoinedAt {
+        member: calimero_account::AccountId::from([5u8; 32]),
+        signed_invitation: invitation,
+        joined_at: 0,
+        account: deterministic_credential(),
+    }));
+
     // `NamespaceCreated` is genesis: there is no namespace key yet to seal it
-    // under, and this op's own apply is what establishes the founder. Asserted
-    // because it is now the ONLY admin-published variant that does not seal,
-    // and so the one most likely to look sealable to a future reader.
+    // under, and this op's own apply is what establishes the founder.
     assert!(!root_op_is_sealable(&RootOp::NamespaceCreated {
         founder: calimero_account::AccountId::from([5u8; 32]),
         account: deterministic_credential(),

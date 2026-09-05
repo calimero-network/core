@@ -22,43 +22,10 @@ use calimero_store::Store;
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
     founder_account_for, namespace_genesis_for, namespace_genesis_naming,
-    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, seal_for_test, test_group_id,
+    test_meta, test_store,
 };
 use super::super::*;
-
-/// Seal a root op the way a publisher does, so a test exercises the path
-/// production takes rather than one only tests can use.
-///
-/// Apply refuses a sealable root op that arrives in the clear, which is the whole
-/// point of that rule — so a test that hand-built `NamespaceOp::Root(GroupCreated
-/// { .. })` was constructing something no peer will accept. Sealing here keeps
-/// those tests about what they were about (parents, cascades, idempotency) while
-/// putting them on the real path.
-///
-/// Mints the namespace key if the fixture has not, because a fixture that skips it
-/// is under-building the namespace: production keys a namespace at creation, since
-/// its root is a group and `create_group` keys whatever group it creates.
-///
-/// Non-sealable variants pass through untouched, so genesis and the joins still
-/// travel in the clear exactly as they must.
-fn seal_for_test(
-    store: &Store,
-    ns_gid: ContextGroupId,
-    op: calimero_context_client::local_governance::RootOp,
-) -> calimero_context_client::local_governance::NamespaceOp {
-    if crate::GroupKeyring::new(store, ns_gid)
-        .load_current_key()
-        .expect("read namespace keyring")
-        .is_none()
-    {
-        let _ = crate::GroupKeyring::new(store, ns_gid)
-            .store_key(&[0x5Au8; 32])
-            .expect("mint the namespace key the fixture omitted");
-    }
-    crate::seal_root_op_for_publish(store, ns_gid.to_bytes().into(), op)
-        .expect("seal a root op for a test")
-}
 
 /// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
 /// comes back SEALED, so the delivery metadata — which account, at which causal
@@ -7189,7 +7156,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 /// from that op stalls on this replica alone. It must park for retry instead.
 #[test]
 fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -7252,11 +7219,15 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner_account,
-            group_id: subgroup_id.into(),
-            account: crate::test_fixtures::real_join_account(&joiner),
-        }),
+        seal_for_test(
+            &store,
+            ContextGroupId::from(namespace_id),
+            RootOp::MemberJoinedOpen {
+                member: joiner_account,
+                group_id: subgroup_id.into(),
+                account: crate::test_fixtures::real_join_account(&joiner),
+            },
+        ),
     )
     .expect("joiner signs MemberJoinedOpen");
 
@@ -7441,7 +7412,7 @@ fn apply_open_join_with(
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
     use super::NamespaceGovernance;
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     // The op names the account the CREDENTIAL certifies, not one derived from
     // the joiner's key: those are different values, and the apply checks the
@@ -7449,16 +7420,23 @@ fn apply_open_join_with(
     let gov = NamespaceGovernance::new(store, namespace_id.into());
     let head = gov.read_head_record().expect("read head");
     let joiner_account = account.statement.account;
+    // Sealed: the publisher is a member inheriting inward, so it holds the
+    // namespace key, and apply refuses this variant in the clear.
+    let op = seal_for_test(
+        store,
+        ContextGroupId::from(namespace_id),
+        RootOp::MemberJoinedOpen {
+            member: joiner_account,
+            group_id: subgroup_id.into(),
+            account,
+        },
+    );
     let join = SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner_account,
-            group_id: subgroup_id.into(),
-            account,
-        }),
+        op,
     )
     .expect("joiner signs MemberJoinedOpen");
     gov.apply_signed_op(&join)
@@ -7765,19 +7743,23 @@ fn a_tee_admission_binds_the_replicas_device() {
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
-            group_id: ns_gid,
-            member: replica,
-            quote_hash: [0x11; 32],
-            mrtd: "m1".to_owned(),
-            rtmr0: String::new(),
-            rtmr1: String::new(),
-            rtmr2: String::new(),
-            rtmr3: String::new(),
-            tcb_status: "ok".to_owned(),
-            role: GroupMemberRole::ReadOnlyTee,
-            account,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedViaTeeAttestation {
+                group_id: ns_gid,
+                member: replica,
+                quote_hash: [0x11; 32],
+                mrtd: "m1".to_owned(),
+                rtmr0: String::new(),
+                rtmr1: String::new(),
+                rtmr2: String::new(),
+                rtmr3: String::new(),
+                tcb_status: "ok".to_owned(),
+                role: GroupMemberRole::ReadOnlyTee,
+                account,
+            },
+        ),
     )
     .expect("verifier signs the admission");
     gov.apply_signed_op(&admit).expect("the admission applies");
@@ -7869,19 +7851,23 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
-            group_id: ns_gid,
-            member: replica,
-            quote_hash: [0x11; 32],
-            mrtd: "m1".to_owned(),
-            rtmr0: String::new(),
-            rtmr1: String::new(),
-            rtmr2: String::new(),
-            rtmr3: String::new(),
-            tcb_status: "ok".to_owned(),
-            role: GroupMemberRole::ReadOnlyTee,
-            account: stolen,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedViaTeeAttestation {
+                group_id: ns_gid,
+                member: replica,
+                quote_hash: [0x11; 32],
+                mrtd: "m1".to_owned(),
+                rtmr0: String::new(),
+                rtmr1: String::new(),
+                rtmr2: String::new(),
+                rtmr3: String::new(),
+                tcb_status: "ok".to_owned(),
+                role: GroupMemberRole::ReadOnlyTee,
+                account: stolen,
+            },
+        ),
     )
     .expect("verifier signs the admission");
     // Refused OUTRIGHT, not "admitted without a binding". The membership row an

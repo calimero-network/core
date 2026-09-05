@@ -267,3 +267,75 @@ pub(crate) mod actor {
         }
     }
 }
+
+/// Wrap a root op the way its publisher does: sealed under the namespace key
+/// when [`calimero_governance_types::root_op_is_sealable`] says the variant
+/// travels that way, cleartext when it does not.
+///
+/// Apply refuses a sealable root op that arrives in the clear, so a test that
+/// hand-builds `NamespaceOp::Root(..)` for one of those variants is constructing
+/// something no peer accepts — and it fails for that reason rather than the one
+/// the test is about.
+///
+/// Mints the namespace key when the fixture has not. Production keys a namespace
+/// at creation (its root is a group, and `create_group` keys whatever group it
+/// creates), so a fixture without one is under-built rather than exercising a
+/// real state.
+///
+/// # Panics
+///
+/// Panics if the keyring cannot be read or written, or if the op cannot be
+/// sealed — in a test that means the fixture is wrong.
+#[must_use]
+pub fn published_root(
+    store: &Store,
+    namespace: &ContextGroupId,
+    op: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    let keyring = calimero_governance_store::GroupKeyring::new(store, *namespace);
+    if keyring
+        .load_current_key()
+        .expect("read the namespace keyring")
+        .is_none()
+    {
+        let _ = keyring
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omitted");
+    }
+    calimero_governance_store::seal_root_op_for_publish(store, namespace.to_bytes().into(), op)
+        .expect("seal a root op for a test")
+}
+
+/// The [`RootOp`] a signed namespace op carries, opened if it arrived sealed.
+///
+/// The projection folds the OPENED root — `scope_projection` decrypts a
+/// `NamespaceOp::RootSealed` and hands the inner op to
+/// `op_from_namespace_op_with_binding` — so a test that feeds the sealed
+/// envelope alone folds a `Noop` and proves nothing about the op it built.
+///
+/// `None` for a cleartext root op (which needs no opening) and for a group op.
+///
+/// # Panics
+///
+/// Panics if the keyring cannot be read or the sealed op will not open, which in
+/// a test means the fixture sealed under a key it then did not keep.
+#[must_use]
+pub fn opened_root(
+    store: &Store,
+    namespace: &ContextGroupId,
+    signed: &calimero_context_client::local_governance::SignedNamespaceOp,
+) -> Option<calimero_context_client::local_governance::RootOp> {
+    let calimero_context_client::local_governance::NamespaceOp::RootSealed { key_id, encrypted } =
+        &signed.op
+    else {
+        return None;
+    };
+    let key = calimero_governance_store::GroupKeyring::new(store, *namespace)
+        .load_key_by_id(key_id.as_bytes())
+        .expect("read the namespace keyring")
+        .expect("the fixture kept the key it sealed under");
+    Some(
+        calimero_governance_store::GroupKeyring::decrypt_root_op(&key, encrypted)
+            .expect("open a root op this fixture sealed"),
+    )
+}
