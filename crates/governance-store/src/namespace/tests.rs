@@ -60,6 +60,60 @@ fn seal_for_test(
         .expect("seal a root op for a test")
 }
 
+/// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
+/// comes back SEALED, so the delivery metadata — which account, at which causal
+/// position — no longer reaches every peer on the namespace topic.
+///
+/// This is asserted at `seal_root_op_for_publish` and not through
+/// `root_op_is_sealable` alone, because the predicate is not where the change
+/// takes effect: every other test in this crate hand-builds
+/// `NamespaceOp::Root(RootOp::KeyDelivery { .. })` and applies it directly,
+/// which bypasses the publish helper entirely and would pass whatever the
+/// classification said. This is the one local test that crosses the boundary the
+/// change actually moved.
+///
+/// What it deliberately does NOT assert is that a keyless recipient recovers the
+/// key anyway. That path is the readiness beacon driving
+/// `SyncManager::recover_missing_group_keys` across two nodes and a partition,
+/// which is a merobox scenario (`account-pairing-missed-publish`) rather than
+/// anything a single store can show.
+#[test]
+fn a_key_delivery_is_sealed_at_the_publish_boundary() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_governance_types::{EnvelopeRecipient, KeyEnvelope};
+
+    let store = test_store();
+    let namespace_id = [0xE1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let delivery = RootOp::KeyDelivery {
+        group_id: ns_gid,
+        envelope: KeyEnvelope {
+            // Member-addressed: the bootstrap form. Sealing the carrier does not
+            // change who the envelope inside is addressed to.
+            recipient: EnvelopeRecipient::Member {
+                identity: PublicKey::from([0xE2u8; 32]),
+                ephemeral_pk: PublicKey::from([0xE3u8; 32]),
+            },
+            sender: PublicKey::from([0xE4u8; 32]),
+            nonce: [0u8; 12],
+            ciphertext: vec![9, 9, 9],
+            signature: [0u8; 64],
+        },
+    };
+
+    let published = seal_for_test(&store, ns_gid, delivery);
+
+    match published {
+        NamespaceOp::RootSealed { .. } => {}
+        NamespaceOp::Root(op) => panic!(
+            "a KeyDelivery must not reach the topic in the clear; the publish \
+             helper returned an unsealed {op:?}"
+        ),
+        other => panic!("unexpected published shape: {other:?}"),
+    }
+}
+
 /// A genesis whose founder credential is inadmissible establishes nothing.
 ///
 /// Two layers enforce it and this pins the property, not either one.
@@ -8323,4 +8377,221 @@ fn provisioning_the_signing_key_joins_nothing() {
     // The namespace-gated reader still answers None: "who am I here" is not yet a
     // question this node can answer, even though it has a key.
     assert!(repo.identity_record(&ns).expect("read").is_none());
+}
+
+/// Does the key-arrival re-drive fold a buffered `AccountDeviceLinked`, writing
+/// the device's binding row?
+///
+/// This is the question sealing `RootOp::KeyDelivery` turned on, and #3846
+/// reverted that sealing without settling it. E2E showed a freshly paired node
+/// receiving its key by direct pull and then failing `join_context` with "is
+/// bound to no account in the namespace owning group" — but a log cannot
+/// distinguish "the re-drive does not handle this op" from "the op had not
+/// arrived yet", and those have opposite fixes. In-process, arrival is not a
+/// variable: the op is definitely in the log before the key lands.
+///
+/// So a PASS here localises the E2E failure to arrival timing, which is a
+/// readiness problem at the caller. A FAIL would mean the re-drive itself has a
+/// gap for this op, which would be a live bug on cleartext master too.
+#[test]
+fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
+    use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xD1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The holder: an admin that already holds the key and publishes the link.
+    let holder_sk = PrivateKey::from([0x11u8; 32]);
+    let holder_pk = holder_sk.public_key();
+    // `enrol_member`, not a bare `add_member`: the apply gate resolves the
+    // endorser's SIGNING KEY to an account through a binding row, and
+    // `add_member` writes only the membership row that is keyed by account. An
+    // endorser with no binding vouches for nobody.
+    let holder_account = enrol_member(&store, &ns_gid, &holder_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(holder_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &holder_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The receiver's own namespace identity, distinct from the holder's so the
+    // re-drive's own-signed skip does not swallow the op under test.
+    let receiver_sk = PrivateKey::from([0x22u8; 32]);
+    let receiver_pk = receiver_sk.public_key();
+    NamespaceRepository::new(&store)
+        .replace_identity(&ns_gid, &receiver_pk, receiver_sk.as_bytes())
+        .unwrap();
+
+    // The account whose device is being linked has to be a member already: a
+    // device links into an account's existing membership, it does not create one.
+    let root = crate::NodeDeviceRepository::new(&store)
+        .provision_account_root()
+        .unwrap();
+    let linked_account = root.account();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &linked_account, GroupMemberRole::Member)
+        .unwrap();
+
+    // The device's signing key — what `member_account_in_namespace` must resolve.
+    let device_sign_pk = PrivateKey::from([0x33u8; 32]).public_key();
+    let device = calimero_account::DeviceId::mint(linked_account, [0x44u8; 16]);
+    let cert = DeviceCert::sign(
+        root.signing_key(),
+        linked_account,
+        device,
+        &device_sign_pk,
+        &KemPublicKey::from([0x55u8; 32]),
+        0,
+        0,
+    )
+    .unwrap();
+
+    let link = GroupOp::AccountDeviceLinked {
+        genesis: root.genesis(),
+        chain: vec![],
+        cert,
+        endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+    };
+
+    // Encrypted under the namespace key, exactly as `publish_link_and_key` sends
+    // it, and signed by the holder.
+    let namespace_key = [0x66u8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let encrypted = GroupKeyring::encrypt_op(&namespace_key, &link).unwrap();
+    let signed = SignedNamespaceOp::sign(
+        &holder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id.into(),
+            key_id: key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    // Applied with no key held: must buffer rather than fail, the same
+    // contract a sealed root op has.
+    apply_signed_namespace_op(&store, &signed)
+        .expect("an encrypted group op with no key must buffer, not fail");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &device_sign_pk).unwrap(),
+        None,
+        "the binding must not exist while the link is unreadable"
+    );
+
+    // The key arrives — by pull, in the sealed world; by KeyDelivery today.
+    // Either way this is the state transition the re-drive hangs off.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+    retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id).unwrap();
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &device_sign_pk).unwrap(),
+        Some(linked_account),
+        "the buffered AccountDeviceLinked must fold once the key is held, binding \
+         the device's signing key to its account"
+    );
+}
+
+/// Control for `the_key_arrival_redrive_folds_a_buffered_account_device_linked`:
+/// the SAME op, the SAME fixture, but the key is held before it is applied, so
+/// the live path folds it instead of the re-drive.
+///
+/// Without this the buffered test proves nothing — a fixture missing a
+/// precondition would fail it for reasons that have nothing to do with the
+/// re-drive. This isolates that variable and nothing else.
+#[test]
+fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
+    use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xD1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let holder_sk = PrivateKey::from([0x11u8; 32]);
+    let holder_pk = holder_sk.public_key();
+    // `enrol_member`, not a bare `add_member`: the apply gate resolves the
+    // endorser's SIGNING KEY to an account through a binding row, and
+    // `add_member` writes only the membership row that is keyed by account. An
+    // endorser with no binding vouches for nobody.
+    let holder_account = enrol_member(&store, &ns_gid, &holder_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(holder_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &holder_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let receiver_sk = PrivateKey::from([0x22u8; 32]);
+    let receiver_pk = receiver_sk.public_key();
+    NamespaceRepository::new(&store)
+        .replace_identity(&ns_gid, &receiver_pk, receiver_sk.as_bytes())
+        .unwrap();
+
+    let root = crate::NodeDeviceRepository::new(&store)
+        .provision_account_root()
+        .unwrap();
+    let linked_account = root.account();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &linked_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let device_sign_pk = PrivateKey::from([0x33u8; 32]).public_key();
+    let device = calimero_account::DeviceId::mint(linked_account, [0x44u8; 16]);
+    let cert = DeviceCert::sign(
+        root.signing_key(),
+        linked_account,
+        device,
+        &device_sign_pk,
+        &KemPublicKey::from([0x55u8; 32]),
+        0,
+        0,
+    )
+    .unwrap();
+
+    let link = GroupOp::AccountDeviceLinked {
+        genesis: root.genesis(),
+        chain: vec![],
+        cert,
+        endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+    };
+
+    let namespace_key = [0x66u8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let encrypted = GroupKeyring::encrypt_op(&namespace_key, &link).unwrap();
+    let signed = SignedNamespaceOp::sign(
+        &holder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id.into(),
+            key_id: key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    // The only difference from the buffered test: the key is here first.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    apply_signed_namespace_op(&store, &signed).expect("apply with the key held");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &device_sign_pk).unwrap(),
+        Some(linked_account),
+        "with the key held on arrival the link folds and the binding is written"
+    );
 }

@@ -267,7 +267,11 @@ Pairing is a **two-way exchange**, and the ordering is forced rather than stylis
 
 Requiring it rather than printing it for comparison is the point: an advisory step is one an operator in a hurry skips. What the requirement cannot do is force the code to travel *separately* from the keys — pasted along with them it proves nothing, since whoever rewrote the payload rewrote the code too. That part is the operator's channel, and it is the whole security assumption of pairing. See [Known limits](#known-limits) for why the code is 64 bits rather than a friendlier six digits.
 
-**The key delivery must be a cleartext root operation.** The pairing device holds no scope key, so a device-addressed envelope carried inside an *encrypted* group operation would be unreadable by its only recipient — the same bootstrap deadlock again. `KeyDelivery` being a root operation is what breaks the cycle.
+**The key delivery is a root operation, and a sealed one.** It has to be a *root* operation for the reason the bootstrap deadlock always gives: a device-addressed envelope carried inside an *encrypted group* operation would be unreadable by its only recipient, since the recipient is exactly who has no scope key.
+
+But being a root operation is no longer what hands the device its key — the operation is sealed under the namespace key, which the device also does not hold. The device gets the key by **pulling it from a peer** over the direct-stream path (`recover_missing_group_keys`), the same way any participant holding no governance state does, and that pull verifies the served key against the `key_id` a signed operation names and requires a trusted anchor where it cannot. Sealing keeps the delivery metadata — which account, at which causal position — off the namespace topic.
+
+What sealing gives up is *ordering*, and that is paid at the join. Cleartext, the delivery handed the device its key at a causal position, and the re-drive folded the `AccountDeviceLinked` published just before it; the device's authority was therefore always present by the time anything asked. The pull is ordered against nothing, so `join_context` **waits** for that binding instead of asking once.
 
 The new device is **never a member**. It records participation in each namespace it was told about and takes a gossip subscription there - both membership-free operations - and its entire right to participate comes from being a device of the account. Because a node holds exactly one device, "two devices" means two nodes.
 
