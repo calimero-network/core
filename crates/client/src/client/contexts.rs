@@ -4,7 +4,7 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
-    GetContextsResponse, PerformIntentApiRequest, PerformIntentApiResponse,
+    GetContextsResponse, IntentRelayApiResponse, PerformIntentApiRequest, PerformIntentApiResponse,
     ResyncContextApiRequest, ResyncContextApiResponse, SyncContextResponse,
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
@@ -29,6 +29,23 @@ where
                 &format!("admin-api/contexts/{context_id}/application"),
                 request,
             )
+            .await?;
+        Ok(response)
+    }
+
+    /// Ask what this node would need to be named as, and whether it may act, before
+    /// minting a warrant for it.
+    ///
+    /// This is the read half of `perform_intent`, and it is a separate call from
+    /// `get_node_identity` for two reasons. It reports `canAuthorOnBehalf`, which
+    /// no identity read carries — and authorship is the default-off capability, so
+    /// the common answer is "no" and finding that out from a refusal costs the
+    /// author a nonce it cannot reuse. And it is readable without a credential on
+    /// this node, which is the whole point of a relay a keyholder has no account on.
+    pub async fn get_intent_relay(&self, context_id: &str) -> Result<IntentRelayApiResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/contexts/{context_id}/intents"))
             .await?;
         Ok(response)
     }

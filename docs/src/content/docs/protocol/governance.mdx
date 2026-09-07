@@ -275,7 +275,7 @@ Governance operations travel as a signed envelope. The group-scoped form:
 
 ```rust
 struct SignedGroupOp {
-  version: u8,  // current schema version = 8
+  version: u8,  // current schema version = 11; checked strictly-equal on decode
   group_id: [u8; 32],
   parent_op_hashes: Vec<[u8; 32]>,  // DAG parents
   signer: PublicKey,
@@ -292,7 +292,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 2)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 7)
 ```
 
 ### Replay protection

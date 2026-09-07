@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use eyre::{bail, eyre, Result};
 use hkdf::Hkdf;
+use rand::Rng;
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -152,8 +152,8 @@ impl KeyManager {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         // Bind the version and nonce as additional authenticated data so the
         // unencrypted header cannot be tampered with (e.g. flipping the version
@@ -163,7 +163,7 @@ impl KeyManager {
         // Encrypt
         let ciphertext = cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: plaintext,
                     aad: &aad,
@@ -210,7 +210,7 @@ impl KeyManager {
         let nonce_bytes: [u8; NONCE_SIZE] = ciphertext[1..1 + NONCE_SIZE]
             .try_into()
             .map_err(|_| eyre!("nonce slice is not NONCE_SIZE bytes"))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
         let encrypted_data = &ciphertext[1 + NONCE_SIZE..];
 
         // The version and nonce header is authenticated via AAD, so any
@@ -227,7 +227,7 @@ impl KeyManager {
 
         cipher
             .decrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: encrypted_data,
                     aad: &aad,
@@ -270,6 +270,29 @@ mod tests {
     fn test_master_key() -> Vec<u8> {
         // 48-byte key similar to what dstack returns
         vec![0x42; 48]
+    }
+
+    /// Look up a committed known-answer vector by name.
+    fn vector(name: &str) -> &'static str {
+        include_str!("../fixtures/known_answers.txt")
+            .lines()
+            .filter_map(|line| line.split_once(char::is_whitespace))
+            .find_map(|(key, value)| (key == name).then_some(value.trim()))
+            .expect("fixture holds the named vector")
+    }
+
+    #[test]
+    fn a_blob_sealed_by_the_shipped_key_manager_still_opens() {
+        // Pins the HKDF-SHA256 DEK derivation and the version||nonce||ciphertext framing.
+        let mut manager = KeyManager::new(test_master_key()).unwrap();
+        let sealed = hex::decode(vector("sealed_v1")).expect("fixture value is hex");
+
+        assert_eq!(
+            manager
+                .decrypt(&sealed)
+                .expect("the pinned blob must still open"),
+            b"sealed-under-aes-gcm-0.10"
+        );
     }
 
     #[test]

@@ -51,6 +51,46 @@ impl Handler<NodeMessage> for NodeManager {
                     namespace_id,
                 ));
             }
+            NodeMessage::PeerAddrsForIdentities {
+                group_id,
+                identities,
+                outcome,
+            } => {
+                // Two hops, and the first one is synchronous off the durable
+                // identity cache: which peers have been seen hosting these
+                // member identities, TTL-filtered so a long-gone peer is not
+                // offered as an address.
+                let wanted: std::collections::BTreeSet<_> = identities.into_iter().collect();
+                let peers: Vec<libp2p::PeerId> = self
+                    .state
+                    .lock_peer_identity_cache()
+                    .members_for_group(
+                        &group_id,
+                        crate::state::now_unix_secs(),
+                        crate::peer_identity_cache::PEER_IDENTITY_TTL_SECS,
+                    )
+                    .into_iter()
+                    .filter(|member| wanted.contains(&member.identity))
+                    .flat_map(|member| member.peers)
+                    .collect();
+
+                // The second hop is a mailbox round-trip per peer, so it is
+                // spawned rather than blocking this actor. A dropped receiver
+                // just means the caller gave up.
+                let node_client = self.clients.node.clone();
+                let _ignored = ctx.spawn(
+                    async move {
+                        let mut out = Vec::new();
+                        for peer in peers {
+                            for addr in node_client.peer_addrs(peer).await {
+                                out.push((peer, addr));
+                            }
+                        }
+                        let _ignored = outcome.send(out);
+                    }
+                    .into_actor(self),
+                );
+            }
             NodeMessage::ForwardNamespaceOpApplied { namespace_id } => {
                 // Forward the publisher-side signal to the readiness FSM.
                 // Mirrors `addr.do_send(NamespaceOpApplied { namespace_id })`

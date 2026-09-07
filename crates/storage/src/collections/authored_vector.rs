@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 
-use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeStrategy, Mergeable, StorageStrategy};
 use super::{StoreError, ValueRef, Vector};
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -111,7 +111,10 @@ where
     ///
     /// # Errors
     /// Returns any underlying storage error.
-    pub fn push(&mut self, value: V) -> Result<Id, StoreError> {
+    pub fn push(&mut self, value: V) -> Result<Id, StoreError>
+    where
+        V: 'static,
+    {
         let storage_type = super::authored_common::make_owner_stamp();
         self.inner.push_with_storage_type(value, storage_type)
     }
@@ -457,6 +460,17 @@ where
     fn can_contain_crdts() -> bool {
         true
     }
+}
+
+/// Structural: the storage layer merges this by its `crdt_type` variant, so
+/// there is no app rule to dispatch. See [`MergeStrategy`].
+#[diagnostic::do_not_recommend]
+impl<V, S> MergeStrategy for AuthoredVector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    const DISPATCHED: bool = false;
 }
 
 #[cfg(test)]

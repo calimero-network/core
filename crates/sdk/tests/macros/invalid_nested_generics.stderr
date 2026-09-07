@@ -85,7 +85,7 @@ error[E0310]: the parameter type `T` may not live long enough
 note: ...that is required by this bound
  --> $WORKSPACE/crates/storage/src/collections/crdt_meta.rs
   |
-  | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+  | pub trait Mergeable: crate::collections::rekey::RekeyTarget + MergeStrategy {
   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider adding an explicit lifetime bound
@@ -105,7 +105,7 @@ error[E0310]: the parameter type `T` may not live long enough
 note: ...that is required by this bound
  --> $WORKSPACE/crates/storage/src/collections/crdt_meta.rs
   |
-  | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+  | pub trait Mergeable: crate::collections::rekey::RekeyTarget + MergeStrategy {
   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider adding an explicit lifetime bound

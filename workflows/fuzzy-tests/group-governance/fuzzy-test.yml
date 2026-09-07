@@ -31,7 +31,7 @@ steps:
   - name: Install kv-store-with-handlers app on node-1
     type: install_application
     node: fuzzy-gov-node-1
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: dist/com.calimero.kv-store-with-handlers-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

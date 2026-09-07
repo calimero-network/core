@@ -38,12 +38,19 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
+use calimero_storage::collections::MergeStrategy;
 use calimero_storage::collections::Mergeable;
 use calimero_storage::merge::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct IntegrationState {
     values: Vec<u32>,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for IntegrationState {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for IntegrationState {

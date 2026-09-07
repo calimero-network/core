@@ -28,7 +28,7 @@ fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
         inviter_signature: "deadbeef".to_string(),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 

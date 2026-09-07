@@ -94,7 +94,7 @@ mod tests {
     fn dummy_ack(op_hash: [u8; 32]) -> SignedAck {
         SignedAck {
             op_hash,
-            signer_pubkey: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+            signer_pubkey: PrivateKey::random(&mut rand::rng()).public_key(),
             signature: [0u8; 64],
         }
     }

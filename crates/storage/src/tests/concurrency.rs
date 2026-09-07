@@ -374,9 +374,7 @@ fn seed_lww_leaf(parent: Id, leaf: Id, value: &[u8]) {
     use crate::interface::{ApplyContext, Interface};
 
     let mut md = Metadata::new(1, 1);
-    md.crdt_type = Some(CrdtType::LwwRegister {
-        inner_type: "String".to_string(),
-    });
+    md.crdt_type = Some(CrdtType::lww_register());
     Interface::<SharedStore>::apply_action(
         Action::Add {
             id: leaf,
@@ -397,9 +395,7 @@ fn update_lww_leaf(leaf: Id, value: Vec<u8>, ts: u64) {
     use crate::interface::{ApplyContext, Interface};
 
     let mut md = Metadata::new(ts, ts);
-    md.crdt_type = Some(CrdtType::LwwRegister {
-        inner_type: "String".to_string(),
-    });
+    md.crdt_type = Some(CrdtType::lww_register());
     Interface::<SharedStore>::apply_action(
         Action::Update {
             id: leaf,
@@ -530,9 +526,7 @@ fn update_container_value(c: Id, data: Vec<u8>, ts: u64) {
     use crate::interface::{ApplyContext, Interface};
 
     let mut md = Metadata::new(ts, ts);
-    md.crdt_type = Some(CrdtType::LwwRegister {
-        inner_type: "String".to_string(),
-    });
+    md.crdt_type = Some(CrdtType::lww_register());
     Interface::<SharedStore>::apply_action(
         Action::Update {
             id: c,

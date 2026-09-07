@@ -3,7 +3,7 @@
 //! Uses ChaCha8Rng for reproducible randomness across platforms.
 //! See spec §17.2 - RNG Specification.
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::clock::SimDuration;
@@ -32,7 +32,7 @@ impl SimRng {
     #[must_use]
     pub fn fork(&mut self) -> Self {
         Self {
-            inner: ChaCha8Rng::seed_from_u64(self.inner.gen()),
+            inner: ChaCha8Rng::seed_from_u64(self.inner.random()),
         }
     }
 
@@ -42,7 +42,7 @@ impl SimRng {
             (0.0..=1.0).contains(&probability),
             "Probability must be in [0.0, 1.0]"
         );
-        self.inner.gen::<f64>() < probability
+        self.inner.random::<f64>() < probability
     }
 
     /// Generate a random duration in range [min, max].
@@ -52,7 +52,7 @@ impl SimRng {
         if min_micros >= max_micros {
             return min;
         }
-        SimDuration::from_micros(self.inner.gen_range(min_micros..=max_micros))
+        SimDuration::from_micros(self.inner.random_range(min_micros..=max_micros))
     }
 
     /// Generate a random duration with base ± jitter.
@@ -67,7 +67,7 @@ impl SimRng {
         let min = base_micros.saturating_sub(jitter_micros);
         let max = base_micros.saturating_add(jitter_micros);
 
-        SimDuration::from_micros(self.inner.gen_range(min..=max))
+        SimDuration::from_micros(self.inner.random_range(min..=max))
     }
 
     /// Generate a random u64 in range [0, max).
@@ -75,7 +75,7 @@ impl SimRng {
         if max == 0 {
             return 0;
         }
-        self.inner.gen_range(0..max)
+        self.inner.random_range(0..max)
     }
 
     /// Generate a random usize in range [0, max).
@@ -83,7 +83,7 @@ impl SimRng {
         if max == 0 {
             return 0;
         }
-        self.inner.gen_range(0..max)
+        self.inner.random_range(0..max)
     }
 
     /// Shuffle a slice in place.
@@ -94,7 +94,7 @@ impl SimRng {
 
     /// Pick a random element from a slice.
     pub fn choose<'a, T>(&mut self, slice: &'a [T]) -> Option<&'a T> {
-        use rand::seq::SliceRandom;
+        use rand::seq::IndexedRandom;
         slice.choose(&mut self.inner)
     }
 
@@ -105,7 +105,7 @@ impl SimRng {
 
     /// Generate a random u64.
     pub fn gen_u64(&mut self) -> u64 {
-        self.inner.gen()
+        self.inner.random()
     }
 }
 

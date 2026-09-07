@@ -44,6 +44,7 @@ pub(crate) fn adopt_pulled_group_key(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_client::local_governance::{
@@ -60,16 +61,19 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::adopt_pulled_group_key;
 
     fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
         GroupMetaValue {
-            bytecode_id: [0xBB; 32],
-            target_application_id: calimero_primitives::application::ApplicationId::from(
-                [0xCC; 32],
-            ),
+            target: GroupTarget {
+                application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+                bytecode_id: [0xBB; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,
@@ -115,7 +119,7 @@ mod tests {
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
             bytecode_id: None,
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 
@@ -128,7 +132,7 @@ mod tests {
     #[test]
     fn a_pulled_key_unwedges_another_members_open_subgroup_join() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
 
         let owner_sk = PrivateKey::random(&mut rng);
         let owner = owner_sk.public_key();

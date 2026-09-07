@@ -1,0 +1,6 @@
+# Known-answer vectors: name, then the value as hex.
+# sha256_bytes: Hash::new(b"calimero known-answer vector")
+# sha256_json / sha256_borsh: Hash::hash_json / Hash::hash_borsh of ("com.calimero.known-answer", 7u32)
+sha256_bytes da4361551b94460170e64043335c634f7064e968a1944f34f846ae82091f4c62
+sha256_json 2fbeee292d3bf2e924c99c579ec483615f19463228cf16be05482c45f1948b1e
+sha256_borsh 203e08cbb21af39276f2cc0c2bf4c5891a756e79af3a4ffa905f08bf34407d58

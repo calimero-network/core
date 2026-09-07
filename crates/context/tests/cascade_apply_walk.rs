@@ -11,6 +11,7 @@
 //!   is exactly what `apply_local_signed_group_op` drives.
 
 use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
@@ -23,7 +24,8 @@ use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
 const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
@@ -45,8 +47,12 @@ fn meta(
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: target,
+        target: GroupTarget {
+            application_id: target,
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -80,7 +86,7 @@ fn create_group(
 
 #[test]
 fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
@@ -119,8 +125,8 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
             .load(gid)
             .unwrap()
             .expect("meta");
-        assert_eq!(m.bytecode_id, BYTECODE_ID_1);
-        assert_eq!(m.target_application_id, app_id_1());
+        assert_eq!(m.target.bytecode_id, BYTECODE_ID_1);
+        assert_eq!(m.target.application_id, app_id_1());
     }
 
     // Cascade op signed on R, targeting from_bytecode_id=K1, new bytecode_id=K2 + new target=APP_ID_2.
@@ -136,6 +142,8 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");
@@ -153,13 +161,13 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
             .unwrap()
             .expect("meta after");
         assert_eq!(
-            m.bytecode_id,
+            m.target.bytecode_id,
             BYTECODE_ID_2,
             "group {} in cascaded subtree must be on K2",
             hex::encode(gid.to_bytes())
         );
         assert_eq!(
-            m.target_application_id,
+            m.target.application_id,
             app_id_2(),
             "group {} in cascaded subtree must point at APP_ID_2",
             hex::encode(gid.to_bytes())
@@ -174,13 +182,13 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
             .unwrap()
             .expect("sibling meta");
         assert_eq!(
-            m.bytecode_id,
+            m.target.bytecode_id,
             BYTECODE_ID_1,
             "sibling-namespace group {} must NOT be touched by R's cascade",
             hex::encode(gid.to_bytes())
         );
         assert_eq!(
-            m.target_application_id,
+            m.target.application_id,
             app_id_1(),
             "sibling-namespace group {} must keep its original target",
             hex::encode(gid.to_bytes())

@@ -23,6 +23,10 @@ fn all() {
 
     // Generic tests
     t.compile_fail("tests/macros/invalid_generics.rs");
+
+    // A hand-written `Mergeable` with no declared strategy: the failure mode
+    // this whole gate exists for.
+    t.compile_fail("tests/macros/error_undeclared_merge_strategy.rs");
     t.pass("tests/macros/valid_generics.rs");
 
     // Argument tests

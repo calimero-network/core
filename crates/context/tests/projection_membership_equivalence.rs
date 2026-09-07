@@ -9,6 +9,7 @@
 //! `member_at_cut`. Any divergence between live and projection fails here —
 //! no CI roulette.
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
@@ -30,7 +31,8 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use core::num::NonZeroU128;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 
 /// A joiner credential. Note this test asserts the projection's fold matches the
@@ -61,8 +63,12 @@ fn hlc(ns: u64) -> HybridTimestamp {
 
 fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -75,21 +81,39 @@ fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 /// because an invitation is spent once an identity joins with it: presenting the
 /// same one again after they exit cannot readmit them, so a re-invite has to
 /// carry a fresh nonce. Real invitations get a random one per issue.
+/// The admitter endorsement every join op now carries.
+///
+/// Signed over the NAMESPACE root even for a subgroup invitation, because that
+/// is what the apply checks the signer against — the accounts that may admit
+/// are the namespace's, whichever group the invitation names.
+fn endorse(
+    admitter_sk: &PrivateKey,
+    ns: &[u8; 32],
+    member: &calimero_account::AccountId,
+    nonce: &[u8; 32],
+) -> Box<calimero_governance_types::AdmitterEndorsement> {
+    Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(admitter_sk, ns, member, nonce)
+            .expect("sign admitter endorsement"),
+    )
+}
+
 fn sign_invitation(
     admin_sk: &PrivateKey,
     group: ContextGroupId,
     role: u8,
     nonce: [u8; 32],
+    admitter: calimero_account::AccountId,
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id: group,
-        // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
-        // joined_at, so any non-zero expiration causes the apply gate to reject it.
+        // 0 is the canonical "no expiry" sentinel, so these fixtures are not
+        // also exercising the expiry gate.
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: role,
-        admitters: Vec::new(),
+        admitters: vec![admitter],
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_sig = admin_sk
@@ -101,7 +125,7 @@ fn sign_invitation(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 
@@ -132,6 +156,7 @@ fn fold_subgroup_structure(
             restricted: true,
         }),
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     proj.ingest_op(&op_from_namespace_op(
         &created,
@@ -176,6 +201,7 @@ fn ns_group_envelope(
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     }
 }
 
@@ -186,9 +212,9 @@ fn ns_group_envelope(
 #[test]
 fn projection_matches_live_across_inherited_join_and_root_removal() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x11; 32]);
@@ -231,18 +257,31 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     );
 
     // (1) joiner joins the namespace root via invitation — a DIRECT membership.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
         }),
     )
     .expect("sign join_ns");
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let id1 = [0xA1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[s2]));
@@ -357,9 +396,9 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
 #[test]
 fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x31; 32]);
@@ -398,18 +437,31 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     );
 
     // join ns (nonce 1) + inherit subgroup (nonce 2).
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &join_ns,
@@ -481,18 +533,31 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     // invitation is spent for the identity that used it, so presenting the same
     // one again after exiting cannot readmit them. Coming back means being
     // re-invited.
-    let rejoin_ns = SignedNamespaceOp::sign(
+    let mut rejoin_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         3,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x43; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
+    rejoin_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x43; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &rejoin_ns).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &rejoin_ns,
@@ -539,9 +604,9 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
 #[test]
 fn projection_defers_when_cut_ancestry_incomplete() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x41; 32]);
@@ -571,18 +636,31 @@ fn projection_defers_when_cut_ancestry_incomplete() {
 
     // LIVE applies the full chain — root join + inherited subgroup join — so the
     // live resolver authoritatively sees the joiner as an inherited member.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -657,9 +735,9 @@ fn projection_defers_when_cut_ancestry_incomplete() {
 #[test]
 fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x51; 32]);
@@ -690,18 +768,31 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
 
     // Both join ops are durably applied to the op-store — the state a node holds
     // after the backfill pull delivered them.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -775,7 +866,7 @@ fn real_join_account_for(
     sign_pk: &PublicKey,
     device: [u8; 32],
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-    let root_sk = PrivateKey::random(&mut OsRng);
+    let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let cert = calimero_account::DeviceCert::sign(
         &root_sk,
@@ -807,9 +898,9 @@ fn real_join_account_for(
 #[test]
 fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x31; 32]);
@@ -869,18 +960,31 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     // has no folded presence in the subgroup, so reaching it can only be the
     // inheritance walk. Folding an open-join into the subgroup instead would
     // hand the admin a direct presence there and prove something easier.
-    let admin_join_root = SignedNamespaceOp::sign(
+    let mut admin_join_root = SignedNamespaceOp::sign(
         &admin_sk,
         ns.to_bytes().into(),
         vec![],
         7,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: admin_account,
-            signed_invitation: sign_invitation(&admin_sk, ns, 2, [0x77; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                2,
+                [0x77; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: admin_credential,
         }),
     )
     .expect("sign admin root-join");
+    admin_join_root.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &admin_account,
+        &[0x77; 32],
+    ));
     let id0 = [0xB7; 32];
     proj.ingest_op(&op_from_namespace_op(
         &admin_join_root,
@@ -910,18 +1014,31 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     );
 
     // The joiner joins the namespace carrying a credential that really folds.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: real_join_account_for(&joiner, [0x3E; 32]),
         }),
     )
     .expect("sign join_ns");
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     let id1 = [0xB1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[id0]));
 
@@ -964,7 +1081,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 #[test]
 fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
     let store = store();
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
     let ns = ContextGroupId::from(*founder_key);
 
@@ -1046,7 +1163,7 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
 #[test]
 fn both_planes_resolve_the_founder_identically_at_every_cut() {
     let store = store();
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
     let ns = ContextGroupId::from(*founder_key);
 
@@ -1138,7 +1255,7 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
 #[test]
 fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     let store = store();
-    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
     let ns = ContextGroupId::from(*founder_key);
 
@@ -1228,7 +1345,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
 /// assertion could pass for the wrong reason.
 #[test]
 fn a_join_is_attributed_to_the_account_its_certificate_names() {
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
     let ns = ContextGroupId::from([0x21; 32]);
     let group = ContextGroupId::from([0x22; 32]);
@@ -1405,9 +1522,9 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
 #[test]
 fn a_late_applied_add_after_a_promotion_is_not_a_divergence() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let member_sk = PrivateKey::random(&mut OsRng);
+    let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let member = member_sk.public_key();
 
     let ns = ContextGroupId::from([0x31; 32]);
@@ -1536,9 +1653,9 @@ fn a_late_applied_add_after_a_promotion_is_not_a_divergence() {
 #[test]
 fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     let store = store();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin = admin_sk.public_key();
-    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let joiner = joiner_sk.public_key();
 
     let ns = ContextGroupId::from([0x61; 32]);
@@ -1568,18 +1685,31 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     );
 
     // The joiner is a member at this cut, by an op the projection HAS folded.
-    let join_ns = SignedNamespaceOp::sign(
+    let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, subgroup, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                subgroup,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
         }),
     )
     .expect("sign join");
+    join_ns.admitter_endorsement = Some(endorse(
+        &admin_sk,
+        &ns.to_bytes(),
+        &calimero_context::test_support::account_for(&joiner),
+        &[0x42; 32],
+    ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let joined = [0xD1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, joined, hlc(1), &[s2]));

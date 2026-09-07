@@ -16,6 +16,7 @@ use crate::storage::StorageError;
 
 /// Key permissions update request
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateKeyPermissionsRequest {
     /// Permissions to add
     pub add: Option<Vec<String>>,

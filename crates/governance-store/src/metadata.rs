@@ -220,8 +220,8 @@ impl<'a> MetadataRepository<'a> {
 
         Ok(Some(calimero_context_client::group::NamespaceSummary {
             namespace_id: *group_id,
-            bytecode_id: meta.bytecode_id.into(),
-            target_application_id: meta.target_application_id,
+            bytecode_id: meta.target.bytecode_id.into(),
+            target_application_id: meta.target.application_id,
             created_at: meta.created_at,
             name,
             member_count,

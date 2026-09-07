@@ -97,7 +97,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct SortedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
-    inner: Collection<(K, V), S>,
+    /// Entries are stored **value first**: `(V, K)`. See
+    /// [`UnorderedMap`](super::UnorderedMap::inner) for why.
+    inner: Collection<(V, K), S>,
 }
 
 /// Convert a `RangeBounds` endpoint into the byte-bound the ordered index
@@ -121,11 +123,7 @@ where
     S: StorageAdaptor,
 {
     fn rekey_relative_to(&mut self, parent_id: Id) {
-        self.reassign_deterministic_id_under(
-            parent_id,
-            "__nested_sorted_map",
-            CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
-        );
+        self.reassign_deterministic_id_under(parent_id, "__nested_sorted_map", CrdtType::SortedMap);
     }
 }
 
@@ -182,7 +180,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
+                CrdtType::SortedMap,
             ),
         }
     }
@@ -287,10 +285,7 @@ where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        self.reassign_deterministic_id_with_crdt_type(
-            field_name,
-            CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
-        );
+        self.reassign_deterministic_id_with_crdt_type(field_name, CrdtType::SortedMap);
     }
 
     /// Insert a key-value pair into the map.
@@ -367,7 +362,7 @@ where
                     .inner
                     .get_mut(id)?
                     .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
-                let (_, v) = &mut *entry;
+                let (v, _) = &mut *entry;
                 mem::replace(v, value)
             };
             // The key set didn't change by THIS op, so if the index was already
@@ -388,9 +383,12 @@ where
         let order_key = S::index_supported().then(|| key.as_ref().to_vec());
         let collection = self.inner.id();
 
-        let _ignored = self
-            .inner
-            .insert_with_storage_type(Some(id), (key, value), storage_type)?;
+        let _ignored = self.inner.insert_with_storage_type(
+            Some(id),
+            (value, key),
+            storage_type,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         if let Some(order_key) = order_key {
             // Done after the inner write so the collection's `full_hash` already
@@ -447,7 +445,7 @@ where
     {
         let id = compute_id(self.inner.id(), key.as_ref());
 
-        Ok(self.inner.get(id)?.map(|(_, v)| ValueRef::new(v)))
+        Ok(self.inner.get(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
     /// Returns a mutable `ValueMut` guard for the value at `key`.
@@ -552,7 +550,7 @@ where
             return Ok(None);
         };
 
-        let removed = entry.remove().map(|(_, v)| v)?;
+        let removed = entry.remove().map(|(v, _)| v)?;
 
         // Keep the ordered index in step with the removal (no-op when the
         // adaptor doesn't back it). `entry.remove()` has already recomputed the
@@ -725,8 +723,9 @@ where
     /// bound.
     fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
         let collection_id = self.inner.id();
+        // Inner yields `(V, K)`; the public contract is `(K, V)`.
         Ok(self.inner.entries()?.filter_map(move |result| match result {
-            Ok(entry) => Some(entry),
+            Ok((value, key)) => Some((key, value)),
             Err(error) => {
                 tracing::error!(
                     target: "calimero_storage::iter_drop",
@@ -904,8 +903,9 @@ where
     fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError> {
         let mut out = Vec::with_capacity(hits.len());
         for (_order_key, id) in hits {
-            if let Some(kv) = self.inner.get(id)? {
-                out.push(kv);
+            // Stored value-first; the public contract is `(K, V)`.
+            if let Some((value, key)) = self.inner.get(id)? {
+                out.push((key, value));
             }
         }
         Ok(out)
@@ -953,7 +953,7 @@ where
     {
         if self.ensure_index()? {
             return match S::index_last(self.inner.id()) {
-                Some((_order_key, id)) => self.inner.get(id),
+                Some((_order_key, id)) => Ok(self.inner.get(id)?.map(|(v, k)| (k, v))),
                 None => Ok(None),
             };
         }
@@ -1106,7 +1106,7 @@ where
             // two nodes that independently build the same entry never converge.
             super::rekey::rekey_nested_value(&mut v, id);
 
-            (Some(id), (k, v))
+            (Some(id), (v, k))
         });
 
         self.inner.extend(iter);
@@ -1138,7 +1138,7 @@ where
     V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    entry_mut: EntryMut<'a, (K, V), S>,
+    entry_mut: EntryMut<'a, (V, K), S>,
 }
 
 impl<K, V, S> Deref for ValueMut<'_, K, V, S>
@@ -1150,7 +1150,7 @@ where
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
-        &self.entry_mut.deref().1
+        &self.entry_mut.deref().0
     }
 }
 
@@ -1161,7 +1161,7 @@ where
     S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.entry_mut.deref_mut().1
+        &mut self.entry_mut.deref_mut().0
     }
 }
 
@@ -1190,7 +1190,7 @@ where
     V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    entry_mut: EntryMut<'a, (K, V), S>,
+    entry_mut: EntryMut<'a, (V, K), S>,
 }
 
 /// A view into a vacant entry in a [`SortedMap`].
@@ -1294,12 +1294,12 @@ where
 {
     /// Gets a reference to the value in the entry.
     pub fn get(&self) -> &V {
-        &self.entry_mut.1
+        &self.entry_mut.0
     }
 
     /// Gets a mutable reference to the value in the entry.
     pub fn get_mut(&mut self) -> &mut V {
-        &mut self.entry_mut.1
+        &mut self.entry_mut.0
     }
 
     /// Replaces the value in the entry and returns the old value.
@@ -1310,7 +1310,7 @@ where
         // Re-key nested collections in the replacement value relative to this
         // entry's (stable, deterministic) id — same reason as `VacantEntry::insert`.
         super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
-        mem::replace(&mut self.entry_mut.1, value)
+        mem::replace(&mut self.entry_mut.0, value)
     }
 
     /// Removes the entry from the map and returns the removed value.
@@ -1320,7 +1320,7 @@ where
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     pub fn remove(self) -> Result<V, StoreError> {
-        self.entry_mut.remove().map(|(_, v)| v)
+        self.entry_mut.remove().map(|(v, _)| v)
     }
 }
 
@@ -1357,7 +1357,11 @@ where
         // Capture the order key before `self.key` is moved, to warm the index.
         let order_key = S::index_supported().then(|| self.key.as_ref().to_vec());
 
-        drop(self.map.inner.insert(Some(id), (self.key, value))?);
+        drop(self.map.inner.insert(
+            Some(id),
+            (value, self.key),
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?);
 
         if let Some(order_key) = order_key {
             // Only stamp the validity marker if the index was consistent before

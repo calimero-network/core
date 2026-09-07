@@ -17,9 +17,9 @@ use serde_json::Value;
 
 use calimero_server_primitives::admin::{
     AddGroupMembersApiRequest, CreateContextRequest, CreateContextResponseData,
-    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, JoinGroupApiResponse,
-    JoinNamespaceApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
-    UpgradeGroupApiResponse,
+    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, IntentRelayApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, ReparentGroupApiRequest,
+    ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -100,6 +100,14 @@ wire_fixtures! {
     upgrade_res: UpgradeGroupApiResponse => "groups/upgrade.res.json",
     upgrade_status_res: GetGroupUpgradeStatusApiResponse => "groups/upgrade_status.res.json",
     migration_status_res: GetMigrationStatusApiResponse => "groups/migration_status.res.json",
+    // The relay descriptor a keyholder reads before minting a warrant. Pinned
+    // because `executorAccount` is the one field whose value a client copies
+    // verbatim into a signed object: rename it and every relay client mints
+    // warrants naming nobody, which surfaces as a 403 nowhere near the cause.
+    // The account and the group are both 64-hex, so they carry deliberately
+    // different values — a field crossed between them shows as a diff rather
+    // than round-tripping cleanly.
+    intent_relay_res: IntentRelayApiResponse => "contexts/intent_relay.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
 }

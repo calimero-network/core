@@ -249,7 +249,7 @@ impl Reconciler {
         let topic = TopicHash::from_raw(context_id);
         let mut mesh_peers = self.sync_network.subscribed_peers(topic).await;
         let mesh_peer_count = mesh_peers.len();
-        mesh_peers.shuffle(&mut rand::thread_rng());
+        mesh_peers.shuffle(&mut rand::rng());
         // Walk mesh peers explicitly so cache-miss skips are visible
         // to operators. A peer with no `peer_identities` entry has not
         // yet been observed signing a verified message in this group;

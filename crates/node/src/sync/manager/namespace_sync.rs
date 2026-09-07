@@ -16,7 +16,7 @@ use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, Str
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
-use rand::Rng;
+use rand::RngExt;
 use tokio::time;
 use tracing::{debug, info, warn};
 
@@ -112,6 +112,15 @@ fn join_target_group(
     }
 }
 
+/// How many distinct admitter machines a joiner will dial before opening its
+/// join stream.
+///
+/// Deliberately far below what an invitation may carry. The address list sits
+/// outside the inviter's signature, so anyone relaying an invitation may rewrite
+/// it, and dialing is an action taken on a stranger's say-so. A real invitation
+/// names a handful of admitters.
+const MAX_ADMITTER_MACHINES_DIALED: usize = 8;
+
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
     /// identity we don't yet recognize as a context member.
@@ -191,7 +200,7 @@ impl SyncManager {
                 namespace_id,
                 delta_ids: Vec::new(),
             },
-            next_nonce: rand::thread_rng().gen(),
+            next_nonce: rand::rng().random(),
             // Sentinel party id (no owned key to prove); backfill serves only
             // already-signed deltas, which the requester re-verifies on receipt.
             pop: None,
@@ -774,7 +783,7 @@ impl SyncManager {
         }
 
         let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
-        let application_id: [u8; 32] = *meta.target_application_id.as_ref();
+        let application_id: [u8; 32] = *meta.target.application_id.as_ref();
 
         for ctx_id in &context_ids {
             let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);
@@ -800,6 +809,39 @@ impl SyncManager {
             .default_capabilities(&namespace)?
             .unwrap_or(0);
 
+        // Endorse the join, but only if this node is one of the admitters the
+        // invitation names.
+        //
+        // The key and the governance history above are things any member may
+        // pass on; authorising a membership is not. So a responder that is not
+        // an admitter still answers usefully and simply does not sign — the
+        // joiner has to reach one that can, and finds out here rather than after
+        // publishing an op every peer refuses.
+        //
+        // Signed over the payload the apply gate checks, so what this node
+        // asserts and what every other node verifies are the same bytes.
+        let admitter_endorsement_bytes =
+            match calimero_governance_store::NamespaceMembershipService::endorse_join(
+                &store,
+                &namespace,
+                &joiner_account,
+                &invitation,
+            ) {
+                Ok(Some(endorsement)) => borsh::to_vec(&endorsement).ok(),
+                Ok(None) => {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "namespace join: this node is not an admitter for the invitation, \
+                         answering without an endorsement"
+                    );
+                    None
+                }
+                Err(err) => {
+                    warn!(%err, "namespace join: could not sign the admitter endorsement");
+                    None
+                }
+            };
+
         debug!(
             namespace_id = %hex::encode(namespace_id),
             has_key = !key_envelope_bytes.is_empty(),
@@ -807,6 +849,7 @@ impl SyncManager {
             app_id = %hex::encode(application_id),
             governance_ops_count = governance_ops.len(),
             default_capabilities,
+            endorsed = admitter_endorsement_bytes.is_some(),
             "Sending NamespaceJoinResponse"
         );
 
@@ -818,6 +861,7 @@ impl SyncManager {
                 application_id,
                 governance_ops,
                 default_capabilities,
+                admitter_endorsement_bytes,
             },
             next_nonce: nonce,
         };
@@ -1126,6 +1170,75 @@ impl SyncManager {
         Ok(ops)
     }
 
+    /// Peer ids for the admitters an invitation names, read out of its addresses.
+    ///
+    /// The addresses carry `/p2p/<peer-id>` precisely so a joiner that has synced
+    /// nothing can name the peer without resolving an account against governance
+    /// state it does not have. That suffix is what makes them usable here.
+    ///
+    /// Best-effort and possibly empty: the field is unsigned and optional, an
+    /// address may be stale, and a malformed one is skipped rather than failing the
+    /// join. An empty result simply leaves peer selection as it was.
+    /// Dial the machines an invitation names, best-effort.
+    ///
+    /// Budgeted per machine rather than per address: the several addresses a
+    /// peer has are alternative routes to it — a direct one, a relay circuit,
+    /// whatever it had before it last moved — so if that machine is off they all
+    /// fail and this has learned one fact. Charging each against the budget
+    /// would spend it inside a single unreachable node and never reach the next
+    /// admitter, which may be up. Dialing a machine stops at the first route
+    /// that connects; the rest are alternatives, not additions.
+    ///
+    /// Nothing here is trusted. The address list is outside the inviter's
+    /// signature, so anyone relaying an invitation may rewrite it — but libp2p
+    /// authenticates the peer id on connect, and admission is decided by the
+    /// signed `admitters` list at apply on every peer. A wrong address costs a
+    /// failed dial.
+    /// The admitter machines the invitation points at, capped and parsed once.
+    ///
+    /// One call feeds both consumers — the dial below and the peer preference
+    /// handed to the connect loop — so the set that gets dialed and the set
+    /// that gets tried first are the same by construction. They used to be
+    /// derived separately, and only one of them was capped: the preference list
+    /// could hold an entry per address (up to `MAX_ADMITTER_ADDRS`), each of
+    /// which the connect loop would try ahead of discovery at a full
+    /// stream-open timeout apiece.
+    fn admitter_routes(invitation_bytes: &[u8]) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
+        let Ok(invitation) = borsh::from_slice::<
+            calimero_context_config::types::SignedGroupOpenInvitation,
+        >(invitation_bytes) else {
+            return Vec::new();
+        };
+
+        super::namespace_join::group_admitter_routes(
+            &invitation.admitter_addrs,
+            MAX_ADMITTER_MACHINES_DIALED,
+        )
+    }
+
+    /// Reach the invitation's admitters before asking discovery about them.
+    ///
+    /// `open_namespace_join_stream` prefers them, but preference only helps
+    /// among peers it can open a stream to, and `subscribed_peers` reports who
+    /// is on the topic mesh — which is exactly what has not converged in the
+    /// case this join path exists for. Dialing first is what turns an address
+    /// the invitation carries into a peer the loop can use.
+    ///
+    /// The bounded-and-concurrent part lives in
+    /// [`namespace_join::dial_admitter_machines`] so its timing can be tested
+    /// against a fake dialer, the same reason the connect loop was extracted.
+    /// Reuses the per-peer stream-open timeout rather than adding a second
+    /// knob: both answer "how long is one unreachable peer worth", and a dial
+    /// that has not completed in that long will not be what unblocks this join.
+    async fn dial_admitters(&self, routes_by_machine: Vec<(PeerId, Vec<libp2p::Multiaddr>)>) {
+        super::namespace_join::dial_admitter_machines(
+            routes_by_machine,
+            self.sync_config.open_stream_timeout,
+            |addr| async move { self.network_client.dial(addr).await },
+        )
+        .await;
+    }
+
     /// Initiator side: open a stream to a mesh peer and perform the
     /// NamespaceJoinRequest / NamespaceJoinResponse exchange.
     pub(super) async fn initiate_namespace_join(
@@ -1160,24 +1273,71 @@ impl SyncManager {
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
         let mut last_connect_err: Option<String> = None;
-        // Cap on protocol-level retries. The connect loop already
-        // handles transport failure across peers; this cap bounds the
-        // total post-open exchanges so a small mesh full of stale
-        // peers can't deadlock the join indefinitely. Sized to cover
-        // typical 1–3 mesh peers plus headroom.
-        const MAX_PROTOCOL_RETRIES: usize = 5;
+        // Cap on protocol-level retries, bounding the total post-open
+        // exchanges so a mesh full of stale peers cannot deadlock the join.
+        //
+        // This used to be 5, "sized to cover typical 1–3 mesh peers plus
+        // headroom", and that was the right size for the job it had: absorbing
+        // transport flakiness across a couple of peers. The endorsement gave
+        // the loop a different job — find an ADMITTER, not merely a peer that
+        // answers — and a specific peer among N members is not found in a
+        // constant number of tries. An 8-node mesh with one admitter left
+        // node-7 asking six peers with five attempts, which is a coin flip
+        // rather than a bug in any one of them.
+        //
+        // Larger is close to free, because attempts are monotonic: every
+        // refusal excludes the peer that caused it, so the candidate set only
+        // shrinks, and once it is empty `open_namespace_join_stream` returns
+        // immediately without opening anything. Wall clock stays bounded by
+        // that loop's own per-peer timeout and deadline, not by this number.
+        //
+        // Still a constant rather than "until candidates run out", because a
+        // node with `admitter_addrs` to work from reaches an admitter in the
+        // first attempt or two — the search only degrades to scanning members
+        // when the invitation carried no addresses, which is the case a mint
+        // with no confirmed external address produces.
+        const MAX_PROTOCOL_RETRIES: usize = 32;
+
+        // The admitter machines the invitation named. Derived here rather than
+        // passed in because the invitation is already in `params` — the
+        // addresses ride along with it, outside the inviter's signature.
+        //
+        // Only an admitter can complete this join, so trying one first is not a
+        // preference so much as the difference between a round trip that can
+        // succeed and one that can only be refused.
+        let admitter_routes = Self::admitter_routes(&params.invitation_bytes);
+        let admitter_peers: Vec<libp2p::PeerId> =
+            admitter_routes.iter().map(|(peer, _)| *peer).collect();
+
+        // Reach those admitters before asking discovery about them.
+        //
+        // `open_namespace_join_stream` prefers them, but preference only helps
+        // among peers it can open a stream to, and `subscribed_peers` reports
+        // who is on the topic mesh — which is exactly what has not converged in
+        // the case this join path exists for. Dialing first is what turns an
+        // address the invitation carries into a peer the loop below can use.
+        //
+        // Best-effort and before the retry loop, not inside it: one pass over
+        // the invitation's addresses, then the loop's own budget governs the
+        // stream attempts. Failures are ordinary — an address is a snapshot
+        // from mint time — and none of them should fail a join that gossip may
+        // still complete.
+        self.dial_admitters(admitter_routes).await;
 
         for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
             let (mut stream, peer) = match super::namespace_join::open_namespace_join_stream(
                 &*self.sync_network,
                 params.namespace_id,
-                self.sync_config.open_stream_timeout,
-                crate::sync::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
-                std::time::Duration::from_millis(
-                    crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
-                ),
-                self.sync_config.namespace_discovery_wait,
+                super::namespace_join::ConnectBudget {
+                    open_timeout: self.sync_config.open_stream_timeout,
+                    mesh_retries: crate::sync::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+                    mesh_retry_delay: std::time::Duration::from_millis(
+                        crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+                    ),
+                    discovery_wait: self.sync_config.namespace_discovery_wait,
+                },
                 &rejected_peers,
+                &admitter_peers,
             )
             .await
             {
@@ -1221,7 +1381,7 @@ impl SyncManager {
                     joiner_public_key: params.joiner_public_key,
                     joiner_credential_bytes: params.joiner_credential_bytes.clone(),
                 },
-                next_nonce: rand::thread_rng().gen(),
+                next_nonce: rand::rng().random(),
             };
 
             if let Err(send_err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -1244,15 +1404,45 @@ impl SyncManager {
                             application_id,
                             governance_ops,
                             default_capabilities,
+                            admitter_endorsement_bytes,
                         },
                     ..
                 })) => {
+                    // A peer that is not an admitter answers honestly and
+                    // simply has no endorsement to give. That is not this
+                    // peer's failure and not a reason to fail the join —
+                    // another mesh peer may well be an admitter — so it is
+                    // treated like a rejection and the loop moves on.
+                    //
+                    // Without this the first non-admitter to answer would end
+                    // the join: the bundle comes back whole, so nothing reads
+                    // as an error until the joiner refuses to publish an
+                    // unendorsed membership, by which point the peers that
+                    // could have endorsed it were never asked. Peer preference
+                    // makes that unlikely rather than impossible, and "unlikely"
+                    // is how a join becomes flaky in a mesh whose members are
+                    // mostly not admitters.
+                    if admitter_endorsement_bytes.is_none() {
+                        let detail =
+                            format!("peer {peer} served the bundle but is not an admitter");
+                        debug!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            %peer,
+                            attempt = protocol_attempt,
+                            "namespace join: responder is not an admitter, trying next peer"
+                        );
+                        rejected_peers.insert(peer);
+                        last_rejection = Some(detail);
+                        continue;
+                    }
+
                     return Ok(JoinBundle {
                         key_envelope_bytes,
                         context_ids,
                         application_id: application_id.into(),
                         governance_ops,
                         default_capabilities,
+                        admitter_endorsement_bytes,
                     });
                 }
                 Ok(Some(StreamMessage::Message {
@@ -1407,8 +1597,8 @@ impl SyncManager {
                 delta_ids: vec![],
             },
             next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
+                use rand::RngExt;
+                rand::rng().random()
             },
             // Sentinel party id; see the catch-up backfill site above.
             pop: None,
@@ -1726,7 +1916,61 @@ impl SyncManager {
         }
 
         for (group_id, key_id) in requests {
-            for peer in &candidates {
+            // Anchors first, per group — `trusted_anchors` is per group, while
+            // the candidate pool is the namespace mesh. Whether the ordering is
+            // merely a preference or a hard restriction is decided by
+            // `key_servers_allowed`, which documents the reasoning: any
+            // candidate may serve a key the hash can check, and only an anchor
+            // may serve one it cannot.
+            let mut ordered = candidates.clone();
+            let anchors = self.anchor_identities_for_group(
+                &calimero_context_config::types::ContextGroupId::from(group_id),
+            );
+            let anchor_count = crate::sync::peers::partition_peers_anchor_first(
+                &mut ordered,
+                &*self.state_access,
+                &anchors,
+            );
+            // How many of those may actually serve this request. Anchor-only
+            // when the key cannot be checked; any candidate when it can.
+            let Some(allowed) = crate::sync::peers::key_servers_allowed(
+                ordered.len(),
+                anchor_count,
+                !anchors.is_empty(),
+                key_id.is_some(),
+            ) else {
+                if anchors.is_empty() {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        candidate_count = ordered.len(),
+                        "group-key recovery refused: this key cannot be verified \
+                         against a signed op and no trusted anchor can be \
+                         identified for the group, so there is nobody it is safe \
+                         to accept it from; retrying once governance state names \
+                         an Admin or ReadOnlyTee"
+                    );
+                } else {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        candidate_count = ordered.len(),
+                        "group-key recovery refused: this key cannot be verified \
+                         against a signed op and no trusted anchor is reachable; \
+                         retrying rather than accepting an unverifiable key from \
+                         a non-anchor peer"
+                    );
+                }
+                continue;
+            };
+            ordered.truncate(allowed);
+            debug!(
+                group_id = %hex::encode(group_id),
+                anchor_peer_count = anchor_count,
+                allowed_servers = allowed,
+                verifiable = key_id.is_some(),
+                "group-key recovery: candidate peers selected"
+            );
+
+            for peer in &ordered {
                 let Some((envelope_bytes, responder_identity)) = self
                     .request_group_key_from_peer(*peer, namespace_id, group_id, requester, key_id)
                     .await
@@ -1744,6 +1988,11 @@ impl SyncManager {
                     group_id,
                     &envelope_bytes,
                     responder_identity,
+                    // What we asked this peer for. `Some` whenever a governance
+                    // op is awaiting a specific key, which is what makes the
+                    // responder untrusted for content rather than merely
+                    // less-preferred.
+                    key_id,
                 );
                 drop(store);
                 match outcome {
@@ -1841,8 +2090,8 @@ impl SyncManager {
                 key_id,
             },
             next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
+                use rand::RngExt;
+                rand::rng().random()
             },
             // The response is an ECDH key envelope sealed either to
             // `requester_public_key` or to `requester_device`'s certified KEM
@@ -2133,7 +2382,7 @@ async fn fetch_open_subgroup_key_once(
                 subgroup_id: params.subgroup_id,
                 joiner_public_key: params.joiner_public_key,
             },
-            next_nonce: rand::thread_rng().gen(),
+            next_nonce: rand::rng().random(),
             pop: join_pop,
         };
 
@@ -2495,13 +2744,14 @@ mod joiner_credential_tests {
     use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::SyncManager;
 
     /// An account root plus a credential certifying `sign_pk` under it.
     fn credential_for(sign_pk: &PublicKey) -> (JoinAccountCredential, AccountGenesis) {
-        let root_sk = PrivateKey::random(&mut OsRng);
+        let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let genesis = AccountGenesis::new(root_sk.public_key());
         let cert = DeviceCert::sign(
             &root_sk,
@@ -2680,7 +2930,8 @@ mod join_target_tests {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     use sha2::{Digest, Sha256};
 
     use super::join_target_group;
@@ -2703,7 +2954,7 @@ mod join_target_tests {
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
             bytecode_id: None,
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 
@@ -2715,7 +2966,7 @@ mod join_target_tests {
         NamespaceRepository::new(&store)
             .nest(&namespace, &subgroup)
             .expect("nest the subgroup");
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
         // The request names the namespace; only the invitation knows it is for
         // the subgroup, and serving the namespace instead is the whole bug.
@@ -2729,7 +2980,7 @@ mod join_target_tests {
     fn a_namespace_invitation_resolves_to_the_namespace() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let namespace = ContextGroupId::from([0x01; 32]);
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
         assert_eq!(
             join_target_group(&store, namespace, &invitation_to(&admin_sk, namespace)).unwrap(),
@@ -2746,10 +2997,89 @@ mod join_target_tests {
         NamespaceRepository::new(&store)
             .nest(&elsewhere, &stranger)
             .expect("nest the foreign subgroup");
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
 
         // Pairing a valid invitation with someone else's namespace must not
         // release that namespace's key material.
         assert!(join_target_group(&store, namespace, &invitation_to(&admin_sk, stranger)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod admitter_derivation_tests {
+    //! What the joiner derives from an invitation's addresses, and the cap that
+    //! has to apply to it.
+    //!
+    //! The dialed set and the preferred set come from one call now, which is
+    //! the point: they used to be derived separately and only the dial was
+    //! capped, so the preference list could carry an entry per address — up to
+    //! `MAX_ADMITTER_ADDRS` of them — each one tried ahead of discovery at a
+    //! full stream-open timeout apiece.
+
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    use super::{SyncManager, MAX_ADMITTER_MACHINES_DIALED};
+
+    /// An invitation carrying `count` addresses, each naming a different peer.
+    fn invitation_naming_distinct_machines(count: usize) -> Vec<u8> {
+        let addrs = (0..count)
+            .map(|i| {
+                // A distinct, well-formed peer id per address, so these count
+                // as separate machines rather than routes to one.
+                let peer = libp2p::identity::Keypair::generate_ed25519()
+                    .public()
+                    .to_peer_id();
+                format!("/ip4/10.0.0.1/udp/{}/quic-v1/p2p/{peer}", 9000 + i)
+            })
+            .collect();
+
+        borsh::to_vec(&SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: SignerId::from([0xA1; 32]),
+                group_id: ContextGroupId::from([0xB2; 32]),
+                expiration_timestamp: 0,
+                invitation_nonce: [0xC3; 32],
+                invited_role: 1,
+                admitters: Vec::new(),
+            },
+            inviter_signature: String::new(),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: addrs,
+        })
+        .expect("borsh the invitation")
+    }
+
+    #[test]
+    fn more_machines_than_the_cap_are_dropped_not_carried() {
+        let over = MAX_ADMITTER_MACHINES_DIALED + 4;
+        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(over));
+
+        assert_eq!(
+            routes.len(),
+            MAX_ADMITTER_MACHINES_DIALED,
+            "an invitation naming {over} machines must be capped at \
+             {MAX_ADMITTER_MACHINES_DIALED}; without the cap every one of them \
+             is tried ahead of discovery at a stream-open timeout each"
+        );
+    }
+
+    #[test]
+    fn fewer_machines_than_the_cap_are_all_kept() {
+        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(3));
+        assert_eq!(routes.len(), 3, "the cap must not drop what fits under it");
+    }
+
+    /// Undecodable bytes are a relayed invitation this node cannot read, not a
+    /// reason to fail the join — the addresses are unsigned hints either way.
+    #[test]
+    fn an_invitation_that_does_not_decode_yields_no_machines() {
+        assert!(
+            SyncManager::admitter_routes(b"not an invitation").is_empty(),
+            "a hint set that cannot be read is empty, not an error"
+        );
     }
 }

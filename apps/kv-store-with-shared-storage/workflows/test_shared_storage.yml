@@ -32,7 +32,7 @@ steps:
   - name: Install Application on Node 1
     type: install_application
     node: new-calimero-node-1
-    path: "./res/kv_store_with_shared_storage.wasm"
+    path: "../../dist/com.calimero.kv-store-with-shared-storage-0.0.0.mpk"
     dev: true
     outputs:
       app_id: applicationId

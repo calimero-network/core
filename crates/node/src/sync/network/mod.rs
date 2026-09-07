@@ -53,6 +53,22 @@ pub trait SyncNetwork: Send + Sync + 'static {
     /// occupying a mesh slot could starve sync discovery.
     async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId>;
 
+    /// Every peer this node currently holds a connection to, regardless of
+    /// topic.
+    ///
+    /// A fallback candidate source for the namespace join, and only that. It
+    /// exists because "connected" and "known to be subscribed" can differ for
+    /// a long time: gossipsub announces a subscription to the peers connected
+    /// when it subscribes, so a peer that connected first and subscribed later
+    /// may never have told us. A joiner that can only see announced
+    /// subscribers is then stuck holding a live connection to the one node
+    /// that could serve it.
+    ///
+    /// Not a substitute for [`subscribed_peers`](Self::subscribed_peers):
+    /// asking an unsubscribed peer to serve a namespace join is a wasted round
+    /// trip, so this is tried only once the subscriber set is exhausted.
+    async fn connected_peers(&self) -> Vec<PeerId>;
+
     /// Total number of peers this node is currently connected to, across
     /// all topics. Used only for diagnostics: when topic discovery finds
     /// zero subscribers, this distinguishes "connected to no one" (a
@@ -83,6 +99,10 @@ impl SyncNetwork for NetworkClient {
     // compile instead — the failure mode we want.
     async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId> {
         NetworkClient::subscribed_peers(self, topic).await
+    }
+
+    async fn connected_peers(&self) -> Vec<PeerId> {
+        NetworkClient::connected_peers(self).await
     }
 
     async fn connected_peer_count(&self) -> usize {

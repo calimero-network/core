@@ -31,7 +31,7 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: e2e-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

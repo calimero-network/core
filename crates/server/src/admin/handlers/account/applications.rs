@@ -37,7 +37,7 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountApplicationApiEntry>>>
     for namespace in NamespaceRepository::new(store).participating_namespaces()? {
         if let Some(value) = meta.load(&namespace)? {
             by_application
-                .entry(value.target_application_id)
+                .entry(value.target.application_id)
                 .or_default()
                 .push(namespace);
         }
@@ -82,7 +82,7 @@ mod tests {
 
     use calimero_governance_store::NodeDeviceRepository;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::GroupMetaValue;
+    use calimero_store::key::{GroupMetaValue, GroupTarget};
 
     use super::*;
 
@@ -96,8 +96,10 @@ mod tests {
 
     fn meta_for(application: ApplicationId) -> GroupMetaValue {
         GroupMetaValue {
-            bytecode_id: [0; 32],
-            target_application_id: application,
+            target: GroupTarget {
+                application_id: application,
+                ..Default::default()
+            },
             created_at: 0,
             admin_identity: calimero_account::AccountId::from([0; 32]),
             owner_identity: calimero_account::AccountId::from([0; 32]),

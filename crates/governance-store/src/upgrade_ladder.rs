@@ -60,10 +60,14 @@ mod tests {
     use crate::test_fixtures::{test_group_id, test_store};
     use calimero_primitives::application::ApplicationId;
 
+    // Distinct coordinates per rung, so the order assertions below double as
+    // proof the pair survives the borsh round trip through the store.
     fn rung(byte: u8) -> LadderRung {
         LadderRung {
             bytecode_id: [byte; 32],
             application_id: ApplicationId::from([0xCC; 32]),
+            package: "com.acme.app".to_owned(),
+            version: format!("{byte}.0.0"),
         }
     }
 

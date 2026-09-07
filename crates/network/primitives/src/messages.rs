@@ -111,10 +111,19 @@ pub enum NetworkMessage {
         request: OpenStream,
         outcome: oneshot::Sender<<OpenStream as actix::Message>::Result>,
     },
+    /// Last known dialable addresses for a peer, from the persistent cache.
+    PeerAddrs {
+        request: PeerAddrs,
+        outcome: oneshot::Sender<<PeerAddrs as actix::Message>::Result>,
+    },
     /// Get the count of connected peers.
     PeerCount {
         request: PeerCount,
         outcome: oneshot::Sender<<PeerCount as actix::Message>::Result>,
+    },
+    ConnectedPeers {
+        request: ConnectedPeers,
+        outcome: oneshot::Sender<<ConnectedPeers as actix::Message>::Result>,
     },
     /// Get the list of mesh peers for a topic.
     MeshPeers {
@@ -234,6 +243,23 @@ impl actix::Message for MeshPeers {
 /// on `SUBSCRIBE` (no GRAFT required). Distinct from [`MeshPeers`], which
 /// returns only the bounded grafted mesh: a peer can be connected and
 /// subscribed yet not (yet/still) in the mesh. Sync peer-selection uses
+/// Every peer this node currently holds a connection to, regardless of topic.
+///
+/// The topic-scoped listings above answer "who announced this topic", which is
+/// what sync wants nearly always. This answers "who could I ask right now",
+/// which is what a joiner needs when the two differ: a peer can be connected
+/// for many seconds before its subscription is known — gossipsub announces a
+/// subscription to peers connected at the time it subscribes, so a peer that
+/// connected first and subscribed later may never have told us. A join that
+/// can only see announced subscribers is then stuck holding a live connection
+/// to the one node that could serve it.
+#[derive(Clone, Debug)]
+pub struct ConnectedPeers;
+
+impl actix::Message for ConnectedPeers {
+    type Result = Vec<PeerId>;
+}
+
 /// this so it can reconcile with any subscribed peer it's connected to,
 /// independent of mesh health.
 #[derive(Clone, Debug)]
@@ -288,6 +314,23 @@ pub struct OpenStream(pub PeerId);
 
 impl actix::Message for OpenStream {
     type Result = eyre::Result<Stream>;
+}
+
+/// Request the last known dialable addresses for a peer.
+///
+/// Answered from the persistent peer-address cache, not from the live swarm, so
+/// it works for a peer this node is not currently connected to — which is the
+/// whole point: an address is worth handing out precisely when the holder is not
+/// already talking to that peer.
+///
+/// Empty when the cache has nothing fresh. Entries expire, so a peer last seen
+/// beyond the cache TTL answers the same as one never seen; both mean "no
+/// address to offer" rather than "no such peer".
+#[derive(Clone, Copy, Debug)]
+pub struct PeerAddrs(pub libp2p::PeerId);
+
+impl actix::Message for PeerAddrs {
+    type Result = Vec<libp2p::Multiaddr>;
 }
 
 /// Request to get the count of connected peers.

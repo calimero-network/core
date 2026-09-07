@@ -69,7 +69,7 @@ impl ContextManager {
             let node_client = self.node_client.clone();
             let context_client = self.context_client.clone();
             let datastore = self.datastore.clone();
-            let target_application_id = meta.target_application_id;
+            let target_application_id = meta.target.application_id;
 
             let propagator = async move {
                 let migration = match crate::handlers::upgrade_group::resolve_resumed_migration(

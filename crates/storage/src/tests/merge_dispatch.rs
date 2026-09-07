@@ -15,7 +15,7 @@
 //! | `test_is_builtin_crdt_classification` | Various | Correct classification |
 //! | `test_merge_by_crdt_type_dispatch` | Various | Correct dispatch |
 
-use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use serial_test::serial;
 
 use crate::collections::crdt_meta::MergeError;
@@ -160,7 +160,7 @@ fn test_lww_register_returns_incoming() {
     let existing = vec![1, 2, 3, 4];
     let incoming = vec![5, 6, 7, 8];
 
-    let result = merge_by_crdt_type(&CrdtType::lww_register("test"), &existing, &incoming);
+    let result = merge_by_crdt_type(&CrdtType::lww_register(), &existing, &incoming);
 
     assert!(result.is_ok(), "LwwRegister merge should succeed");
     assert_eq!(
@@ -190,29 +190,26 @@ fn test_is_builtin_crdt_classification() {
 
     // All standard types are builtin
     assert!(
-        is_builtin_crdt(&CrdtType::lww_register("u64")),
+        is_builtin_crdt(&CrdtType::lww_register()),
         "LwwRegister is builtin"
     );
     assert!(
-        is_builtin_crdt(&CrdtType::unordered_map("String", "u64")),
+        is_builtin_crdt(&CrdtType::UnorderedMap),
         "UnorderedMap is builtin"
     );
     assert!(
-        is_builtin_crdt(&CrdtType::sorted_map("String", "u64")),
+        is_builtin_crdt(&CrdtType::SortedMap),
         "SortedMap is builtin"
     );
     assert!(
-        is_builtin_crdt(&CrdtType::unordered_set("String")),
+        is_builtin_crdt(&CrdtType::UnorderedSet),
         "UnorderedSet is builtin"
     );
     assert!(
-        is_builtin_crdt(&CrdtType::sorted_set("String")),
+        is_builtin_crdt(&CrdtType::SortedSet),
         "SortedSet is builtin"
     );
-    assert!(
-        is_builtin_crdt(&CrdtType::vector("u64")),
-        "Vector is builtin"
-    );
+    assert!(is_builtin_crdt(&CrdtType::Vector), "Vector is builtin");
     assert!(
         is_builtin_crdt(&CrdtType::UserStorage),
         "UserStorage is builtin"
@@ -224,7 +221,7 @@ fn test_is_builtin_crdt_classification() {
 
     // Only Custom needs WASM
     assert!(
-        !is_builtin_crdt(&CrdtType::Custom("MyType".to_string())),
+        !is_builtin_crdt(&CrdtType::Custom(CustomTypeId::of("MyType"))),
         "Custom needs WASM"
     );
 }
@@ -239,13 +236,13 @@ fn test_merge_custom_type_returns_wasm_required() {
     let bytes = vec![1, 2, 3, 4];
 
     let result = merge_by_crdt_type(
-        &CrdtType::Custom("MyCustomType".to_string()),
+        &CrdtType::Custom(CustomTypeId::of("MyCustomType")),
         &bytes,
         &bytes,
     );
 
     assert!(
-        matches!(result, Err(MergeError::WasmRequired { type_name }) if type_name == "MyCustomType"),
+        matches!(result, Err(MergeError::WasmRequired { type_id }) if type_id == CustomTypeId::of("MyCustomType")),
         "Custom types should return WasmRequired with the type name"
     );
 }
@@ -277,31 +274,27 @@ fn test_collections_return_incoming() {
     let incoming = vec![5, 6, 7, 8];
 
     // UnorderedMap - returns incoming for structured storage
-    let result = merge_by_crdt_type(
-        &CrdtType::unordered_map("String", "u64"),
-        &existing,
-        &incoming,
-    );
+    let result = merge_by_crdt_type(&CrdtType::UnorderedMap, &existing, &incoming);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), incoming);
 
     // SortedMap - same structured-storage dispatch as UnorderedMap
-    let result = merge_by_crdt_type(&CrdtType::sorted_map("String", "u64"), &existing, &incoming);
+    let result = merge_by_crdt_type(&CrdtType::SortedMap, &existing, &incoming);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), incoming);
 
     // UnorderedSet - returns incoming for structured storage
-    let result = merge_by_crdt_type(&CrdtType::unordered_set("String"), &existing, &incoming);
+    let result = merge_by_crdt_type(&CrdtType::UnorderedSet, &existing, &incoming);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), incoming);
 
     // SortedSet - same structured-storage dispatch as UnorderedSet
-    let result = merge_by_crdt_type(&CrdtType::sorted_set("String"), &existing, &incoming);
+    let result = merge_by_crdt_type(&CrdtType::SortedSet, &existing, &incoming);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), incoming);
 
     // Vector - returns incoming for structured storage
-    let result = merge_by_crdt_type(&CrdtType::vector("u64"), &existing, &incoming);
+    let result = merge_by_crdt_type(&CrdtType::Vector, &existing, &incoming);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), incoming);
 }
@@ -355,12 +348,12 @@ fn test_crdt_type_has_required_variants() {
     // Verify the CrdtType enum has the variants we need for dispatch
     let _ = CrdtType::GCounter;
     let _ = CrdtType::PnCounter;
-    let _ = CrdtType::lww_register("test");
+    let _ = CrdtType::lww_register();
     let _ = CrdtType::Rga;
-    let _ = CrdtType::unordered_map("String", "u64");
-    let _ = CrdtType::unordered_set("String");
-    let _ = CrdtType::vector("u64");
+    let _ = CrdtType::UnorderedMap;
+    let _ = CrdtType::UnorderedSet;
+    let _ = CrdtType::Vector;
     let _ = CrdtType::UserStorage;
     let _ = CrdtType::FrozenStorage;
-    let _ = CrdtType::Custom("test".to_string());
+    let _ = CrdtType::Custom(CustomTypeId::of("test"));
 }

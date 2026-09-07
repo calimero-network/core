@@ -584,54 +584,6 @@ pub struct SignedOpenInvitation {
 ///
 /// A ceiling rather than a default: a caller asking for longer is clamped, not
 /// obeyed. A default alone protects only the callers who never pass a value,
-/// Where an admitter can be reached, and over which transport.
-///
-/// Two, because a claim arrives by two different routes and they are not
-/// interchangeable. A joining **node** dials libp2p; a **keyholder with no
-/// node** — the case direct admission exists for — has no swarm to dial from and
-/// reaches the admitter over HTTPS. An untyped string could not tell them apart,
-/// and a joiner would have to guess by inspecting the text.
-///
-/// Unsigned, like the rest of the hints: a wrong endpoint costs a failed
-/// connection, because the admitting node still has to appear in the *signed*
-/// `admitters` list for its admission to count. It can misdirect where you
-/// knock, never who may answer.
-///
-/// Best-effort by nature. An address recorded when the invitation was minted may
-/// have moved by the time it is used — which is survivable now that an
-/// invitation lives at most [`MAX_INVITATION_VALIDITY_SECS`], and was not when
-/// they lasted a year.
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdmitterEndpoint {
-    /// A libp2p multiaddr including the peer id, e.g.
-    /// `/ip4/10.0.0.1/tcp/2528/p2p/12D3KooW...`. For a joiner that runs a node.
-    ///
-    /// Carries the peer id because a joiner cannot resolve one: the
-    /// identity-to-peer map is in-memory and lost on restart, and a joiner that
-    /// has synced nothing has no entry for anybody.
-    Multiaddr(String),
-    /// An `https://` base URL serving the admin API. For a joiner that holds
-    /// only a key.
-    ///
-    /// The stable option: a hosted or TEE admitter keeps its URL across the
-    /// restarts and re-addressing that invalidate a multiaddr.
-    Url(String),
-}
-
-impl AdmitterEndpoint {
-    /// The account this endpoint claims to reach.
-    ///
-    /// Returns nothing on its own — deliberately. An endpoint is a hint, and the
-    /// authority to admit comes from the *signed* `admitters` list, checked
-    /// against the account the admitter proves it holds. Resolving a hint to an
-    /// account here would invite treating the hint as the answer.
-    #[must_use]
-    pub const fn is_dialable_by_a_node(&self) -> bool {
-        matches!(self, Self::Multiaddr(_))
-    }
-}
-
 /// and those are not the ones that make an invitation dangerous.
 pub const MAX_INVITATION_VALIDITY_SECS: u64 = 24 * 60 * 60;
 
@@ -672,7 +624,7 @@ pub struct GroupInvitationFromAdmin {
     /// Accounts rather than `PeerId`s: an account survives the node re-keying,
     /// and governance names accounts everywhere else. Where to *reach* them is a
     /// separate, unsigned question — see
-    /// [`SignedGroupOpenInvitation::admitter_hints`].
+    /// [`SignedGroupOpenInvitation::admitter_addrs`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admitters: Vec<calimero_account::AccountId>,
 }
@@ -748,21 +700,30 @@ pub struct SignedGroupOpenInvitation {
     /// existed and costs only a slower cold start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inviter_account: Option<calimero_account::AccountId>,
-    /// Where to reach the accounts in
+    /// libp2p addresses for the accounts in
     /// [`GroupInvitationFromAdmin::admitters`] (unsigned bootstrap field).
     ///
-    /// Outside the signature deliberately, beside the other hints. An account
-    /// is reached through a `PeerId`, and the identity-to-peer map is held in
-    /// memory and lost on restart — so a joiner that has synced nothing has no
-    /// way to resolve one. Shipping the hint is what makes the signed list
-    /// usable at all.
+    /// Each is a full multiaddr including the `/p2p/<peer-id>` suffix, e.g.
+    /// `/ip4/10.0.0.1/tcp/2528/p2p/12D3KooW...`. The peer id travels with the
+    /// address because a joiner cannot derive it: resolving an account to a peer
+    /// needs governance state, which is exactly what a joiner has not synced yet.
     ///
-    /// Unsigned is safe here in a way it would not be for `admitters` itself:
-    /// a wrong hint costs a failed dial, because the admitting node still has
-    /// to be in the signed list for its admission to count. It can misdirect
-    /// where you knock, never who may answer.
+    /// Outside the signature deliberately. An account is reached through a peer,
+    /// so requiring the address to be signed would mean the inviter had to know
+    /// every admitter's current address at mint time and re-mint whenever one
+    /// moved. Carrying it unsigned is what makes the signed list usable at all.
+    ///
+    /// Unsigned is safe here in a way it would not be for `admitters` itself: a
+    /// wrong address costs a failed dial, because libp2p authenticates the peer
+    /// id on connect and the admitting node still has to be in the signed list
+    /// for its admission to count. It can misdirect where you knock, never who
+    /// may answer.
+    ///
+    /// Best-effort and possibly empty. An address recorded at mint may have
+    /// moved by the time it is used — survivable because an invitation lives at
+    /// most [`MAX_INVITATION_VALIDITY_SECS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub admitter_hints: Vec<AdmitterEndpoint>,
+    pub admitter_addrs: Vec<String>,
     /// Application ID for the group (unsigned bootstrap field).
     /// `None` for backwards compatibility with invitations created before
     /// this field was added; joiners fall back to zero when absent.
@@ -911,7 +872,7 @@ mod tests {
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         };
 
         // Round-tripping unchanged JSON is what pins the wire name; swapping in
@@ -946,7 +907,7 @@ mod tests {
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         };
 
         let json = serde_json::to_string(&signed).expect("serialize");
@@ -976,7 +937,7 @@ mod tests {
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x66; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         };
 
         let mut value = serde_json::to_value(&signed).expect("serialize");

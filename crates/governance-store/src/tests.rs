@@ -2,12 +2,13 @@ use super::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     MetadataRepository, NamespaceRepository, UpgradeLadderRepository, UpgradesRepository,
 };
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_store::key::{GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
 use super::test_fixtures::{
@@ -30,8 +31,8 @@ fn save_load_delete_group_meta() {
 
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     let loaded = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(loaded.bytecode_id, meta.bytecode_id);
-    assert_eq!(loaded.target_application_id, meta.target_application_id);
+    assert_eq!(loaded.target.bytecode_id, meta.target.bytecode_id);
+    assert_eq!(loaded.target.application_id, meta.target.application_id);
 
     MetaRepository::new(&store).delete(&gid).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
@@ -170,11 +171,16 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     );
 
     settings
-        .set_target_application(&member_pk, &[0xAB; 32], &app_id)
+        .set_target_application(
+            &member_pk,
+            &[0xAB; 32],
+            &app_id,
+            RegistryCoords::new("com.acme.app", "1.0.0"),
+        )
         .unwrap();
     let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(meta.bytecode_id, [0xAB; 32]);
-    assert_eq!(meta.target_application_id, app_id);
+    assert_eq!(meta.target.bytecode_id, [0xAB; 32]);
+    assert_eq!(meta.target.application_id, app_id);
 
     MetadataRepository::new(&store)
         .set_group(
@@ -218,22 +224,25 @@ fn set_target_application_appends_upgrade_ladder_rung() {
     let app_v2 = ApplicationId::from([0xD2; 32]);
     let app_v3 = ApplicationId::from([0xD3; 32]);
 
+    let coords = |version| RegistryCoords::new("com.acme.app", version);
     settings
-        .set_target_application(&admin_pk, &[0x02; 32], &app_v2)
+        .set_target_application(&admin_pk, &[0x02; 32], &app_v2, coords("2.0.0"))
         .unwrap();
     settings
-        .set_target_application(&admin_pk, &[0x02; 32], &app_v2)
+        .set_target_application(&admin_pk, &[0x02; 32], &app_v2, coords("2.0.0"))
         .unwrap();
     settings
-        .set_target_application(&admin_pk, &[0x03; 32], &app_v3)
+        .set_target_application(&admin_pk, &[0x03; 32], &app_v3, coords("3.0.0"))
         .unwrap();
 
     let rungs = UpgradeLadderRepository::new(&store).load(&gid).unwrap();
     assert_eq!(rungs.len(), 2);
     assert_eq!(rungs[0].bytecode_id, [0x02; 32]);
     assert_eq!(rungs[0].application_id, app_v2);
+    assert_eq!(rungs[0].version, "2.0.0");
     assert_eq!(rungs[1].bytecode_id, [0x03; 32]);
     assert_eq!(rungs[1].application_id, app_v3);
+    assert_eq!(rungs[1].version, "3.0.0");
 }
 
 #[test]
@@ -263,7 +272,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
         .unwrap();
 
     let mut meta = test_meta();
-    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.target.application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     // Pre-store context meta with zero app id to verify backfill path.
@@ -310,7 +319,8 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             .load(&gid)
             .unwrap()
             .unwrap()
-            .target_application_id,
+            .target
+            .application_id,
         app_id
     );
     let handle = store.handle();
@@ -441,8 +451,8 @@ fn group_with_zeroed_meta(store: &Store, bytecode_id: [u8; 32]) -> (ContextGroup
         .unwrap();
 
     let mut meta = test_meta();
-    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
-    meta.bytecode_id = bytecode_id;
+    meta.target.application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.target.bytecode_id = bytecode_id;
     MetaRepository::new(store).save(&gid, &meta).unwrap();
 
     (gid, creator_pk)
@@ -469,8 +479,8 @@ fn context_registered_heals_a_zeroed_bytecode_id() {
         .unwrap();
 
     let healed = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(healed.target_application_id, app_id);
-    assert_eq!(healed.bytecode_id, [0x53; 32]);
+    assert_eq!(healed.target.application_id, app_id);
+    assert_eq!(healed.target.bytecode_id, [0x53; 32]);
 }
 
 /// A group already pinned to a blob - by its own create, an invitation, or an
@@ -491,7 +501,7 @@ fn context_registered_leaves_a_set_bytecode_id_alone() {
         .unwrap();
 
     let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(meta.bytecode_id, [0xBB; 32]);
+    assert_eq!(meta.target.bytecode_id, [0xBB; 32]);
 }
 
 /// Re-applying the same op (e.g. a node's own published op coming back via
@@ -506,9 +516,10 @@ fn context_registered_leaves_a_set_bytecode_id_alone() {
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -583,9 +594,10 @@ fn apply_local_signed_group_op_nonce_and_admin() {
 fn apply_local_signed_group_op_out_of_order_siblings_2516() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -693,9 +705,10 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
 fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -786,9 +799,10 @@ fn nonce_window_round_trips_through_single_key() {
 fn reject_read_only_tee_via_member_added() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -827,9 +841,10 @@ fn reject_read_only_tee_via_member_added() {
 fn reject_read_only_tee_via_member_role_set() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -872,9 +887,10 @@ fn reject_read_only_tee_via_member_role_set() {
 fn apply_local_member_alias_member_signer_or_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -960,9 +976,10 @@ fn apply_local_context_alias_admin_or_creator() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1003,6 +1020,8 @@ fn apply_local_context_alias_admin_or_creator() {
             blob_id: calimero_primitives::blobs::BlobId::from([0u8; 32]),
             source: String::new(),
             service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .unwrap();
@@ -1052,9 +1071,10 @@ fn apply_local_context_alias_admin_or_creator() {
 fn apply_local_signed_group_op_capabilities_and_delete() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1109,9 +1129,10 @@ fn apply_local_signed_group_op_capabilities_and_delete() {
 fn apply_local_signed_group_op_rejects_last_admin_removal() {
     use calimero_context_client::local_governance::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1157,9 +1178,10 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
 fn transfer_ownership_rejects_non_owner_signer() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1225,9 +1247,10 @@ fn transfer_ownership_rejects_non_owner_signer() {
 fn transfer_ownership_rejects_new_owner_not_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1285,9 +1308,10 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
 fn transfer_ownership_rejects_new_owner_not_member() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1344,9 +1368,10 @@ fn transfer_ownership_rejects_new_owner_not_member() {
 fn transfer_ownership_moves_admin_identity_to_new_owner() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1415,9 +1440,10 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
 fn context_capability_granted_rejects_unauthorized_signer() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1480,9 +1506,10 @@ fn context_capability_granted_rejects_unauthorized_signer() {
 fn context_capability_revoked_rejects_unauthorized_signer() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1551,9 +1578,10 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
 fn context_capability_granted_rejects_context_not_in_group() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1618,9 +1646,10 @@ fn context_capability_granted_rejects_context_not_in_group() {
 fn context_capability_granted_rejects_non_member_grantee() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1680,9 +1709,10 @@ fn context_capability_granted_rejects_non_member_grantee() {
 fn context_capability_revoked_rejects_context_not_in_group() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1745,9 +1775,10 @@ fn context_capability_revoked_rejects_context_not_in_group() {
 fn cross_node_state_hash_is_order_independent() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
 
@@ -2754,25 +2785,30 @@ fn delete_defaults_and_member_capabilities_clears_values() {
 #[test]
 fn auto_group_node_identity_is_admin_member() {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let context_id = ContextId::from([0xDD; 32]);
     let auto_group_id = ContextGroupId::from(*context_id.as_ref());
 
     // Simulate what create_context does: use node's group identity
-    let node_sk = PrivateKey::random(&mut OsRng);
+    let node_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let node_pk = node_sk.public_key();
     let node_account = AccountId::from(*node_pk);
-    let sender_key = PrivateKey::random(&mut OsRng);
+    let sender_key = PrivateKey::random(&mut UnwrapErr(SysRng));
 
     // Save group meta (as create_context does for auto-groups)
     MetaRepository::new(&store)
         .save(
             &auto_group_id,
             &GroupMetaValue {
-                bytecode_id: [0u8; 32],
-                target_application_id: ApplicationId::from([0xCC; 32]),
+                target: GroupTarget {
+                    application_id: ApplicationId::from([0xCC; 32]),
+                    bytecode_id: [0u8; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
                 created_at: 1_700_000_000,
                 admin_identity: node_account,
                 owner_identity: node_account,
@@ -2824,13 +2860,14 @@ fn auto_group_node_identity_is_admin_member() {
 #[test]
 fn auto_group_random_identity_not_found_by_node_check() {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let auto_group_id = ContextGroupId::from([0xEE; 32]);
 
     // A random creator identity was added as admin
-    let random_sk = PrivateKey::random(&mut OsRng);
+    let random_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let random_pk = random_sk.public_key();
     let random_account = AccountId::from(*random_pk);
     MembershipRepository::new(&store)
@@ -2838,7 +2875,7 @@ fn auto_group_random_identity_not_found_by_node_check() {
         .unwrap();
 
     // The node's ACTUAL group identity is different
-    let node_sk = PrivateKey::random(&mut OsRng);
+    let node_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let node_pk = node_sk.public_key();
     let node_account = AccountId::from(*node_pk);
 
@@ -2907,9 +2944,10 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     set_local_gov_nonce(&store, &gid, &member_pk, 7).unwrap();
 
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signer_sk = PrivateKey::random(&mut rng);
     let op =
         SignedGroupOp::sign(&signer_sk, gid.to_bytes().into(), vec![], 1, GroupOp::Noop).unwrap();
@@ -3001,9 +3039,10 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     let quote_b = [0xE2; 32];
 
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_1 = SignedGroupOp::sign(
         &signer_sk,
@@ -3156,12 +3195,13 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 #[test]
 fn seed_bootstrap_admin_repairs_missing_member_row() {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -3213,9 +3253,10 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
 
 fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &str) {
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signer_sk = PrivateKey::random(&mut rng);
     let op = SignedGroupOp::sign(
         &signer_sk,
@@ -3299,10 +3340,11 @@ fn apply_tee_policy_op_on_subgroup_rejected() {
     // accepting the op would create dead data; rejecting it keeps state
     // aligned with the decision that policies are namespace-scoped.
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let root = ContextGroupId::from([0xB0; 32]);
     let child = ContextGroupId::from([0xB1; 32]);
     let admin_sk = PrivateKey::random(&mut rng);
@@ -3696,9 +3738,10 @@ fn restore_member_context_identities_leaves_existing_rows_untouched() {
 fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -3821,9 +3864,10 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     // remove).
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // namespace (root) ── subgroup
@@ -3941,9 +3985,10 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // Namespace + Open subgroup + context structure:
@@ -4073,10 +4118,11 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     use sha2::{Digest, Sha256};
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // namespace (root) ── subgroup; the member re-joins the subgroup via
@@ -4119,7 +4165,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
-        admitters: Vec::new(),
+        admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -4129,7 +4175,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -4137,13 +4183,27 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member,
             signed_invitation,
+            joined_at: 1,
             account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
         }),
     )
     .unwrap();
+    // On the envelope, after signing: the endorsement is outside the joiner's
+    // signature, which is what lets an admitter attach one to an op it did not
+    // author.
+    let mut signed = signed;
+    signed.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            &admin_sk,
+            &ns_id,
+            &member,
+            &[0x42; 32],
+        )
+        .expect("the admin endorses the rejoin"),
+    ));
     apply_signed_namespace_op(&store, &signed).unwrap();
 
     // The join materialized the joiner's direct membership row...
@@ -4173,9 +4233,10 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     // DAG ops as the rejoiner.
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let admin_sk = PrivateKey::random(&mut rng);
@@ -4838,10 +4899,11 @@ fn deny_list_member_added_op_clears_existing_entry() {
     // Apply-path integration: a `MemberAdded` apply must clear any
     // existing deny-list entry for that member, even if they were
     // previously removed.
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
     let (_target_pk, target_account) = enrolled(&store, &gid, 0xC1);
@@ -4895,10 +4957,11 @@ fn deny_list_member_added_op_clears_existing_entry() {
 
 #[test]
 fn deny_list_member_removed_op_marks_entry() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
     let (_target_pk, target_account) = enrolled(&store, &gid, 0xC2);
@@ -4947,9 +5010,10 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
     // half of that end to end.
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::VisibilityMode;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
     // namespace (root) ── Open subgroup ── context, matching the e2e.
@@ -5071,10 +5135,11 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
 
 #[test]
 fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
     let (_target_pk, target_account) = enrolled(&store, &gid, 0xC3);
@@ -5132,14 +5197,15 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
 #[test]
 fn inherited_deny_fast_drops_evicted_inherited_member_and_clears_on_readmit() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let store = test_store();
     let ns_gid = ContextGroupId::from([0xF1u8; 32]);
     let subgroup = ContextGroupId::from([0xF2u8; 32]);
     let ctx = ContextId::from([0xFCu8; 32]);
 
-    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &ns_gid, &admin_pk);
     let member_pk = PublicKey::from([0xE7; 32]);
@@ -5398,7 +5464,9 @@ fn signed_invitation_for(
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: 1,
-        admitters: Vec::new(),
+        // The inviter names itself, which is what the mint's default would
+        // produce for an admin issuing its own invitation.
+        admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -5408,37 +5476,60 @@ fn signed_invitation_for(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 
-/// Apply a `RootOp::MemberJoined` signed by the joiner themselves.
+/// Apply a `RootOp::MemberJoinedAt` signed by the joiner themselves, endorsed
+/// by `admitter_sk`.
+///
+/// The admitter's key is a separate parameter from the joiner's because the two
+/// signatures answer different questions: the joiner's proves it owns the
+/// account being admitted, the admitter's proves somebody entitled to admit
+/// agreed. Passing one key for both would make every test's join self-endorsed
+/// and hide that distinction.
 fn apply_member_joined(
     store: &Store,
     ns_id: [u8; 32],
     member_sk: &PrivateKey,
     signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation,
     nonce: u64,
+    admitter_sk: &PrivateKey,
 ) -> EyreResult<()> {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+    let admitter_endorsement = Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            admitter_sk,
+            &ns_id,
+            &member,
+            &signed_invitation.invitation.invitation_nonce,
+        )
+        .expect("sign admitter endorsement"),
+    );
 
     let signed = SignedNamespaceOp::sign(
         member_sk,
         ns_id.into(),
         vec![],
         nonce,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             // The member and the credential beside it have to name the SAME
             // account: the apply verifies the credential certifies the signer
             // and speaks for the declared member. A synthetic member beside an
             // unrelated credential is refused before the op reaches whatever
             // the test meant to exercise.
-            member: crate::test_fixtures::account_for(&member_sk.public_key()),
+            member,
             signed_invitation,
+            joined_at: 1,
             account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
         }),
     )
     .unwrap();
+    // On the envelope, after signing — see above.
+    let mut signed = signed;
+    signed.admitter_endorsement = Some(admitter_endorsement);
     apply_signed_namespace_op(store, &signed).map(|_result| ())
 }
 
@@ -5448,9 +5539,10 @@ fn apply_member_joined(
 /// from quietly becoming "nobody checks".
 #[test]
 fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5458,7 +5550,7 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
 
     // This node is the admin — a peer applying someone else's join op, which is
     // the side that holds the state and therefore owes the check.
-    let node_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let node_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let node_sk = PrivateKey::from(node_sk_bytes);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes)
@@ -5467,10 +5559,16 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
     // Signed by a stranger who is no member of the group, let alone one with
     // CAN_INVITE_MEMBERS.
     let stranger_sk = PrivateKey::random(&mut rng);
+    // Bound in the namespace but not a member of it: the endorsement resolves a
+    // signing key to an account through the bindings, and a real joiner has
+    // those rows before it self-applies — the join bundle's catch-up ops land
+    // first. Without the binding this would fail on the endorsement instead of
+    // on the permission check it exists to pin, which is a different claim.
+    let _ = crate::test_fixtures::enrol_member(&store, &ns_gid, &stranger_sk.public_key());
     let invitation = signed_invitation_for(&stranger_sk, subgroup, [0x81; 32]);
 
     let joiner_sk = PrivateKey::random(&mut rng);
-    let err = apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1)
+    let err = apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1, &stranger_sk)
         .expect_err("a peer must refuse an invitation from an inviter with no permission");
 
     assert!(
@@ -5490,19 +5588,20 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
 
 #[test]
 fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // The offline joiner: it holds none of the group's state — no genesis, no
     // membership rows, no bindings — so the inviter lookup can only ever fail,
     // whatever the invitation. Refusing there left the op unapplied and so never
     // published, and the join could not converge once peers were reachable.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_pk);
 
-    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
 
@@ -5514,9 +5613,15 @@ fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
     // The same invitation the peer test refuses, from an inviter this node
     // cannot resolve. It applies here, and peers remain free to reject it.
     let stranger_sk = PrivateKey::random(&mut rng);
+    // Bound in the namespace but not a member of it: the endorsement resolves a
+    // signing key to an account through the bindings, and a real joiner has
+    // those rows before it self-applies — the join bundle's catch-up ops land
+    // first. Without the binding this would fail on the endorsement instead of
+    // on the permission check it exists to pin, which is a different claim.
+    let _ = crate::test_fixtures::enrol_member(&store, &ns_gid, &stranger_sk.public_key());
     let invitation = signed_invitation_for(&stranger_sk, subgroup, [0x82; 32]);
 
-    apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1)
+    apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1, &stranger_sk)
         .expect("the joiner must be able to apply its own join op");
 
     assert!(
@@ -5529,14 +5634,15 @@ fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
 
 #[test]
 fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // The whole point of the ban: an open invitation is a bearer token that
     // anyone can present, so if a kick only invalidated the invitation the
     // kicked member USED, the admin could never keep them out of a group with a
     // live join link. A removal has to outrank every invitation, including ones
     // minted after the removal.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5563,7 +5669,7 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
     // A brand-new invitation, minted after the kick, with a nonce they have
     // never seen.
     let fresh = signed_invitation_for(&admin_sk, subgroup, [0x77; 32]);
-    let err = apply_member_joined(&store, ns_id, &member_sk, fresh, 1)
+    let err = apply_member_joined(&store, ns_id, &member_sk, fresh, 1, &admin_sk)
         .expect_err("a removed member must not be able to rejoin by invitation");
 
     assert!(
@@ -5580,12 +5686,13 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
 
 #[test]
 fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // The ban is not a tombstone — an admin can undo it, and `MemberAdded` is
     // the only thing that does. This is the counterpart to the test above: it
     // pins that the block is lifted by the admin-gated op and nothing else.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5641,12 +5748,13 @@ fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
 
 #[test]
 fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // Leaving is not a ban — they can come back. What they cannot do is walk
     // back in on the invitation they walked out on; that one is spent for them,
     // so re-entry has to be an explicit re-invite.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5658,7 +5766,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
     // Join with invitation A.
     let invite_a = signed_invitation_for(&admin_sk, subgroup, [0xA1; 32]);
-    apply_member_joined(&store, ns_id, &member_sk, invite_a.clone(), 1)
+    apply_member_joined(&store, ns_id, &member_sk, invite_a.clone(), 1, &admin_sk)
         .expect("first join with a fresh invitation must succeed");
     assert!(MembershipRepository::new(&store)
         .has_direct_member(&subgroup, &member)
@@ -5683,7 +5791,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
         .unwrap());
 
     // Replaying invitation A must not readmit them.
-    let err = apply_member_joined(&store, ns_id, &member_sk, invite_a, 2)
+    let err = apply_member_joined(&store, ns_id, &member_sk, invite_a, 2, &admin_sk)
         .expect_err("replaying the invitation they left with must be rejected");
     assert!(
         format!("{err:#}").contains("already used this invitation"),
@@ -5695,7 +5803,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
     // A freshly issued invitation does.
     let invite_b = signed_invitation_for(&admin_sk, subgroup, [0xB2; 32]);
-    apply_member_joined(&store, ns_id, &member_sk, invite_b, 3)
+    apply_member_joined(&store, ns_id, &member_sk, invite_b, 3, &admin_sk)
         .expect("a re-invited leaver must be able to rejoin");
     assert!(
         MembershipRepository::new(&store)
@@ -5707,13 +5815,14 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
 #[test]
 fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // Consumption is per-identity, not global. An open invitation is a bearer
     // token with no invitee field — a link in a channel that many people join
     // with — so burning it globally on first use would break the shared link for
     // everyone else. Only the identity that used it is barred from replaying it.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5724,7 +5833,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     let shared = signed_invitation_for(&admin_sk, subgroup, [0x5A; 32]);
 
     // Bob joins with the shared link, then leaves — spending it for himself.
-    apply_member_joined(&store, ns_id, &bob_sk, shared.clone(), 1).expect("bob joins");
+    apply_member_joined(&store, ns_id, &bob_sk, shared.clone(), 1, &admin_sk).expect("bob joins");
     let left = SignedGroupOp::sign(
         &bob_sk,
         subgroup.to_bytes().into(),
@@ -5740,7 +5849,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     apply_local_signed_group_op(&store, &left).expect("bob leaves");
 
     // Carol has never used it, so the same link still lets her in.
-    apply_member_joined(&store, ns_id, &carol_sk, shared, 1)
+    apply_member_joined(&store, ns_id, &carol_sk, shared, 1, &admin_sk)
         .expect("the shared invitation must still admit an identity that never used it");
     assert!(MembershipRepository::new(&store)
         .has_direct_member(
@@ -5754,14 +5863,15 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
 fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_from() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     // Inheritance is the back door that makes a subgroup kick meaningless: an
     // Open subgroup admits any parent member holding CAN_JOIN_OPEN_SUBGROUPS
     // automatically, so the kicked member simply re-inherits. That is exactly
     // what `group-kick-and-rejoin-keyshare` exercised as the SUCCESS path, and
     // it is now a rejection.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5878,9 +5988,10 @@ fn drained_member_joined(
 #[test]
 #[serial_test::serial]
 fn member_joined_invite_emits_membership_op_event() {
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5892,7 +6003,8 @@ fn member_joined_invite_emits_membership_op_event() {
 
     let mut rx = crate::op_events::subscribe();
     let invite = signed_invitation_for(&admin_sk, subgroup, [0xC1; 32]);
-    apply_member_joined(&store, ns_id, &member_sk, invite, 1).expect("first join succeeds");
+    apply_member_joined(&store, ns_id, &member_sk, invite, 1, &admin_sk)
+        .expect("first join succeeds");
 
     let role = drained_member_joined(&mut rx, subgroup.to_bytes(), member_account).expect(
         "RootOp::MemberJoined apply must emit OpEvent::MemberJoined for the joined subgroup",
@@ -5909,9 +6021,10 @@ fn member_joined_invite_emits_membership_op_event() {
 fn member_joined_open_emits_membership_op_event() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -6021,9 +6134,10 @@ fn permission_checker_can_manage_metadata() {
 fn metadata_set_does_not_change_group_state_hash() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -6080,9 +6194,10 @@ fn member_metadata_self_set_allowed_others_gated() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
@@ -6488,9 +6603,10 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     // would slip through without this one.
     use calimero_context_client::local_governance::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let store = test_store();
     let gid = test_group_id();
     let admin_sk = PrivateKey::random(&mut rng);
@@ -6871,7 +6987,7 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
 #[test]
 fn is_tee_admitted_identity_matches_tee_joined_member() {
     let store = test_store();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
     let tee_node = AccountId::from([0x42; 32]);
@@ -6910,13 +7026,14 @@ fn is_tee_admitted_identity_matches_tee_joined_member() {
 mod auto_follow_tests {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::*;
     use crate::apply_local_signed_group_op;
 
     fn seed(
-        rng: &mut OsRng,
+        rng: &mut UnwrapErr<SysRng>,
     ) -> (
         calimero_store::Store,
         calimero_context_config::types::ContextGroupId,
@@ -6954,7 +7071,7 @@ mod auto_follow_tests {
 
     #[test]
     fn admin_can_set_member_auto_follow() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, _member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -6982,7 +7099,7 @@ mod auto_follow_tests {
 
     #[test]
     fn member_can_set_own_auto_follow() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7010,7 +7127,7 @@ mod auto_follow_tests {
 
     #[test]
     fn non_admin_cannot_set_others_auto_follow() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, _member_account) =
             seed(&mut rng);
 
@@ -7062,7 +7179,7 @@ mod auto_follow_tests {
 
     #[test]
     fn rejects_non_member_target() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, _gid, gid_bytes, admin_sk, _member_sk, _admin_account, _member_account) =
             seed(&mut rng);
         let stranger = PrivateKey::random(&mut rng).public_key();
@@ -7089,7 +7206,7 @@ mod auto_follow_tests {
 
     #[test]
     fn default_flags_match_default_impl_and_preserved_on_role_change() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7157,7 +7274,7 @@ mod auto_follow_tests {
 
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
@@ -7200,6 +7317,8 @@ mod auto_follow_tests {
                 blob_id: BlobId::from([0xBB; 32]),
                 source: "test://app".to_owned(),
                 service_name: None,
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .unwrap();
@@ -7262,7 +7381,7 @@ mod auto_follow_tests {
     async fn member_added_emits_synthesized_auto_follow_set() {
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (
             store,
             _gid,
@@ -7372,7 +7491,7 @@ mod auto_follow_tests {
     /// must be honored.
     #[test]
     fn explicit_opt_out_after_member_added_is_preserved() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, _, _admin_account, _member_account) = seed(&mut rng);
 
         let target_sk = PrivateKey::random(&mut rng);
@@ -7452,7 +7571,7 @@ mod auto_follow_tests {
 
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (store, gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, _member_account) =
             seed(&mut rng);
 
@@ -7568,7 +7687,7 @@ mod auto_follow_tests {
     fn replayed_group_op_does_not_re_emit() {
         use crate::op_events::{self, OpEvent};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (
             store,
             _gid,
@@ -7660,7 +7779,7 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
         use crate::NamespaceOpLogService;
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let admin_sk = PrivateKey::random(&mut rng);
         let admin_sk_bytes: [u8; 32] = *admin_sk.as_bytes();
         let admin_pk = admin_sk.public_key();
@@ -7802,7 +7921,8 @@ mod auto_follow_tests {
 mod tee_member_removed_event_tests {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::*;
     use crate::apply_local_signed_group_op;
@@ -7931,7 +8051,7 @@ mod tee_member_removed_event_tests {
     fn member_removed_op_emits_tee_event_for_readonly_tee_role() {
         let store = test_store();
         let gid = test_group_id();
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &gid, &admin_pk);
         let (_tee_pk, tee_account) = enrolled(&store, &gid, 0xE1);
@@ -7982,7 +8102,7 @@ mod tee_member_removed_event_tests {
     fn member_removed_op_does_not_emit_tee_event_for_regular_member() {
         let store = test_store();
         let gid = test_group_id();
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &gid, &admin_pk);
         let (_target_pk, target_account) = enrolled(&store, &gid, 0xE2);
@@ -8045,7 +8165,7 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         let (_tee_pk, tee_account) = enrolled(&store, &ns_gid, 0xE1);
@@ -8148,7 +8268,7 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         let (tee_pk, tee_account) = enrolled(&store, &ns_gid, 0xE3);
@@ -8253,11 +8373,11 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         // The leaver signs its own MemberLeft, so it needs a real keypair.
-        let tee_sk = PrivateKey::random(&mut OsRng);
+        let tee_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let tee_pk = tee_sk.public_key();
         let tee_account = enrol_member(&store, &ns_gid, &tee_pk);
 
@@ -8359,7 +8479,7 @@ mod tee_member_removed_event_tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
             .unwrap();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin_pk = admin_sk.public_key();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
         let member_pk = PublicKey::from([0xE2; 32]);
@@ -8438,10 +8558,10 @@ mod tee_member_removed_event_tests {
             // Distinct admin so the leaver is not the last admin (the
             // apply path bails on `OwnerCannotSelfLeave` /
             // `LastAdminCannotLeave` otherwise).
-            let admin_sk = PrivateKey::random(&mut OsRng);
+            let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let admin_pk = admin_sk.public_key();
             let admin = enrol_member(&store, &gid, &admin_pk);
-            let tee_sk = PrivateKey::random(&mut OsRng);
+            let tee_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let tee_pk = tee_sk.public_key();
             let tee_account = enrol_member(&store, &gid, &tee_pk);
 
@@ -8486,10 +8606,10 @@ mod tee_member_removed_event_tests {
         {
             let store = test_store();
             let gid = test_group_id();
-            let admin_sk = PrivateKey::random(&mut OsRng);
+            let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let admin_pk = admin_sk.public_key();
             let admin = enrol_member(&store, &gid, &admin_pk);
-            let leaver_sk = PrivateKey::random(&mut OsRng);
+            let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
             let leaver_pk = leaver_sk.public_key();
             let leaver_account = enrol_member(&store, &gid, &leaver_pk);
 
@@ -8546,7 +8666,8 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
     // type actually stored. Asserting over many freshly derived accounts is the
     // testable half of it.
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     let sentinel = placeholder_admin_identity();
     assert_eq!(
@@ -8555,7 +8676,7 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
         "the AccountId form of the sentinel must round-trip to the all-zeros bytes"
     );
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     for _ in 0..256 {
         let root = PrivateKey::random(&mut rng);
         let genesis = calimero_account::AccountGenesis::new(root.public_key());
@@ -8594,9 +8715,10 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use calimero_storage::logical_clock::HybridTimestamp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
@@ -8619,8 +8741,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
 
         // Root: signer is a direct admin, on `from_bytecode_id`.
         let mut root_meta = sample_meta_with_admin(admin);
-        root_meta.bytecode_id = from_bytecode_id;
-        root_meta.target_application_id = app_v1;
+        root_meta.target.bytecode_id = from_bytecode_id;
+        root_meta.target.application_id = app_v1;
         MetaRepository::new(&store).save(&root, &root_meta).unwrap();
         MembershipRepository::new(&store)
             .add_member(&root, &admin, GroupMemberRole::Admin)
@@ -8630,8 +8752,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
         // Left at the DEFAULT Restricted visibility, so the signer does NOT
         // inherit admin authority across the boundary.
         let mut d_meta = sample_meta_with_admin(other_admin);
-        d_meta.bytecode_id = from_bytecode_id;
-        d_meta.target_application_id = app_v1;
+        d_meta.target.bytecode_id = from_bytecode_id;
+        d_meta.target.application_id = app_v1;
         MetaRepository::new(&store)
             .save(&descendant, &d_meta)
             .unwrap();
@@ -8667,6 +8789,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
                 to_state_version: 0,
                 migration: None,
                 cascade_hlc: HybridTimestamp::zero(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign CascadeUpgrade")
@@ -8698,11 +8822,11 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             .unwrap()
             .expect("descendant meta");
         assert_eq!(
-            d.bytecode_id, to_bytecode_id,
+            d.target.bytecode_id, to_bytecode_id,
             "descendant must be cascaded to the new bytecode_id on the {label} replica"
         );
         assert_eq!(
-            d.target_application_id, app_v2,
+            d.target.application_id, app_v2,
             "descendant must point at the new target on the {label} replica"
         );
         // The sticky cascade fence must be stamped identically on both
@@ -8730,9 +8854,10 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use calimero_storage::logical_clock::HybridTimestamp;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let root = ContextGroupId::from([0xE1; 32]);
@@ -8750,7 +8875,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
         let admin = enrol_member(&store, &root, &admin_pk);
         for gid in [&root, &descendant] {
             let mut meta = sample_meta_with_admin(admin);
-            meta.bytecode_id = from_bytecode_id;
+            meta.target.bytecode_id = from_bytecode_id;
             MetaRepository::new(&store).save(gid, &meta).unwrap();
         }
         MembershipRepository::new(&store)
@@ -8794,6 +8919,8 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
                 to_state_version: 2,
                 migration: None,
                 cascade_hlc: HybridTimestamp::zero(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign CascadeUpgrade");
@@ -8871,6 +8998,8 @@ mod apply_auth_at_cut {
         GroupOp::TargetApplicationSet {
             bytecode_id: BytecodeId::from([0x5A; 32]),
             target_application_id: ApplicationId::from([0x5B; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         }
     }
 
@@ -9002,7 +9131,7 @@ mod apply_auth_at_cut {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta.bytecode_id, [0x5A; 32],
+            meta.target.bytecode_id, [0x5A; 32],
             "the mutation must actually land, not just be reported handled"
         );
     }
@@ -9033,7 +9162,7 @@ mod apply_auth_at_cut {
 
         let after = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            before.bytecode_id, after.bytecode_id,
+            before.target.bytecode_id, after.target.bytecode_id,
             "a rejected settings op must not mutate group meta"
         );
     }
@@ -9103,7 +9232,7 @@ mod apply_auth_at_cut {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_eq!(
-                meta.bytecode_id, [0x5A; 32],
+                meta.target.bytecode_id, [0x5A; 32],
                 "{label}: both replicas must converge on the same bytecode_id"
             );
         }
@@ -9128,7 +9257,8 @@ mod rotation_gate_alignment {
     use crate::group_governance_publisher::ensure_rotation_is_publishable;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     /// Namespace + a subgroup nested under it. The subgroup's visibility is left at
     /// the default (Restricted), so it encrypts under its OWN key and a removal
@@ -9155,7 +9285,7 @@ mod rotation_gate_alignment {
     /// Repoint this node's namespace identity at a fresh keypair that holds no
     /// admin row anywhere — the non-admin `MANAGE_MEMBERS` holder's node.
     fn make_namespace_identity_a_non_admin(store: &Store, ns_gid: &ContextGroupId) -> PublicKey {
-        let sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+        let sk_bytes: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
         let sk = PrivateKey::from(sk_bytes);
         let pk = sk.public_key();
         NamespaceRepository::new(store)
@@ -9258,6 +9388,8 @@ mod undecidable_authority_parks {
         GroupOp::TargetApplicationSet {
             bytecode_id: BytecodeId::from([0x5A; 32]),
             target_application_id: ApplicationId::from([0x5B; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         }
     }
 
@@ -9321,7 +9453,7 @@ mod undecidable_authority_parks {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta.bytecode_id, [0x5A; 32],
+            meta.target.bytecode_id, [0x5A; 32],
             "a parked op must not mutate state — it has not been authorized yet"
         );
     }
@@ -9434,7 +9566,7 @@ mod undecidable_authority_parks {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_ne!(
-                meta.bytecode_id, [0x5A; 32],
+                meta.target.bytecode_id, [0x5A; 32],
                 "{label}: a parked op must leave state untouched"
             );
         }
@@ -9497,7 +9629,8 @@ mod self_leave_rotation {
     use calimero_context_config::VisibilityMode;
     use calimero_governance_types::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     /// A namespace root plus a subgroup, with `admin` in charge of both and `leaver` a
     /// plain member of both. The subgroup's visibility is left at the default
@@ -9518,7 +9651,7 @@ mod self_leave_rotation {
         let ((_admin_sk, _admin_pk), admin) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
         let leaver_account = enrol_member(&store, &ns_gid, &leaver);
 
@@ -9729,7 +9862,7 @@ mod self_leave_rotation {
         let pending = PendingRotationRepository::new(&f.store);
         apply_member_left(&f, &f.sub_gid);
 
-        let outsider_sk = PrivateKey::random(&mut OsRng);
+        let outsider_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         MembershipRepository::new(&f.store)
             .add_member(
                 &f.sub_gid,
@@ -9771,8 +9904,9 @@ mod self_leave_rotation_crypto {
     use crate::GroupKeyring;
     use calimero_governance_types::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
-    use rand::Rng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+    use rand::RngExt;
 
     #[test]
     fn the_rotation_wraps_the_new_key_for_everyone_except_the_leaver() {
@@ -9782,10 +9916,10 @@ mod self_leave_rotation_crypto {
         let ((admin_sk, admin_pk), admin) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
-        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let stayer = stayer_sk.public_key();
         let stayer_account = enrol_member(&store, &ns_gid, &stayer);
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
         let leaver_account = enrol_member(&store, &ns_gid, &leaver);
 
@@ -9796,7 +9930,7 @@ mod self_leave_rotation_crypto {
             .add_member(&ns_gid, &leaver_account, GroupMemberRole::Member)
             .unwrap();
 
-        let new_key: [u8; 32] = OsRng.gen();
+        let new_key: [u8; 32] = UnwrapErr(SysRng).random();
         let keyring = GroupKeyring::new(&store, ns_gid);
         let entitled = keyring.current_key_recipients().expect("list recipients");
 
@@ -9911,9 +10045,9 @@ mod self_leave_rotation_crypto {
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&admin_store, ns_id);
         let _ = crate::test_fixtures::bootstrap_namespace_with_admin_account(&leaver_store, ns_id);
 
-        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let stayer = stayer_sk.public_key();
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
 
         let mut leaver_account = None;
@@ -9932,7 +10066,7 @@ mod self_leave_rotation_crypto {
 
         // The key everyone holds before the departure. The leaver keeps a copy of this
         // forever — deleting it is not something the group can enforce.
-        let key_before: [u8; 32] = OsRng.gen();
+        let key_before: [u8; 32] = UnwrapErr(SysRng).random();
         GroupKeyring::new(&admin_store, ns_gid)
             .store_key_with_epoch(&key_before, 1)
             .unwrap();
@@ -9946,6 +10080,8 @@ mod self_leave_rotation_crypto {
         let before_op = calimero_governance_types::GroupOp::TargetApplicationSet {
             bytecode_id: calimero_context_config::types::BytecodeId::from([0x11; 32]),
             target_application_id: ApplicationId::from([0x12; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         };
         let sealed_before = GroupKeyring::encrypt_op(&key_before, &before_op).expect("encrypt");
         let leaver_key_before = GroupKeyring::new(&leaver_store, ns_gid)
@@ -9984,7 +10120,7 @@ mod self_leave_rotation_crypto {
         }
 
         // --- The remaining admin discharges it. ---
-        let key_after: [u8; 32] = OsRng.gen();
+        let key_after: [u8; 32] = UnwrapErr(SysRng).random();
         assert_ne!(key_before, key_after);
         let admin_ring = GroupKeyring::new(&admin_store, ns_gid);
         let entitled = admin_ring.current_key_recipients().expect("recipients");
@@ -10021,6 +10157,8 @@ mod self_leave_rotation_crypto {
         let after_op = calimero_governance_types::GroupOp::TargetApplicationSet {
             bytecode_id: calimero_context_config::types::BytecodeId::from([0x21; 32]),
             target_application_id: ApplicationId::from([0x22; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         };
         let sealed_after = GroupKeyring::encrypt_op(&key_after, &after_op).expect("encrypt");
 
@@ -10097,8 +10235,8 @@ mod self_leave_rotation_crypto {
         let gid = test_group_id();
 
         // Two rotations, minted independently, landing at different DAG sequences.
-        let key_from_admin_1: [u8; 32] = OsRng.gen();
-        let key_from_admin_2: [u8; 32] = OsRng.gen();
+        let key_from_admin_1: [u8; 32] = UnwrapErr(SysRng).random();
+        let key_from_admin_2: [u8; 32] = UnwrapErr(SysRng).random();
 
         // Replica A sees admin 1's rotation first, then admin 2's. Replica B sees them
         // in the opposite order — the whole point is that arrival order must not matter.
@@ -10140,7 +10278,7 @@ mod self_leave_rotation_crypto {
         let ns_gid = ContextGroupId::from(ns_id);
         let (_admin_sk, _admin) = bootstrap_namespace_with_admin(&store, ns_id);
 
-        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let leaver = leaver_sk.public_key();
         let leaver_account = enrol_member(&store, &ns_gid, &leaver);
         MembershipRepository::new(&store)
@@ -10196,14 +10334,15 @@ mod parked_op_retries_to_success {
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     #[test]
     fn an_undecidable_op_applies_cleanly_once_the_cut_becomes_resolvable() {
         let store = test_store();
         let gid = test_group_id();
 
-        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         let admin = admin_sk.public_key();
         let admin = enrol_member(&store, &gid, &admin);
         let mut meta = test_meta();
@@ -10224,6 +10363,8 @@ mod parked_op_retries_to_success {
             GroupOp::TargetApplicationSet {
                 bytecode_id: BytecodeId::from([0x5A; 32]),
                 target_application_id: ApplicationId::from([0x5B; 32]),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign TargetApplicationSet");
@@ -10239,7 +10380,7 @@ mod parked_op_retries_to_success {
         // The park must be inert. Any residue here turns "retry later" into "never".
         let meta_after_park = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta_after_park.bytecode_id, [0x5A; 32],
+            meta_after_park.target.bytecode_id, [0x5A; 32],
             "a parked op must not half-apply"
         );
         assert_eq!(
@@ -10257,11 +10398,11 @@ mod parked_op_retries_to_success {
 
         let meta_after_retry = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta_after_retry.bytecode_id, [0x5A; 32],
+            meta_after_retry.target.bytecode_id, [0x5A; 32],
             "the retried op must actually take effect"
         );
         assert_eq!(
-            meta_after_retry.target_application_id,
+            meta_after_retry.target.application_id,
             ApplicationId::from([0x5B; 32]),
             "the retried op's full mutation must land, not just part of it"
         );
@@ -10366,6 +10507,70 @@ mod account_plane_apply {
             held.applications.is_empty(),
             "the wire carries no scope, so the widest one is the only honest guess"
         );
+    }
+
+    /// A device bound after the group's contexts were registered saw those
+    /// registrations while it was still nobody; the link is what must start the
+    /// catch-up sweep, as a new member row does.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_recorded_link_starts_the_context_sweep_for_its_account() {
+        use crate::op_events::{self, OpEvent};
+
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.provision_account_root().unwrap();
+        let account = root.account();
+        let device = DeviceId::mint(account, [8u8; 16]);
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            account,
+            device,
+            &key(6).public_key(),
+            &KemPublicKey::from([6u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .unwrap();
+        let mut rx = op_events::subscribe();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: root.genesis(),
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(OpEvent::AutoFollowSet {
+                    group_id,
+                    member,
+                    contexts,
+                    ..
+                })) if group_id == gid.to_bytes() && member == account => {
+                    assert!(contexts, "the sweep is for contexts");
+                    return;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        panic!("linking a device must start the context sweep for its account");
     }
 
     /// And only for this node's own account: a stranger's device is somebody
@@ -11202,6 +11407,361 @@ mod account_plane_apply {
             repo.account_key(&gid, account).unwrap().map(|r| r.0),
             Some(1),
             "a replayed rotation must not advance the epoch twice"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// An upgrade op seeds the row for the application it targets.
+// -----------------------------------------------------------------------
+
+/// A raw-wasm upgrade names a new application id; a peer holding no row for it
+/// stranded silently. The apply seeds the row the migrate binds its bytes to.
+mod target_application_row_seeding {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
+    use calimero_context_client::local_governance::RootOp;
+    use calimero_context_config::types::BytecodeId;
+    use calimero_governance_types::GroupOp;
+    use calimero_primitives::application::ApplicationSource;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    const FROM_BYTECODE: [u8; 32] = [0xBB; 32];
+    const TO_BYTECODE: [u8; 32] = [0x88; 32];
+
+    fn target() -> ApplicationId {
+        ApplicationId::from([0x77; 32])
+    }
+
+    /// A group sitting on `test_meta`'s bytecode, i.e. the `from` side of the
+    /// upgrade ops below.
+    fn group(store: &Store) -> (ContextGroupId, PublicKey) {
+        let gid = test_group_id();
+        MetaRepository::new(store).save(&gid, &test_meta()).unwrap();
+        (gid, PublicKey::from([0x11; 32]))
+    }
+
+    fn apply(store: &Store, gid: &ContextGroupId, signer: &PublicKey, op: &GroupOp) {
+        let (handled, _divergence, _events) =
+            apply_group_op_mutations(store, gid, signer, op, &CUT, &FixedAuthorizer(true))
+                .expect("apply must succeed");
+        assert!(handled, "the dispatcher must handle the op");
+    }
+
+    fn target_row(store: &Store) -> Option<(String, String, String, [u8; 32])> {
+        let handle = store.handle();
+        handle
+            .get(&calimero_store::key::ApplicationMeta::new(target()))
+            .expect("row read")
+            .map(|row| {
+                (
+                    row.source.to_string(),
+                    row.package.to_string(),
+                    row.version.to_string(),
+                    *row.bytecode.blob_id().as_ref(),
+                )
+            })
+    }
+
+    fn target_application_set(package: &str, version: &str) -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(TO_BYTECODE),
+            target_application_id: target(),
+            package: package.to_owned(),
+            version: version.to_owned(),
+        }
+    }
+
+    fn cascade_upgrade(from_bytecode_id: [u8; 32]) -> GroupOp {
+        GroupOp::CascadeUpgrade {
+            from_bytecode_id: BytecodeId::from(from_bytecode_id),
+            bytecode_id: BytecodeId::from(TO_BYTECODE),
+            target_application_id: target(),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_upgrade_to_an_unknown_target_seeds_the_row_the_migrate_needs() {
+        let store = test_store();
+        let (gid, signer) = group(&store);
+        assert!(
+            target_row(&store).is_none(),
+            "the stranding precondition: no row binds the target id"
+        );
+
+        apply(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set("com.example.app", "2.0.0"),
+        );
+
+        let (source, package, version, blob) =
+            target_row(&store).expect("the migrate resolves the target through this row");
+        assert_eq!(blob, TO_BYTECODE, "the row must name the blob the op named");
+        assert_eq!(package, "com.example.app");
+        assert_eq!(version, "2.0.0");
+        assert_eq!(
+            source, PENDING_BLOB_SHARE_SOURCE,
+            "a seeded row names no location; the coordinates are the route"
+        );
+        // The resolver parses this field, so an empty source strands the peer
+        // just as thoroughly as an absent row.
+        let _parsed: ApplicationSource = source.parse().expect("the seeded source must parse");
+    }
+
+    #[test]
+    fn a_seeded_row_never_overwrites_the_local_install() {
+        let store = test_store();
+        let (gid, signer) = group(&store);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ApplicationMeta::new(target()),
+                    &calimero_store::types::ApplicationMeta::new(
+                        calimero_store::key::BlobMeta::new([0x99; 32].into()),
+                        7,
+                        "file:///local/install.mpk".into(),
+                        Box::default(),
+                        calimero_store::key::BlobMeta::new([0_u8; 32].into()),
+                        calimero_store::types::PackageInfo {
+                            package: "com.example.app".into(),
+                            version: "3.0.0".into(),
+                            signer_id: String::new().into_boxed_str(),
+                            state_version: 0,
+                        },
+                    ),
+                )
+                .unwrap();
+        }
+
+        apply(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set("com.example.app", "2.0.0"),
+        );
+
+        let (source, _package, version, blob) = target_row(&store).expect("row still present");
+        assert_eq!(version, "3.0.0", "a local install must not be overwritten");
+        assert_eq!(blob, [0x99; 32]);
+        assert_eq!(source, "file:///local/install.mpk");
+    }
+
+    #[test]
+    fn an_upgrade_naming_no_target_seeds_no_row() {
+        // A zero id and a zero blob are both placeholders, not a location to
+        // bind bytes to; a row under either is junk no fetch can ever satisfy.
+        for op in [
+            GroupOp::TargetApplicationSet {
+                bytecode_id: BytecodeId::from(TO_BYTECODE),
+                target_application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            },
+            GroupOp::TargetApplicationSet {
+                bytecode_id: BytecodeId::from([0_u8; 32]),
+                target_application_id: target(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            },
+        ] {
+            let store = test_store();
+            let (gid, signer) = group(&store);
+
+            apply(&store, &gid, &signer, &op);
+
+            let handle = store.handle();
+            for id in [
+                calimero_primitives::application::ZERO_APPLICATION_ID,
+                target(),
+            ] {
+                assert!(
+                    handle
+                        .get(&calimero_store::key::ApplicationMeta::new(id))
+                        .expect("row read")
+                        .is_none(),
+                    "a placeholder id or blob must seed nothing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cascade_seeds_the_target_row_for_a_matched_descendant() {
+        let store = test_store();
+        let (gid, signer) = group(&store);
+
+        apply(&store, &gid, &signer, &cascade_upgrade(FROM_BYTECODE));
+
+        let (source, package, version, blob) =
+            target_row(&store).expect("a cascaded group needs the same row an upgrade does");
+        assert_eq!(blob, TO_BYTECODE);
+        assert_eq!(package, "com.example.app");
+        assert_eq!(version, "2.0.0");
+        assert_eq!(source, PENDING_BLOB_SHARE_SOURCE);
+    }
+
+    #[test]
+    fn a_cascade_that_matches_nothing_seeds_no_row() {
+        // Nothing on this node moves to the target, so a row for it would be a
+        // row no context ever reads.
+        let store = test_store();
+        let (gid, signer) = group(&store);
+
+        apply(&store, &gid, &signer, &cascade_upgrade([0x5E; 32]));
+
+        assert!(
+            target_row(&store).is_none(),
+            "an unmatched cascade must seed nothing"
+        );
+    }
+
+    /// A subgroup inherits its parent's target, so it must inherit the coordinates
+    /// too - it has no ladder of its own to recover them from.
+    #[test]
+    fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
+        let ns_id = [0x5A; 32];
+        let sub_id = [0x5B; 32];
+        let store = test_store();
+        let ((admin_sk, _admin_pk), admin_account) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+
+        let ns_gid = ContextGroupId::from(ns_id);
+        let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        parent_meta.target.package = "com.acme.app".into();
+        parent_meta.target.version = "2.0.0".into();
+        MetaRepository::new(&store)
+            .save(&ns_gid, &parent_meta)
+            .unwrap();
+
+        // GroupCreated is published under the namespace key, so the apply path
+        // refuses it in the clear and the fixture has to hold one to seal with.
+        let _ = crate::GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omits");
+        let sealed = crate::seal_root_op_for_publish(
+            &store,
+            ns_id.into(),
+            RootOp::GroupCreated {
+                admin: admin_account,
+                group_id: sub_id.into(),
+                parent_id: ns_id.into(),
+                restricted: false,
+            },
+        )
+        .expect("seal the subgroup-creation op");
+        let op = SignedNamespaceOp::sign(&admin_sk, ns_id.into(), vec![], 1, sealed).unwrap();
+        NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .unwrap();
+
+        let sub_meta = MetaRepository::new(&store)
+            .load(&ContextGroupId::from(sub_id))
+            .unwrap()
+            .expect("the subgroup must have a meta row");
+        assert_eq!(
+            sub_meta.target.application_id, parent_meta.target.application_id,
+            "the subgroup inherits its parent's target"
+        );
+        assert_eq!(
+            stored_coords(&sub_meta.target.package, &sub_meta.target.version)
+                .map(|c| (c.package.to_owned(), c.version.to_owned())),
+            Some(("com.acme.app".to_owned(), "2.0.0".to_owned())),
+            "an inherited target the subgroup cannot address is unfetchable"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// A target that does not move is not a migration.
+// -----------------------------------------------------------------------
+
+/// Creation publishes `TargetApplicationSet`; announcing on it would tell every
+/// member their new namespace is migrating.
+mod target_application_set_announcement {
+    use super::*;
+    use crate::op_events::OpEvent;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use calimero_context_config::types::BytecodeId;
+    use calimero_governance_types::GroupOp;
+    use calimero_primitives::application::ZERO_APPLICATION_ID;
+
+    fn group_with_target(
+        application_id: ApplicationId,
+        bytecode_id: [u8; 32],
+    ) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let mut meta = test_meta();
+        meta.target.application_id = application_id;
+        meta.target.bytecode_id = bytecode_id;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        (store, gid)
+    }
+
+    fn set(application_id: ApplicationId, bytecode_id: [u8; 32]) -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(bytecode_id),
+            target_application_id: application_id,
+            package: "com.example.app".to_owned(),
+            version: "1.0.0".to_owned(),
+        }
+    }
+
+    fn announces(store: &Store, gid: &ContextGroupId, op: &GroupOp) -> bool {
+        let signer = PublicKey::from([0x11; 32]);
+        let (handled, _divergence, events) =
+            apply_group_op_mutations(store, gid, &signer, op, &CUT, &FixedAuthorizer(true))
+                .expect("apply must succeed");
+        assert!(handled, "the dispatcher must handle the op");
+        events
+            .iter()
+            .any(|event| matches!(event, OpEvent::MigrationStarted { .. }))
+    }
+
+    #[test]
+    fn restating_the_current_target_announces_nothing() {
+        let app = ApplicationId::from([0xCC; 32]);
+        let (store, gid) = group_with_target(app, [0xBB; 32]);
+
+        assert!(
+            !announces(&store, &gid, &set(app, [0xBB; 32])),
+            "the group is already on this target; nothing moved"
+        );
+    }
+
+    #[test]
+    fn the_first_target_a_group_ever_gets_announces_nothing() {
+        // The row a node that learned the namespace by backfill holds: a target
+        // nobody ever filled in.
+        let (store, gid) = group_with_target(ZERO_APPLICATION_ID, [0_u8; 32]);
+
+        assert!(
+            !announces(
+                &store,
+                &gid,
+                &set(ApplicationId::from([0xCC; 32]), [0xBB; 32])
+            ),
+            "a group with no prior target is being told what it is, not migrated"
+        );
+    }
+
+    #[test]
+    fn a_code_only_upgrade_still_announces() {
+        let app = ApplicationId::from([0xCC; 32]);
+        let (store, gid) = group_with_target(app, [0xBB; 32]);
+
+        assert!(
+            announces(&store, &gid, &set(app, [0x88; 32])),
+            "same application, new bytecode: the code still swaps under every member"
         );
     }
 }

@@ -12,6 +12,7 @@
 //! folded view at the op's cut, like every other authority question — so
 //! removing the endorser at the cut takes the device's ops with it.
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
@@ -30,7 +31,8 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use core::num::NonZeroU128;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -45,8 +47,12 @@ fn hlc(ns: u64) -> HybridTimestamp {
 
 fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -59,7 +65,7 @@ fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 /// projection. Returns the projection, the cut, and the store.
 fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, ContextGroupId, [u8; 32]) {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let ns = ContextGroupId::from([0x11; 32]);
     let ns_bytes = ns.to_bytes();
 
@@ -94,6 +100,7 @@ fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, Context
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
 
@@ -150,13 +157,13 @@ fn link_device(
 
 #[test]
 fn a_paired_device_may_author_for_the_account_that_certified_it() {
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
 
     // The device signs with its own namespace identity, minted on its own node.
     // It is a member of nothing.
-    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+    let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     assert_eq!(
         proj.member_at_cut(&store, ns, &member, &heads),
@@ -183,10 +190,10 @@ fn revoking_a_device_withdraws_its_right_to_author() {
     // Revocation has to cut authorship, not only key delivery. A revoked device's
     // node still holds the member key and is still in the namespace, so if the
     // resolver kept granting on the binding the device would keep writing.
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
-    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+    let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let device = link_device(&store, ns, &member, &device_sign_pk);
     assert_eq!(
@@ -212,12 +219,12 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
     // account's entitlement is resolved at the cut — so a vouch from someone who
     // is not a member at that cut grants nothing, and a device cannot be smuggled
     // in by endorsing its account with an unrelated key.
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
-    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+    let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
-    let stranger = PrivateKey::random(&mut OsRng).public_key();
+    let stranger = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let _device = link_device(&store, ns, &stranger, &device_sign_pk);
 
     assert_eq!(
@@ -238,7 +245,7 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
 /// ancestry includes a `DeviceLinked` op still resolve an ordinary member?
 #[test]
 fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
-    let member_sk = PrivateKey::random(&mut OsRng);
+    let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let member = member_sk.public_key();
     let (store, mut proj, ns, member_cut) = namespace_with_member(member);
 
@@ -291,6 +298,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let link_cut = signed.content_hash().unwrap();
     proj.ingest_op(&op_from_namespace_op(
@@ -333,7 +341,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 /// an override for a key that is a member in its own right.
 #[test]
 fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
-    let member_sk = PrivateKey::random(&mut OsRng);
+    let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let member = member_sk.public_key();
     let (store, mut proj, ns, member_cut) = namespace_with_member(member);
 
@@ -384,6 +392,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let link_cut = signed.content_hash().unwrap();
     proj.ingest_op(&op_from_namespace_op(
@@ -421,7 +430,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
     use calimero_governance_store::{NamespaceGovernance, NamespaceRepository};
 
     let store = store();
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin = admin_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
@@ -474,7 +483,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         expiration_timestamp: 0,
         invitation_nonce: [0x21; 32],
         invited_role: 1,
-        admitters: Vec::new(),
+        admitters: vec![admin_account],
     };
     let inv_sig = admin_sk
         .sign(&<sha2::Sha256 as sha2::Digest>::digest(
@@ -487,8 +496,13 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
+
+    // Bound before the credential moves into the op below, and used for both
+    // the member it names and the endorsement's payload — the two have to be
+    // the same account or the signature covers a different join.
+    let joining_member = credential.statement.account;
 
     let gov = NamespaceGovernance::new(&store, ns_bytes.into());
     let head = gov.read_head_record().expect("read head");
@@ -498,17 +512,31 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Root(
-            calimero_context_client::local_governance::RootOp::MemberJoined {
+            calimero_context_client::local_governance::RootOp::MemberJoinedAt {
                 // The account THIS credential certifies — the test builds its own
                 // rather than using the shared fixture, so the member must come
                 // off it and not from the fixture's derivation.
-                member: credential.statement.account,
+                member: joining_member,
                 signed_invitation: invitation,
+                joined_at: 1,
                 account: credential,
             },
         ),
     )
     .expect("joiner signs its join");
+    // On the envelope, after signing: the endorsement is outside the joiner's
+    // signature, which is what lets an admitter attach one to an op it did not
+    // author.
+    let mut join = join;
+    join.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            &admin_sk,
+            &ns_bytes,
+            &joining_member,
+            &[0x21; 32],
+        )
+        .expect("the admin endorses the join"),
+    ));
     gov.apply_signed_op(&join).expect("the join applies");
 
     // Plane one: what the joiner itself writes as.

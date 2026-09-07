@@ -29,27 +29,28 @@ use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{info, warn};
+use url::Url;
 
 use super::admin_creds::AdminCredArgs;
 use super::auth_mode::AuthModeArg;
 use crate::cli;
 
 /// Restrict a single path to the given owner-only `mode` (`0700` for
-/// directories, `0600` for files). No-op on non-Unix platforms, which lack
-/// POSIX mode bits.
-#[cfg(unix)]
+/// directories, `0600` for files) — and to the equivalent DACL on Windows,
+/// where a file otherwise inherits whatever the containing directory allows.
+///
+/// `mode` is the unix spelling of the intent. Windows has no mode, so the
+/// helper derives the same intent from whether the path is a directory; the
+/// argument is ignored there rather than approximated.
 async fn restrict_to_owner(path: impl AsRef<Path>, mode: u32) -> EyreResult<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = path.as_ref();
-    fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .await
-        .wrap_err_with(|| format!("failed to restrict permissions on {path:?}"))
-}
-
-#[cfg(not(unix))]
-async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()> {
-    Ok(())
+    let _ = mode;
+    let path = path.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        calimero_utils_fs::restrict_existing_to_owner(&path)
+            .wrap_err_with(|| format!("failed to restrict permissions on {path:?}"))
+    })
+    .await
+    .wrap_err("failed to join the permission-restriction task")?
 }
 
 /// Recursively restrict a directory tree to owner-only access: `0700` for every
@@ -61,7 +62,10 @@ async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()
 /// left untouched (RocksDB creates none here). `pub(crate)` so
 /// `auth set-admin` applies the same pinning to the auth database it may
 /// create.
-#[cfg(unix)]
+///
+/// Runs on every platform. It used to be unix-only, which left the whole
+/// datastore on Windows inheriting the ACL of wherever `--home` pointed — the
+/// one place the raw node data lives.
 pub(crate) async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
     let mut stack = vec![root.as_ref().to_path_buf()];
 
@@ -85,11 +89,6 @@ pub(crate) async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub(crate) async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
-    Ok(())
-}
-
 /// Create `path` and any missing parents, with directories created owner-only
 /// (`0700`) on Unix. Using the mode at creation time means the node home is
 /// never momentarily visible to other users with permissive bits — the window a
@@ -105,7 +104,16 @@ async fn create_dir_owner_only(path: impl AsRef<Path>) -> EyreResult<()> {
     builder
         .create(path)
         .await
-        .wrap_err_with(|| format!("failed to create directory {path:?}"))
+        .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
+
+    // Unconditional, not `cfg(windows)`. Windows has no mode to set at creation,
+    // so the directory arrives with the parent's inherited ACL and has to be
+    // narrowed immediately afterwards; on unix the mode above already did it and
+    // this re-applies the same 0700. Writing it without a `cfg` costs one
+    // redundant syscall per directory at init and keeps the call type-checked on
+    // every host, where a `cfg(windows)` body is compiled by nothing a
+    // pull request runs.
+    restrict_to_owner(path, 0o700).await
 }
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
@@ -113,6 +121,9 @@ const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_SESSION_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
+
+/// Registry written into a fresh `config.toml`. Operators override it there.
+const DEFAULT_REGISTRY_URL: &str = "https://apps.calimero.network";
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum AuthStorageArg {
@@ -207,6 +218,20 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
+    /// Run this node as a delegated-execution relay: serve
+    /// `GET`/`POST /admin-api/contexts/:context_id/intents` without a node
+    /// credential.
+    ///
+    /// Off by default. Pass it only for a node whose job is to write on behalf
+    /// of keyholders that have no relationship with it — a hosted TEE relay.
+    /// The two routes are self-authenticating: the warrant is the credential,
+    /// and a request is refused before anything executes unless the warrant is
+    /// this member's, covers this exact intent, has not expired, has an unspent
+    /// nonce, and this node holds `CAN_AUTHOR_ON_BEHALF` on the owning group.
+    /// Nothing else on the admin API is opened.
+    #[clap(long, default_value_t = false)]
+    pub public_intents: bool,
+
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
     /// terminals on one laptop and a tenancy question anywhere else — on a
@@ -274,6 +299,11 @@ pub struct InitCommand {
     /// Node operation mode (standard or read-only)
     #[clap(long, value_enum, default_value_t = NodeMode::Standard)]
     pub mode: NodeMode,
+
+    /// Registry base URL to pull application bundles from. Overrides the
+    /// default written into a fresh `config.toml`.
+    #[clap(long)]
+    pub registry_url: Option<Url>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -518,7 +548,7 @@ impl InitCommand {
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                 .collect(),
-            Some(AdminConfig::new(true)),
+            Some(AdminConfig::new(true, self.public_intents)),
             Some(JsonRpcConfig::new(true)),
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),
@@ -526,7 +556,7 @@ impl InitCommand {
             embedded_auth,
         );
 
-        let config = ConfigFile::new(
+        let mut config = ConfigFile::new(
             IdentityConfig { keypair: identity },
             self.mode,
             NetworkConfig::new(
@@ -555,6 +585,13 @@ impl InitCommand {
             BlobStoreConfig::new("blobs".into()),
             ContextConfig { migration_v2: true },
         );
+
+        // Written into config.toml rather than defaulted in code, so an operator
+        // points elsewhere by editing one visible line instead of rebuilding.
+        config.registry.base_url = Some(self.registry_url.unwrap_or_else(|| {
+            // SAFETY: DEFAULT_REGISTRY_URL is a hardcoded valid URL.
+            DEFAULT_REGISTRY_URL.parse().expect("valid URL")
+        }));
 
         // `save` writes config.toml atomically and owner-only (0600); the file
         // holds the private key, so this keeps it unreadable to other users.
@@ -667,6 +704,31 @@ mod tests {
     use clap::Parser;
 
     use super::InitCommand;
+
+    // `merod init` is the only place the registry default is written, so both
+    // arms decide whether a fresh node resolves apps at all.
+    #[test]
+    fn registry_url_defaults_unless_overridden() {
+        let default = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert_eq!(
+            default.registry_url, None,
+            "a bare init must defer to the public-registry default, not parse one at arg time"
+        );
+
+        let overridden =
+            InitCommand::try_parse_from(["merod", "--registry-url", "https://mirror.example/"])
+                .unwrap();
+        assert_eq!(
+            overridden.registry_url.unwrap().as_str(),
+            "https://mirror.example/",
+            "--registry-url must win"
+        );
+
+        assert!(
+            InitCommand::try_parse_from(["merod", "--registry-url", "not a url"]).is_err(),
+            "an unparseable override must fail arg parsing, not fall back"
+        );
+    }
 
     /// `init` must leave the node holding an account root.
     ///

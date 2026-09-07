@@ -232,7 +232,7 @@ pub fn verify_manifest(manifest: &serde_json::Value) -> Result<bool> {
 /// `force`: a signing key is unrecoverable, and losing one means no further
 /// updates can be published for any app already installed under its signerId.
 pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let signing_key = SigningKey::generate(&mut rng);
     let verifying_key: VerifyingKey = signing_key.verifying_key();
 
@@ -273,8 +273,6 @@ pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
 /// only. Other platforms inherit the default ACL, and say so. Without `force`,
 /// `create_new` leaves an existing key untouched and reports `AlreadyExists`.
 fn write_private_key(path: &Path, contents: &str, force: bool) -> std::io::Result<()> {
-    use std::io::Write as _;
-
     if force {
         match fs::remove_file(path) {
             Ok(()) => {}
@@ -283,24 +281,12 @@ fn write_private_key(path: &Path, contents: &str, force: bool) -> std::io::Resul
         }
     }
 
-    let mut options = fs::OpenOptions::new();
-    let _ = options.write(true).create_new(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let _ = options.mode(0o600);
-    }
-    // std cannot set a Windows ACL, so the file inherits the directory's. Say so
-    // rather than leaving the operator to assume the key is protected.
-    #[cfg(not(unix))]
-    eprintln!(
-        "warning: {} inherits the directory's default permissions on this platform; \
-         keep it out of shared or world-readable locations",
-        path.display()
-    );
-
-    options.open(path)?.write_all(contents.as_bytes())
+    // Exclusive creation, owner-only on every platform. This used to be `0600`
+    // on unix and a printed warning everywhere else, because std cannot set a
+    // Windows ACL — the signing seed is the one key that cannot be regenerated,
+    // and whoever reads it can publish under this publisher's ApplicationId, so
+    // a warning was never the right answer.
+    calimero_utils_fs::write_owner_only(path, contents.as_bytes())
 }
 
 /// Derive the signerId from a key file
@@ -406,7 +392,7 @@ mod tests {
 
     #[test]
     fn verify_manifest_rejects_signer_id_mismatched_with_embedded_key() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let key_a = SigningKey::generate(&mut rng);
         let key_b = SigningKey::generate(&mut rng);
 
@@ -526,7 +512,7 @@ mod tests {
 
         assert!(is_dev_key(&load_signing_key(&key_path).unwrap()));
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         assert!(!is_dev_key(&SigningKey::generate(&mut rng)));
     }
 

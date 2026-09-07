@@ -61,7 +61,7 @@ fn signed_invitation(
         inviter_signature: hex::encode(signature.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 
@@ -70,7 +70,7 @@ fn queued_join_op(
     joiner_sk: &PrivateKey,
     invitation: SignedGroupOpenInvitation,
 ) -> SignedNamespaceOp {
-    SignedNamespaceOp::sign(
+    let op = SignedNamespaceOp::sign(
         joiner_sk,
         NS.into(),
         Vec::new(),
@@ -84,7 +84,22 @@ fn queued_join_op(
             account: test_join_account(),
         }),
     )
-    .expect("sign join op")
+    .expect("sign join op");
+
+    // A joiner only ever queues an endorsed join — without one it fails rather
+    // than republishing, so the republish fixture carries one. On the envelope,
+    // after signing: the endorsement is outside the joiner's signature.
+    let mut op = op;
+    op.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            &calimero_primitives::identity::PrivateKey::from([5u8; 32]),
+            &[7u8; 32],
+            &test_join_account().statement.account,
+            &[0u8; 32],
+        )
+        .expect("sign endorsement"),
+    ));
+    op
 }
 
 /// The single gossipsub payload this node put on the wire, decoded through the
@@ -114,8 +129,8 @@ fn only_published_msg(node: &TestNode) -> NamespaceTopicMsg {
 #[serial(boot_test_node)]
 async fn a_queued_join_reaches_the_wire_through_the_node_client() {
     let node = boot_test_node().await;
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let inviter_sk = PrivateKey::random(&mut rand::thread_rng());
+    let joiner_sk = PrivateKey::random(&mut rand::rng());
+    let inviter_sk = PrivateKey::random(&mut rand::rng());
     let op = queued_join_op(
         &joiner_sk,
         signed_invitation(&inviter_sk, ContextGroupId::from(NS)),

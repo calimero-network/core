@@ -175,12 +175,12 @@ fn build_conflict_scenario() -> Vec<SimNode> {
     a.insert_entity_with_metadata(
         x,
         b"from-A".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("x"), 1),
+        EntityMetadata::new(CrdtType::lww_register(), 1),
     );
     b.insert_entity_with_metadata(
         x,
         b"from-B".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("x"), 2),
+        EntityMetadata::new(CrdtType::lww_register(), 2),
     );
 
     a.insert_entity_with_metadata(

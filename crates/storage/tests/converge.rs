@@ -8,7 +8,7 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
-use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
+use calimero_storage::collections::{Counter, MergeStrategy, Mergeable, UnorderedMap};
 use calimero_storage::testing::converge;
 use serial_test::serial;
 
@@ -18,6 +18,12 @@ use serial_test::serial;
 #[borsh(crate = "calimero_sdk::borsh")]
 struct TeamMetrics {
     teams: UnorderedMap<String, Counter>,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for TeamMetrics {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for TeamMetrics {
@@ -79,6 +85,12 @@ fn team_stats_converge_many_ops_and_replicas() {
 struct Inline {
     a: Counter,
     b: Counter,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for Inline {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for Inline {

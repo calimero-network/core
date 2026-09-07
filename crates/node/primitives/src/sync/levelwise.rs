@@ -467,7 +467,7 @@ mod tests {
     // =========================================================================
 
     fn make_leaf_data(key: u8, value: Vec<u8>) -> TreeLeafData {
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [key; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [key; 32]);
         TreeLeafData::new([key; 32], value, metadata)
     }
 
@@ -583,7 +583,7 @@ mod tests {
         assert!(valid_leaf.is_valid());
 
         // Invalid leaf node with oversized value
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let invalid_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_leaf = LevelNode::leaf([1; 32], [2; 32], None, invalid_leaf_data);
@@ -663,7 +663,7 @@ mod tests {
         assert!(!over_level.is_valid());
 
         // Invalid response with invalid node
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let invalid_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_node = LevelNode::leaf([1; 32], [2; 32], None, invalid_leaf_data);
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn test_levelwise_cross_validation_consistency() {
         // Verify that individual node validation is enforced in response validation
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let oversized_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_node = LevelNode::leaf([1; 32], [2; 32], None, oversized_leaf_data);
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_level_node_leaf_with_empty_value() {
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![], metadata);
         let node = LevelNode::leaf([1; 32], [2; 32], None, leaf_data);
 
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn test_level_node_leaf_at_max_value_size() {
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE], metadata);
         let node = LevelNode::leaf([1; 32], [2; 32], None, leaf_data);
 
@@ -1147,7 +1147,7 @@ mod tests {
             .map(|i| LevelNode::internal([i as u8; 32], [i as u8; 32], None))
             .collect();
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let oversized_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_node = LevelNode::leaf([99; 32], [99; 32], None, oversized_leaf_data);
@@ -1243,13 +1243,13 @@ mod tests {
     fn test_levelwise_leaf_with_all_metadata_variants() {
         // Test with various CRDT types
         let crdt_types = [
-            CrdtType::lww_register("test"),
+            CrdtType::lww_register(),
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::unordered_map("String", "u64"),
-            CrdtType::unordered_set("String"),
-            CrdtType::vector("u64"),
+            CrdtType::UnorderedMap,
+            CrdtType::UnorderedSet,
+            CrdtType::Vector,
         ];
 
         for crdt_type in crdt_types {
@@ -1287,7 +1287,7 @@ mod tests {
     #[test]
     fn test_levelwise_response_validation_with_deeply_nested_invalid_data() {
         // Create a response where validity depends on nested leaf validation
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
 
         // Valid leaf with exactly MAX size
         let valid_leaf_data =
@@ -1332,7 +1332,7 @@ mod tests {
     #[test]
     fn test_levelwise_response_multiple_invalid_nodes() {
         // Response with multiple invalid nodes at different positions
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [1; 32]);
         let oversized_data = vec![0u8; MAX_LEAF_VALUE_SIZE + 1];
 
         let nodes = vec![

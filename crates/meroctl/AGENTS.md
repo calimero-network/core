@@ -29,7 +29,7 @@ cargo test -p meroctl
 ```
 meroctl --node <name> <subcommand>
 ├── app           # Application management
-│   ├── install   # Install app from URL/path
+│   ├── install   # Install app by package@version or --path
 │   ├── list      # List installed apps
 │   ├── get       # Get app details
 │   └── uninstall # Remove app
@@ -158,11 +158,11 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 pub struct InstallCommand {
-    #[clap(long, short)]
-    path: Option<Utf8PathBuf>,
+    #[arg(value_name = "PACKAGE@VERSION", conflicts_with = "path")]
+    coords: Option<String>,
 
-    #[clap(long, short)]
-    url: Option<Url>,
+    #[arg(long, short, conflicts_with = "coords")]
+    path: Option<Utf8PathBuf>,
 }
 
 impl InstallCommand {

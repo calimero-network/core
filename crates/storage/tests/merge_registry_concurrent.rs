@@ -16,6 +16,7 @@
 //! has no cleanup hook here, so adding a second `#[test]` in this file
 //! would leak state into it.
 
+use calimero_storage::collections::MergeStrategy;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -27,6 +28,12 @@ use calimero_storage::merge::{register_crdt_merge, try_merge_registered, MergeRe
 #[derive(BorshSerialize, BorshDeserialize)]
 struct ConcurrentState {
     values: Vec<u32>,
+}
+
+// Structural: a test fixture, merged by the storage layer's own rules.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for ConcurrentState {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for ConcurrentState {

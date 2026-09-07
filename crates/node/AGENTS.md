@@ -62,6 +62,10 @@ primitives/                   # calimero-node-primitives
 ├── src/
 │   ├── lib.rs                # Shared types
 │   ├── client.rs             # NodeClient
+│   ├── client/application/
+│   │   ├── acquire.rs        # acquire_bytecode + the ApplicationStore impl
+│   │   ├── bind.rs           # Application-row binding + blob release on failure
+│   │   └── install.rs        # Installs by coordinates or local path
 │   ├── sync.rs               # Sync types
 │   └── messages/             # Message types
 ```
@@ -191,6 +195,7 @@ publishes a `ReadinessProbe`, and awaits the first fresh beacon.
 | `src/join_namespace.rs`         | J6 namespace-join flow         |
 | `src/sync/manager/mod.rs`       | Sync coordination              |
 | `primitives/src/client.rs`      | NodeClient interface           |
+| `primitives/src/client/application/acquire.rs` | `acquire_bytecode`; `NodeClient`'s `ApplicationStore` impl |
 
 ## JIT Index
 
@@ -254,3 +259,36 @@ cargo test -p calimero-node --test network_simulation
 - `BundleManifest::artifacts` destructures the manifest without `..`,
   so adding an artifact field is a compile error until it is
   classified; keep it that way rather than reaching for a wildcard
+- `acquire_bytecode` is a thin wrapper over
+  `calimero-app-downloader`, which picks the node's ONE source from
+  `[registry] mode` and states the contract; see
+  [app-downloader/AGENTS.md](../app-downloader/AGENTS.md). This crate
+  owns the storage half: the `ApplicationStore` impl, the `PeerBlobs`
+  impl, and the row binding (`bind_application`) in `acquire.rs`, backed
+  by `bind.rs`'s `write_application_row`. Add a source there, not by
+  fetching inline at a call site
+- In `Http` mode a node is not a source of application bytecode, so it
+  neither announces nor serves it: `NodeClient::may_share_blob` gates
+  `announce_blob_to_network`, `sync/blobs.rs`'s
+  `handle_blob_share_request`, and `handlers/blob_protocol.rs`. Gate every
+  new serve site through it. User-data blobs are untouched in both modes
+- `NodeClient::get_blob`'s discovery leg does NOT trust the DHT alone: a
+  provider record is opportunistic (nothing announces application
+  bytecode at install, and a restart drops what was announced), so an
+  empty or failed lookup falls back to the context topic's subscribers.
+  A blob a context member holds must stay reachable without a record
+- `sync/manager/blob_fetch.rs` acquires a context's bytecode through
+  `acquire_bytecode` too, never through `initiate_blob_share_process`.
+  `Unavailable` there is non-fatal by type - it returns a bare `Outcome`,
+  so nothing can `?` it into a session abort
+- `bind_application` derives a bundle's application id from its
+  signed manifest and compares it to the one governance named *before*
+  calling `install_bundle`. That call writes the `ApplicationMeta` row
+  and a blob per service, and nothing reclaims either, so validating
+  afterwards would leave the artifact's own (legitimate, possibly
+  unrelated) application row pointing at a blob the failure path then
+  deletes
+- `add_blob`'s `expected_size` asserts a length the caller already
+  knows; it is never a ceiling. Passing a cap through it rejects every
+  correct blob under that cap. Bound a stream where the bytes arrive
+  instead - see `sync/blobs.rs`

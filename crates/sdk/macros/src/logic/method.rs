@@ -3,7 +3,7 @@ use quote::{quote, quote_spanned, ToTokens};
 use syn::spanned::Spanned;
 use syn::{
     Error as SynError, GenericArgument, GenericParam, Ident, ImplItemFn, Path, PathArguments,
-    ReturnType, Type, Visibility,
+    ReturnType, Safety, Type, Visibility,
 };
 
 use crate::abi_type::nullable;
@@ -53,7 +53,7 @@ pub struct PublicLogicMethod<'a> {
     self_: Path,
 
     name: &'a Ident,
-    self_type: Option<SelfType<'a>>,
+    self_type: Option<SelfType>,
     args: Vec<LogicArgTyped<'a>>,
     ret: Option<LogicTy>,
 
@@ -206,11 +206,11 @@ impl ToTokens for PublicLogicMethod<'_> {
         let (def, mut call) = match &self.self_type {
             Some(type_) => (
                 {
-                    let (mutability, ty) = match type_ {
-                        SelfType::Mutable(ty) => (Some(quote! {mut}), ty),
-                        SelfType::Owned(ty) | SelfType::Immutable(ty) => (None, ty),
+                    let (mutability, span) = match type_ {
+                        SelfType::Mutable(span) => (Some(quote! {mut}), span),
+                        SelfType::Owned(span) | SelfType::Immutable(span) => (None, span),
                     };
-                    quote_spanned! {ty.span()=>
+                    quote_spanned! {span.span()=>
                         let Some(#mutability app) = ::calimero_storage::collections::Root::<#self_>::fetch()
                         else {
                             ::calimero_sdk::env::panic_str("Failed to find or read app state")
@@ -648,7 +648,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             errors.subsume(SynError::new_spanned(asyncness, ParseError::NoAsyncSupport));
         }
 
-        if let Some(unsafety) = &input.item.sig.unsafety {
+        if let Safety::Unsafe(unsafety) = &input.item.sig.safety {
             errors.subsume(SynError::new_spanned(unsafety, ParseError::NoUnsafeSupport));
         }
 
@@ -704,15 +704,17 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         // A `#[app::view]` method is read-only (the node takes a shared read
         // lock), so a `&mut self` receiver is a contradiction.
         if is_view {
-            if let Some(SelfType::Mutable(ty)) = &self_type {
-                errors.subsume(SynError::new_spanned(ty, ParseError::ViewCannotMutate));
+            if let Some(SelfType::Mutable(span)) = &self_type {
+                errors.subsume(SynError::new_spanned(span, ParseError::ViewCannotMutate));
             }
         }
 
         match (is_init, &self_type) {
             (true, Some(self_type)) => errors.subsume(SynError::new_spanned(
                 match self_type {
-                    SelfType::Owned(ty) | SelfType::Mutable(ty) | SelfType::Immutable(ty) => ty,
+                    SelfType::Owned(span) | SelfType::Mutable(span) | SelfType::Immutable(span) => {
+                        span
+                    }
                 },
                 ParseError::NoSelfReceiverAtInit,
             )),

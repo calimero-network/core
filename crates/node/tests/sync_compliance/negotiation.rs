@@ -313,28 +313,15 @@ fn test_cip23_rule7_default_hash_comparison() {
     );
 }
 
-// =============================================================================
-// Version Compatibility Tests
-// =============================================================================
-
-/// CIP-2.3: Version mismatch falls back to HashComparison.
-#[test]
-fn test_cip23_version_mismatch_fallback() {
-    let mut hs_local = SyncHandshake::new([1; 32], 50, 3, vec![]);
-    let mut hs_remote = SyncHandshake::new([2; 32], 50, 3, vec![]);
-
-    // Force version mismatch
-    hs_local.version = 1;
-    hs_remote.version = 999;
-
-    let selection = select_protocol(&hs_local, &hs_remote);
-
-    assert!(
-        matches!(selection.protocol, SyncProtocol::HashComparison { .. }),
-        "Version mismatch should fall back to HashComparison, got {:?}",
-        selection.protocol
-    );
-}
+// Version-compatibility tests lived here. `SYNC_PROTOCOL_VERSION` and
+// `is_version_compatible` are gone. The check DID run — on every sync, from
+// `select_protocol` — but could never fail: `build_remote_handshake` builds the
+// peer's handshake locally from the only fields that cross the wire (root hash
+// and dag heads), so its `version` came from this node's own constant. Both
+// sides of the comparison were the same local value, which is why incrementing
+// the constant its doc told you to increment detected nothing. CIP §2.3 does
+// specify negotiation (#3810), so this section should come back when it is
+// real.
 
 // =============================================================================
 // Edge Cases and Priority Tests

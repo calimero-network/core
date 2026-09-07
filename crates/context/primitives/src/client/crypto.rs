@@ -61,7 +61,7 @@ impl ContextClient {
     pub fn new_identity(&self) -> eyre::Result<PublicKey> {
         let mut handle = self.registry.datastore.handle();
 
-        let private_key = PrivateKey::random(&mut rand::thread_rng());
+        let private_key = PrivateKey::random(&mut rand::rng());
         let public_key = private_key.public_key();
 
         handle.put(

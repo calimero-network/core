@@ -89,6 +89,24 @@ impl Report for NodeIdentityApiResponse {
                 .unwrap_or("none - joining a namespace enrols one"),
         ]);
         let _ = table.add_row(vec!["Account root key", &self.data.account_root_public_key]);
+        // The two flags an operator needs to tell a half-finished pairing from a
+        // delegate device: both are false between pair-init and pair-complete.
+        let _ = table.add_row(vec![
+            "Holds account root",
+            if self.data.holds_account_root {
+                "yes"
+            } else {
+                "no"
+            },
+        ]);
+        let _ = table.add_row(vec![
+            "Device certified",
+            if self.data.device_certified {
+                "yes"
+            } else {
+                "no - pair-complete on the account holder certifies it"
+            },
+        ]);
         println!("{table}");
     }
 }

@@ -61,34 +61,30 @@ impl Config {
         let contents =
             toml::to_string_pretty(self).wrap_err("Failed to serialize config to TOML")?;
 
-        // Write with owner-only permissions (0600) from the start to avoid the
-        // TOCTOU window that exists when writing first and then chmod-ing after.
-        // On non-Unix platforms we fall back to a plain async write.
-        #[cfg(unix)]
-        {
+        // Written to a sibling temp file, narrowed, then renamed into place.
+        //
+        // The previous shape opened the real path with `create(true)`, which
+        // keeps an EXISTING file's permissions — so a config that had somehow
+        // been created world-readable stayed that way however often it was
+        // rewritten, and on Windows every rewrite simply inherited the
+        // directory's ACL. Narrowing the temp file before the rename means the
+        // credentials are never readable at the path anyone would look at.
+        let path2 = path.clone();
+        let bytes = contents.into_bytes();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             use std::io::Write as _;
-            use std::os::unix::fs::OpenOptionsExt;
-            let path2 = path.clone();
-            let bytes = contents.into_bytes();
-            tokio::task::spawn_blocking(move || {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&path2)
-                    .and_then(|mut f| f.write_all(&bytes))
-            })
-            .await
-            .wrap_err("thread panicked while writing config file")?
-            .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(&path, contents)
-                .await
-                .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
-        }
+
+            let dir = path2.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+            calimero_utils_fs::restrict_existing_to_owner(tmp.path())?;
+            tmp.write_all(&bytes)?;
+            tmp.as_file().sync_all()?;
+            tmp.persist(&path2).map_err(|e| e.error)?;
+            Ok(())
+        })
+        .await
+        .wrap_err("thread panicked while writing config file")?
+        .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
 
         Ok(())
     }

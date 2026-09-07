@@ -642,6 +642,15 @@ pub enum MessagePayload<'a> {
         /// `DefaultCapabilitiesSet` are respected even before the
         /// governance op finishes propagating to the joiner.
         default_capabilities: u32,
+        /// The responder's endorsement of this join, borsh-encoded, when the
+        /// responder is named in the invitation's `admitters`.
+        ///
+        /// `None` from a responder that may share the key and the governance
+        /// history — things any member may pass on — but may not authorise a
+        /// membership. The joiner then has to reach one that can: an unendorsed
+        /// join is refused by every peer at apply, so there is nothing useful it
+        /// can do with a `None` beyond trying another peer.
+        admitter_endorsement_bytes: Option<Vec<u8>>,
     },
 
     /// The responder rejected the join request.
@@ -724,7 +733,7 @@ mod tests {
             [10u8; 32],
             vec![1, 2, 3],
             LeafMetadata::new(
-                crate::sync::hash_comparison::CrdtType::lww_register("test"),
+                crate::sync::hash_comparison::CrdtType::lww_register(),
                 100,
                 [0u8; 32],
             ),
@@ -864,7 +873,7 @@ mod tests {
         use crate::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
         use crate::sync::levelwise::LevelNode;
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         let leaf_data = TreeLeafData::new([5u8; 32], vec![1, 2, 3, 4], metadata);
 
         let nodes = vec![
@@ -936,7 +945,7 @@ mod tests {
     fn test_init_payload_entity_push_roundtrip() {
         use crate::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
 
-        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         let leaf = TreeLeafData::new([10u8; 32], vec![1, 2, 3, 4], metadata);
 
         let request = InitPayload::EntityPush {

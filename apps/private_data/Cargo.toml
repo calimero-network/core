@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 thiserror.workspace = true
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 [package.metadata.workspaces]
@@ -24,3 +24,7 @@ independent = true
 # Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
 # CRDT state under `cargo test`.
 calimero-storage = { workspace = true, features = ["testing"] }
+
+[package.metadata.calimero]
+package = "com.calimero.private-data"
+name = "Private Data"

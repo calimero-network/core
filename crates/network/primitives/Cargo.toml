@@ -17,7 +17,8 @@ eyre.workspace = true
 futures-util.workspace = true
 libp2p = { workspace = true, features = ["autonat", "gossipsub", "rendezvous", "request-response"] }
 multiaddr.workspace = true
-rand.workspace = true
+# pinned to the rand_core libp2p-autonat uses; moves when libp2p does
+rand = "0.8"
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util"] }

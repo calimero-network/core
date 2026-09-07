@@ -403,7 +403,7 @@ mod tests {
     fn signed_ack_roundtrip() {
         let ack = SignedAck {
             op_hash: [7u8; 32],
-            signer_pubkey: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+            signer_pubkey: PrivateKey::random(&mut rand::rng()).public_key(),
             signature: [9u8; 64],
         };
         let bytes = borsh::to_vec(&ack).expect("ser");
@@ -433,7 +433,7 @@ mod tests {
     fn group_topic_msg_discriminates_kinds() {
         let beacon = GroupTopicMsg::ReadinessBeacon(SignedReadinessBeacon {
             namespace_id: [3u8; 32].into(),
-            peer_pubkey: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+            peer_pubkey: PrivateKey::random(&mut rand::rng()).public_key(),
             dag_head: [4u8; 32],
             applied_through: 17,
             ts_millis: 42,
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn hash_scoped_namespace_is_topic_bound() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let op = SignedNamespaceOp::sign(
             &sk,
             [0u8; 32].into(),
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn signed_ack_verify_round_trip() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let op_hash = [42u8; 32];
         let msg = SignedAck::signable_bytes(&op_hash);
         let signature = sk.sign(&msg).expect("sign").to_bytes();
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn signed_ack_rejects_tampered_op_hash() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let op_hash = [42u8; 32];
         let msg = SignedAck::signable_bytes(&op_hash);
         let signature = sk.sign(&msg).expect("sign").to_bytes();
@@ -505,7 +505,7 @@ mod tests {
     fn signed_ack_rejects_wrong_domain() {
         // An attacker cannot lift a SignedAck signature from another protocol
         // surface that signs a 32-byte hash without the calimero.ack.v1 prefix.
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let op_hash = [42u8; 32];
         let signature = sk.sign(&op_hash).expect("sign").to_bytes(); // signed without domain prefix
         let ack = SignedAck {
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn signed_readiness_beacon_verify_round_trip() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut beacon = SignedReadinessBeacon {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -542,7 +542,7 @@ mod tests {
     fn signed_readiness_beacon_rejects_strong_flip() {
         // Field-substitution attack: flipping `strong` from false to true
         // must break the signature.
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut beacon = SignedReadinessBeacon {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -567,7 +567,7 @@ mod tests {
     fn signed_readiness_beacon_rejects_applied_through_rewind() {
         // Replay/rewind attack: substituting an older applied_through
         // must break the signature.
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut beacon = SignedReadinessBeacon {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn beacon_round_trips() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let beacon = signed_beacon(&sk, [3u8; 32].into());
         let bytes = borsh::to_vec(&beacon).unwrap();
         let decoded: SignedReadinessBeacon = borsh::from_slice(&bytes).unwrap();
@@ -626,14 +626,14 @@ mod tests {
             signature: [u8; 64],
         }
 
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let bytes = borsh::to_vec(&signed_beacon(&sk, [3u8; 32].into())).unwrap();
         assert!(borsh::from_slice::<ProofCarryingBeacon>(&bytes).is_err());
     }
 
     #[test]
     fn signed_migration_heartbeat_verify_round_trip() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut hb = SignedMigrationHeartbeat {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -656,7 +656,7 @@ mod tests {
     fn signed_migration_heartbeat_rejects_residue_auto_flip() {
         // Field-substitution attack: rewriting `residue_auto` to 0 to
         // fake a completed migration must break the signature.
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut hb = SignedMigrationHeartbeat {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -685,7 +685,7 @@ mod tests {
     // not break verification. This is the mixed-fleet back-compat guarantee.
     #[test]
     fn migration_heartbeat_authored_remaining_unsigned_and_eof_tolerant() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut hb = SignedMigrationHeartbeat {
             namespace_id: [9u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -736,7 +736,7 @@ mod tests {
     // is unsigned advisory telemetry, so tampering it never breaks verification.
     #[test]
     fn migration_heartbeat_migration_failed_unsigned_and_eof_tolerant() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let mut hb = SignedMigrationHeartbeat {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -783,7 +783,7 @@ mod tests {
         // An attacker cannot lift a heartbeat signature from another protocol
         // surface that signs borsh(body) without the migration-heartbeat
         // domain prefix.
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let hb_unsigned = SignableMigrationHeartbeat {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn namespace_topic_msg_migration_heartbeat_roundtrip() {
-        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let sk = PrivateKey::random(&mut rand::rng());
         let envelope = NamespaceTopicMsg::MigrationHeartbeat(SignedMigrationHeartbeat {
             namespace_id: [3u8; 32].into(),
             peer_pubkey: sk.public_key(),

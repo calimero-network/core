@@ -476,10 +476,7 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
 /// what `merge_unordered_map` does. Claiming `CrdtType::FugueText` here would
 /// route it to a dispatcher that deserialises a `FugueText` from these bytes.
 fn node_map_crdt_type() -> CrdtType {
-    CrdtType::unordered_map(
-        core::any::type_name::<NodeKey>(),
-        core::any::type_name::<TextNode>(),
-    )
+    CrdtType::UnorderedMap
 }
 
 /// Expand the stored nodes into a Fugue tree — one entity, one node.

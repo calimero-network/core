@@ -206,7 +206,7 @@ mod tests {
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{self, GroupMetaValue};
+    use calimero_store::key::{self, GroupMetaValue, GroupTarget};
     use calimero_store::slice::Slice;
     use calimero_store::types;
     use calimero_store::Store;
@@ -253,8 +253,12 @@ mod tests {
         let node_account =
             calimero_context::test_support::enrol(store, &namespace_id, &node_identity_pk);
         let meta = GroupMetaValue {
-            bytecode_id: [0xAA; 32],
-            target_application_id: ApplicationId::from([0xBB; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0xBB; 32]),
+                bytecode_id: [0xAA; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: node_account,
             owner_identity: node_account,
@@ -306,8 +310,12 @@ mod tests {
         // namespace B: meta exists but no identity + no membership → should be skipped.
         let ns_b = ContextGroupId::from([0x22; 32]);
         let meta = GroupMetaValue {
-            bytecode_id: [0xAA; 32],
-            target_application_id: ApplicationId::from([0xBB; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0xBB; 32]),
+                bytecode_id: [0xAA; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             // Never resolved: this namespace is the one the walk must SKIP for
             // having no identity and no membership, so a bare account id says

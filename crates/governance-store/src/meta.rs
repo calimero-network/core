@@ -171,7 +171,7 @@ fn hash_group_state(
     hasher.update(group_id.to_bytes());
     hasher.update(meta.admin_identity.as_bytes());
     hasher.update(meta.owner_identity.as_bytes());
-    hasher.update(meta.target_application_id.as_ref());
+    hasher.update(meta.target.application_id.as_ref());
     for (account, role) in members_sorted {
         hasher.update(account.as_bytes());
         let role_bytes =
@@ -202,7 +202,7 @@ mod tests {
 
         repo.save(&gid, &meta).unwrap();
         let loaded = repo.load(&gid).unwrap().expect("meta must round-trip");
-        assert_eq!(loaded.bytecode_id, meta.bytecode_id);
+        assert_eq!(loaded.target.bytecode_id, meta.target.bytecode_id);
         assert_eq!(loaded.admin_identity, meta.admin_identity);
     }
 

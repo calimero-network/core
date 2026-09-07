@@ -15,9 +15,10 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::{GroupMetaValue, GroupParentRef};
+use calimero_store::key::{GroupMetaValue, GroupParentRef, GroupTarget};
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 /// A fresh account root: its signing key and the genesis that names it.
 ///
@@ -25,7 +26,7 @@ use rand::rngs::OsRng;
 /// a rejoin, or a person's second device — which is the whole distinction the
 /// account plane exists to draw.
 pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
-    let root_sk = PrivateKey::random(&mut OsRng);
+    let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     (root_sk, genesis)
 }
@@ -146,8 +147,12 @@ pub(super) fn dummy_member_removed_op(member: AccountId) -> GroupOp {
 
 pub(super) fn test_meta() -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: AccountId::from([0x01; 32]),
         owner_identity: AccountId::from([0x01; 32]),
@@ -160,8 +165,12 @@ pub(super) fn test_meta() -> GroupMetaValue {
 /// supplied account. Used by tests that want a specific admin.
 pub(super) fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -194,7 +203,7 @@ pub(super) fn bootstrap_namespace_with_admin_account(
     store: &Store,
     ns_id: [u8; 32],
 ) -> ((PrivateKey, PublicKey), AccountId) {
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let ns_gid = ContextGroupId::from(ns_id);

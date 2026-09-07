@@ -25,6 +25,7 @@ bench = false
 [dev-dependencies]
 criterion.workspace = true
 eyre.workspace = true
+hex.workspace = true
 rand.workspace = true
 
 [[bench]]

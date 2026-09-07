@@ -43,7 +43,7 @@ use borsh::{from_slice, to_vec};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::address::Id;
 use crate::child_trie::ChildTrie;
@@ -73,7 +73,7 @@ pub type MainInterface = Interface<MainStorage>;
 /// LWW fallback. It is consulted only after the merge registry reports no
 /// registered function, so a registered merger always wins first.
 ///
-/// The synthetic `LwwRegister { inner_type: "Opaque" }` marker the node sync
+/// The synthetic `CrdtType::opaque_leaf()` marker the node sync
 /// layer attaches to opaque leaves *on the wire* is deliberately NOT matched
 /// here: that marker is a HashComparison wire-format concern owned by the node
 /// crate and never reaches a local `save_raw`/`save_internal` write (the sync
@@ -565,10 +565,7 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::collections::crdt_meta::CrdtType;
         let map_id = Self::rotation_log_child_id(anchor);
         if S::storage_read(Key::Entry(map_id)).is_none() {
-            let crdt = CrdtType::unordered_map(
-                core::any::type_name::<[u8; 32]>(),
-                core::any::type_name::<crate::rotation_log::RotationLogEntry>(),
-            );
+            let crdt = CrdtType::UnorderedMap;
             let meta = Metadata::with_crdt_type(0, 0, crdt);
             <Index<S>>::add_child_to(anchor, ChildInfo::new(map_id, [0u8; 32], meta.clone()))?;
             // Byte-identical to a genuinely-created empty `UnorderedMap` at this
@@ -3266,13 +3263,35 @@ impl<S: StorageAdaptor> Interface<S> {
         let final_data = if let Some(last_metadata) = &last_metadata {
             if matches!(
                 metadata.crdt_type,
-                Some(crate::collections::crdt_meta::CrdtType::RotationLog)
-            ) || (origin == WriteOrigin::Applied
-                && matches!(
-                    metadata.crdt_type,
-                    Some(crate::collections::crdt_meta::CrdtType::FugueTextBlock)
-                ))
+                Some(
+                    crate::collections::crdt_meta::CrdtType::RotationLog
+                        | crate::collections::crdt_meta::CrdtType::Custom(_)
+                )
+            ) && !crate::collections::is_app_root_entry(id)
+                || origin == WriteOrigin::Applied
+                    && matches!(
+                        metadata.crdt_type,
+                        Some(crate::collections::crdt_meta::CrdtType::FugueTextBlock)
+                    )
             {
+                // `Custom` joins this arm for the same reason, and it is
+                // load-bearing rather than tidy. The `is_app_root_entry` guard
+                // keeps it to NON-root entries: a root stamped `Custom` has its
+                // own merge path below (`merge_root_state`), which raises the
+                // I5 error when the app registered no merger. Catching roots
+                // here instead would swallow that error and resolve them by
+                // LWW — `non_opaque_root_local_write_still_errors_when_unregistered`
+                // is the test that says so. The `updated_at` branches below
+                // short-circuit a stale incoming write with `return Ok(None)`,
+                // which is right for LWW — an older write loses anyway — and
+                // wrong for an app-defined rule, which still needs to SEE that
+                // write. Without this, whichever replica happened to write
+                // second merges and the other silently keeps its own value:
+                // concurrent 900 and 100 under a "highest wins" rule converge to
+                // 900 on one node and 100 on the other. The merge has to run in
+                // both directions or it is not commutative, and the entities
+                // never converge.
+                //
                 // `FugueTextBlock` (one run-length block of a `FugueText`) joins
                 // this timestamp-blind arm for the same reason: its join is a
                 // lattice join, not a pick, so the LWW-by-HLC branches below
@@ -3929,14 +3948,54 @@ impl<S: StorageAdaptor> Interface<S> {
                     );
                 }
             }
+        } else if let CrdtType::Custom(type_id) = crdt_type {
+            // App-defined merge. The entry carries the id because its
+            // collection stamped it at insert from the value type's
+            // declaration; without that stamp this arm is unreachable and the
+            // app's rule silently never runs.
+            match crate::merge::merge_custom(*type_id, existing, incoming) {
+                Ok(merged) => {
+                    trace!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        "Merged via the app's own rule"
+                    );
+                    return Ok(merged);
+                }
+                // Nothing claimed the id in this build. In WASM that means the
+                // app no longer declares a type it once stamped — upgrade skew.
+                // On a host there is no registry at all and the merge belongs
+                // to the guest callback, which the caller reaches instead.
+                Err(MergeError::WasmRequired { .. }) => {
+                    debug!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        "No app merge registered here; leaving it to the caller"
+                    );
+                }
+                // The app's own rule failed. LWW is the wrong repair — it would
+                // resolve a conflict the app declared itself responsible for,
+                // and do it differently on each replica depending on which side
+                // arrived first. Refuse instead.
+                Err(err) => {
+                    error!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = ?err,
+                        "App-defined merge failed"
+                    );
+                    return Err(StorageError::MergeFailure(err));
+                }
+            }
         } else {
-            // Types that need WASM callback (LwwRegister, collections, Custom)
-            // For now, fall back to LWW. PR #1940 will add WASM callback support.
             debug!(
                 target: "storage::merge",
                 %id,
                 crdt_type = ?crdt_type,
-                "CRDT type requires WASM callback, falling back to LWW"
+                "CRDT type is not merged in this layer, falling back to LWW"
             );
         }
 
@@ -4350,7 +4409,16 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     }
 
     // Verify the content-addressing via byte-slicing.
-    // The data blob is: [key_hash (32 bytes)] + [value_bytes (N bytes)] + [element_id (32 bytes)]
+    //
+    // A `FrozenStorage<T>` is an `UnorderedMap<Hash, FrozenValue<T>>`, and a map
+    // entry is stored VALUE-FIRST — `(V, K)`, so the value sits at offset 0
+    // whatever the key type. The blob is therefore:
+    //
+    //   [value_bytes (N)] + [key_hash (32)] + [element_id (32)]
+    //
+    // Both trailing fields are fixed 32-byte arrays, which is what makes this
+    // sliceable at all. If the entry layout moves again, this moves with it —
+    // `tests/map_entry_layout.rs` pins the bytes for exactly that reason.
     const KEY_HASH_SIZE: usize = 32;
     const ELEMENT_ID_SIZE: usize = 32;
     const MIN_LEN: usize = KEY_HASH_SIZE + ELEMENT_ID_SIZE;
@@ -4362,10 +4430,8 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     }
 
     // Extract the three components
-    let key_from_entry = &data[..KEY_HASH_SIZE];
-    // We don't need the `Element::Id` from the end, but we know it's there and
-    // we need to remove it from the value_bytes.
-    let value_bytes = &data[KEY_HASH_SIZE..data.len() - ELEMENT_ID_SIZE];
+    let value_bytes = &data[..data.len() - MIN_LEN];
+    let key_from_entry = &data[data.len() - MIN_LEN..data.len() - ELEMENT_ID_SIZE];
 
     // Re-calculate the hash of the `value bytes`
     let calculated_hash: [u8; 32] = Sha256::digest(value_bytes).into();

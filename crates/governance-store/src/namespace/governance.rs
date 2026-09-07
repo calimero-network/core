@@ -4,6 +4,7 @@ use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, KeyRequester, MembershipRepository,
     MetaRepository, NamespaceRepository, PermissionChecker,
 };
+use calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE;
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope,
     KeyRotation, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
@@ -50,6 +51,16 @@ pub struct ApplyNamespaceOpResult {
     /// ops that match the receiver's view, and for ops that don't go
     /// through the verify path at all.
     pub divergence: Option<super::super::DivergenceReport>,
+}
+
+/// The source string to persist on an application stub built from an inbound
+/// op: a location a receiver cannot fetch from becomes the marker instead.
+pub(super) fn effective_stub_source(op_source: &str) -> &str {
+    if op_source.starts_with("http://") || op_source.starts_with("https://") {
+        op_source
+    } else {
+        PENDING_BLOB_SHARE_SOURCE
+    }
 }
 
 pub(crate) fn min_acks_after_local_mutation(
@@ -330,6 +341,12 @@ impl<'a> NamespaceGovernance<'a> {
                             group_id.to_bytes(),
                             envelope,
                             op.signer,
+                            // `None`: a `KeyDelivery` carries no `key_id` to
+                            // check against, and needs none — the op is signed
+                            // and the envelope's sender is pinned to that
+                            // signer, so provenance is already established by
+                            // the DAG rather than by a hash comparison.
+                            None,
                         ) {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
@@ -609,12 +626,19 @@ impl<'a> NamespaceGovernance<'a> {
     /// so a caller that needs to rebroadcast it later (e.g. after a publish
     /// that reached no peer) can do so without re-signing - re-signing would
     /// mint a second op at the next nonce.
+    /// `endorsement` is an admitter's consent, for the join ops that need one
+    /// and `None` for everything else. Attached after signing, because it is
+    /// deliberately outside the signature — see
+    /// [`SignedNamespaceOp::admitter_endorsement`]. Taken here rather than left
+    /// to the caller so the op is endorsed before it is applied and published:
+    /// attaching it afterwards would apply an op locally that peers refuse.
     pub async fn sign_apply_and_publish_returning_op(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
+        endorsement: Option<Box<calimero_governance_types::AdmitterEndorsement>>,
     ) -> EyreResult<(DeliveryReport, SignedNamespaceOp)> {
         let topic = ns_topic(self.namespace_id);
 
@@ -634,6 +658,7 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
+        refuse_unsealed_sealable_root(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -647,6 +672,9 @@ impl<'a> NamespaceGovernance<'a> {
         // `op_hash` on the synthesized best-effort report (below)
         // consistent with the success path, so log correlation works
         // regardless of whether the publish confirmed.
+        let mut signed = signed;
+        signed.admitter_endorsement = endorsement;
+
         let op_hash = hash_scoped_namespace(topic.as_str().as_bytes(), &signed)
             .map_err(|e| eyre::eyre!("hash_scoped_namespace: {e}"))?;
 
@@ -740,7 +768,7 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
     ) -> EyreResult<DeliveryReport> {
         let (report, _signed) = self
-            .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op)
+            .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op, None)
             .await?;
         Ok(report)
     }
@@ -844,6 +872,7 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
+        refuse_unsealed_sealable_root(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -1053,10 +1082,14 @@ impl<'a> NamespaceGovernance<'a> {
         let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {
-                bytecode_id: [0u8; 32],
-                target_application_id: calimero_primitives::application::ApplicationId::from(
-                    [0u8; 32],
-                ),
+                target: calimero_store::key::GroupTarget {
+                    application_id: calimero_primitives::application::ApplicationId::from(
+                        [0u8; 32],
+                    ),
+                    bytecode_id: [0u8; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
                 created_at: 0,
                 admin_identity: placeholder_admin,
                 owner_identity: placeholder_admin,
@@ -1291,6 +1324,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope_bytes: &[u8],
         responder_identity: PublicKey,
+        expected_key_id: Option<[u8; 32]>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let envelope: KeyEnvelope = match borsh::from_slice(envelope_bytes) {
             Ok(env) => env,
@@ -1299,7 +1333,12 @@ impl<'a> NamespaceGovernance<'a> {
                 return Ok(None);
             }
         };
-        self.apply_received_group_key_envelope(group_id, &envelope, responder_identity)
+        self.apply_received_group_key_envelope(
+            group_id,
+            &envelope,
+            responder_identity,
+            expected_key_id,
+        )
     }
 
     /// Like [`apply_received_group_key`](Self::apply_received_group_key) but
@@ -1311,6 +1350,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope: &KeyEnvelope,
         responder_identity: PublicKey,
+        expected_key_id: Option<[u8; 32]>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let ns_id = ContextGroupId::from(self.namespace_id.to_bytes());
         let gid = ContextGroupId::from(group_id);
@@ -1402,6 +1442,35 @@ impl<'a> NamespaceGovernance<'a> {
                 return Ok(None);
             }
         };
+
+        // Bind the key to what a signed op said it would be.
+        //
+        // The gate above authenticates WHO wrapped this envelope, not WHAT is
+        // inside it: any key-holding member of the group can mint a valid wrap
+        // around a key of its own choosing. That is enough to matter, because a
+        // node that stores a chosen key seals its own subsequent writes under it
+        // — readable by whoever chose it — and cannot decode the group's real
+        // ops. `key_id` is `SHA256(group_key)`, so when the caller knows which
+        // id it is waiting for (a governance op referenced it, and that op is
+        // signed) the hash decides, and the responder stops being trusted for
+        // content at all.
+        //
+        // Rejection is `Ok(None)`, the same benign shape as an envelope
+        // addressed elsewhere: the joiner moves on to the next peer rather than
+        // failing the round, so one dishonest member cannot deny the key.
+        if let Some(expected) = expected_key_id {
+            let served = GroupKeyring::key_id_for(&group_key);
+            if served != expected {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id),
+                    responder = %responder_identity,
+                    expected_key_id = %hex::encode(expected),
+                    served_key_id = %hex::encode(served),
+                    "rejecting received group key: it is not the key the awaiting op names"
+                );
+                return Ok(None);
+            }
+        }
 
         let key_id = GroupKeyring::new(self.store, gid)
             .store_key(&group_key)
@@ -1961,6 +2030,8 @@ impl<'a> NamespaceGovernance<'a> {
             application_id,
             blob_id,
             source,
+            package,
+            version,
             ..
         } = op
         {
@@ -1974,11 +2045,7 @@ impl<'a> NamespaceGovernance<'a> {
                 if !handle.has(&bytecode_id)? {
                     drop(handle);
                     let blob_meta = calimero_store::key::BlobMeta::new(*blob_id);
-                    let effective_source = if source.starts_with("file://") || source.is_empty() {
-                        "calimero://pending-blob-share".to_owned()
-                    } else {
-                        source.clone()
-                    };
+                    let effective_source = effective_stub_source(source).to_owned();
                     let stub = calimero_store::types::ApplicationMeta::new(
                         blob_meta,
                         0,
@@ -1986,8 +2053,8 @@ impl<'a> NamespaceGovernance<'a> {
                         Vec::new().into_boxed_slice(),
                         blob_meta,
                         calimero_store::types::PackageInfo {
-                            package: String::new().into_boxed_str(),
-                            version: String::new().into_boxed_str(),
+                            package: package.as_str().into(),
+                            version: version.as_str().into(),
                             signer_id: String::new().into_boxed_str(),
                             state_version: 0,
                         },
@@ -2295,11 +2362,13 @@ pub fn apply_received_group_key(
     group_id: [u8; 32],
     envelope_bytes: &[u8],
     responder_identity: PublicKey,
+    expected_key_id: Option<[u8; 32]>,
 ) -> EyreResult<Option<super::super::DivergenceReport>> {
     NamespaceGovernance::new(store, namespace_id).apply_received_group_key(
         group_id,
         envelope_bytes,
         responder_identity,
+        expected_key_id,
     )
 }
 /// Prepare a root op for publishing, resolving this namespace's key here.
@@ -2462,10 +2531,43 @@ pub async fn sign_apply_and_publish_namespace_op_returning_op(
     namespace_id: NamespaceId,
     signer_sk: &PrivateKey,
     op: NamespaceOp,
+    endorsement: Option<Box<calimero_governance_types::AdmitterEndorsement>>,
 ) -> EyreResult<(DeliveryReport, SignedNamespaceOp)> {
     NamespaceGovernance::new(store, namespace_id)
-        .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op)
+        .sign_apply_and_publish_returning_op(node_client, ack_router, signer_sk, op, endorsement)
         .await
+}
+
+/// Refuse to sign a sealable root op that reached the publisher in the clear.
+///
+/// The publish-side counterpart to the gate in `apply_signed_namespace_op`, which
+/// refuses the same shape on arrival. That gate is what makes sealing a rule
+/// rather than a convention, but it only ever fires on somebody ELSE's node: a
+/// publisher that forgets `seal_root_op_for_publish` signs happily, broadcasts,
+/// and every peer drops the op. The failure is total and it is invisible from the
+/// side that caused it.
+///
+/// #3846 is the worked example. Flipping `KeyDelivery` to sealable without routing
+/// its three publishers through the helper looked like a no-op locally — the
+/// classification changed a match arm, and 653 tests that hand-build the op and
+/// apply it directly did not care. What it actually produced was three publishers
+/// emitting ops no peer would accept. Nothing said so at the point of the mistake.
+///
+/// So this answers the same question the receiver answers, at the moment the
+/// mistake is made, naming the fix. It cannot break a working publisher: an op it
+/// refuses is an op every receiver already refuses.
+pub(super) fn refuse_unsealed_sealable_root(op: &NamespaceOp) -> EyreResult<()> {
+    if let NamespaceOp::Root(root) = op {
+        if calimero_governance_types::root_op_is_sealable(root) {
+            eyre::bail!(
+                "refusing to publish a sealable root op in the clear: this variant is \
+                 published under the namespace key and every peer refuses the cleartext \
+                 form, so signing it here would broadcast an op nothing accepts. Route it \
+                 through `seal_root_op_for_publish`."
+            );
+        }
+    }
+    Ok(())
 }
 
 pub async fn sign_and_publish_namespace_op(

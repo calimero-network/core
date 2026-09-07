@@ -16,6 +16,7 @@ use crate::storage::models::KeyType;
 
 /// Create key request
 #[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct CreateKeyRequest {
     /// Public key
     #[validate(length(min = 1, message = "Public key is required"))]

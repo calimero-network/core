@@ -107,7 +107,7 @@ GET  /admin-api/contexts/{id}          # Get context
 DELETE /admin-api/contexts/{id}        # Delete context
 
 GET  /admin-api/applications          # List apps
-POST /admin-api/install-application   # Install app
+POST /admin-api/install-application   # Install app by package@version
 GET  /admin-api/applications/{id}      # Get app
 GET  /admin-api/applications/{id}/abi  # Embedded WASM ABI manifest (optional ?service_name=)
 
@@ -221,3 +221,4 @@ Authentication handled via middleware in `src/auth.rs`:
 - WebSocket requires context subscription
 - SSE streams are per-context
 - All responses use consistent error format
+- Every request body is `deny_unknown_fields`; add a new request type to the list in `primitives/tests/deny_unknown_fields.rs`

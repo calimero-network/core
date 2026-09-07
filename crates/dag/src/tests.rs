@@ -1119,7 +1119,7 @@ async fn test_extreme_random_order_1000_deltas() {
 
     // Completely shuffle
     let mut shuffled = deltas.clone();
-    shuffled.shuffle(&mut rand::thread_rng());
+    shuffled.shuffle(&mut rand::rng());
 
     // Apply in random order
     for delta in shuffled {

@@ -632,17 +632,17 @@ mod tests {
         alice.insert_entity_with_metadata(
             conflict_id,
             b"alice-version".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 100), // oldest
+            EntityMetadata::new(CrdtType::lww_register(), 100), // oldest
         );
         bob.insert_entity_with_metadata(
             conflict_id,
             b"bob-version".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 200), // middle
+            EntityMetadata::new(CrdtType::lww_register(), 200), // middle
         );
         charlie.insert_entity_with_metadata(
             conflict_id,
             b"charlie-version".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 300), // newest - should win
+            EntityMetadata::new(CrdtType::lww_register(), 300), // newest - should win
         );
 
         // Sync all to Alice (Alice pulls from both)
@@ -1179,12 +1179,12 @@ mod tests {
         alice.insert_entity_with_metadata(
             conflict_id,
             b"alice-wins".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 200), // newer
+            EntityMetadata::new(CrdtType::lww_register(), 200), // newer
         );
         bob.insert_entity_with_metadata(
             conflict_id,
             b"bob-loses".to_vec(),
-            EntityMetadata::new(CrdtType::lww_register("test"), 100), // older
+            EntityMetadata::new(CrdtType::lww_register(), 100), // older
         );
 
         // Alice also has extra entities to trigger push
@@ -1479,7 +1479,7 @@ mod tests {
         let parent_storage_id = Id::new([1u8; 32]);
         let initial_child_id = Id::new([2u8; 32]);
         let mut child_meta = Metadata::new(50, 50);
-        child_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        child_meta.crdt_type = Some(CrdtType::lww_register());
         for node in [&alice, &bob] {
             node.storage()
                 .add_entity(parent_storage_id, b"shared-parent", Metadata::new(50, 50));
@@ -1502,7 +1502,7 @@ mod tests {
         // `LeafMetadata.parent_id` must be honoured on push.
         let new_child_id = Id::new([200u8; 32]);
         let mut new_child_meta = Metadata::new(200, 200);
-        new_child_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        new_child_meta.crdt_type = Some(CrdtType::lww_register());
         let new_child_value = b"value-from-alice".to_vec();
         alice.storage().add_entity_with_parent(
             new_child_id,
@@ -1596,7 +1596,7 @@ mod tests {
         // protocol selects HashComparison over Snapshot.
         let parent_id = Id::new([1u8; 32]);
         let mut parent_meta = Metadata::new(50, 50);
-        parent_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        parent_meta.crdt_type = Some(CrdtType::lww_register());
         for node in [&alice, &bob] {
             node.storage()
                 .add_entity(parent_id, b"shared-parent", parent_meta.clone());
@@ -1612,11 +1612,11 @@ mod tests {
         // needed to converge.
         let entity_id = Id::new([42u8; 32]);
         let mut older_meta = Metadata::new(100, 100);
-        older_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        older_meta.crdt_type = Some(CrdtType::lww_register());
         bob.storage()
             .add_entity_with_parent(entity_id, parent_id, b"older-from-bob", older_meta);
         let mut newer_meta = Metadata::new(100, 200);
-        newer_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        newer_meta.crdt_type = Some(CrdtType::lww_register());
         alice.storage().add_entity_with_parent(
             entity_id,
             parent_id,

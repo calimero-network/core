@@ -1,5 +1,5 @@
 use borsh::from_slice as from_borsh_slice;
-use rand::RngCore;
+use rand::Rng;
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -164,7 +164,7 @@ impl VMHostFunctions<'_> {
         self.check_guest_memory_bounds(&dest_buf)?;
 
         let mut bytes = vec![0_u8; dest_buf.len() as usize];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         self.write_guest_memory_slice(&dest_buf, &bytes)?;
 
         Ok(())
@@ -396,7 +396,8 @@ mod tests {
     fn test_ed25519_verify() {
         use ed25519_dalek::Signer;
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
 
         // 1. Setup host
         let mut storage = SimpleMockStorage::new();
@@ -405,7 +406,7 @@ mod tests {
         let mut host = logic.host_functions(store.as_store_mut());
 
         // 2. Generate a valid signature (on the host side, for testing)
-        let mut csprng = OsRng;
+        let mut csprng = UnwrapErr(SysRng);
         let keypair: SigningKey = SigningKey::generate(&mut csprng);
         let public_key = keypair.verifying_key();
         let message = b"test message";
@@ -768,7 +769,8 @@ mod tests {
     fn test_ed25519_verify_empty_message() {
         use ed25519_dalek::Signer;
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
 
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
@@ -776,7 +778,7 @@ mod tests {
         let mut host = logic.host_functions(store.as_store_mut());
 
         // Generate a valid signature for an empty message.
-        let mut csprng = OsRng;
+        let mut csprng = UnwrapErr(SysRng);
         let keypair: SigningKey = SigningKey::generate(&mut csprng);
         let public_key = keypair.verifying_key();
         let empty_message: &[u8] = b"";
@@ -812,7 +814,8 @@ mod tests {
     fn test_ed25519_verify_long_message() {
         use ed25519_dalek::Signer;
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
 
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
@@ -820,7 +823,7 @@ mod tests {
         let mut host = logic.host_functions(store.as_store_mut());
 
         // Generate a valid signature for a long message.
-        let mut csprng = OsRng;
+        let mut csprng = UnwrapErr(SysRng);
         let keypair: SigningKey = SigningKey::generate(&mut csprng);
         let public_key = keypair.verifying_key();
         let long_message: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();

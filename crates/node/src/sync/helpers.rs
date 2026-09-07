@@ -5,6 +5,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{EntityDeletion, TreeLeafData};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
@@ -13,7 +14,7 @@ use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
 use eyre::{bail, Result};
-use rand::Rng;
+use rand::RngExt;
 
 /// Read the local root-hash for `context_id` from the index.
 ///
@@ -142,7 +143,7 @@ pub fn validate_application_id(ours: &ApplicationId, theirs: &ApplicationId) -> 
 /// Generates a random nonce for message encryption.
 #[must_use]
 pub fn generate_nonce() -> calimero_crypto::Nonce {
-    rand::thread_rng().gen()
+    rand::rng().random()
 }
 
 /// Extract the authorization triple to put on the HashComparison wire
@@ -351,15 +352,12 @@ pub(crate) fn select_attributable_peer_identity(
 /// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
 /// whose stored metadata has no `crdt_type` (typically the `Root<T>`
 /// entry for apps that don't use `#[app::state]`, plus test fixtures).
-/// The sender wraps these in `CrdtType::LwwRegister { inner_type:
-/// OPAQUE_LEAF_CRDT_TYPE_NAME }` so the wire never carries an absent
+/// The sender wraps these in `CrdtType::opaque_leaf()` so the wire never carries an absent
 /// type; the receiver uses this helper to recognise them and route to a
 /// direct LWW write rather than expecting WASM-side merge dispatch
 /// (which doesn't exist for entities without a `Mergeable` impl).
 fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool {
-    use calimero_primitives::crdt::CrdtType;
-    matches!(crdt_type, CrdtType::LwwRegister { inner_type }
-        if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME)
+    crdt_type.is_opaque_leaf()
 }
 
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
@@ -482,6 +480,47 @@ pub(crate) fn signer_account_for(
     calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
         .ok()
         .flatten()
+}
+
+/// What a receiver should do with one incoming leaf.
+///
+/// Both DFS walks — HashComparison and level-wise — face the same three-way
+/// choice, and had it inline twice. It lives here so the two cannot drift, and
+/// so the classification is testable without a transport.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LeafDisposition {
+    /// Apply it here and now; the storage layer can merge this itself.
+    Apply,
+    /// An app root: defer for `__calimero_merge_root_state`.
+    DeferRoot,
+    /// A custom-typed entry: defer for `__calimero_merge_custom`, carrying the
+    /// id the entry declares.
+    DeferCustom(CustomTypeId),
+}
+
+/// Decide what to do with `leaf_metadata` for `entity_id`.
+///
+/// Neither deferral is an optimisation. A leaf whose merge rule lives in the
+/// app's module cannot be merged from the DFS at all: the apply is synchronous
+/// and runs inside `with_runtime_env`, so it cannot call into the runtime.
+/// Applying it anyway falls through to last-write-wins, which for a custom type
+/// contradicts the in-WASM delta path and leaves the two replicas settling the
+/// same conflict differently depending on which path delivered it.
+///
+/// An **opaque** root is the exception and applies directly: the synthetic
+/// `Opaque` marker means there is no `Mergeable` to dispatch to, so LWW is the
+/// only rule available and also the right one.
+#[must_use]
+pub fn classify_leaf(entity_id: Id, crdt_type: &CrdtType) -> LeafDisposition {
+    if calimero_storage::collections::is_app_root_entry(entity_id) && !crdt_type.is_opaque_leaf() {
+        return LeafDisposition::DeferRoot;
+    }
+
+    if let CrdtType::Custom(type_id) = crdt_type {
+        return LeafDisposition::DeferCustom(*type_id);
+    }
+
+    LeafDisposition::Apply
 }
 
 pub fn apply_leaf_with_crdt_merge_gated(
@@ -963,7 +1002,7 @@ fn apply_entity_push_batch(
             // `crdt_type` and go through the proper deferred dispatch.
             // Root entities with a real `crdt_type` get deferred for
             // WASM dispatch; opaque root entities (synthetic LWW marker
-            // tagged with `OPAQUE_LEAF_CRDT_TYPE_NAME`) are handled
+            // tagged `LwwKind::Opaque`) are handled
             // internally by `apply_leaf_with_crdt_merge` via direct LWW
             // write — see the comment there.
             let entity_id = Id::new(leaf.key);
@@ -1377,7 +1416,7 @@ mod tests {
     fn opaque_leaf_with_schema(key: [u8; 32], schema: Option<[u8; 32]>) -> TreeLeafData {
         // An opaque (non-root) LWW leaf — the simplest leaf the apply path
         // stores directly without WASM dispatch.
-        let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let mut md = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         if let Some(k) = schema {
             md = md.with_schema_bytecode_id(k);
         }
@@ -1639,5 +1678,81 @@ mod empty_chain_placement_tests {
             ScopeVerdict::DataDiverged
         );
         assert_eq!(scope_verdict(None, None, E1, E1), ScopeVerdict::Converged);
+    }
+}
+
+#[cfg(test)]
+mod classify_leaf_tests {
+    use calimero_primitives::crdt::{CrdtType, CustomTypeId};
+    use calimero_storage::address::Id;
+
+    use super::{classify_leaf, LeafDisposition};
+
+    /// The reachability check. A stamped entry must be recognised from the
+    /// metadata that actually crosses the wire — the sender carries the
+    /// entity's stored `crdt_type` verbatim, so this is the tag that arrives.
+    /// If this returned `Apply`, the whole dispatch below it would be
+    /// unreachable and the app's rule would silently never run.
+    #[test]
+    fn a_custom_entry_defers_and_carries_its_id() {
+        let id = CustomTypeId::of("team::Stats");
+        assert_eq!(
+            classify_leaf(Id::random(), &CrdtType::Custom(id)),
+            LeafDisposition::DeferCustom(id),
+            "the id must survive classification — the dispatcher has no other \
+             way to know which rule to run"
+        );
+    }
+
+    /// Built-ins merge in the storage layer and must NOT be deferred; deferring
+    /// them would park work the receiver could have finished immediately.
+    #[test]
+    fn builtin_entries_apply_directly() {
+        for crdt_type in [
+            CrdtType::GCounter,
+            CrdtType::PnCounter,
+            CrdtType::UnorderedMap,
+            CrdtType::Vector,
+            CrdtType::lww_register(),
+        ] {
+            assert_eq!(
+                classify_leaf(Id::random(), &crdt_type),
+                LeafDisposition::Apply,
+                "{crdt_type:?} merges in the storage layer"
+            );
+        }
+    }
+
+    /// An app root goes to the root dispatcher, not the custom one, even though
+    /// both defer — they call different exports.
+    #[test]
+    fn an_app_root_defers_as_a_root() {
+        assert_eq!(
+            classify_leaf(Id::root(), &CrdtType::lww_register()),
+            LeafDisposition::DeferRoot
+        );
+    }
+
+    /// The exception that keeps sync working for opaque roots: no `Mergeable`
+    /// exists to dispatch to, so LWW is the only available rule and applying
+    /// directly is correct. Deferring here would send the root to an export
+    /// that cannot resolve it, and the entity would never settle.
+    #[test]
+    fn an_opaque_root_applies_rather_than_deferring() {
+        assert_eq!(
+            classify_leaf(Id::root(), &CrdtType::opaque_leaf()),
+            LeafDisposition::Apply
+        );
+    }
+
+    /// Root wins over custom when a root somehow carries a `Custom` tag: the
+    /// root export dispatches through the app's registered root `Mergeable`,
+    /// which is the rule that owns the whole state.
+    #[test]
+    fn a_root_stamped_custom_still_defers_as_a_root() {
+        assert_eq!(
+            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x"))),
+            LeafDisposition::DeferRoot
+        );
     }
 }

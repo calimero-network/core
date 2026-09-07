@@ -42,7 +42,9 @@ pub use fugue_text_simple::FugueTextSimple;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
-pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageKey, StorageStrategy};
+pub use crdt_meta::{
+    CrdtMeta, CrdtType, Decomposable, MergeStrategy, Mergeable, StorageKey, StorageStrategy,
+};
 // Re-export of the `Mergeable` *derive macro*, whose single canonical
 // implementation lives in `calimero-sdk-macros` (it shares the forbidden-type
 // field lint with `#[app::state]`, which is why it can't live in this crate's
@@ -278,18 +280,23 @@ struct Entry<T> {
 /// core#2716).
 ///
 /// A rotation-log map child is an ordinary [`UnorderedMap`] entry, so its stored
-/// value is `borsh(Entry<([u8; 32], RotationLogEntry)>)` — NOT a bare
+/// value is `borsh(Entry<(RotationLogEntry, [u8; 32])>)` — NOT a bare
 /// `RotationLog` blob. The node-side direct reader (`delta_store`) reads child
 /// bytes straight from RocksDB outside a storage env, so it cannot go through
 /// the `UnorderedMap` handle; this exposes the exact borsh layout the collection
 /// writes (`item` then the `#[storage]` `Element`, whose only serialized field
 /// is its id). Returns `None` if the bytes are not a valid map entry.
+///
+/// Note the tuple is VALUE-first: a map entry stores `(V, K)` so the value sits
+/// at offset 0 whatever the key type. This is the one reader that spells the
+/// layout out, so it moves in lockstep with
+/// [`UnorderedMap::inner`](unordered_map::UnorderedMap).
 pub fn decode_rotation_log_entry_child(
     bytes: &[u8],
 ) -> Option<crate::rotation_log::RotationLogEntry> {
-    borsh::from_slice::<Entry<([u8; 32], crate::rotation_log::RotationLogEntry)>>(bytes)
+    borsh::from_slice::<Entry<(crate::rotation_log::RotationLogEntry, [u8; 32])>>(bytes)
         .ok()
-        .map(|entry| entry.item.1)
+        .map(|entry| entry.item.0)
 }
 
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
@@ -641,13 +648,21 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         for (index, (item, storage_type)) in snapshot.into_iter().enumerate() {
             let id = compute_id(parent, &(index as u64).to_le_bytes());
             let _reinserted = self
-                .insert_with_storage_type(Some(id), item, storage_type)
+                .insert_with_storage_type(Some(id), item, storage_type, None)
                 .expect("re-insert vector child during reindex");
         }
     }
 
     /// Inserts an item into the collection.
-    fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
+    ///
+    /// `crdt_type` stamps the ENTRY. Passing `None` here is what left the
+    /// `Entry`/`or_default` write-back path unstamped while the direct
+    /// `map.insert` path was stamped: the entry then carried no declaration,
+    /// took the legacy branch in `try_merge_non_root`, and resolved
+    /// last-write-wins with the app's rule never called. An app that reaches
+    /// its map only through `entry(..).or_default()` — which is the ergonomic
+    /// way, and what the reference app does — got no dispatch at all.
+    fn insert(&mut self, id: Option<Id>, item: T, crdt_type: Option<CrdtType>) -> StoreResult<T> {
         // Entries inherit this collection's own storage domain. For an ordinary
         // collection the element is `Public`, so this is the previous default;
         // when the element carries `Shared{writers}` (a guarded collection) every
@@ -656,7 +671,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // the bare `Collection::insert` (sets, vectors, RGA), so guarding a
         // collection covers those paths too — not only the direct `map.insert`.
         let inherited = self.storage.metadata.storage_type.clone();
-        self.insert_with_storage_type(id, item, inherited)
+        self.insert_with_storage_type(id, item, inherited, crdt_type)
             .map(|(_id, item)| item)
     }
 
@@ -693,13 +708,21 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// the id is the only stable way to address the entry afterwards —
     /// enumeration is `(created_at, id)` ordered over a set other replicas
     /// insert into, so a position is not (core#3637).
+    /// `crdt_type` stamps the ENTRY, not the collection.
+    ///
+    /// It is what makes app-defined merge reachable: `try_merge_non_root`
+    /// dispatches on the entry's own `crdt_type`, and an entry that declares
+    /// nothing takes the legacy branch and resolves last-write-wins. Only the
+    /// collections that know their value type pass `Some` — the generic
+    /// `insert` cannot, since `T` there is already the erased item.
     pub(crate) fn insert_with_storage_type(
         &mut self,
         id: Option<Id>,
         item: T,
         storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
-        self.insert_with_storage_type_and_crdt_type(id, item, storage_type, None)
+        self.insert_with_storage_type_and_crdt_type(id, item, storage_type, crdt_type)
     }
 
     /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally

@@ -1,3 +1,5 @@
+pub mod acquire;
+mod bind;
 pub mod bundle;
 mod install;
 mod query;
@@ -72,18 +74,6 @@ impl NodeClient {
         };
         self.application_bytes_from_blob(&application.bytecode.blob_id(), service_name)
             .await
-    }
-
-    pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
-        let handle = self.datastore.handle();
-
-        let key = key::ApplicationMeta::new(*application_id);
-
-        if let Some(application) = handle.get(&key)? {
-            return self.has_blob(&application.bytecode.blob_id());
-        }
-
-        Ok(false)
     }
 
     // Installation and uninstallation are in `install` submodule.
@@ -206,8 +196,8 @@ impl NodeClient {
                     // Only this application's groups: a foreign group's
                     // bytecode_id would otherwise be fetched + manifest-parsed
                     // just to be discarded by the package filter below.
-                    if meta.target_application_id == *application_id {
-                        let _ = candidates.insert(meta.bytecode_id);
+                    if meta.target.application_id == *application_id {
+                        let _ = candidates.insert(meta.target.bytecode_id);
                     }
                 }
             }
@@ -320,5 +310,18 @@ impl NodeClient {
         })
         .await??;
         Ok(Some(wasm))
+    }
+
+    /// Whether this node holds the bytecode `application_id`'s row names.
+    pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+
+        let key = key::ApplicationMeta::new(*application_id);
+
+        if let Some(application) = handle.get(&key)? {
+            return self.has_blob(&application.bytecode.blob_id());
+        }
+
+        Ok(false)
     }
 }

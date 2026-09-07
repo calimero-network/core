@@ -210,8 +210,21 @@ pub(crate) mod actor {
         }
     }
 
-    /// Start a manager over `store`.
+    /// Start a manager over `store`, with no peer answering join requests.
     pub(crate) async fn over(store: Store) -> Harness {
+        over_answering_joins(store, None).await
+    }
+
+    /// [`over`], with a peer that answers every namespace-join request with
+    /// `bundle`.
+    ///
+    /// Needed by anything that asserts on what a *successful* join wrote: with
+    /// no responder the join cannot obtain an admitter's endorsement, and a
+    /// join without one is refused rather than recorded locally.
+    pub(crate) async fn over_answering_joins(
+        store: Store,
+        bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
+    ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
@@ -222,8 +235,17 @@ pub(crate) mod actor {
             }
         });
 
-        let (node_client, data_dir, blob_dir) =
-            node_client_over(store.clone(), NetworkClient::new(network)).await;
+        let (node_client, data_dir, blob_dir) = match bundle {
+            Some(bundle) => {
+                calimero_node_primitives::test_fixtures::node_client_over_answering_joins(
+                    store.clone(),
+                    NetworkClient::new(network),
+                    bundle,
+                )
+                .await
+            }
+            None => node_client_over(store.clone(), NetworkClient::new(network)).await,
+        };
 
         // Wired rather than left unbound: a handler that routes back through the
         // client (the join path applies its catch-up ops that way) would

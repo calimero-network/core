@@ -181,11 +181,10 @@ mod tests {
     use super::*;
     use calimero_crypto::{SharedKey, NONCE_LEN};
     use calimero_storage::delta::StorageDelta;
-    use rand::thread_rng;
 
     #[test]
     fn decrypt_delta_actions_roundtrip() -> Result<()> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let sender_key = PrivateKey::random(&mut rng);
         let shared_key = SharedKey::from_sk(&sender_key);
 
@@ -214,7 +213,7 @@ mod tests {
 
     #[test]
     fn decrypt_delta_actions_rejects_bad_cipher() {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let sender_key = PrivateKey::random(&mut rng);
         let nonce = [9u8; NONCE_LEN];
 
@@ -239,7 +238,7 @@ mod tests {
         use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
         use ed25519_dalek::SigningKey;
 
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let sender_key = PrivateKey::random(&mut rng);
         let shared_key = SharedKey::from_sk(&sender_key);
 
@@ -292,7 +291,7 @@ mod tests {
 
     #[test]
     fn decrypt_delta_actions_rejects_oversized_payload() {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let sender_key = PrivateKey::random(&mut rng);
         let shared_key = SharedKey::from_sk(&sender_key);
 
