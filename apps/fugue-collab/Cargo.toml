@@ -17,3 +17,7 @@ bs58 = "0.5"
 
 [package.metadata.workspaces]
 independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.fugue-collab"
+name = "Fugue Collab"

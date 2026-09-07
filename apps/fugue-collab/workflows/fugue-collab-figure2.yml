@@ -32,10 +32,30 @@ steps:
   - name: Install fugue-collab on Node 1
     type: install_application
     node: fugue-node-1
-    path: res/fugue_collab.wasm
+    path: dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
+  # that has never held the blob cannot execute — and this scenario stops every
+  # other node while one writes, leaving nobody to fetch it from. Each node must
+  # therefore own the bytecode before isolation begins.
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
+  # that has never held the blob cannot execute — and this scenario stops every
+  # other node while one writes, leaving nobody to fetch it from. Each node must
+  # therefore own the bytecode before isolation begins.
+  - name: Install fugue-collab on Node 3
+    type: install_application
+    node: fugue-node-3
+    path: dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
 
   - name: Create a 3-node mesh
     type: create_mesh

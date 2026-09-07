@@ -28,7 +28,7 @@ steps:
   - name: Install fugue-collab on Node 1
     type: install_application
     node: calimero-node-1
-    path: res/fugue_collab.wasm
+    path: dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
