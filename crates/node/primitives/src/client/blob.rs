@@ -3,7 +3,7 @@ use std::sync::Arc;
 use calimero_app_downloader::registry::RegistryMode;
 use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
-use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
+use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe};
 use calimero_primitives::{
     blobs::{BlobId, BlobInfo, BlobMetadata},
     common::DIGEST_SIZE,
@@ -117,6 +117,30 @@ impl BlobManager {
     }
 }
 
+/// Where a blob was found, and therefore how much is known about it.
+///
+/// The two arms are not interchangeable, and the type exists to stop them being
+/// treated as if they were. `hash` and `mime_type` are derived from the bytes on
+/// this node — the content hash out of `BlobMeta`, the MIME type sniffed from
+/// the first chunk — so for a blob only a peer holds, they are not "missing",
+/// they are unknowable without downloading it. A single struct with optional
+/// fields would invite a caller to fill them in with a default and publish a
+/// hash nobody computed.
+#[derive(Debug)]
+pub enum BlobPresence {
+    /// This node holds the bytes, so everything is known.
+    Local(BlobMetadata),
+    /// A context peer answered a probe. Only presence and size are known, both
+    /// taken from the holder's `BlobResponse` header; nothing was transferred.
+    Peer {
+        blob_id: BlobId,
+        /// Size in bytes as the holder reported it, `None` if it claimed the
+        /// blob without one. Not verified — verifying it means downloading the
+        /// blob, which is precisely what this path avoids.
+        size: Option<u64>,
+    },
+}
+
 /// How many peers are probed at once when looking for a blob's holder.
 ///
 /// Bounded on purpose: the candidate list is the whole subscriber set of a
@@ -190,7 +214,8 @@ fn discovery_backoff(attempt: usize) -> core::time::Duration {
         .min(MAX_RETRY_DELAY)
 }
 
-/// Index of the first peer in `candidates` that answers "yes, I hold it".
+/// The first peer in `candidates` that answers "yes, I hold it", as its index
+/// plus whatever its probe reported.
 ///
 /// Probes go out `PROBE_BATCH` at a time, concurrently within a batch (so one
 /// slow peer costs the batch a single probe timeout, not one per peer) and
@@ -202,16 +227,20 @@ fn discovery_backoff(attempt: usize) -> core::time::Duration {
 /// before each one, so this returns `None` for "not found, not asked, or out of
 /// time" — all three are the same answer to the caller.
 ///
-/// `probe` must answer `false` for a peer it cannot reach — a search with other
-/// candidates left should not be aborted by one unreachable peer.
-async fn find_blob_holder<P, F>(
+/// `probe` answers `Some(_)` for a holder and `None` otherwise, and must answer
+/// `None` for a peer it cannot reach — a search with other candidates left
+/// should not be aborted by one unreachable peer. The payload is generic so
+/// that a caller wanting only presence (`Some(())`) and one wanting what the
+/// holder reported (`Some(size)`) share this one bounded search rather than
+/// each growing a copy of it.
+async fn find_blob_holder<T, P, F>(
     candidates: &[PeerId],
     probe: P,
     deadline: tokio::time::Instant,
-) -> Option<usize>
+) -> Option<(usize, T)>
 where
     P: Fn(PeerId) -> F,
-    F: core::future::Future<Output = bool>,
+    F: core::future::Future<Output = Option<T>>,
 {
     for (batch_index, batch) in candidates
         .chunks(PROBE_BATCH)
@@ -229,8 +258,12 @@ where
         }))
         .await;
 
-        if let Some(offset) = answers.into_iter().position(|holds| holds) {
-            return Some(batch_index * PROBE_BATCH + offset);
+        if let Some((offset, held)) = answers
+            .into_iter()
+            .enumerate()
+            .find_map(|(offset, held)| held.map(|held| (offset, held)))
+        {
+            return Some((batch_index * PROBE_BATCH + offset, held));
         }
     }
 
@@ -262,14 +295,14 @@ async fn fetch_from_first_holder<T, P, PF, D, DF>(
 ) -> Option<T>
 where
     P: Fn(PeerId) -> PF,
-    PF: core::future::Future<Output = bool>,
+    PF: core::future::Future<Output = Option<()>>,
     D: Fn(PeerId) -> DF,
     DF: core::future::Future<Output = Option<T>>,
 {
     let mut searched = 0;
 
     while searched < candidates.len() {
-        let found = find_blob_holder(&candidates[searched..], &probe, deadline).await?;
+        let (found, ()) = find_blob_holder(&candidates[searched..], &probe, deadline).await?;
         let peer_id = candidates[searched + found];
 
         if tokio::time::Instant::now() >= deadline {
@@ -286,26 +319,26 @@ where
     None
 }
 
-/// Discover a holder among the context's peers and fetch the blob from it,
-/// retrying only while the candidate set is still empty.
+/// Run `sweep` against the context's peers, retrying only while the candidate
+/// set is still empty.
+///
+/// This is the retry-and-deadline half of discovery, with no opinion on what a
+/// sweep does once it has candidates: [`discover_and_fetch_blob`] sweeps by
+/// probing and then downloading, [`discover_blob_presence`] sweeps by probing
+/// alone. Both are bounded by the same [`DISCOVERY_DEADLINE`] and the same
+/// retry rule, because there is one implementation of them.
 ///
 /// `resolve_candidates` is called afresh on every attempt: the reason to retry
 /// at all is that the subscriber set grows, so re-using a stale (empty) list
 /// would make the retries pointless. Once it comes back non-empty, that sweep
 /// is the answer — success or not — and the whole path is capped by
 /// [`DISCOVERY_DEADLINE`] regardless.
-async fn discover_and_fetch_blob<T, C, CF, P, PF, D, DF>(
-    resolve_candidates: C,
-    probe: P,
-    fetch: D,
-) -> Option<T>
+async fn discover_with_retries<T, C, CF, S, SF>(resolve_candidates: C, sweep: S) -> Option<T>
 where
     C: Fn() -> CF,
     CF: core::future::Future<Output = Vec<PeerId>>,
-    P: Fn(PeerId) -> PF,
-    PF: core::future::Future<Output = bool>,
-    D: Fn(PeerId) -> DF,
-    DF: core::future::Future<Output = Option<T>>,
+    S: Fn(Vec<PeerId>, tokio::time::Instant) -> SF,
+    SF: core::future::Future<Output = Option<T>>,
 {
     let deadline = tokio::time::Instant::now() + DISCOVERY_DEADLINE;
 
@@ -317,7 +350,7 @@ where
         let candidates = resolve_candidates().await;
         let had_candidates = !candidates.is_empty();
 
-        if let Some(value) = fetch_from_first_holder(&candidates, &probe, &fetch, deadline).await {
+        if let Some(value) = sweep(candidates, deadline).await {
             return Some(value);
         }
 
@@ -334,6 +367,61 @@ where
     }
 
     None
+}
+
+/// Discover a holder among the context's peers and fetch the blob from it.
+async fn discover_and_fetch_blob<T, C, CF, P, PF, D, DF>(
+    resolve_candidates: C,
+    probe: P,
+    fetch: D,
+) -> Option<T>
+where
+    C: Fn() -> CF,
+    CF: core::future::Future<Output = Vec<PeerId>>,
+    P: Fn(PeerId) -> PF,
+    PF: core::future::Future<Output = Option<()>>,
+    D: Fn(PeerId) -> DF,
+    DF: core::future::Future<Output = Option<T>>,
+{
+    // Bound as references so the per-attempt closure can be `Fn`: `async move`
+    // would otherwise move the probe/fetch closures into the first sweep and
+    // leave nothing for a retry.
+    let (probe, fetch) = (&probe, &fetch);
+
+    discover_with_retries(resolve_candidates, |candidates, deadline| async move {
+        fetch_from_first_holder(&candidates, probe, fetch, deadline).await
+    })
+    .await
+}
+
+/// Discover what a context peer knows about a blob, without transferring it.
+///
+/// The probe-only half of [`discover_and_fetch_blob`]: same candidate list,
+/// same ordering, same batching, same deadline, minus the download. `HEAD` on
+/// the blob endpoint answers from this — a presence question must not cost a
+/// transfer, and a peer already tells us the size in the header it sends before
+/// the first chunk.
+///
+/// Stops at the first holder, whose answer is the answer: unlike a fetch, a
+/// probe has no failure mode to fall back from — a peer that does not answer is
+/// already reported as absent by `probe`, so the next candidate is tried inside
+/// [`find_blob_holder`] rather than here.
+async fn discover_blob_presence<T, C, CF, P, PF>(resolve_candidates: C, probe: P) -> Option<T>
+where
+    C: Fn() -> CF,
+    CF: core::future::Future<Output = Vec<PeerId>>,
+    P: Fn(PeerId) -> PF,
+    PF: core::future::Future<Output = Option<T>>,
+{
+    // See `discover_and_fetch_blob`: a reference is `Copy`, the closure is not.
+    let probe = &probe;
+
+    discover_with_retries(resolve_candidates, |candidates, deadline| async move {
+        find_blob_holder(&candidates, probe, deadline)
+            .await
+            .map(|(_index, held)| held)
+    })
+    .await
 }
 
 impl NodeClient {
@@ -412,7 +500,8 @@ impl NodeClient {
                     self.network_client
                         .probe_blob(*blob_id, *context_id, peer_id, auth)
                         .await
-                        .unwrap_or(false)
+                        .is_ok_and(BlobProbe::is_held)
+                        .then_some(())
                 },
                 |peer_id| async move {
                     tracing::info!(
@@ -979,6 +1068,79 @@ impl NodeClient {
         }
     }
 
+    /// Answer "does this blob exist, and how big is it" — locally, or in
+    /// `context_id` if this node does not hold it.
+    ///
+    /// Without a context this is exactly [`NodeClient::get_blob_info`]: one
+    /// store read, no network, `None` if the blob is not here. With one, a
+    /// local miss falls through to the same bounded probe sweep `get_blob`
+    /// uses — same candidates, same availability-node-first ordering, same
+    /// `PROBE_BATCH`/`MAX_PROBE_BATCHES` caps, same [`DISCOVERY_DEADLINE`] —
+    /// but stops at the header the holder sends before its first chunk. **No
+    /// bytes are transferred and nothing is cached**, which is what makes this
+    /// answerable for a blob far too large to download just to size it.
+    ///
+    /// Discovery is opt-in for that reason: a sweep can cost up to the
+    /// discovery deadline, and a caller that just wants to know what is on this
+    /// node must not pay for it.
+    ///
+    /// The two outcomes carry different amounts of truth, so
+    /// [`BlobPresence`] keeps them apart rather than letting a caller mistake
+    /// one for the other — see its docs.
+    pub async fn get_blob_presence(
+        &self,
+        blob_id: BlobId,
+        context_id: Option<&ContextId>,
+    ) -> eyre::Result<Option<BlobPresence>> {
+        if let Some(metadata) = self.get_blob_info(blob_id).await? {
+            return Ok(Some(BlobPresence::Local(metadata)));
+        }
+
+        let Some(context_id) = context_id else {
+            return Ok(None);
+        };
+
+        // The same signed proof that authorizes a fetch authorizes a probe: a
+        // peer answers "not held" to an unauthorized probe, so probing without
+        // it would find only public blobs. Presence discovery is therefore no
+        // weaker than the download path, and no stronger.
+        let auth = self.create_blob_auth_for_context(context_id, &blob_id)?;
+
+        let size = discover_blob_presence(
+            || async {
+                let candidates = self.context_subscribers(context_id).await;
+                order_candidates(
+                    candidates,
+                    &self.member_roles.anchors_for_context(context_id),
+                )
+            },
+            |peer_id| async move {
+                match self
+                    .network_client
+                    .probe_blob(blob_id, *context_id, peer_id, auth)
+                    .await
+                {
+                    Ok(BlobProbe::Held { size }) => Some(size),
+                    Ok(BlobProbe::Absent) | Err(_) => None,
+                }
+            },
+        )
+        .await;
+
+        let Some(size) = size else {
+            tracing::debug!(
+                %blob_id,
+                %context_id,
+                max_probed = PROBE_BATCH * MAX_PROBE_BATCHES,
+                deadline_secs = DISCOVERY_DEADLINE.as_secs(),
+                "no context peer reported holding this blob"
+            );
+            return Ok(None);
+        };
+
+        Ok(Some(BlobPresence::Peer { blob_id, size }))
+    }
+
     /// Detect MIME type by reading the first few bytes of a blob
     pub async fn detect_blob_mime_type(&self, blob_id: BlobId) -> Option<String> {
         match self.get_blob(&blob_id, None).await {
@@ -1144,8 +1306,8 @@ mod blob_discovery_tests {
     use std::sync::Mutex;
 
     use super::{
-        discover_and_fetch_blob, fetch_from_first_holder, find_blob_holder, PeerId,
-        DISCOVERY_DEADLINE, MAX_DISCOVERY_ATTEMPTS, MAX_PROBE_BATCHES, PROBE_BATCH,
+        discover_and_fetch_blob, discover_blob_presence, fetch_from_first_holder, find_blob_holder,
+        PeerId, DISCOVERY_DEADLINE, MAX_DISCOVERY_ATTEMPTS, MAX_PROBE_BATCHES, PROBE_BATCH,
     };
 
     /// The most peers a single sweep may ask.
@@ -1169,7 +1331,10 @@ mod blob_discovery_tests {
         /// Run one probe: enter, yield enough times that any concurrent sibling
         /// gets scheduled (so `peak_in_flight` reflects real overlap rather
         /// than luck), then leave with `answer`.
-        async fn probe(&self, peer_id: PeerId, answer: bool) -> bool {
+        ///
+        /// Shaped like the real probe closures: `Some(())` for a holder,
+        /// `None` for anything else.
+        async fn probe(&self, peer_id: PeerId, answer: bool) -> Option<()> {
             self.probed
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1183,7 +1348,7 @@ mod blob_discovery_tests {
             }
 
             let _ignored = self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            answer
+            answer.then_some(())
         }
 
         fn probed(&self) -> Vec<PeerId> {
@@ -1212,7 +1377,7 @@ mod blob_discovery_tests {
         )
         .await;
 
-        assert_eq!(holder, None);
+        assert_eq!(holder, None::<(usize, ())>);
         assert_eq!(
             recorder.peak_in_flight.load(Ordering::SeqCst),
             PROBE_BATCH,
@@ -1234,7 +1399,7 @@ mod blob_discovery_tests {
         )
         .await;
 
-        assert_eq!(holder, None);
+        assert_eq!(holder, None::<(usize, ())>);
         assert_eq!(recorder.probed(), candidates[..PROBE_WINDOW].to_vec());
     }
 
@@ -1269,7 +1434,7 @@ mod blob_discovery_tests {
                 let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
                 candidates.clone()
             },
-            |_peer_id| async { false },
+            |_peer_id| async { None },
             |_peer_id| async { Some("bytes") },
         )
         .await;
@@ -1327,7 +1492,7 @@ mod blob_discovery_tests {
         )
         .await;
 
-        assert_eq!(holder, Some(holder_index));
+        assert_eq!(holder, Some((holder_index, ())));
         // The holder is in the first batch, so the search ends there: the
         // batch it sits in is probed in full (those probes are concurrent and
         // already in flight), and not one peer beyond it.
@@ -1350,7 +1515,7 @@ mod blob_discovery_tests {
         )
         .await;
 
-        assert_eq!(holder, Some(holder_index));
+        assert_eq!(holder, Some((holder_index, ())));
         // Two batches: the miss widened the search exactly once, and the third
         // batch was never touched.
         assert_eq!(recorder.probed(), candidates[..PROBE_BATCH * 2].to_vec());
@@ -1373,7 +1538,7 @@ mod blob_discovery_tests {
         )
         .await;
 
-        assert_eq!(holder, Some(1));
+        assert_eq!(holder, Some((1, ())));
     }
 
     #[tokio::test]
@@ -1383,7 +1548,7 @@ mod blob_discovery_tests {
         let holder =
             find_blob_holder(&[], |peer_id| recorder.probe(peer_id, true), no_deadline()).await;
 
-        assert_eq!(holder, None);
+        assert_eq!(holder, None::<(usize, ())>);
         assert!(recorder.probed().is_empty());
     }
 
@@ -1498,7 +1663,7 @@ mod blob_discovery_tests {
                     vec![late_holder]
                 }
             },
-            |_peer_id| async { true },
+            |_peer_id| async { Some(()) },
             |_peer_id| async { Some("bytes") },
         )
         .await;
@@ -1516,7 +1681,7 @@ mod blob_discovery_tests {
                 let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
                 Vec::new()
             },
-            |_peer_id| async { true },
+            |_peer_id| async { Some(()) },
             |_peer_id| async { Some("bytes") },
         )
         .await;
@@ -1535,13 +1700,177 @@ mod blob_discovery_tests {
                 let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
                 vec![holder]
             },
-            |_peer_id| async { true },
+            |_peer_id| async { Some(()) },
             |_peer_id| async { Some("bytes") },
         )
         .await;
 
         assert_eq!(result, Some("bytes"));
         assert_eq!(sweeps.load(Ordering::SeqCst), 1);
+    }
+
+    /// Probe-only discovery: the peer's answer is the answer, and it carries
+    /// the size the holder reported.
+    #[tokio::test]
+    async fn presence_returns_what_the_first_holder_reported() {
+        let candidates = peers(PROBE_BATCH * 3);
+        let holder = candidates[1];
+        let recorder = ProbeRecorder::default();
+
+        let size = discover_blob_presence(
+            || async { candidates.clone() },
+            |peer_id| {
+                let recorder = &recorder;
+                async move {
+                    recorder.probe(peer_id, peer_id == holder).await?;
+                    Some(Some(4096_u64))
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(size, Some(Some(4096)));
+        // One batch, then stop: presence short-circuits exactly like the fetch
+        // path, and no peer past the holder's batch is ever asked.
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH].to_vec());
+    }
+
+    /// A holder that claims the blob without a size is still a holder. The
+    /// unknown size is reported as unknown rather than filled in with a zero
+    /// the caller would publish as fact.
+    #[tokio::test]
+    async fn presence_keeps_an_unknown_size_unknown() {
+        let candidates = peers(1);
+
+        let size = discover_blob_presence(
+            || async { candidates.clone() },
+            |_peer_id| async { Some(None) },
+        )
+        .await;
+
+        assert_eq!(size, Some(None::<u64>));
+    }
+
+    /// Nobody holds it: the same `None` the local-miss path returns, so the
+    /// handler's 404 is reached.
+    #[tokio::test]
+    async fn presence_finds_nothing_when_no_peer_holds_it() {
+        let candidates = peers(PROBE_BATCH * 2);
+        let recorder = ProbeRecorder::default();
+
+        let size: Option<Option<u64>> = discover_blob_presence(
+            || async { candidates.clone() },
+            |peer_id| {
+                let recorder = &recorder;
+                async move {
+                    recorder.probe(peer_id, false).await?;
+                    Some(Some(1))
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(size, None);
+        assert_eq!(recorder.probed().len(), candidates.len());
+    }
+
+    /// The batch and window bounds are the shared `find_blob_holder` ones, not
+    /// a second copy that could drift: a presence sweep on a huge context asks
+    /// the same 32 peers, a full batch wide and no wider.
+    #[tokio::test]
+    async fn presence_holds_the_batch_and_window_bounds() {
+        let candidates = peers(PROBE_WINDOW * 32);
+        let recorder = ProbeRecorder::default();
+
+        let size: Option<Option<u64>> = discover_blob_presence(
+            || async { candidates.clone() },
+            |peer_id| {
+                let recorder = &recorder;
+                async move {
+                    recorder.probe(peer_id, false).await?;
+                    Some(Some(1))
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(size, None);
+        assert_eq!(recorder.probed(), candidates[..PROBE_WINDOW].to_vec());
+        assert_eq!(
+            recorder.peak_in_flight.load(Ordering::SeqCst),
+            PROBE_BATCH,
+            "presence probes must run a full batch wide, and no wider"
+        );
+    }
+
+    /// A `HEAD` must not be able to hang past the discovery budget any more
+    /// than a `GET` can.
+    #[tokio::test(start_paused = true)]
+    async fn presence_stops_at_the_deadline() {
+        let candidates = peers(PROBE_WINDOW);
+        let recorder = ProbeRecorder::default();
+        let started = tokio::time::Instant::now();
+
+        let size: Option<Option<u64>> = discover_blob_presence(
+            || async { candidates.clone() },
+            |peer_id| {
+                let recorder = &recorder;
+                async move {
+                    tokio::time::sleep(core::time::Duration::from_secs(11)).await;
+                    recorder.probe(peer_id, false).await?;
+                    Some(Some(1))
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(size, None);
+        // 11s a batch against the 30s budget: three batches start, the fourth
+        // is refused — the identical arithmetic to the fetch path, because it
+        // is the identical deadline check.
+        assert_eq!(recorder.probed().len(), PROBE_BATCH * 3);
+        assert!(started.elapsed() <= DISCOVERY_DEADLINE + core::time::Duration::from_secs(11));
+    }
+
+    /// Presence inherits the retry rule too: retry an empty subscriber set,
+    /// never re-sweep one that already answered.
+    #[tokio::test(start_paused = true)]
+    async fn presence_retries_only_an_empty_candidate_set() {
+        let late_holder = PeerId::random();
+        let sweeps = AtomicUsize::new(0);
+
+        let size = discover_blob_presence(
+            || async {
+                let sweep = sweeps.fetch_add(1, Ordering::SeqCst) + 1;
+                if sweep < 3 {
+                    Vec::new()
+                } else {
+                    vec![late_holder]
+                }
+            },
+            |_peer_id| async { Some(Some(7_u64)) },
+        )
+        .await;
+
+        assert_eq!(size, Some(Some(7)));
+        assert_eq!(sweeps.load(Ordering::SeqCst), 3);
+
+        let swept = AtomicUsize::new(0);
+        let size: Option<Option<u64>> = discover_blob_presence(
+            || async {
+                let _ignored = swept.fetch_add(1, Ordering::SeqCst);
+                vec![PeerId::random()]
+            },
+            |_peer_id| async { None },
+        )
+        .await;
+
+        assert_eq!(size, None);
+        assert_eq!(
+            swept.load(Ordering::SeqCst),
+            1,
+            "a non-empty presence sweep that found nothing is not repeated"
+        );
     }
 
     #[test]
@@ -1557,5 +1886,62 @@ mod blob_discovery_tests {
         // Underflow- and overflow-safe at both ends of the range.
         assert_eq!(discovery_backoff(0), INITIAL_RETRY_DELAY);
         assert_eq!(discovery_backoff(usize::MAX), MAX_RETRY_DELAY);
+    }
+}
+
+/// `get_blob_presence` over a real node client: what the local arm actually
+/// returns, and what a miss with no context does. The peer arm's bounds live in
+/// [`blob_discovery_tests`] — reaching it here would need a network actor, and
+/// its shape is enforced by [`BlobPresence`] having no hash or MIME field to
+/// fill in wrongly.
+#[cfg(test)]
+mod blob_presence_tests {
+    use calimero_primitives::blobs::BlobId;
+
+    use super::BlobPresence;
+    use crate::test_fixtures::node_client;
+
+    /// A locally held blob answers with everything: size, content hash, and the
+    /// sniffed MIME type — byte-for-byte what `get_blob_info` returned before
+    /// this path existed, so `HEAD` without a context is unchanged.
+    #[tokio::test]
+    async fn a_local_blob_answers_with_full_metadata() {
+        let (node_client, _store, _data_dir, _blob_dir) = node_client().await;
+
+        // A GIF header, so the MIME sniffer has something to find and the test
+        // proves the type is derived rather than defaulted.
+        let bytes: &[u8] = b"GIF89a\x01\x00\x01\x00\x00\x00\x00;";
+        let (blob_id, size) = node_client
+            .add_blob(bytes, Some(bytes.len() as u64), None)
+            .await
+            .expect("blob to store");
+
+        let presence = node_client
+            .get_blob_presence(blob_id, None)
+            .await
+            .expect("presence lookup to succeed")
+            .expect("the blob is local");
+
+        let BlobPresence::Local(metadata) = presence else {
+            panic!("a blob this node holds must not be reported as a peer's");
+        };
+        assert_eq!(metadata.blob_id, blob_id);
+        assert_eq!(metadata.size, size);
+        assert_ne!(metadata.hash, [0; 32], "the content hash must be real");
+        assert_eq!(metadata.mime_type, "image/gif");
+    }
+
+    /// No context asked for means no network at all: an absent blob is absent,
+    /// and the caller pays one store read rather than a probe sweep.
+    #[tokio::test]
+    async fn a_missing_blob_without_a_context_is_not_found() {
+        let (node_client, _store, _data_dir, _blob_dir) = node_client().await;
+
+        let presence = node_client
+            .get_blob_presence(BlobId::from([7; 32]), None)
+            .await
+            .expect("presence lookup to succeed");
+
+        assert!(presence.is_none());
     }
 }

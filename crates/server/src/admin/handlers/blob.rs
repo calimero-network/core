@@ -6,6 +6,7 @@ use axum::http::response::Builder;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
+use calimero_node_primitives::client::BlobPresence;
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::content_hash::ContentHash;
 use calimero_primitives::hash::Hash;
@@ -229,6 +230,30 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
     }
 }
 
+/// Names where a blob lookup got its answer, in `X-Blob-Source`.
+///
+/// A caller must be able to tell "this node holds it" from "some peer says it
+/// does" without inferring it from which headers happen to be missing: the
+/// second answer carries a size and nothing else, because `X-Blob-Hash` and
+/// `X-Blob-MIME-Type` are derived from bytes this node does not have. An
+/// explicit header says which answer this is; a missing `X-Blob-Hash` would
+/// otherwise be indistinguishable from a bug.
+const BLOB_SOURCE_HEADER: &str = "X-Blob-Source";
+
+/// `X-Blob-Source` value: served from (or verified against) this node's store.
+const BLOB_SOURCE_LOCAL: &str = "local";
+
+/// `X-Blob-Source` value: a context peer answered a probe. Presence and size
+/// only, and neither is verified — verifying either means transferring the
+/// blob, which `HEAD` deliberately never does.
+const BLOB_SOURCE_PEER: &str = "peer";
+
+/// The `X-Blob-*` headers a client may read cross-origin.
+///
+/// One list, used by both the full-metadata and the peer-presence response, so
+/// the two cannot drift.
+const EXPOSED_BLOB_HEADERS: &str = "X-Blob-ID, X-Blob-Hash, X-Blob-MIME-Type, X-Blob-Source, ETag";
+
 /// Helper function to build response headers from blob metadata
 fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) -> Builder {
     let etag = format!("\"{}\"", hex::encode(blob_metadata.hash));
@@ -248,10 +273,40 @@ fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) ->
         .header("X-Blob-ID", blob_id.to_string())
         .header("X-Blob-Hash", hex::encode(blob_metadata.hash))
         .header("X-Blob-MIME-Type", &blob_metadata.mime_type)
-        .header(
-            "Access-Control-Expose-Headers",
-            "X-Blob-ID, X-Blob-Hash, X-Blob-MIME-Type, ETag",
-        )
+        // Every response built here is backed by bytes in this node's store —
+        // `download_handler` reaches it only after discovery has stored the
+        // blob locally — so the hash and MIME type above are ours, not a
+        // peer's claim.
+        .header(BLOB_SOURCE_HEADER, BLOB_SOURCE_LOCAL)
+        .header("Access-Control-Expose-Headers", EXPOSED_BLOB_HEADERS)
+}
+
+/// Headers for a blob this node does not hold but a context peer answered for.
+///
+/// Deliberately narrower than [`build_blob_response_headers`]: no `ETag`, no
+/// `Content-Type`, no `X-Blob-Hash`, no `X-Blob-MIME-Type`. All four are
+/// computed from the bytes — the hash from `BlobMeta`, the MIME type sniffed
+/// from the first chunk — and this node has none. Emitting a placeholder would
+/// hand the client a hash nobody computed and let a cache key on it, so the
+/// headers are omitted and `X-Blob-Source: peer` says why.
+///
+/// `Content-Length` carries the size the holder reported, and is omitted when
+/// it reported none: a `HEAD` with no `Content-Length` says "exists, size
+/// unknown", which is true, where `0` would be a lie about an existing blob.
+fn build_peer_presence_headers(blob_id: BlobId, size: Option<u64>) -> Builder {
+    let builder = Response::builder()
+        .status(StatusCode::OK)
+        // Same reasoning as the local path: never shared-cacheable, always
+        // revalidated. More so here — the answer is one peer's word.
+        .header("Cache-Control", "private, no-cache")
+        .header("X-Blob-ID", blob_id.to_string())
+        .header(BLOB_SOURCE_HEADER, BLOB_SOURCE_PEER)
+        .header("Access-Control-Expose-Headers", EXPOSED_BLOB_HEADERS);
+
+    match size {
+        Some(size) => builder.header("Content-Length", size.to_string()),
+        None => builder,
+    }
 }
 
 /// Download a blob by its ID
@@ -452,8 +507,36 @@ pub async fn delete_handler(
 /// Returns blob metadata in HTTP headers without the actual blob content.
 /// This is efficient for checking blob existence and getting size info.
 /// Also detects and returns MIME type based on file content.
+///
+/// # Optional network discovery
+///
+/// With `?context_id=<id>` — the same opt-in `download_handler` takes — a blob
+/// this node does not hold is looked for among the context's peers by probing
+/// them, which answers presence and size without transferring a byte. **`HEAD`
+/// never transfers the blob, with or without a context.**
+///
+/// Discovery is opt-in and not the default because a probe sweep can run to the
+/// node client's 30s discovery deadline, while `HEAD` reads as a cheap call.
+/// Without the parameter this endpoint is exactly what it was: one local store
+/// read.
+///
+/// # Response headers
+///
+/// `X-Blob-Source` names where the answer came from, and decides which of the
+/// other headers are present:
+///
+/// - `local` — this node holds the blob. `Content-Length`, `Content-Type`,
+///   `ETag`, `X-Blob-Hash` and `X-Blob-MIME-Type` are all present, exactly as
+///   before this parameter existed.
+/// - `peer` — only a context peer holds it. `Content-Length` carries the size
+///   it reported; `ETag`, `Content-Type`, `X-Blob-Hash` and `X-Blob-MIME-Type`
+///   are **absent**, because all of them are derived from bytes this node does
+///   not have and are not worth a download to fabricate.
+///
+/// A blob held neither locally nor by any probed peer is a 404, as before.
 pub async fn info_handler(
     Path(blob_id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
@@ -467,23 +550,45 @@ pub async fn info_handler(
         }
     };
 
-    match state.node_client.get_blob_info(blob_id).await {
-        Ok(Some(blob_metadata)) => build_blob_response_headers(&blob_metadata, blob_id)
-            .body(Body::empty())
-            .unwrap_or_else(|_| {
-                ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to build response".to_owned(),
-                }
-                .into_response()
-            }),
-        Ok(None) => ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: "Blob not found".to_owned(),
+    let context_id = match params.get("context_id").map(|raw| raw.parse()).transpose() {
+        Ok(context_id) => context_id,
+        Err(err) => {
+            error!(?err, "Invalid context ID format");
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context ID format".to_owned(),
+            }
+            .into_response();
         }
-        .into_response(),
-        Err(err) => parse_api_error(err).into_response(),
-    }
+    };
+
+    let presence = state
+        .node_client
+        .get_blob_presence(blob_id, context_id.as_ref())
+        .await;
+
+    let headers = match presence {
+        Ok(Some(BlobPresence::Local(blob_metadata))) => {
+            build_blob_response_headers(&blob_metadata, blob_id)
+        }
+        Ok(Some(BlobPresence::Peer { size, .. })) => build_peer_presence_headers(blob_id, size),
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Blob not found".to_owned(),
+            }
+            .into_response()
+        }
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    headers.body(Body::empty()).unwrap_or_else(|_| {
+        ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "Failed to build response".to_owned(),
+        }
+        .into_response()
+    })
 }
 
 #[cfg(test)]
@@ -517,5 +622,52 @@ mod parse_expected_content_hash_tests {
             parse_expected_content_hash("CZ8YUVdk7znjrUmnb5n7kgySk9yRAsQDYmyCxzfSky9t"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_presence_header_tests {
+    use super::{
+        build_peer_presence_headers, BLOB_SOURCE_HEADER, BLOB_SOURCE_PEER, EXPOSED_BLOB_HEADERS,
+    };
+    use calimero_primitives::blobs::BlobId;
+
+    /// The peer answer must not carry anything derived from bytes this node
+    /// does not have. A regression here would publish a hash nobody computed —
+    /// and let a cache key on it.
+    #[test]
+    fn a_peer_answer_omits_the_locally_derived_headers() {
+        let blob_id = BlobId::from([3; 32]);
+        let response = build_peer_presence_headers(blob_id, Some(1024))
+            .body(())
+            .expect("headers to build");
+        let headers = response.headers();
+
+        assert_eq!(headers["Content-Length"], "1024");
+        assert_eq!(headers[BLOB_SOURCE_HEADER], BLOB_SOURCE_PEER);
+        assert_eq!(headers["X-Blob-ID"], blob_id.to_string());
+        assert_eq!(
+            headers["Access-Control-Expose-Headers"],
+            EXPOSED_BLOB_HEADERS
+        );
+
+        for absent in ["ETag", "Content-Type", "X-Blob-Hash", "X-Blob-MIME-Type"] {
+            assert!(
+                !headers.contains_key(absent),
+                "{absent} is derived from the blob's bytes, which this node does not hold"
+            );
+        }
+    }
+
+    /// "Exists, size unknown" is a true answer; `Content-Length: 0` about a
+    /// blob that exists is not.
+    #[test]
+    fn an_unreported_size_omits_content_length() {
+        let response = build_peer_presence_headers(BlobId::from([3; 32]), None)
+            .body(())
+            .expect("headers to build");
+
+        assert!(!response.headers().contains_key("Content-Length"));
+        assert_eq!(response.headers()[BLOB_SOURCE_HEADER], BLOB_SOURCE_PEER);
     }
 }

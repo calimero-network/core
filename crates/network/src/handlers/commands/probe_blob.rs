@@ -1,8 +1,9 @@
 //! "Do you have this blob?" — one peer, one round trip, no transfer.
 //!
 //! Reuses the existing `BlobRequest`/`BlobResponse` exchange: the server
-//! answers `found` before streaming any chunk, so a probe is simply a request
-//! whose chunks are never read. No new wire format.
+//! answers `found` (and, when found, `size`) before streaming any chunk, so a
+//! probe is simply a request whose chunks are never read. No new wire format,
+//! and the size the caller gets back is the one already in that header.
 //!
 //! A probe deliberately does NOT distinguish "not authorised" from "not held" —
 //! the current protocol answers both with `found: false`
@@ -13,7 +14,7 @@ use core::time::Duration;
 
 use actix::{Context, Handler, Message, ResponseFuture};
 use calimero_network_primitives::{
-    blob_types::{BlobRequest, BlobResponse},
+    blob_types::{BlobProbe, BlobRequest, BlobResponse},
     messages::ProbeBlob,
     stream::{Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL},
 };
@@ -54,10 +55,19 @@ impl Handler<ProbeBlob> for NetworkManager {
                 // stream is dropped here, before any chunk is read: that is
                 // what makes this a probe rather than a download.
                 let Some(Ok(msg)) = stream.next().await else {
-                    return Ok::<bool, eyre::Report>(false);
+                    return Ok::<BlobProbe, eyre::Report>(BlobProbe::Absent);
                 };
                 let response: BlobResponse = serde_json::from_slice(&msg.data)?;
-                Ok(response.found)
+                // `found` is the authority on presence; `size` merely rides
+                // along. A holder that omits the size is still a holder — with
+                // an unknown size, never a fabricated one.
+                Ok(if response.found {
+                    BlobProbe::Held {
+                        size: response.size,
+                    }
+                } else {
+                    BlobProbe::Absent
+                })
             })
             .await;
 
@@ -66,18 +76,18 @@ impl Handler<ProbeBlob> for NetworkManager {
             // simply not the peer to fetch from. Returning an error here would
             // abort a search that has other candidates left.
             match probe {
-                Ok(Ok(found)) => {
+                Ok(Ok(outcome)) => {
                     debug!(
                         peer_id = %request.peer_id,
                         blob_id = %request.blob_id,
-                        found,
+                        found = outcome.is_held(),
                         "blob probe complete"
                     );
-                    Ok(found)
+                    Ok(outcome)
                 }
                 Ok(Err(err)) => {
                     debug!(peer_id = %request.peer_id, %err, "blob probe failed");
-                    Ok(false)
+                    Ok(BlobProbe::Absent)
                 }
                 Err(_elapsed) => {
                     debug!(
@@ -85,7 +95,7 @@ impl Handler<ProbeBlob> for NetworkManager {
                         timeout_secs = PROBE_TIMEOUT.as_secs(),
                         "blob probe timed out"
                     );
-                    Ok(false)
+                    Ok(BlobProbe::Absent)
                 }
             }
         })

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use actix::{Actor, Context, Handler};
+use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_node_primitives::bundle::{
@@ -90,8 +91,12 @@ impl Handler<NetworkMessage> for FakePeer {
             NetworkMessage::ProbeBlob { outcome, .. } => {
                 let _previous = self.queries.fetch_add(1, Ordering::SeqCst);
                 let answer = match &self.behavior {
-                    PeerBehavior::Serves(_) | PeerBehavior::ServesUnannounced(_) => true,
-                    PeerBehavior::NoProviders | PeerBehavior::QueryFails => false,
+                    PeerBehavior::Serves(bytes) | PeerBehavior::ServesUnannounced(bytes) => {
+                        BlobProbe::Held {
+                            size: Some(bytes.len() as u64),
+                        }
+                    }
+                    PeerBehavior::NoProviders | PeerBehavior::QueryFails => BlobProbe::Absent,
                 };
                 let _ignored = outcome.send(Ok(answer));
             }
