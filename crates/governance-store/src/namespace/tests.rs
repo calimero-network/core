@@ -8845,3 +8845,73 @@ fn a_subgroup_member_outside_the_namespace_root_is_still_served_by_the_pull() {
          or sealing KeyDelivery locked this member out of its own subgroup"
     );
 }
+
+/// A sealed `GroupDeleted` keeps the heavy ack budget it had in the clear — and
+/// the wire form alone cannot know that.
+///
+/// `timeout_for_namespace_op` classifies from what is on the wire, and there a
+/// sealed root op is an opaque blob, so every one of them fell to the
+/// member-change default. `GroupDeleted` and `KeyDelivery` are the two that were
+/// deliberately given a longer budget — a cascade delete touches every
+/// descendant row, an envelope unwrap can be large — and sealing them silently
+/// halved it from 10s to 5s. The op still propagates; what breaks is the
+/// publisher's verdict, which reports `Degraded` for a delivery that was fine.
+///
+/// The third assertion is the one that says why this is not fixed by raising the
+/// wire-form default: a cheap op must NOT be promoted. Blanket-heavy would make
+/// every sealed `AdminChanged` wait 10s instead of 2s before reporting a real
+/// failure, which is a worse trade than the bug on the common admin path.
+#[test]
+fn a_sealed_root_op_is_given_the_ack_budget_its_cleartext_variant_earns() {
+    use calimero_context_client::local_governance::RootOp;
+
+    use super::governance::NamespaceGovernance;
+    use crate::governance_broadcast::{
+        timeout_for_namespace_op, OP_ACK_CHEAP_TIMEOUT, OP_ACK_HEAVY_TIMEOUT,
+        OP_ACK_MEMBER_CHANGE_TIMEOUT,
+    };
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE4u8; 32]);
+    let gov = NamespaceGovernance::new(&store, ns_gid.to_bytes().into());
+
+    let heavy = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::GroupDeleted {
+            root_group_id: ContextGroupId::from([0xE5u8; 32]),
+            cascade_group_ids: vec![],
+            cascade_context_ids: vec![],
+        },
+    );
+    assert!(
+        matches!(
+            heavy,
+            calimero_context_client::local_governance::NamespaceOp::RootSealed { .. }
+        ),
+        "precondition: this variant travels sealed, or the test proves nothing"
+    );
+    assert_eq!(
+        timeout_for_namespace_op(&heavy),
+        OP_ACK_MEMBER_CHANGE_TIMEOUT,
+        "the key-less classifier can only offer the floor for an opaque blob"
+    );
+    assert_eq!(
+        gov.ack_timeout_for(&heavy),
+        OP_ACK_HEAVY_TIMEOUT,
+        "the publisher holds the key, so it must give the budget the op earns"
+    );
+
+    let cheap = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::AdminChanged {
+            new_admin: calimero_account::AccountId::from([0xE6u8; 32]),
+        },
+    );
+    assert_eq!(
+        gov.ack_timeout_for(&cheap),
+        OP_ACK_CHEAP_TIMEOUT,
+        "and a cheap op must not be promoted: the fix is exactness, not a raise"
+    );
+}
