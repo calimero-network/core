@@ -425,7 +425,7 @@ fn typing_and_reading_walls() {
         }
         landed += 1;
 
-        if read_wall.is_none() && landed % READ_PROBE_STRIDE == 0 {
+        if read_wall.is_none() && landed.is_multiple_of(READ_PROBE_STRIDE) {
             let started = Instant::now();
             let read = call(&module, &mut storage, "get_text", &serde_json::json!({}));
             let read_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -560,7 +560,7 @@ fn mid_document_typing_wall() {
         }
         landed += 1;
 
-        if landed % PROBE_STRIDE == 0 {
+        if landed.is_multiple_of(PROBE_STRIDE) {
             println!(
                 "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1}",
                 outcome.gas_used, outcome.storage_reads,

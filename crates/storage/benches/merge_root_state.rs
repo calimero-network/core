@@ -67,7 +67,7 @@ use std::hint::black_box;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
-use calimero_storage::collections::crdt_meta::{MergeError, Mergeable};
+use calimero_storage::collections::crdt_meta::{MergeError, MergeStrategy, Mergeable};
 use calimero_storage::collections::rekey::RekeyTarget;
 use calimero_storage::merge::merge_root_state_typed;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
@@ -91,6 +91,12 @@ impl BenchState {
 impl RekeyTarget for BenchState {
     // No nested collection ids to re-key — every field is a plain byte blob.
     fn rekey_relative_to(&mut self, _parent_id: Id) {}
+}
+
+// A bench fixture with a hand-written rule, not an app type: the merge is
+// fixed here, so it is not dispatched through a `CustomTypeId`.
+impl MergeStrategy for BenchState {
+    const DISPATCHED: bool = false;
 }
 
 impl Mergeable for BenchState {

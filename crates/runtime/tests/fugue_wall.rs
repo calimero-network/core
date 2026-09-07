@@ -376,7 +376,7 @@ fn typing_and_reading_walls() {
         }
         landed += 1;
 
-        if landed % READ_PROBE_STRIDE != 0 {
+        if !landed.is_multiple_of(READ_PROBE_STRIDE) {
             continue;
         }
 
@@ -543,7 +543,7 @@ fn mid_document_typing_wall() {
         }
         landed += 1;
 
-        if landed % PROBE_STRIDE == 0 {
+        if landed.is_multiple_of(PROBE_STRIDE) {
             println!(
                 "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1}",
                 outcome.gas_used, outcome.storage_reads,

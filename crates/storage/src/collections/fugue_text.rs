@@ -724,7 +724,7 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// applies, so the two paths cannot drift apart.
     ///
     /// The byte layout is an `UnorderedMap` entry's:
-    /// `borsh(Entry<(BlockKey, TextBlock)>)`, i.e. the key and value followed by
+    /// `borsh(Entry<(TextBlock, BlockKey)>)`, i.e. the value and key followed by
     /// the entry's `Element` (whose only serialized field is its id). Both sides
     /// describe the same entity id, so the existing entry's `Element` is kept.
     ///
@@ -737,14 +737,19 @@ impl<S: StorageAdaptor> FugueText<S> {
     ) -> Result<Vec<u8>, super::crdt_meta::MergeError> {
         use super::crdt_meta::MergeError;
 
-        type BlockEntry = super::Entry<(BlockKey, TextBlock)>;
+        // `(value, key)`, not `(key, value)`: that is the order
+        // `UnorderedMap::insert_with_storage_type` stores an entry in. Decoding
+        // it the other way round still SUCCEEDS — a `TextBlock` opens with a
+        // 12-byte `start_id` and a `BlockKey` is 12 bytes — so the mistake
+        // surfaces as a silently wrong join, never as a decode error.
+        type BlockEntry = super::Entry<(TextBlock, BlockKey)>;
 
         let mut existing_entry: BlockEntry = borsh::from_slice(existing)
             .map_err(|error| MergeError::SerializationError(error.to_string()))?;
         let incoming_entry: BlockEntry = borsh::from_slice(incoming)
             .map_err(|error| MergeError::SerializationError(error.to_string()))?;
 
-        join_block(&mut existing_entry.item.1, incoming_entry.item.1);
+        join_block(&mut existing_entry.item.0, incoming_entry.item.0);
 
         borsh::to_vec(&existing_entry)
             .map_err(|error| MergeError::SerializationError(error.to_string()))

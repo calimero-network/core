@@ -715,10 +715,8 @@ fn backward_twin(seed: &Twin, writer: &Passage) -> Twin {
 fn forward_twin(seed: &Twin, writer: &Passage) -> Twin {
     let mut twin = Twin::new(u64::from(writer.replica));
     twin.receive_from(seed);
-    let mut at = 1;
-    for value in core::iter::once(writer.heading).chain(writer.text.chars()) {
+    for (at, value) in (1..).zip(core::iter::once(writer.heading).chain(writer.text.chars())) {
         let _ignored = twin.insert(at, value);
-        at += 1;
     }
     twin
 }

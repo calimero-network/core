@@ -26,7 +26,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 const NONCE: Nonce = [7_u8; 12];
 
 fn aead(c: &mut Criterion) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let sk = PrivateKey::random(&mut rng);
     let key = SharedKey::from_sk(&sk);
 
