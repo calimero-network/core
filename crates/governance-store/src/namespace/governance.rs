@@ -101,6 +101,47 @@ pub(crate) fn classify_report_readiness(
 }
 
 /// Domain API for namespace DAG and governance operation lifecycle.
+/// How many times a retry pass may re-enter itself.
+///
+/// Two of the effects in [`NamespaceGovernance::root_op_side_effects`] call back
+/// into the retry that invoked them: a replayed `KeyDelivery` unwraps a key and
+/// then re-drives that group's buffered ops, and a replayed `GroupCreated`
+/// re-drives the ops it just unblocked. Each of those re-drives replays sealed
+/// root ops again, which can reach another `KeyDelivery`. Without a bound that
+/// is unbounded mutual recursion on a log the node controls the contents of.
+///
+/// One re-entry is what the real dependency edges need, and the passes are
+/// idempotent, so a level that finds nothing costs a walk and no more. Deeper
+/// chains are left to the next key arrival or the #2848 startup sweep, which is
+/// where an unbounded amount of catch-up belongs.
+const MAX_RETRY_REENTRY: u8 = 1;
+
+/// What one [`NamespaceGovernance::retry_sealed_root_ops`] pass achieved.
+///
+/// `applied` is the progress signal the caller needs to decide whether a second
+/// pass could find anything; `divergence` rides along because a replayed op's
+/// effects can re-drive a group op whose post-apply hash disagrees, and the
+/// retry path is the only place that verdict surfaces (a later fresh arrival of
+/// the same op is nonce-deduped and skips the check).
+struct SealedRootRetry {
+    applied: usize,
+    divergence: Option<super::super::DivergenceReport>,
+}
+
+/// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
+/// op's effects, for the caller to fold into its own report.
+///
+/// Both fields are best-effort signals rather than failures: an effect that
+/// could not complete says so here and the DAG apply continues, because a root
+/// op that folded must not be un-applied by a side effect that did not.
+#[derive(Default)]
+struct RootSideEffects {
+    /// Divergence surfaced by a nested retry, if any.
+    divergence: Option<super::super::DivergenceReport>,
+    /// Keys an effect needed and did not hold.
+    key_unwrap_failures: Vec<KeyUnwrapFailure>,
+}
+
 pub struct NamespaceGovernance<'a> {
     store: &'a Store,
     namespace_id: NamespaceId,
@@ -321,197 +362,13 @@ impl<'a> NamespaceGovernance<'a> {
             (NamespaceOp::Root(root), _) | (NamespaceOp::RootSealed { .. }, Some(root)) => {
                 root_events = self.apply_root_op(op, root)?;
 
-                match root {
-                    RootOp::KeyDelivery {
-                        group_id,
-                        ref envelope,
-                    } => {
-                        // Admin-initiated delivery (add_group_members /
-                        // admit_tee_node) of a group key to a member that
-                        // can't yet decrypt the group. Reuse the joiner-side
-                        // apply: unwrap for our identity, store, seed the
-                        // bootstrap scaffolding (placeholder meta + own member
-                        // row + default caps — NOT the founding admin, which
-                        // comes from the NamespaceCreated genesis since #2474),
-                        // and replay buffered ops. Best-effort:
-                        // a failure here must not block the DAG (every later
-                        // op would orphan), so errors are logged, not
-                        // propagated.
-                        match self.apply_received_group_key_envelope(
-                            group_id.to_bytes(),
-                            envelope,
-                            op.signer,
-                            // `None`: a `KeyDelivery` carries no `key_id` to
-                            // check against, and needs none — the op is signed
-                            // and the envelope's sender is pinned to that
-                            // signer, so provenance is already established by
-                            // the DAG rather than by a hash comparison.
-                            None,
-                        ) {
-                            Ok(retry_divergence) => {
-                                if retry_divergence.is_some() {
-                                    result.divergence = retry_divergence;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    group_id = %hex::encode(group_id.to_bytes()),
-                                    error = %e,
-                                    "KeyDelivery side-effect failed; DAG apply continues"
-                                );
-                                result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                    group_id: group_id.to_bytes(),
-                                    reason: format!("KeyDelivery side-effect failed: {e}"),
-                                });
-                            }
-                        }
-                    }
-                    RootOp::MemberJoined {
-                        member,
-                        signed_invitation,
-                        ..
-                    }
-                    | RootOp::MemberJoinedAt {
-                        member,
-                        signed_invitation,
-                        ..
-                    } => {
-                        // The joiner obtains the group key via the direct
-                        // join response and the joiner-side pull
-                        // (`recover_missing_group_keys`); no delivery is
-                        // triggered from this apply path.
-                        //
-                        // Clear the deny-list on EVERY peer, not just the
-                        // local rejoiner — same rationale as the
-                        // `MemberJoinedOpen` arm below and the sibling
-                        // `MemberAdded` (`mod.rs:1215`) /
-                        // `MemberJoinedViaTeeAttestation` (`mod.rs:1502`)
-                        // arms. A prior `MemberLeft` (or `MemberRemoved`)
-                        // stamped this member on each peer's per-subgroup
-                        // deny-list; re-joining via an open invitation must
-                        // clear that stale `GroupDeniedMember` row, or peers
-                        // keep dropping the rejoiner's state-delta traffic at
-                        // the receive filter forever. `MemberJoined` /
-                        // `MemberJoinedAt` were the missing arms. Idempotent
-                        // on a member who was never denied. The group key is
-                        // the invitation's `group_id`, the subgroup the
-                        // joiner materialized a direct membership row in.
-                        let group_id = signed_invitation.invitation.group_id;
-                        DenyListRepository::new(self.store).clear(&group_id, member)?;
-                    }
-                    RootOp::MemberJoinedOpen {
-                        member, group_id, ..
-                    } => {
-                        // The joiner pulls the subgroup key directly from a
-                        // sync peer; no delivery is triggered here. Authority
-                        // for this op is validated in `execute_member_joined_open`
-                        // (we ran it via `apply_root_op` above before this
-                        // match), so by the time we get here the path is
-                        // confirmed Inherited.
-                        let group_id_typed = *group_id;
-                        // Clear deny-list on EVERY peer, not just the
-                        // local rejoiner. A prior `MemberLeft` (or
-                        // `MemberRemoved` followed by inheritance rejoin)
-                        // stamped node-2 on each peer's per-subgroup
-                        // deny-list at `mod.rs:1248` / `:1627`; without
-                        // clearing it here, peers continue to drop
-                        // node-2's state-delta traffic at the receive
-                        // filter even after the rejoin completes. The
-                        // sibling `MemberAdded` arm at `mod.rs:1215`
-                        // already does this; `MemberJoinedViaTeeAttestation`
-                        // at `mod.rs:1502` does this; `MemberJoinedOpen`
-                        // was the missing third arm. Without it the
-                        // `kick → inheritance-rejoin → write` and
-                        // `leave → inheritance-rejoin → write` flows
-                        // converge on the rejoiner's local store but
-                        // never replicate to peers — symptom: post-rejoin
-                        // sync diverges in the kick/leave-rejoin e2e.
-                        // Idempotent on a member who was never denied.
-                        //
-                        // Local rejoiner recovery goes with it: re-create the
-                        // per-context `ContextIdentity` membership marker that a
-                        // prior `MemberLeft` cascade deleted. The marker is
-                        // keyless — the signer is resolved live from the node's
-                        // namespace identity — and the scope gate inside
-                        // `restore_member_context_identities` makes it a no-op on
-                        // peers whose namespace identity differs from `member`.
-                        // With the marker present the joiner can author state-DAG
-                        // ops as soon as the group key lands. Idempotent: an
-                        // existing row is left untouched.
-                        //
-                        // Both live in a named helper because the sealed-root
-                        // retry has to run them too — see its call site.
-                        self.member_joined_open_side_effects(&group_id_typed, member)?;
-                    }
-                    RootOp::GroupCreated { group_id, .. } => {
-                        // #2848: GroupCreated just wrote this subgroup's meta +
-                        // admin row (via `apply_root_op` above), so an
-                        // encrypted ContextRegistered that was buffered before
-                        // it landed — and previously bailed at the staleness
-                        // check because the meta did not exist — can now apply.
-                        // Re-drive, but only when the node plausibly holds a key
-                        // that could decrypt this group's buffered ops. This is
-                        // a CHEAP keyring presence check — a single
-                        // first-key-exists lookup per keyring
-                        // (`holds_any_key`) — NOT an op-log scan: gating with a
-                        // full op-log scan would defeat the gate's purpose,
-                        // since the retry it guards
-                        // (`collect_retry_candidates_for_group`) already does a
-                        // full scan, so a scanning gate saves nothing on the
-                        // GroupCreated hot path. The check mirrors the
-                        // dual-keyring resolution the apply/retry path uses
-                        // (#2256): the subgroup's own keyring (Restricted) OR
-                        // the namespace keyring (Open subgroups encrypt under
-                        // it). Gating on the subgroup keyring alone was wrong —
-                        // a node holding only the namespace key still has
-                        // decryptable Open buffered ops and must be re-driven.
-                        //
-                        // W3/S1 fix: gate on whether the keyring holds ANY key,
-                        // not just the *current* one. The retry resolves each
-                        // buffered op by its `key_id` (`load_key_by_id`), so
-                        // after a key ROTATION a node may hold only the OLD key
-                        // that a buffered op was encrypted under while
-                        // `load_current_key` returns the newer key (or, if the
-                        // node never received the new delivery, the old key IS
-                        // still the entry but distinct from the op's key_id).
-                        // The old current-key gate produced a false-negative in
-                        // exactly that case — the op was decryptable yet the
-                        // re-drive was skipped. "Holds any key" has no such
-                        // false-negative (if the matching key_id is held, the
-                        // keyring is non-empty); the residual false-positive
-                        // (non-empty keyring without the specific key_id) just
-                        // costs one bounded, self-gating retry scan that finds
-                        // no candidates — harmless. When neither keyring holds
-                        // any key (the common case and the deleted-group exit
-                        // since purge clears keys) the retry is skipped without
-                        // touching the op-log. Best-effort: log, never
-                        // propagate.
-                        let gid = *group_id;
-                        let gid_typed = gid;
-                        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
-                        let holds_key = GroupKeyring::new(self.store, gid_typed)
-                            .holds_any_key()
-                            .unwrap_or(false)
-                            || GroupKeyring::new(self.store, ns_typed)
-                                .holds_any_key()
-                                .unwrap_or(false);
-                        if holds_key {
-                            match self.retry_encrypted_ops_for_group(group_id.to_bytes()) {
-                                Ok(retry_divergence) => {
-                                    if retry_divergence.is_some() {
-                                        result.divergence = retry_divergence;
-                                    }
-                                }
-                                Err(e) => tracing::warn!(
-                                    ?e,
-                                    group_id = %hex::encode(group_id.to_bytes()),
-                                    "retry after GroupCreated failed (#2848)"
-                                ),
-                            }
-                        }
-                    }
-                    _ => {}
+                let effects = self.root_op_side_effects(op, root, 0)?;
+                if effects.divergence.is_some() {
+                    result.divergence = effects.divergence;
                 }
+                result
+                    .key_unwrap_failures
+                    .extend(effects.key_unwrap_failures);
             }
             // Sealed, and the key is not held. Reported rather than applied or
             // dropped: the op stays in the log for the retry pass that runs on
@@ -1354,6 +1211,29 @@ impl<'a> NamespaceGovernance<'a> {
         responder_identity: PublicKey,
         expected_key_id: Option<[u8; 32]>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        self.apply_received_group_key_envelope_at_depth(
+            group_id,
+            envelope,
+            responder_identity,
+            expected_key_id,
+            0,
+        )
+    }
+
+    /// [`Self::apply_received_group_key_envelope`], told how deep the retry chain
+    /// that reached it already is.
+    ///
+    /// Only the replay path needs this: a key that arrives from outside a retry
+    /// starts a fresh chain, so every other caller goes through the wrapper above
+    /// at depth 0.
+    fn apply_received_group_key_envelope_at_depth(
+        &self,
+        group_id: [u8; 32],
+        envelope: &KeyEnvelope,
+        responder_identity: PublicKey,
+        expected_key_id: Option<[u8; 32]>,
+        depth: u8,
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let ns_id = ContextGroupId::from(self.namespace_id.to_bytes());
         let gid = ContextGroupId::from(group_id);
 
@@ -1505,7 +1385,7 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
-        self.retry_encrypted_ops_for_group(group_id)
+        self.retry_encrypted_ops_for_group_at_depth(group_id, depth)
             .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))
     }
 
@@ -1530,13 +1410,16 @@ impl<'a> NamespaceGovernance<'a> {
     /// logged and skipped rather than failing the pass: one undecryptable op must
     /// not stop the others from landing.
     ///
-    /// Returns no divergence report, unlike the group retry: `apply_root_op`
-    /// yields events rather than a post-apply hash comparison, so there is no
-    /// verdict to pass up and a `None` would only look like one that came back
-    /// clean. What it does return is how many ops actually applied, which is
-    /// what lets the caller run this pass twice and know whether the second one
-    /// was worth it.
-    fn retry_sealed_root_ops(&self) -> EyreResult<usize> {
+    /// `applied` is how many ops actually landed, which is what lets the caller
+    /// run this pass twice and know whether the second one was worth it.
+    ///
+    /// A divergence report can come back too, though not from the fold itself:
+    /// `apply_root_op` yields events rather than a post-apply hash comparison.
+    /// It comes from the nested re-drive a replayed `KeyDelivery` or
+    /// `GroupCreated` triggers, where a buffered group op does get hash-checked
+    /// — and this is the only pass that will ever check it, since a later fresh
+    /// arrival of the same op is nonce-deduped and skips the comparison.
+    fn retry_sealed_root_ops(&self, depth: u8) -> EyreResult<SealedRootRetry> {
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
         let own_identity = super::NamespaceRepository::new(self.store)
             .identity(&ns_typed)
@@ -1548,6 +1431,7 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("collect_sealed_root_ops: {e}"))?;
 
         let mut applied = 0usize;
+        let mut divergence: Option<super::super::DivergenceReport> = None;
         for entry in entries {
             if own_identity == Some(entry.signed_op.signer) {
                 continue;
@@ -1593,28 +1477,37 @@ impl<'a> NamespaceGovernance<'a> {
                 Ok(_events) => {
                     applied += 1;
                     record_namespace_retry_event("sealed_root_applied");
-                    // `apply_root_op` is only half of what the fresh-arrival path
-                    // does: the rest of each variant's effects live in
-                    // `apply_signed_op`'s match, which this walk does not run.
-                    // `MemberJoinedOpen` is handled here because this is where
-                    // a buffered join lands; `KeyDelivery`'s envelope unwrap and
-                    // `GroupCreated`'s buffered-op re-drive are still skipped on
-                    // replay, and both re-enter this same retry, so wiring them
-                    // in needs a recursion bound rather than another call.
-                    if let RootOp::MemberJoinedOpen {
-                        ref member,
-                        ref group_id,
-                        ..
-                    } = root
-                    {
-                        if let Err(e) = self.member_joined_open_side_effects(group_id, member) {
-                            tracing::warn!(
-                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                                error = %format!("{e:#}"),
-                                "a replayed MemberJoinedOpen folded but its deny-list clear \
-                                 did not; peers may keep dropping this member's deltas"
-                            );
+                    // `apply_root_op` is the fold and nothing else. The rest of
+                    // what an arriving op does lives in `root_op_side_effects`,
+                    // and a replay that skipped it left the op half-applied:
+                    // a `KeyDelivery` whose key was never unwrapped, a
+                    // `GroupCreated` whose unblocked ops were never re-driven, a
+                    // rejoiner still deny-stamped on every peer. `depth + 1`
+                    // because acting on those effects re-enters this pass.
+                    //
+                    // Best-effort, like every other step in this walk: the fold
+                    // has already happened and is correct, so an effect that
+                    // fails is logged rather than allowed to abort the ops behind
+                    // it in the log.
+                    match self.root_op_side_effects(&entry.signed_op, &root, depth + 1) {
+                        Ok(effects) => {
+                            if effects.divergence.is_some() {
+                                divergence = effects.divergence;
+                            }
+                            for miss in effects.key_unwrap_failures {
+                                tracing::debug!(
+                                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                    group_id = %hex::encode(miss.group_id),
+                                    reason = %miss.reason,
+                                    "a replayed root op's effect still lacks a key"
+                                );
+                            }
                         }
+                        Err(e) => tracing::warn!(
+                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                            error = %format!("{e:#}"),
+                            "a replayed root op folded but one of its effects did not"
+                        ),
                     }
                 }
                 Err(e) => {
@@ -1626,13 +1519,43 @@ impl<'a> NamespaceGovernance<'a> {
                 }
             }
         }
-        Ok(applied)
+        Ok(SealedRootRetry {
+            applied,
+            divergence,
+        })
     }
 
     fn retry_encrypted_ops_for_group(
         &self,
         group_id: [u8; 32],
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        self.retry_encrypted_ops_for_group_at_depth(group_id, 0)
+    }
+
+    /// [`Self::retry_encrypted_ops_for_group`], told how many times the chain
+    /// that reached it has already re-entered itself, and refusing to go deeper
+    /// than [`MAX_RETRY_REENTRY`].
+    ///
+    /// The bound is not a safety valve for a case that "should not happen": the
+    /// cycle is real and reachable. A replayed `KeyDelivery` re-drives its
+    /// group, that re-drive replays sealed root ops, and those can include
+    /// another `KeyDelivery`. Refusing at the bound costs nothing a later key
+    /// arrival or the startup sweep will not redo, and the passes are idempotent
+    /// so nothing is lost by stopping early.
+    fn retry_encrypted_ops_for_group_at_depth(
+        &self,
+        group_id: [u8; 32],
+        depth: u8,
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        if depth > MAX_RETRY_REENTRY {
+            tracing::debug!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                group_id = %hex::encode(group_id),
+                depth,
+                "retry chain hit its re-entry bound; leaving the rest to the next key arrival"
+            );
+            return Ok(None);
+        }
         // Sealed root ops first, and here rather than at a caller. A key reaches a
         // node two ways — a `KeyDelivery` op, and the pull in `group_key_pull` —
         // and both come through this function. Draining at one of them left the
@@ -1644,12 +1567,18 @@ impl<'a> NamespaceGovernance<'a> {
         // node has not folded has nothing to apply against. The dependency also
         // runs the other way, which is why this pass repeats at the end of the
         // group phase below -- see the comment there.
-        if let Err(e) = self.retry_sealed_root_ops() {
-            tracing::warn!(
+        let mut retry_divergence: Option<super::super::DivergenceReport> = None;
+        match self.retry_sealed_root_ops(depth) {
+            Ok(pass) => {
+                if pass.divergence.is_some() {
+                    retry_divergence = pass.divergence;
+                }
+            }
+            Err(e) => tracing::warn!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 error = %format!("{e:#}"),
                 "sealed-root retry pass failed; group retry continues"
-            );
+            ),
         }
 
         let gid_typed = ContextGroupId::from(group_id);
@@ -1669,7 +1598,6 @@ impl<'a> NamespaceGovernance<'a> {
         // semantics. In practice each retry batch unblocks a small
         // number of ops and at most one is a `MemberRemoved` /
         // `MemberLeft` that could report divergence.
-        let mut retry_divergence: Option<super::super::DivergenceReport> = None;
         // Whether the group phase folded anything, which is the only condition
         // under which the second sealed-root pass below can find new work.
         let mut group_applied = 0usize;
@@ -1802,13 +1730,20 @@ impl<'a> NamespaceGovernance<'a> {
         // unconditionally would double that walk on every key arrival for no
         // possible gain: nothing changed between the two passes.
         if group_applied > 0 {
-            match self.retry_sealed_root_ops() {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(
-                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                    applied = n,
-                    "sealed root ops applied only once the group retry folded their ancestry"
-                ),
+            match self.retry_sealed_root_ops(depth) {
+                Ok(pass) => {
+                    if pass.divergence.is_some() {
+                        retry_divergence = pass.divergence;
+                    }
+                    if pass.applied > 0 {
+                        tracing::info!(
+                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                            applied = pass.applied,
+                            "sealed root ops applied only once the group retry folded their \
+                             ancestry"
+                        );
+                    }
+                }
                 Err(e) => tracing::warn!(
                     namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                     error = %format!("{e:#}"),
@@ -2300,6 +2235,227 @@ impl<'a> NamespaceGovernance<'a> {
         nonce_window.record(nonce);
         store_nonce_window(self.store, group_id, signer, &nonce_window)?;
         Ok(divergence)
+    }
+
+    /// Everything a root op does BEYOND folding its own state.
+    ///
+    /// This used to live inline in [`Self::apply_signed_op`]'s match, which made
+    /// it reachable only by a fresh arrival. The sealed-root retry replays ops
+    /// through [`Self::apply_root_op`], which is the fold and nothing else — so a
+    /// replayed `KeyDelivery` never unwrapped its envelope, a replayed
+    /// `GroupCreated` never re-drove the buffered ops it unblocks, and a replayed
+    /// `MemberJoinedOpen` left its rejoiner deny-stamped. Both callers run this
+    /// now, so there is one definition of what an op does rather than a full one
+    /// and a partial one.
+    ///
+    /// `depth` bounds re-entry: two of these effects call back into the retry
+    /// machinery that called us. See [`MAX_RETRY_REENTRY`].
+    ///
+    /// # Errors
+    ///
+    /// When a repository write an effect needs cannot be made. Effects that are
+    /// best-effort by design (the envelope unwrap, the buffered-op re-drive)
+    /// report through the returned [`RootSideEffects`] instead.
+    fn root_op_side_effects(
+        &self,
+        op: &SignedNamespaceOp,
+        root: &RootOp,
+        depth: u8,
+    ) -> EyreResult<RootSideEffects> {
+        let mut effects = RootSideEffects::default();
+        match root {
+            RootOp::KeyDelivery {
+                group_id,
+                ref envelope,
+            } => {
+                // Admin-initiated delivery (add_group_members /
+                // admit_tee_node) of a group key to a member that
+                // can't yet decrypt the group. Reuse the joiner-side
+                // apply: unwrap for our identity, store, seed the
+                // bootstrap scaffolding (placeholder meta + own member
+                // row + default caps — NOT the founding admin, which
+                // comes from the NamespaceCreated genesis since #2474),
+                // and replay buffered ops. Best-effort:
+                // a failure here must not block the DAG (every later
+                // op would orphan), so errors are logged, not
+                // propagated.
+                match self.apply_received_group_key_envelope_at_depth(
+                    group_id.to_bytes(),
+                    envelope,
+                    op.signer,
+                    // `None`: a `KeyDelivery` carries no `key_id` to
+                    // check against, and needs none — the op is signed
+                    // and the envelope's sender is pinned to that
+                    // signer, so provenance is already established by
+                    // the DAG rather than by a hash comparison.
+                    None,
+                    depth,
+                ) {
+                    Ok(retry_divergence) => {
+                        if retry_divergence.is_some() {
+                            effects.divergence = retry_divergence;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            error = %e,
+                            "KeyDelivery side-effect failed; DAG apply continues"
+                        );
+                        effects.key_unwrap_failures.push(KeyUnwrapFailure {
+                            group_id: group_id.to_bytes(),
+                            reason: format!("KeyDelivery side-effect failed: {e}"),
+                        });
+                    }
+                }
+            }
+            RootOp::MemberJoined {
+                member,
+                signed_invitation,
+                ..
+            }
+            | RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                ..
+            } => {
+                // The joiner obtains the group key via the direct
+                // join response and the joiner-side pull
+                // (`recover_missing_group_keys`); no delivery is
+                // triggered from this apply path.
+                //
+                // Clear the deny-list on EVERY peer, not just the
+                // local rejoiner — same rationale as the
+                // `MemberJoinedOpen` arm below and the sibling
+                // `MemberAdded` (`mod.rs:1215`) /
+                // `MemberJoinedViaTeeAttestation` (`mod.rs:1502`)
+                // arms. A prior `MemberLeft` (or `MemberRemoved`)
+                // stamped this member on each peer's per-subgroup
+                // deny-list; re-joining via an open invitation must
+                // clear that stale `GroupDeniedMember` row, or peers
+                // keep dropping the rejoiner's state-delta traffic at
+                // the receive filter forever. `MemberJoined` /
+                // `MemberJoinedAt` were the missing arms. Idempotent
+                // on a member who was never denied. The group key is
+                // the invitation's `group_id`, the subgroup the
+                // joiner materialized a direct membership row in.
+                let group_id = signed_invitation.invitation.group_id;
+                DenyListRepository::new(self.store).clear(&group_id, member)?;
+            }
+            RootOp::MemberJoinedOpen {
+                member, group_id, ..
+            } => {
+                // The joiner pulls the subgroup key directly from a
+                // sync peer; no delivery is triggered here. Authority
+                // for this op is validated in `execute_member_joined_open`
+                // (we ran it via `apply_root_op` above before this
+                // match), so by the time we get here the path is
+                // confirmed Inherited.
+                let group_id_typed = *group_id;
+                // Clear deny-list on EVERY peer, not just the
+                // local rejoiner. A prior `MemberLeft` (or
+                // `MemberRemoved` followed by inheritance rejoin)
+                // stamped node-2 on each peer's per-subgroup
+                // deny-list at `mod.rs:1248` / `:1627`; without
+                // clearing it here, peers continue to drop
+                // node-2's state-delta traffic at the receive
+                // filter even after the rejoin completes. The
+                // sibling `MemberAdded` arm at `mod.rs:1215`
+                // already does this; `MemberJoinedViaTeeAttestation`
+                // at `mod.rs:1502` does this; `MemberJoinedOpen`
+                // was the missing third arm. Without it the
+                // `kick → inheritance-rejoin → write` and
+                // `leave → inheritance-rejoin → write` flows
+                // converge on the rejoiner's local store but
+                // never replicate to peers — symptom: post-rejoin
+                // sync diverges in the kick/leave-rejoin e2e.
+                // Idempotent on a member who was never denied.
+                //
+                // Local rejoiner recovery goes with it: re-create the
+                // per-context `ContextIdentity` membership marker that a
+                // prior `MemberLeft` cascade deleted. The marker is
+                // keyless — the signer is resolved live from the node's
+                // namespace identity — and the scope gate inside
+                // `restore_member_context_identities` makes it a no-op on
+                // peers whose namespace identity differs from `member`.
+                // With the marker present the joiner can author state-DAG
+                // ops as soon as the group key lands. Idempotent: an
+                // existing row is left untouched.
+                //
+                // Both live in a named helper because the sealed-root
+                // retry has to run them too — see its call site.
+                self.member_joined_open_side_effects(&group_id_typed, member)?;
+            }
+            RootOp::GroupCreated { group_id, .. } => {
+                // #2848: GroupCreated just wrote this subgroup's meta +
+                // admin row (via `apply_root_op` above), so an
+                // encrypted ContextRegistered that was buffered before
+                // it landed — and previously bailed at the staleness
+                // check because the meta did not exist — can now apply.
+                // Re-drive, but only when the node plausibly holds a key
+                // that could decrypt this group's buffered ops. This is
+                // a CHEAP keyring presence check — a single
+                // first-key-exists lookup per keyring
+                // (`holds_any_key`) — NOT an op-log scan: gating with a
+                // full op-log scan would defeat the gate's purpose,
+                // since the retry it guards
+                // (`collect_retry_candidates_for_group`) already does a
+                // full scan, so a scanning gate saves nothing on the
+                // GroupCreated hot path. The check mirrors the
+                // dual-keyring resolution the apply/retry path uses
+                // (#2256): the subgroup's own keyring (Restricted) OR
+                // the namespace keyring (Open subgroups encrypt under
+                // it). Gating on the subgroup keyring alone was wrong —
+                // a node holding only the namespace key still has
+                // decryptable Open buffered ops and must be re-driven.
+                //
+                // W3/S1 fix: gate on whether the keyring holds ANY key,
+                // not just the *current* one. The retry resolves each
+                // buffered op by its `key_id` (`load_key_by_id`), so
+                // after a key ROTATION a node may hold only the OLD key
+                // that a buffered op was encrypted under while
+                // `load_current_key` returns the newer key (or, if the
+                // node never received the new delivery, the old key IS
+                // still the entry but distinct from the op's key_id).
+                // The old current-key gate produced a false-negative in
+                // exactly that case — the op was decryptable yet the
+                // re-drive was skipped. "Holds any key" has no such
+                // false-negative (if the matching key_id is held, the
+                // keyring is non-empty); the residual false-positive
+                // (non-empty keyring without the specific key_id) just
+                // costs one bounded, self-gating retry scan that finds
+                // no candidates — harmless. When neither keyring holds
+                // any key (the common case and the deleted-group exit
+                // since purge clears keys) the retry is skipped without
+                // touching the op-log. Best-effort: log, never
+                // propagate.
+                let gid = *group_id;
+                let gid_typed = gid;
+                let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+                let holds_key = GroupKeyring::new(self.store, gid_typed)
+                    .holds_any_key()
+                    .unwrap_or(false)
+                    || GroupKeyring::new(self.store, ns_typed)
+                        .holds_any_key()
+                        .unwrap_or(false);
+                if holds_key {
+                    match self.retry_encrypted_ops_for_group_at_depth(group_id.to_bytes(), depth) {
+                        Ok(retry_divergence) => {
+                            if retry_divergence.is_some() {
+                                effects.divergence = retry_divergence;
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            ?e,
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            "retry after GroupCreated failed (#2848)"
+                        ),
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(effects)
     }
 
     /// What a `MemberJoinedOpen` does beyond folding its own state.
