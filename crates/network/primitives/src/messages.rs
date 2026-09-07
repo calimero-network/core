@@ -52,7 +52,7 @@ pub use libp2p::PeerId;
 use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
-use crate::blob_types::BlobAuth;
+use crate::blob_types::{BlobAuth, BlobProbe};
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
 
@@ -515,9 +515,14 @@ pub struct ProbeBlob {
 }
 
 impl actix::Message for ProbeBlob {
-    /// Whether that peer holds (and will serve) the blob. A peer that is
-    /// unreachable, slow, or unwilling answers `false` — never an error.
-    type Result = eyre::Result<bool>;
+    /// Whether that peer holds (and will serve) the blob, and how big it says
+    /// it is. A peer that is unreachable, slow, or unwilling answers
+    /// [`BlobProbe::Absent`] — never an error.
+    ///
+    /// The size rides along because it is already on the wire: the responder
+    /// sends `BlobResponse { found, size }` before any chunk, so a caller that
+    /// wants presence and size never has to open a transfer.
+    type Result = eyre::Result<BlobProbe>;
 }
 
 /// Tell one peer that this node now holds `blob_id` for `context_id`.
