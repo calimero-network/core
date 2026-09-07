@@ -297,7 +297,7 @@ impl<'a> NamespaceGovernance<'a> {
         // Unconditional, with no exception for an unkeyed namespace. A namespace
         // root is a group, `create_group` mints a key for whatever group it
         // creates, so a namespace is keyed from the moment it exists and there is
-        // no legitimate window in which one of these five is authored without a
+        // no legitimate window in which a sealable root op is authored without a
         // key to seal it under. An exception here would also have to be decided
         // from the receiver's own keyring, and a node still awaiting key delivery
         // would answer differently from a keyed peer — two nodes disagreeing
@@ -427,19 +427,21 @@ impl<'a> NamespaceGovernance<'a> {
                         // never replicate to peers — symptom: post-rejoin
                         // sync diverges in the kick/leave-rejoin e2e.
                         // Idempotent on a member who was never denied.
-                        DenyListRepository::new(self.store).clear(&group_id_typed, member)?;
-                        // Local rejoiner recovery: re-create the per-context
-                        // `ContextIdentity` membership marker that a prior
-                        // `MemberLeft` cascade deleted. The marker is keyless —
-                        // the signer is resolved live from the node's namespace
-                        // identity — and the scope gate inside
+                        //
+                        // Local rejoiner recovery goes with it: re-create the
+                        // per-context `ContextIdentity` membership marker that a
+                        // prior `MemberLeft` cascade deleted. The marker is
+                        // keyless — the signer is resolved live from the node's
+                        // namespace identity — and the scope gate inside
                         // `restore_member_context_identities` makes it a no-op on
                         // peers whose namespace identity differs from `member`.
                         // With the marker present the joiner can author state-DAG
-                        // ops as soon as `KeyDelivery` populates the group key
-                        // (GroupKeyring). Idempotent: an existing row is left
-                        // untouched.
-                        restore_member_context_identities(self.store, &group_id_typed, member)?;
+                        // ops as soon as the group key lands. Idempotent: an
+                        // existing row is left untouched.
+                        //
+                        // Both live in a named helper because the sealed-root
+                        // retry has to run them too — see its call site.
+                        self.member_joined_open_side_effects(&group_id_typed, member)?;
                     }
                     RootOp::GroupCreated { group_id, .. } => {
                         // #2848: GroupCreated just wrote this subgroup's meta +
@@ -1531,8 +1533,10 @@ impl<'a> NamespaceGovernance<'a> {
     /// Returns no divergence report, unlike the group retry: `apply_root_op`
     /// yields events rather than a post-apply hash comparison, so there is no
     /// verdict to pass up and a `None` would only look like one that came back
-    /// clean.
-    fn retry_sealed_root_ops(&self) -> EyreResult<()> {
+    /// clean. What it does return is how many ops actually applied, which is
+    /// what lets the caller run this pass twice and know whether the second one
+    /// was worth it.
+    fn retry_sealed_root_ops(&self) -> EyreResult<usize> {
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
         let own_identity = super::NamespaceRepository::new(self.store)
             .identity(&ns_typed)
@@ -1543,6 +1547,7 @@ impl<'a> NamespaceGovernance<'a> {
             .collect_sealed_root_ops()
             .map_err(|e| eyre::eyre!("collect_sealed_root_ops: {e}"))?;
 
+        let mut applied = 0usize;
         for entry in entries {
             if own_identity == Some(entry.signed_op.signer) {
                 continue;
@@ -1585,7 +1590,33 @@ impl<'a> NamespaceGovernance<'a> {
                 continue;
             }
             match self.apply_root_op(&entry.signed_op, &root) {
-                Ok(_events) => record_namespace_retry_event("sealed_root_applied"),
+                Ok(_events) => {
+                    applied += 1;
+                    record_namespace_retry_event("sealed_root_applied");
+                    // `apply_root_op` is only half of what the fresh-arrival path
+                    // does: the rest of each variant's effects live in
+                    // `apply_signed_op`'s match, which this walk does not run.
+                    // `MemberJoinedOpen` is handled here because this is where
+                    // a buffered join lands; `KeyDelivery`'s envelope unwrap and
+                    // `GroupCreated`'s buffered-op re-drive are still skipped on
+                    // replay, and both re-enter this same retry, so wiring them
+                    // in needs a recursion bound rather than another call.
+                    if let RootOp::MemberJoinedOpen {
+                        ref member,
+                        ref group_id,
+                        ..
+                    } = root
+                    {
+                        if let Err(e) = self.member_joined_open_side_effects(group_id, member) {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                error = %format!("{e:#}"),
+                                "a replayed MemberJoinedOpen folded but its deny-list clear \
+                                 did not; peers may keep dropping this member's deltas"
+                            );
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         namespace_id = %hex::encode(self.namespace_id.as_bytes()),
@@ -1595,7 +1626,7 @@ impl<'a> NamespaceGovernance<'a> {
                 }
             }
         }
-        Ok(())
+        Ok(applied)
     }
 
     fn retry_encrypted_ops_for_group(
@@ -1610,7 +1641,9 @@ impl<'a> NamespaceGovernance<'a> {
         //
         // Root before group, because a root op can be what makes a group op
         // applicable: `GroupCreated` is sealed, and a group op for a group this
-        // node has not folded has nothing to apply against.
+        // node has not folded has nothing to apply against. The dependency also
+        // runs the other way, which is why this pass repeats at the end of the
+        // group phase below -- see the comment there.
         if let Err(e) = self.retry_sealed_root_ops() {
             tracing::warn!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
@@ -1637,6 +1670,9 @@ impl<'a> NamespaceGovernance<'a> {
         // number of ops and at most one is a `MemberRemoved` /
         // `MemberLeft` that could report divergence.
         let mut retry_divergence: Option<super::super::DivergenceReport> = None;
+        // Whether the group phase folded anything, which is the only condition
+        // under which the second sealed-root pass below can find new work.
+        let mut group_applied = 0usize;
 
         for candidate in &retry_candidates {
             let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
@@ -1658,6 +1694,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // fires for `MemberRemoved` / `MemberLeft` ops that
                 // were buffered pending `KeyDelivery`.
                 Ok(divergence) => {
+                    group_applied += 1;
                     record_namespace_retry_event("applied");
                     tracing::info!(
                         group_id = %hex::encode(group_id),
@@ -1721,13 +1758,14 @@ impl<'a> NamespaceGovernance<'a> {
                         // MemberRemoved/MemberLeft divergence is instead surfaced
                         // by that subgroup's own key-delivery path or the #2848
                         // startup sweep — not reported from here.
-                        if let Err(e) = self.redrive_encrypted_ops_for_group_counted(sub) {
-                            tracing::warn!(
+                        match self.redrive_encrypted_ops_for_group_counted(sub) {
+                            Ok(applied) => group_applied += applied,
+                            Err(e) => tracing::warn!(
                                 group_id = %hex::encode(sub),
                                 error = %format!("{e:#}"),
                                 "failed to re-drive Open-subgroup buffered ops after \
                                  namespace key delivery"
-                            );
+                            ),
                         }
                     }
                 }
@@ -1736,6 +1774,45 @@ impl<'a> NamespaceGovernance<'a> {
                     error = %format!("{e:#}"),
                     "failed to enumerate held-key buffered-op groups after namespace \
                      key delivery"
+                ),
+            }
+        }
+
+        // And root AFTER group, because the dependency is not one-directional.
+        //
+        // `MemberJoinedOpen` is a sealed root op whose apply gate asks whether
+        // the subgroup is `Open` -- and that answer comes from
+        // `SubgroupVisibilitySet`, a GROUP op sealed under this same namespace
+        // key. A node that held neither buffers both, and the pass above runs
+        // while the flip is still frozen: the gate reads `Restricted`, refuses
+        // the join, and the warn-and-skip loses it until some unrelated key
+        // arrives. The subgroup then has a member every keyed peer sees and this
+        // node does not, with nothing failing to say so.
+        //
+        // Two passes, not a fixed point. The class of edges is small and known
+        // -- `GroupCreated` unblocks group ops, a folded group op unblocks the
+        // root ops gated on it -- so one pass in each direction closes it. A
+        // longer alternating chain (a group op gated on a membership only
+        // `MemberJoinedOpen` establishes) would still need the next key arrival
+        // or the startup sweep; that is the accepted bound, not an oversight.
+        //
+        // Only when the group phase folded something. The sealed-root walk has
+        // no per-op applied marker -- it re-feeds every sealed root op in the log
+        // and leans on the apply handlers being replay-safe -- so running it
+        // unconditionally would double that walk on every key arrival for no
+        // possible gain: nothing changed between the two passes.
+        if group_applied > 0 {
+            match self.retry_sealed_root_ops() {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    applied = n,
+                    "sealed root ops applied only once the group retry folded their ancestry"
+                ),
+                Err(e) => tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    error = %format!("{e:#}"),
+                    "second sealed-root retry pass failed"
                 ),
             }
         }
@@ -2223,6 +2300,27 @@ impl<'a> NamespaceGovernance<'a> {
         nonce_window.record(nonce);
         store_nonce_window(self.store, group_id, signer, &nonce_window)?;
         Ok(divergence)
+    }
+
+    /// What a `MemberJoinedOpen` does beyond folding its own state.
+    ///
+    /// These live outside [`Self::apply_root_op`], in `apply_signed_op`'s match,
+    /// and the sealed-root retry runs only the former — so a join folded on
+    /// replay would leave the rejoiner deny-stamped on every peer, with peers
+    /// dropping its state deltas at the receive filter, and without the context
+    /// marker it needs to author at all. Named so both callers run the same
+    /// thing rather than one of them running half of it.
+    ///
+    /// # Errors
+    ///
+    /// When the deny-list clear or the marker restore cannot be written.
+    fn member_joined_open_side_effects(
+        &self,
+        group_id: &ContextGroupId,
+        member: &calimero_account::AccountId,
+    ) -> EyreResult<()> {
+        DenyListRepository::new(self.store).clear(group_id, member)?;
+        restore_member_context_identities(self.store, group_id, member)
     }
 
     fn apply_root_op(

@@ -503,31 +503,55 @@ impl Handler<JoinContextRequest> for ContextManager {
                          inherited joiner waits for an admin to add_group_members them"
                     ),
                     Ok(join_account) => {
-                    let op = calimero_context_client::local_governance::NamespaceOp::Root(
+                    // Sealed under the NAMESPACE key, which this publisher holds:
+                    // it is an inherited member joining an Open SUBGROUP, so the
+                    // key it lacks -- and that this op asks a peer for -- is the
+                    // subgroup's, not the namespace's.
+                    // A seal failure is handled exactly like the credential
+                    // failure above and the publish failure below: warn and skip
+                    // the publish. The join itself already stands, so reporting
+                    // it as failed would leave this node a member of a context it
+                    // was told it had not joined.
+                    match calimero_governance_store::seal_root_op_for_publish(
+                        &datastore,
+                        ns_id.to_bytes().into(),
                         calimero_context_client::local_governance::RootOp::MemberJoinedOpen {
                             member: join_account.statement.account,
                             group_id: group_id.to_bytes().into(),
                             account: join_account,
                         },
-                    );
-                    if let Err(e) = calimero_governance_store::sign_apply_and_publish_namespace_op(
-                        &datastore,
-                        &node_client,
-                        &ack_router,
-                        ns_id.to_bytes().into(),
-                        &signer_sk,
-                        op,
-                    )
-                    .await
-                    {
-                        warn!(
-                            ?e,
+                    ) {
+                        Err(err) => warn!(
+                            ?err,
                             %joiner_identity,
                             %context_id,
-                            "failed to publish MemberJoinedOpen — key delivery to this \
-                             inherited joiner will be skipped; messages will appear local-only \
-                             until an admin explicitly add_group_members the joiner"
-                        );
+                            "join_context: could not seal the MemberJoinedOpen publish; the \
+                             join stands, but key delivery to this inherited joiner waits for \
+                             an admin to add_group_members them"
+                        ),
+                        Ok(op) => {
+                            if let Err(e) =
+                                calimero_governance_store::sign_apply_and_publish_namespace_op(
+                                    &datastore,
+                                    &node_client,
+                                    &ack_router,
+                                    ns_id.to_bytes().into(),
+                                    &signer_sk,
+                                    op,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    ?e,
+                                    %joiner_identity,
+                                    %context_id,
+                                    "failed to publish MemberJoinedOpen — key delivery to this \
+                                     inherited joiner will be skipped; messages will appear \
+                                     local-only until an admin explicitly add_group_members the \
+                                     joiner"
+                                );
+                            }
+                        }
                     }
                     }
                     }

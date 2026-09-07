@@ -7,7 +7,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
     JoinSubgroupInheritanceError, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
 };
-use calimero_context_client::local_governance::{KeyEnvelope, NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{KeyEnvelope, RootOp};
 use calimero_primitives::identity::PrivateKey;
 use tracing::{info, warn};
 
@@ -154,11 +154,19 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &ns_id.to_bytes().into(),
                     &joiner_identity,
                 )?;
-                let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
-                    member: join_account.statement.account,
-                    group_id: group_id.to_bytes().into(),
-                    account: join_account,
-                });
+                // Sealed under the NAMESPACE key. This publisher holds it: it is
+                // already a member inheriting inward, and the key it was missing
+                // -- the subgroup's -- is local by this point, as the comment
+                // above about the post-condition says.
+                let op = calimero_governance_store::seal_root_op_for_publish(
+                    &datastore,
+                    ns_id.to_bytes().into(),
+                    RootOp::MemberJoinedOpen {
+                        member: join_account.statement.account,
+                        group_id: group_id.to_bytes().into(),
+                        account: join_account,
+                    },
+                )?;
                 calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,

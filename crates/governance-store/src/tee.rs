@@ -1,8 +1,6 @@
 use crate::NamespaceRepository;
 use calimero_account::AccountId;
-use calimero_context_client::local_governance::{
-    GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
-};
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::Store;
@@ -184,20 +182,49 @@ fn tee_admission_from_bytes(bytes: &[u8]) -> Option<(AccountId, TeeAdmissionReco
     None
 }
 
-/// This namespace's cleartext root ops, for the namespace owning `group_id`.
-fn root_ops_for(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<SignedNamespaceOp>> {
+/// This namespace's root ops, for the namespace owning `group_id`, with the
+/// sealed ones opened.
+///
+/// `MemberJoinedViaTeeAttestation` is published SEALED, so reading only the
+/// cleartext ops finds no admission for any fleet replica — and the subgroup
+/// fan-in below would then admit nobody, silently, on a namespace that has
+/// plainly admitted them. Opening is best-effort: a node that does not hold the
+/// namespace key cannot read the admission, which is the ordinary state before
+/// its own key delivery rather than an error.
+fn root_ops_for(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<RootOp>> {
     let namespace = NamespaceRepository::new(store).resolve(group_id)?;
-    crate::NamespaceOpLogService::new(store, namespace.to_bytes().into()).collect_root_ops()
+    let namespace_id = calimero_governance_types::NamespaceId::from(namespace.to_bytes());
+    let mut ops = Vec::new();
+    for signed in crate::NamespaceOpLogService::new(store, namespace_id).collect_root_ops()? {
+        match signed.op {
+            NamespaceOp::Root(root) => ops.push(root),
+            NamespaceOp::RootSealed { key_id, encrypted } => {
+                match crate::open_sealed_root_op(store, namespace_id, key_id.as_bytes(), &encrypted)
+                {
+                    Ok(Some(root)) => ops.push(root),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(
+                        namespace_id = %hex::encode(namespace.to_bytes()),
+                        error = %format!("{e:#}"),
+                        "skipping a sealed root op that would not open while reading TEE \
+                         admissions"
+                    ),
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ops)
 }
 
-/// The admission verdict a cleartext [`RootOp`] carries, if it is one and it
-/// names `group_id`.
+/// The admission verdict a [`RootOp`] carries, if it is one and it names
+/// `group_id`.
 fn tee_admission_from_root_op(
-    signed: &SignedNamespaceOp,
+    root: &RootOp,
     group_id: &ContextGroupId,
 ) -> Option<(AccountId, TeeAdmissionRecord)> {
     {
-        if let NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
+        if let RootOp::MemberJoinedViaTeeAttestation {
             group_id: op_group,
             member: _,
             quote_hash,
@@ -210,15 +237,15 @@ fn tee_admission_from_root_op(
             role,
             account,
             ..
-        }) = &signed.op
+        } = root
         {
-            // The cleartext form names its group explicitly, so an admission
-            // into a DIFFERENT group in this namespace must not be read as one
-            // into `group_id`.
+            // The root form names its group explicitly, so an admission into a
+            // DIFFERENT group in this namespace must not be read as one into
+            // `group_id`.
             if *op_group != *group_id {
                 return None;
             }
-            // The cleartext form names the attested KEY, while the verdict is
+            // The root form names the attested KEY, while the verdict is
             // recorded against the account that admission created. Both are on
             // the op: the account comes from the credential, which the apply
             // refused unless it certifies this very key.
@@ -256,12 +283,12 @@ pub fn tee_admission_record(
         }
     }
 
-    // ...and the namespace log, where the CLEARTEXT admission lives. A fleet
+    // ...and the namespace log, where the ROOT admission lives. A fleet
     // replica's admission is a `RootOp`, so it never appears in the per-group
     // log scanned above; without this the subgroup fan-in finds no verdict for
     // a replica the namespace has plainly admitted.
-    for signed in root_ops_for(store, group_id)? {
-        if let Some((member, record)) = tee_admission_from_root_op(&signed, group_id) {
+    for root in root_ops_for(store, group_id)? {
+        if let Some((member, record)) = tee_admission_from_root_op(&root, group_id) {
             if member == *identity {
                 latest = Some(record);
             }
@@ -294,8 +321,8 @@ pub fn tee_admission_records(
         }
     }
 
-    for signed in root_ops_for(store, group_id)? {
-        if let Some((member, record)) = tee_admission_from_root_op(&signed, group_id) {
+    for root in root_ops_for(store, group_id)? {
+        if let Some((member, record)) = tee_admission_from_root_op(&root, group_id) {
             let _ = out.insert(member, record);
         }
     }
@@ -306,7 +333,7 @@ pub fn tee_admission_records(
 #[cfg(test)]
 mod tests {
     use calimero_account::AccountId;
-    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedGroupOp};
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
@@ -387,6 +414,81 @@ mod tests {
         assert!(tee_admission_record(&store, &ns_gid, &unknown)
             .unwrap()
             .is_none());
+    }
+
+    /// A fleet replica's admission is a SEALED root op, and the fan-in has to
+    /// open it.
+    ///
+    /// `MemberJoinedViaTeeAttestation` is published sealed under the namespace
+    /// key, so a read that only looks at cleartext root ops finds no admission
+    /// for any replica. Nothing errors: `tee_admission_record` answers `None`,
+    /// the subgroup fan-in reads that as "not admitted", and every Restricted
+    /// subgroup created afterwards silently admits nobody -- on a namespace that
+    /// has plainly admitted them.
+    #[test]
+    fn a_sealed_root_admission_is_opened_and_read_back() {
+        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+        use crate::test_fixtures::{real_join_account, seal_for_test};
+
+        let store = test_store();
+        let mut rng = rand::rng();
+        let namespace_id = [0xAB; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+
+        let replica_sk = PrivateKey::random(&mut rng);
+        let replica = replica_sk.public_key();
+        let account = real_join_account(&replica);
+        let replica_account = account.statement.account;
+
+        // Signed by the ADMITTER, which is who publishes this op.
+        let admitter_sk = PrivateKey::random(&mut rng);
+        let admit = SignedNamespaceOp::sign(
+            &admitter_sk,
+            namespace_id.into(),
+            vec![],
+            1,
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::MemberJoinedViaTeeAttestation {
+                    group_id: ns_gid,
+                    member: replica,
+                    quote_hash: [0x0A; 32],
+                    mrtd: "m1".to_owned(),
+                    rtmr0: "r0".to_owned(),
+                    rtmr1: "r1".to_owned(),
+                    rtmr2: "r2".to_owned(),
+                    rtmr3: "r3".to_owned(),
+                    tcb_status: "UpToDate".to_owned(),
+                    role: GroupMemberRole::ReadOnlyTee,
+                    account,
+                },
+            ),
+        )
+        .expect("the admitter signs the admission");
+        assert!(
+            matches!(admit.op, NamespaceOp::RootSealed { .. }),
+            "precondition: this variant must be published sealed, or the test \
+             proves nothing"
+        );
+        crate::NamespaceOpLogService::new(&store, namespace_id.into())
+            .store_signed_operation(&admit)
+            .expect("land the admission on the namespace log");
+
+        let record = tee_admission_record(&store, &ns_gid, &replica_account)
+            .unwrap()
+            .expect("a sealed admission this node holds the key for must read back");
+        assert_eq!(record.quote_hash, [0x0A; 32]);
+        assert_eq!(record.role, GroupMemberRole::ReadOnlyTee);
+        assert_eq!(
+            tee_admission_records(&store, &ns_gid)
+                .unwrap()
+                .get(&replica_account)
+                .map(|r| r.quote_hash),
+            Some([0x0A; 32]),
+            "and the batch read must agree with the single-member one"
+        );
     }
 
     #[test]

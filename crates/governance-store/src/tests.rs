@@ -3982,7 +3982,7 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
     // did neither — the kick→inheritance-rejoin and leave→inheritance-
     // rejoin e2e flows hung in post-rejoin sync because the rejoiner's
     // writes were dropped at every peer's deny-list filter.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -4065,11 +4065,15 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member,
-            group_id: subgroup.to_bytes().into(),
-            account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-        }),
+        crate::test_fixtures::seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedOpen {
+                member,
+                group_id: subgroup.to_bytes().into(),
+                account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+            },
+        ),
     )
     .unwrap();
     apply_signed_namespace_op(&store, &signed).unwrap();
@@ -5861,7 +5865,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
 
 #[test]
 fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_from() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -5937,11 +5941,15 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: bob_account,
-            group_id: subgroup,
-            account: crate::test_fixtures::real_join_account(&bob_sk.public_key()),
-        }),
+        crate::test_fixtures::seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedOpen {
+                member: bob_account,
+                group_id: subgroup,
+                account: crate::test_fixtures::real_join_account(&bob_sk.public_key()),
+            },
+        ),
     )
     .unwrap();
     let err = apply_signed_namespace_op(&store, &signed)
@@ -6019,7 +6027,7 @@ fn member_joined_invite_emits_membership_op_event() {
 #[test]
 #[serial_test::serial]
 fn member_joined_open_emits_membership_op_event() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -6074,11 +6082,15 @@ fn member_joined_open_emits_membership_op_event() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: bob_account,
-            group_id: subgroup,
-            account: crate::test_fixtures::real_join_account(&bob_sk.public_key()),
-        }),
+        crate::test_fixtures::seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedOpen {
+                member: bob_account,
+                group_id: subgroup,
+                account: crate::test_fixtures::real_join_account(&bob_sk.public_key()),
+            },
+        ),
     )
     .unwrap();
     apply_signed_namespace_op(&store, &signed).expect("inherited open-subgroup join succeeds");

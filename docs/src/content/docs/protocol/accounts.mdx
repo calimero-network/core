@@ -127,7 +127,7 @@ Endorsers are stored as a **grow-only set**, never a single field. Two links for
 
 ## Enrolling at join — the default path
 
-A member and the device it joined with become known **together**, in one operation, because every cleartext join operation carries the joiner's credential as a required field — `MemberJoined` and `MemberJoinedAt` (invitation), `MemberJoinedOpen` (open-subgroup self-join), and `MemberJoinedViaTeeAttestation` (a hardware-attested [fleet replica](/protocol/tee-attestation/)):
+A member and the device it joined with become known **together**, in one operation, because every join operation carries the joiner's credential as a required field — `MemberJoined` and `MemberJoinedAt` (invitation), `MemberJoinedOpen` (open-subgroup self-join), and `MemberJoinedViaTeeAttestation` (a hardware-attested [fleet replica](/protocol/tee-attestation/)):
 
 ```
   JoinAccountCredential { genesis, chain, cert }
@@ -155,7 +155,7 @@ Everything a peer needs to verify the account and the device, from the operation
 
 ### Why this is possible at all
 
-Nothing in building the credential publishes or encrypts. `ensure_enrolled` mints the device row **locally** and returns the genesis derived from the node's account root; the certificate is signed by that root. The whole credential therefore exists *before* the node holds any scope key — which is exactly what lets it ride a cleartext join operation, and why enrolment no longer waits on key delivery.
+Nothing in building the credential publishes or encrypts. `ensure_enrolled` mints the device row **locally** and returns the genesis derived from the node's account root; the certificate is signed by that root. The whole credential therefore exists *before* the node holds any scope key — which is exactly what lets it ride the join operation itself, and why enrolment no longer waits on key delivery. It is also why the two invitation joins a keyless joiner publishes — `MemberJoined` and `MemberJoinedAt` — are the joins that cannot be [sealed](/protocol/encryption/): sealing them would need the very key the join exists to obtain.
 
 ### The one join somebody else publishes
 
@@ -175,7 +175,7 @@ Two questions, both answerable from the operation's own bytes:
 
 | Check | Guards against |
 | --- | --- |
-| `cert.sign_pk == member` | Join operations are cleartext, so anyone can lift a credential out of somebody else's join and present it as their own. `op.signer == member` proves the envelope, never the payload. |
+| `cert.sign_pk == member` | A join operation is readable by everyone who can apply it — every namespace member, and for the cleartext invitation joins every peer on the topic — so a credential can be lifted out of somebody else's join and presented as one's own. `op.signer == member` proves the envelope, never the payload. |
 | `verify_device_cert(...)` | The genesis hashes to the account the certificate claims, and the certificate is signed by the root key its chain reaches. |
 
 Both live in one predicate that the apply path and the projection encoder **share**, because a credential admitted by one plane and refused by the other is the split this whole design exists to prevent.
@@ -556,7 +556,7 @@ Enrolment is therefore an *ensure*, not a create — and there is no command for
 It derives the account from the root that already exists and mints a device only if
 this node holds none, so it is idempotent by construction. It happens inside the
 join: `MemberJoined`, `MemberJoinedAt`, `MemberJoinedOpen` and
-`MemberJoinedViaTeeAttestation` are cleartext `RootOp`s that carry the
+`MemberJoinedViaTeeAttestation` are `RootOp`s that carry the
 `JoinAccountCredential`, so the binding lands in the same apply as the membership
 and needs no scope key. That is also why the old "join first, then enrol" ordering
 rule is gone: there is nothing left to sequence.
@@ -645,7 +645,7 @@ What comes back, and what does not:
 
 The ordering constraint that used to catch people is gone: a device link once
 travelled as an encrypted group operation, so enrolling needed the scope key and
-had to follow the join. The credential now rides the cleartext join op, so the join
+had to follow the join. The credential now rides the join op itself, so the join
 *is* the enrolment and there is no order to get wrong.
 
 ### Import's guards

@@ -422,10 +422,10 @@ impl<'a> GroupKeyring<'a> {
     /// a strict subset of the members entitled to read it, and would look correct
     /// at every step until some member could not fold namespace structure.
     ///
-    /// Only the five admin-published variants are sealable; see
-    /// [`EncryptedRootOp`] for why the joins, `KeyDelivery` and
-    /// `NamespaceCreated` are not. This function does not enforce that: E1 gates
-    /// it at the publisher, where the decision belongs, and sealing a join here
+    /// Which variants are sealable is decided by `root_op_is_sealable`; see
+    /// [`EncryptedRootOp`] for why `MemberJoinedAt` and `NamespaceCreated` are
+    /// not. This function does not enforce that: the gate lives at the
+    /// publisher, where the decision belongs, and sealing an unsealable op here
     /// would fail later at a point far from the cause.
     ///
     /// # Errors

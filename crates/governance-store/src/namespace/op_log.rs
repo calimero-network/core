@@ -386,13 +386,20 @@ impl<'a> NamespaceOpLogService<'a> {
     /// subgroup's own key). Used by the joiner-side direct key-delivery
     /// pull to learn which groups it has undecryptable pending ops for.
     /// Deduplicated on `(group_id, key_id)`.
-    /// Every cleartext `RootOp` in this namespace's log, oldest first.
+    /// Every root op in this namespace's log, oldest first — sealed and
+    /// cleartext alike, in one walk so the caller sees them in log order.
     ///
     /// The `Root` counterpart of [`Self::collect_signed_group_ops_for_group`].
     /// A namespace op lives under `NamespaceGovOp`, NOT the per-group op log —
     /// so anything scanning `read_op_log_after` for a group is structurally
-    /// blind to it, which is how a cleartext TEE admission left the subgroup
-    /// fan-in with nothing to read.
+    /// blind to it, which is how a TEE admission left the subgroup fan-in with
+    /// nothing to read.
+    ///
+    /// Sealed ops are returned unopened. Opening needs the namespace key, and a
+    /// caller that has to decide what an unreadable op means is better placed to
+    /// do that than a walk that would have to guess. Filtering them out here
+    /// instead is what made the same fan-in blind a second time, once the
+    /// admission became a sealed op.
     pub fn collect_root_ops(&self) -> EyreResult<Vec<SignedNamespaceOp>> {
         let mut entries = Vec::new();
         let handle = self.store.handle();
@@ -478,7 +485,10 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
-            if matches!(signed_op.op, NamespaceOp::Root(_)) {
+            if matches!(
+                signed_op.op,
+                NamespaceOp::Root(_) | NamespaceOp::RootSealed { .. }
+            ) {
                 entries.push(signed_op);
             }
         }
