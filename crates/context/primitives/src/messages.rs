@@ -307,6 +307,22 @@ impl Message for ApplySignedNamespaceOpRequest {
     type Result = eyre::Result<NamespaceApplyOutcome>;
 }
 
+/// Seal a joiner's already-signed join under the namespace key and publish it
+/// under this node's own signature.
+///
+/// The joiner signs its join and hands it over; this node only wraps it. Sealing
+/// here rather than in the caller is not a layering nicety — it needs the
+/// namespace key and this node's signing key, and the actor is where both live.
+#[derive(Debug, Clone)]
+pub struct RelaySignedJoinRequest {
+    /// The joiner's op, endorsed by the admitter, exactly as it will be sealed.
+    pub op: crate::local_governance::SignedNamespaceOp,
+}
+
+impl Message for RelaySignedJoinRequest {
+    type Result = eyre::Result<()>;
+}
+
 /// Query the number of pending (not-yet-applied) ops in a namespace's
 /// governance DAG. Used by the cross-peer parent-pull loop (#2198) to
 /// decide whether another backfill round is needed.
@@ -394,6 +410,10 @@ pub enum ContextMessage {
     ApplySignedNamespaceOp {
         request: ApplySignedNamespaceOpRequest,
         outcome: oneshot::Sender<<ApplySignedNamespaceOpRequest as Message>::Result>,
+    },
+    RelaySignedJoin {
+        request: RelaySignedJoinRequest,
+        outcome: oneshot::Sender<<RelaySignedJoinRequest as Message>::Result>,
     },
     NamespacePendingOpCount {
         request: NamespacePendingOpCountRequest,

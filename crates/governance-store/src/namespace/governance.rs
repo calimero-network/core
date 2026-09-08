@@ -331,6 +331,31 @@ impl<'a> NamespaceGovernance<'a> {
             _ => None,
         };
 
+        // Open a relayed join the same way, and verify the JOINER'S signature
+        // here rather than at the envelope.
+        //
+        // `apply_signed_op` already verified the outer envelope above — that is
+        // the admitter's signature, and it proves only who relayed. The inner
+        // signature is the one that says who joined, and it cannot be checked
+        // until the payload is decrypted. Skipping it would let any namespace
+        // keyholder mint a membership for an account it does not control, which
+        // is precisely the substitution `join_op_proves_ownership` exists to
+        // stop.
+        let opened_relay: Option<SignedNamespaceOp> = match &op.op {
+            NamespaceOp::RootRelaySealed { key_id, encrypted } => {
+                let ns_id_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+                match GroupKeyring::new(self.store, ns_id_typed)
+                    .load_key_by_id(key_id.as_bytes())?
+                {
+                    Some(key) => Some(open_relayed_join(self.namespace_id, &key, encrypted)?),
+                    // Not held yet — ordinary, and parked rather than dropped,
+                    // exactly as for a sealed root op.
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+
         // A sealable root op arriving in the clear is refused, not folded.
         //
         // Until now sealing was a convention: a publisher that skipped it still
@@ -384,6 +409,92 @@ impl<'a> NamespaceGovernance<'a> {
                     ),
                 });
             }
+            // A relayed join. The inner op drives the apply, not the envelope.
+            //
+            // `apply_root_op` and the side effects are handed `inner`, so every
+            // gate below them reads the JOINER as the signer and its endorsement
+            // off the joiner's own envelope — the same values they would see had
+            // the joiner published in the clear. The outer envelope stays the DAG
+            // node: it is what this node stores, dedups on and serves to peers,
+            // and it is signed by the admitter, so a keyless peer can still
+            // authenticate it.
+            (NamespaceOp::RootRelaySealed { key_id, .. }, _) => match opened_relay.as_ref() {
+                Some(inner) => {
+                    // Established when `opened_relay` was built.
+                    let NamespaceOp::Root(root) = &inner.op else {
+                        eyre::bail!("relayed op is not a root op after unsealing");
+                    };
+
+                    // Two replay guards on the INNER op, because the envelope
+                    // cannot serve as one.
+                    //
+                    // `apply_signed_op`'s idempotency guard dedups on the
+                    // ENVELOPE's content hash, and a relay mints a fresh
+                    // envelope around a join that already exists. Without a
+                    // guard here, any namespace keyholder — any member, not only
+                    // an admin — could re-seal a member's old signed join under a
+                    // new id and have every peer fold it again, re-adding a
+                    // member an admin removed: a direct member row is not
+                    // deny-list gated, so that is an admin decision undone by
+                    // someone without admin.
+                    //
+                    // The two cases need different answers because the inner op
+                    // is stored only when it arrived in the clear:
+                    //
+                    // 1. The joiner published this join itself, and it is in the
+                    //    op log under its OWN content hash. Ask the log.
+                    // 2. The join only ever arrived relayed, so the log holds
+                    //    envelopes and never the inner op. The per-signer nonce
+                    //    window answers that one; `record` returns false for a
+                    //    nonce already applied (and for one out of window).
+                    let inner_id = inner
+                        .content_hash()
+                        .map_err(|e| eyre::eyre!("relayed op content_hash: {e}"))?;
+                    let already_in_the_clear =
+                        NamespaceOpLogService::new(self.store, self.namespace_id)
+                            .contains_op(inner_id)?;
+
+                    let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
+                    let mut window = load_nonce_window(self.store, &ns_gid, &inner.signer)?;
+                    // Short-circuit: `record` mutates, so it must not run when
+                    // the op-log already answered.
+                    let newly_applied = !already_in_the_clear && window.record(inner.nonce);
+
+                    if newly_applied {
+                        root_events = self.apply_root_op(inner, root)?;
+
+                        let effects = self.root_op_side_effects(inner, root, 0)?;
+                        if effects.divergence.is_some() {
+                            result.divergence = effects.divergence;
+                        }
+                        result
+                            .key_unwrap_failures
+                            .extend(effects.key_unwrap_failures);
+
+                        // Persisted only after the apply succeeded: burning the
+                        // nonce for an apply that failed would make the failure
+                        // permanent.
+                        store_nonce_window(self.store, &ns_gid, &inner.signer, &window)?;
+                    } else {
+                        tracing::debug!(
+                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                            signer = %inner.signer,
+                            nonce = inner.nonce,
+                            already_in_the_clear,
+                            "a relayed join that was already applied; folding nothing"
+                        );
+                    }
+                }
+                None => {
+                    result.key_unwrap_failures.push(KeyUnwrapFailure {
+                        group_id: self.namespace_id.to_bytes(),
+                        reason: format!(
+                            "no namespace key {} held yet for a relayed join",
+                            hex::encode(key_id.as_bytes())
+                        ),
+                    });
+                }
+            },
             (
                 NamespaceOp::Group {
                     group_id,
@@ -1471,13 +1582,7 @@ impl<'a> NamespaceGovernance<'a> {
             if own_identity == Some(entry.signed_op.signer) {
                 continue;
             }
-            let NamespaceOp::RootSealed {
-                key_id,
-                ref encrypted,
-            } = entry.signed_op.op
-            else {
-                continue;
-            };
+            let key_id = entry.key_id;
             // Still not held: the key that arrived was for something else. Not an
             // error, and not a reason to stop — a later delivery may bring it.
             let Some(key) = GroupKeyring::new(self.store, ns_typed)
@@ -1486,16 +1591,49 @@ impl<'a> NamespaceGovernance<'a> {
             else {
                 continue;
             };
-            let root = match GroupKeyring::decrypt_root_op(&key, encrypted) {
-                Ok(root) => root,
-                Err(e) => {
-                    tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                        error = %format!("{e:#}"),
-                        "skipping a sealed root op that would not open on retry"
-                    );
-                    continue;
+            // Both parked shapes open here, and each yields the op its gates
+            // must see: a sealed root op is gated on its own envelope, a relayed
+            // join on the JOINER'S inner op. Handing the envelope to a relay's
+            // gates would check the admitter's signer against the joiner's
+            // credential and refuse every replayed relay.
+            let opened: Option<(SignedNamespaceOp, RootOp)> = match &entry.signed_op.op {
+                NamespaceOp::RootSealed { encrypted, .. } => {
+                    match GroupKeyring::decrypt_root_op(&key, encrypted) {
+                        Ok(root) => Some((entry.signed_op.clone(), root)),
+                        Err(e) => {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                error = %format!("{e:#}"),
+                                "skipping a sealed root op that would not open on retry"
+                            );
+                            None
+                        }
+                    }
                 }
+                NamespaceOp::RootRelaySealed { encrypted, .. } => {
+                    match open_relayed_join(self.namespace_id, &key, encrypted) {
+                        Ok(inner) => match &inner.op {
+                            NamespaceOp::Root(root) => {
+                                let root = root.clone();
+                                Some((inner, root))
+                            }
+                            // `open_relayed_join` only yields a root op.
+                            _ => None,
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                error = %format!("{e:#}"),
+                                "skipping a relayed join that would not open on retry"
+                            );
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
+            let Some((gate_op, root)) = opened else {
+                continue;
             };
             // The same relocated check the receive path runs. Skipping it here
             // would mean a replayed op is validated less than one applied on
@@ -1508,7 +1646,7 @@ impl<'a> NamespaceGovernance<'a> {
                 );
                 continue;
             }
-            match self.apply_root_op(&entry.signed_op, &root) {
+            match self.apply_root_op(&gate_op, &root) {
                 Ok(_events) => {
                     applied += 1;
                     record_namespace_retry_event("sealed_root_applied");
@@ -1524,7 +1662,7 @@ impl<'a> NamespaceGovernance<'a> {
                     // has already happened and is correct, so an effect that
                     // fails is logged rather than allowed to abort the ops behind
                     // it in the log.
-                    match self.root_op_side_effects(&entry.signed_op, &root, depth + 1) {
+                    match self.root_op_side_effects(&gate_op, &root, depth + 1) {
                         Ok(effects) => {
                             if effects.divergence.is_some() {
                                 divergence = effects.divergence;
@@ -2602,6 +2740,97 @@ pub fn decrypt_group_op(
 /// delivered the namespace key cannot read these, and says so rather than
 /// guessing. Callers must fold that `None` as a hole the reader can see, never
 /// as "nothing happened here".
+/// Open and authenticate a join an admitter relayed under the namespace key.
+///
+/// Decryption proves only that a namespace keyholder sealed this — that is the
+/// admitter. Everything that says *who joined* is inside, so the inner op's
+/// bounds, namespace and signature are all checked here, and this is the only
+/// place they are: the receive path and the key-delivery retry both call it, so
+/// a replayed relay is authenticated exactly as an arriving one. Two copies of
+/// these checks would be two places for them to drift, and the drift would show
+/// up as peers disagreeing about membership rather than as anything failing.
+fn open_relayed_join(
+    namespace_id: NamespaceId,
+    key: &[u8; 32],
+    encrypted: &calimero_governance_types::EncryptedRelayedOp,
+) -> EyreResult<SignedNamespaceOp> {
+    let inner = GroupKeyring::decrypt_relayed_op(key, encrypted)?;
+
+    // The inner op must belong to this namespace. Without this, a relay is a way
+    // to smuggle an op signed for another namespace into this DAG — the outer
+    // envelope's own namespace check never sees the payload.
+    if inner.namespace_id != namespace_id {
+        eyre::bail!(
+            "relayed op is for namespace {}, not {}",
+            hex::encode(inner.namespace_id.as_bytes()),
+            hex::encode(namespace_id.as_bytes())
+        );
+    }
+
+    // The bounds the envelope could not check, then the signature that matters.
+    //
+    // The outer envelope's signature is the admitter's and proves only who
+    // relayed. This one is the joiner's. Skipping it would let any namespace
+    // keyholder mint a membership for an account it does not control, which is
+    // exactly the substitution `join_op_proves_ownership` exists to stop — and
+    // it would be invisible, because the outer signature verifies fine.
+    inner.validate()?;
+    inner
+        .verify_signature()
+        .map_err(|e| eyre::eyre!("relayed op signature: {e}"))?;
+
+    // A real nonce, because the replay guard below is keyed on it.
+    //
+    // `NonceWindow` mints nonces as `max_applied() + 1`, so 1 is the first valid
+    // one and 0 is never authored — and a fresh window has `floor == 0`, so
+    // `contains(0)` is already true. Left unchecked, a join signed with nonce 0
+    // would be silently taken for a replay and never applied. Refused loudly
+    // instead, naming the requirement, so a client that mints 0 is diagnosable
+    // rather than invisible.
+    if inner.nonce == 0 {
+        eyre::bail!(
+            "relayed join carries nonce 0, which is never authored: governance nonces start              at 1, and 0 cannot be told apart from an already-applied nonce"
+        );
+    }
+
+    // A relay carries a join and nothing else. Sealing on someone's behalf is
+    // authority to admit them, not authority to publish arbitrary governance
+    // that peers cannot read — the same limit `carries_a_join` puts on the
+    // endpoint that mints these.
+    if !matches!(
+        inner.op,
+        NamespaceOp::Root(RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. })
+    ) {
+        eyre::bail!(
+            "relayed op is {}, but a relay carries an invitation join only",
+            inner.op.op_kind_label()
+        );
+    }
+
+    Ok(inner)
+}
+
+/// Best-effort read-side open of a relayed join: `None` when the key is not held.
+///
+/// The projection/op-store paths need the joiner's op to attribute the
+/// membership, and they must not fail a store write because a key has not
+/// arrived — so a missing key is `None` here rather than an error, exactly as in
+/// [`open_sealed_root_op`]. The authentication is not relaxed: this goes through
+/// [`open_relayed_join`], so a payload that decrypts but does not verify is an
+/// error, not a `None`.
+pub fn open_relayed_join_for_read(
+    store: &Store,
+    namespace_id: NamespaceId,
+    key_id: &[u8; 32],
+    encrypted: &calimero_governance_types::EncryptedRelayedOp,
+) -> EyreResult<Option<SignedNamespaceOp>> {
+    let ns_group = ContextGroupId::from(namespace_id.to_bytes());
+    match GroupKeyring::new(store, ns_group).load_key_by_id(key_id)? {
+        Some(key) => Ok(Some(open_relayed_join(namespace_id, &key, encrypted)?)),
+        None => Ok(None),
+    }
+}
+
 pub fn open_sealed_root_op(
     store: &Store,
     namespace_id: NamespaceId,

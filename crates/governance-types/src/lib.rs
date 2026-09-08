@@ -711,6 +711,38 @@ pub enum NamespaceOp {
         key_id: KeyId,
         encrypted: EncryptedRootOp,
     },
+    /// A join an admitter relayed, sealed under the namespace key.
+    ///
+    /// The payload is the JOINER'S OWN [`SignedNamespaceOp`], verbatim — not a
+    /// bare [`RootOp`]. That is the whole point: the joiner signs its join in the
+    /// clear, exactly as it does today and with no change to any client, and the
+    /// admitter wraps that signed op rather than re-authoring it. On receive the
+    /// inner op is decrypted and applied through the ordinary path, so the join's
+    /// gates see the joiner as the signer and `join_op_proves_ownership` still
+    /// holds. An admitter cannot substitute a member: the inner signature covers
+    /// the join, and it does not hold the joiner's key.
+    ///
+    /// This exists because sealing these two joins any other way is impossible.
+    /// The signature covers `op` verbatim, the joiner holds no namespace key to
+    /// seal with, and the admitter may not re-sign — see
+    /// [`root_op_is_sealable`] for the full account.
+    ///
+    /// Keyless verification survives, which is why the payload is nested rather
+    /// than the signature moved. The OUTER envelope is signed by the admitter, so
+    /// a peer holding no namespace key authenticates what it stores exactly as it
+    /// does for [`NamespaceOp::RootSealed`]; only the inner join needs the key.
+    ///
+    /// Appended, for the reason [`NamespaceOp::RootSealed`] was: borsh numbers
+    /// variants by position, so every existing op still encodes byte-identically
+    /// and an older node rejects an unknown discriminant outright rather than
+    /// misreading one.
+    ///
+    /// `key_id` is carried for the same reason the other sealed variants carry
+    /// it: after a rotation the receiver holds more than one namespace key.
+    RootRelaySealed {
+        key_id: KeyId,
+        encrypted: EncryptedRelayedOp,
+    },
 }
 
 /// Whether a [`RootOp`] is published sealed.
@@ -778,8 +810,34 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         // invitations -- and only them, which is the kind of partial break that
         // reads as a client bug.
         //
-        // Sealing either therefore needs a different publisher (the admitter,
-        // who already endorses the join and does hold the key), not a flag flip.
+        // A different PUBLISHER does not fix it, and it is worth being exact
+        // about why, because "hand it to the admitter" is the obvious next idea
+        // and it does not work.
+        //
+        // The admitter already relays: `admit_join.rs` exists so a keyholder
+        // with no node can be admitted at all, and that node does hold the
+        // namespace key. So the transmitting party is already the right one.
+        // What blocks the seal is the SIGNATURE, not the transport.
+        // `SignedNamespaceOp::to_signable` copies `op` verbatim, so the joiner's
+        // signature covers the exact `NamespaceOp` value -- swapping
+        // `Root(MemberJoined)` for `RootSealed` invalidates it, and moves the op
+        // id with it. The joiner cannot sign the sealed form (no key, as above),
+        // and the admitter cannot re-sign it: `join_op_proves_ownership` requires
+        // `signer == account.statement.sign_pk`, checked by every peer at apply,
+        // and that check is exactly what stops an admitter substituting a
+        // different member. Endorsement can ride along because it sits OUTSIDE
+        // the signature; the op body cannot.
+        //
+        // Nor is signing-then-sealing available. `seal_root_op_for_publish` runs
+        // BEFORE `sign` on every sealed op deliberately: the signature then
+        // covers the ciphertext, which is what lets a peer holding no namespace
+        // key verify a sealed op without decrypting it. Moving the signature
+        // inside the seal -- verify after decrypt -- would seal these two, at the
+        // cost of keyless verification for every sealed root op, so a non-member
+        // would store skeletons it cannot authenticate.
+        //
+        // Sealing these two is therefore a change to how a sealed op is signed
+        // and verified, i.e. another wire break, not a publisher swap.
         RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. } => false,
         // Published by an admin or member who holds the key, like the ones
         // above. It reads as an exception because its RECIPIENT does not hold
@@ -1117,6 +1175,9 @@ impl NamespaceOp {
             // breakdown for the sealed variants, which is a real cost of
             // sealing them and not an oversight here.
             NamespaceOp::RootSealed { .. } => "root_sealed",
+            // Likewise opaque, and distinct from `root_sealed` because the
+            // payload is a whole signed op rather than a bare root op.
+            NamespaceOp::RootRelaySealed { .. } => "root_relay_sealed",
             NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
             NamespaceOp::Root(RootOp::GroupReparented { .. }) => "group_reparented",
             NamespaceOp::Root(RootOp::GroupDeleted { .. }) => "group_deleted",
@@ -1157,6 +1218,22 @@ pub struct EncryptedRootOp {
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
     /// `AES-256-GCM(borsh(RootOp))` using the namespace key.
+    pub ciphertext: Vec<u8>,
+}
+
+/// A sealed relay payload: an entire [`SignedNamespaceOp`], encrypted under the
+/// namespace key.
+///
+/// A separate type from [`EncryptedRootOp`] on purpose, even though the shape is
+/// identical. The two carry different plaintexts — a bare [`RootOp`] there, a
+/// fully signed op here — and borsh will happily hand a `RootOp` decode a relay
+/// payload's bytes and fail somewhere less obvious. The type is the thing that
+/// says which decrypt to reach for.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct EncryptedRelayedOp {
+    /// 12-byte AES-GCM nonce.
+    pub nonce: [u8; 12],
+    /// `AES-256-GCM(borsh(SignedNamespaceOp))` using the namespace key.
     pub ciphertext: Vec<u8>,
 }
 
@@ -1626,7 +1703,9 @@ impl SignedNamespaceOp {
             // but not readably, and answering from the envelope would mean
             // answering `None` for an op that has one. Callers that need it must
             // decrypt first.
-            NamespaceOp::Root(_) | NamespaceOp::RootSealed { .. } => None,
+            NamespaceOp::Root(_)
+            | NamespaceOp::RootSealed { .. }
+            | NamespaceOp::RootRelaySealed { .. } => None,
         }
     }
 }
@@ -1832,6 +1911,21 @@ impl EncryptedRootOp {
     }
 }
 
+impl EncryptedRelayedOp {
+    /// Bound the ciphertext, the only thing checkable without the key.
+    ///
+    /// The relayed op's own `validate` runs after decryption, in the same place
+    /// and for the same reason as a sealed root op's — see
+    /// [`EncryptedRootOp::validate`].
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "encrypted_relayed_op.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
 impl EncryptedGroupOp {
     /// Bound the ciphertext of an encrypted group op.
     pub fn validate(&self) -> Result<(), GovernanceError> {
@@ -2013,6 +2107,10 @@ impl NamespaceOp {
             // Only the envelope. The inner op is validated after decryption —
             // see `EncryptedRootOp::validate`.
             Self::RootSealed { encrypted, .. } => encrypted.validate(),
+            // Same split for a relayed join: the envelope is bounded here, and
+            // the inner signed op is validated (and its signature verified)
+            // after decryption.
+            Self::RootRelaySealed { encrypted, .. } => encrypted.validate(),
             Self::Group {
                 encrypted,
                 key_rotation,

@@ -9028,3 +9028,408 @@ fn a_replayed_sealed_key_delivery_stores_the_key_it_carries() {
         "and it must be the key the envelope actually carried, not some other entry"
     );
 }
+
+/// A joiner's own signature — not the relay's — decides who joined.
+///
+/// This is the whole reason the relay nests a signed op instead of moving the
+/// signature inside the seal. The envelope is signed by the ADMITTER, so if the
+/// join's gates read the envelope they would compare the admitter's key against
+/// the joiner's credential and refuse every relayed join. They read the inner op
+/// instead, so `join_op_proves_ownership` still holds and the membership lands
+/// for the joiner.
+///
+/// The second half is the security property that makes this safe to add at all:
+/// a namespace keyholder can seal whatever it likes, so if the inner signature
+/// were not checked, any admitter could mint a membership for an account it does
+/// not control. Forging it must be refused.
+#[actix::test]
+async fn a_relayed_join_is_authenticated_by_the_joiner_not_the_admitter() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    // A joiner with a key of its own and no node: it signs, it does not publish.
+    let joiner_sk = PrivateKey::from([0x4Du8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+
+    let join = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member,
+        signed_invitation,
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    });
+    let mut inner =
+        SignedNamespaceOp::sign(&joiner_sk, ns_id, vec![], 1, join).expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+    assert!(
+        matches!(sealed, NamespaceOp::RootRelaySealed { .. }),
+        "precondition: the relay must travel sealed, or this test proves nothing"
+    );
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        .expect("the admitter signs the envelope");
+
+    gov.apply_signed_op(&outer)
+        .expect("a relayed join must apply");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "the join must land for the JOINER; reading the envelope's signer instead \
+         would compare the admitter's key against the joiner's credential and refuse it"
+    );
+
+    // And a relay whose inner signature does not verify is refused. Decryption
+    // proves only that a keyholder sealed it, which is the admitter.
+    let mut forged = inner.clone();
+    forged.signature[0] ^= 0xFF;
+    let forged_sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &forged);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let forged_outer =
+        SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, forged_sealed)
+            .expect("the admitter signs a well-formed envelope around a forged join");
+
+    let err = gov
+        .apply_signed_op(&forged_outer)
+        .expect_err("a relay carrying an unverifiable join must be refused");
+    assert!(
+        format!("{err:#}").contains("signature"),
+        "the refusal must name the signature, got: {err:#}"
+    );
+}
+
+/// A relay carries a join and nothing else.
+///
+/// Being able to seal on someone's behalf is authority to admit them, not
+/// authority to put arbitrary governance on the topic in a form peers cannot
+/// read. Without this a relay is a sealed injector: an admitter could wrap any
+/// signed op at all, and non-members could not even see what went past.
+#[actix::test]
+async fn a_relay_carrying_governance_that_is_not_a_join_is_refused() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    let other_sk = PrivateKey::from([0x4Eu8; 32]);
+    // A valid nonce, so this reaches the join-only check rather than being
+    // refused earlier for the nonce.
+    let inner = SignedNamespaceOp::sign(
+        &other_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::AdminChanged {
+            new_admin: crate::test_fixtures::account_for(&other_sk.public_key()),
+        }),
+    )
+    .expect("sign a non-join op");
+
+    let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        .expect("the admitter signs the envelope");
+
+    let err = gov
+        .apply_signed_op(&outer)
+        .expect_err("a relay is for joins only");
+    assert!(
+        format!("{err:#}").contains("invitation join only"),
+        "the refusal must say a relay carries a join only, got: {err:#}"
+    );
+}
+
+/// A relay that arrives before the namespace key must park, then land when the
+/// key does.
+///
+/// A relayed join is sealed under the namespace key, so a member that has not
+/// received that key yet cannot read it — the ordinary case for anyone still
+/// being bootstrapped. Dropping it would lose a membership permanently, since
+/// nothing re-sends a governance op that was accepted and discarded. It is
+/// parked instead, and the key-delivery retry pass is what completes it.
+///
+/// The park is asserted, not just the eventual apply: without a park recorded
+/// the retry pass has nothing to find, and the test would still pass on a build
+/// that applied the join eagerly for the wrong reason.
+#[actix::test]
+async fn a_relayed_join_parks_without_the_key_and_applies_once_it_arrives() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    let joiner_sk = PrivateKey::from([0x4Fu8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+
+    let join = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member,
+        signed_invitation,
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    });
+    let mut inner =
+        SignedNamespaceOp::sign(&joiner_sk, ns_id, vec![], 1, join).expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    // Sealed under a key this store will then forget, so the receive path is the
+    // realistic one: the op is readable by a keyholder, and this node is not one
+    // yet.
+    // Sealed under a key this store does not hold yet — the realistic receive
+    // case. The key is never stored before the apply, so `load_key_by_id` misses
+    // and the op parks; `key_id` is derived from the key, so the same id resolves
+    // once it is delivered below.
+    let namespace_key = [0x5Au8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let encrypted = GroupKeyring::encrypt_relayed_op(&namespace_key, &inner).expect("seal");
+
+    // The envelope is signed by a DIFFERENT node than the one receiving it. That
+    // is the case a park exists for: the retry pass deliberately skips ops this
+    // node published itself, because publishing already applied them, so a test
+    // that let the receiver be its own admitter would park and then never
+    // replay — and would be testing the skip, not the retry.
+    let remote_admitter_sk = PrivateKey::from([0x50u8; 32]);
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(
+        &remote_admitter_sk,
+        ns_id,
+        vec![],
+        next_nonce,
+        NamespaceOp::RootRelaySealed {
+            key_id: key_id.into(),
+            encrypted,
+        },
+    )
+    .expect("the relaying node signs the envelope");
+
+    let parked = gov.apply_signed_op(&outer).expect("the op is accepted");
+    assert!(
+        !parked.key_unwrap_failures.is_empty(),
+        "a relay it cannot open must be reported as parked, or the retry pass has \
+         nothing to find and the membership is lost silently"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "precondition: the join must not have landed yet"
+    );
+
+    // The key arrives.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("the key is delivered");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the retry pass runs");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "once the key lands, the parked relay must complete the join"
+    );
+}
+
+/// Re-sealing an old join under a fresh envelope must not resurrect a removed
+/// member.
+///
+/// The idempotency guard dedups on the ENVELOPE's content hash, and a relay
+/// mints a fresh envelope around a join that already exists. Without a guard on
+/// the inner op, any namespace keyholder — any member, not only an admin — could
+/// take a member's old signed join, re-seal it, and have every peer fold it
+/// again. A direct member row is not deny-list gated, so that re-adds a member
+/// an admin removed: an admin decision undone by someone who does not hold
+/// admin.
+///
+/// Both arrival shapes are covered here because they need different answers: a
+/// join that arrived in the clear is in the op log under its own hash, and one
+/// that only ever arrived relayed is not, so the nonce window has to answer that
+/// one.
+#[actix::test]
+async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+
+    // Case 1: the join arrived RELAYED, so only envelopes are in the log and the
+    // nonce window is what remembers it.
+    let joiner_sk = PrivateKey::from([0x51u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+    let mut inner = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let relay_once = |inner: &SignedNamespaceOp| {
+        let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, inner);
+        let next_nonce = gov.read_head_record().expect("head").next_nonce;
+        SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+            .expect("sign the envelope")
+    };
+
+    let first = relay_once(&inner);
+    gov.apply_signed_op(&first).expect("the join applies");
+    assert!(
+        members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "precondition: the first relay must land the join"
+    );
+
+    members
+        .remove_member(&ns_gid, &member)
+        .expect("an admin removes the member");
+
+    let replay = relay_once(&inner);
+    assert_ne!(
+        replay.content_hash().expect("hash"),
+        first.content_hash().expect("hash"),
+        "precondition: the re-seal must produce a different op id, or the envelope's own \
+         content-hash guard would catch it and this test proves nothing"
+    );
+    gov.apply_signed_op(&replay)
+        .expect("a well-formed envelope is accepted; it must simply fold nothing");
+    assert!(
+        !members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a re-sealed relayed join must not resurrect a removed member"
+    );
+
+    // Case 2: the join arrived IN THE CLEAR, so the op log holds the inner op
+    // under its own hash and no nonce was ever burned for it.
+    let direct_sk = PrivateKey::from([0x52u8; 32]);
+    let direct_member = crate::test_fixtures::account_for(&direct_sk.public_key());
+    let (direct_invitation, direct_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &direct_member);
+    let mut cleartext = SignedNamespaceOp::sign(
+        &direct_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: direct_member,
+            signed_invitation: direct_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&direct_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    cleartext.admitter_endorsement = Some(direct_endorsement);
+
+    gov.apply_signed_op(&cleartext)
+        .expect("a cleartext invitation join still applies");
+    assert!(
+        members
+            .is_member(&ns_gid, &direct_member)
+            .expect("read membership"),
+        "precondition: the cleartext join must land"
+    );
+
+    members
+        .remove_member(&ns_gid, &direct_member)
+        .expect("an admin removes the member");
+
+    let laundered = relay_once(&cleartext);
+    gov.apply_signed_op(&laundered)
+        .expect("accepted, and must fold nothing");
+    assert!(
+        !members
+            .is_member(&ns_gid, &direct_member)
+            .expect("read membership"),
+        "wrapping an already-applied cleartext join in a relay must not resurrect it \
+         either — the op log holds that one under its own hash"
+    );
+}
+
+/// A relayed join signed with nonce 0 is refused loudly, not silently dropped.
+///
+/// The replay guard is keyed on the joiner's nonce, and `NonceWindow` mints
+/// nonces as `max_applied() + 1` — so 1 is the first valid one, 0 is never
+/// authored, and a fresh window has `floor == 0`, which makes `contains(0)`
+/// already true. Left unchecked, a join signed with nonce 0 would be mistaken
+/// for a replay and never applied, with nothing to show why: the client would
+/// see a well-formed op accepted and the membership never appear. Refusing it by
+/// name is the difference between a diagnosable client bug and an invisible one.
+#[actix::test]
+async fn a_relayed_join_signed_with_nonce_zero_is_refused_by_name() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    let joiner_sk = PrivateKey::from([0x53u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+    let mut inner = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs with an invalid nonce");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        .expect("sign the envelope");
+
+    let err = gov
+        .apply_signed_op(&outer)
+        .expect_err("a join signed with nonce 0 must be refused, not quietly dropped");
+    assert!(
+        format!("{err:#}").contains("nonce 0"),
+        "the refusal must name the nonce so the client can act on it, got: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "and it must not have applied"
+    );
+}
