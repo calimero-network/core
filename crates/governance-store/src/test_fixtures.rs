@@ -737,6 +737,37 @@ pub(super) async fn namespace_publish_fixture() -> (
 ///
 /// Non-sealable variants pass through untouched, so the namespace genesis and
 /// the two invitation joins still travel in the clear exactly as they must.
+/// Wrap a joiner's already-signed op as an admitter's sealed relay.
+///
+/// Mirrors what `relay_signed_join` does in production: seal the joiner's op
+/// under the namespace key and hand back the envelope contents for the caller to
+/// sign as the admitter.
+pub(super) fn relay_seal_for_test(
+    store: &Store,
+    ns_gid: ContextGroupId,
+    inner: &calimero_context_client::local_governance::SignedNamespaceOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    if crate::GroupKeyring::new(store, ns_gid)
+        .load_current_key()
+        .expect("read namespace keyring")
+        .is_none()
+    {
+        let _ = crate::GroupKeyring::new(store, ns_gid)
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omitted");
+    }
+    let (key_id, key) = crate::GroupKeyring::new(store, ns_gid)
+        .load_current_key()
+        .expect("read namespace keyring")
+        .expect("a key was just ensured");
+    let encrypted =
+        crate::GroupKeyring::encrypt_relayed_op(&key, inner).expect("seal a relay for a test");
+    calimero_context_client::local_governance::NamespaceOp::RootRelaySealed {
+        key_id: key_id.into(),
+        encrypted,
+    }
+}
+
 pub(super) fn seal_for_test(
     store: &Store,
     ns_gid: ContextGroupId,

@@ -172,13 +172,44 @@ impl<'a> NamespaceOpLogService<'a> {
             _ => None,
         };
 
+        // A relayed join is decoded from the JOINER'S op, not the envelope.
+        //
+        // The envelope is signed by the admitter, so decoding from it would
+        // record the relay as the author of somebody else's membership — the
+        // same misattribution a sealed join had before #3850, and just as
+        // silent, because an op attributed to the wrong account still folds.
+        // The DAG identity stays the envelope's: `delta.id`/`hlc`/`parents` are
+        // passed through unchanged below, so the op-store and the gov-DAG still
+        // key the same op.
+        let relayed = match &signed.op {
+            NamespaceOp::RootRelaySealed { key_id, encrypted } => {
+                crate::open_relayed_join_for_read(
+                    self.store,
+                    self.namespace_id,
+                    key_id.as_bytes(),
+                    encrypted,
+                )
+                .ok()
+                .flatten()
+            }
+            _ => None,
+        };
+        let (decode_from, opened_root) = match relayed.as_ref() {
+            Some(inner) => match &inner.op {
+                NamespaceOp::Root(root) => (inner, Some(root.clone())),
+                // `open_relayed_join_for_read` only yields a root op.
+                _ => (signed, opened_root),
+            },
+            None => (signed, opened_root),
+        };
+
         let signer_binding = crate::unified_op_decode::signer_binding_for(
             self.store,
             &self.namespace_id.to_bytes().into(),
-            &signed.signer,
+            &decode_from.signer,
         );
         let unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
-            signed,
+            decode_from,
             decrypted.as_ref(),
             opened_root.as_ref(),
             signer_binding,
@@ -264,7 +295,14 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
-            let NamespaceOp::RootSealed { key_id, .. } = signed_op.op else {
+            // Both parked shapes, so one retry pass drains both. A relayed
+            // join that arrived before the namespace key is stuck for exactly
+            // the same reason a sealed root op is, and leaving it out of this
+            // walk would leave the membership unapplied with nothing to
+            // re-drive it.
+            let (NamespaceOp::RootSealed { key_id, .. }
+            | NamespaceOp::RootRelaySealed { key_id, .. }) = signed_op.op
+            else {
                 continue;
             };
             entries.push(StoredSignedGroupOp { signed_op, key_id });

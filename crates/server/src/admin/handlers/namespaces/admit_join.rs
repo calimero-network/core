@@ -114,21 +114,6 @@ pub async fn handler(
         .into_response();
     }
 
-    // Derived from the op, as the governance publisher does. The receiver
-    // ignores both today, but zeros would be wrong the moment anything reads
-    // them for dedup or parent links.
-    let delta_id = match op.content_hash() {
-        Ok(hash) => hash,
-        Err(e) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: format!("signed_op has no content hash: {e}"),
-            }
-            .into_response();
-        }
-    };
-    let parent_ids = op.parent_op_hashes.clone();
-
     // Refuse before publishing, never after: once an op reaches the topic it is
     // on every peer's DAG, so "was this node entitled to carry it" has to be
     // answered while the answer still changes anything.
@@ -220,48 +205,27 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     }
 
-    // Applied here before it is published anywhere.
+    // Sealed and published as one step, by the actor that holds both keys.
     //
-    // Publishing alone leaves this node with the stalest possible view of the
-    // membership it just admitted: peers fold the op, and the one node the
-    // joiner actually talked to does not. With no mesh peers it is worse than
-    // stale — the publish is best-effort, nobody folds it, and the joiner is
-    // told `published: true` about an op that changed nothing anywhere.
+    // The joiner's op goes inside the seal exactly as it stands — endorsement
+    // attached above and its own signature untouched — and this node signs the
+    // envelope that carries it. Peers decrypt, verify the JOINER'S signature and
+    // apply the join, so `signer == credential.statement.sign_pk` still decides
+    // who joined and a hostile admitter still cannot admit a different account.
     //
-    // Applying first also means only an op this node's own state accepted gets
-    // broadcast, so a bad op is answered with an error instead of being handed
-    // to the network under this node's name.
-    match state.ctx_client.apply_signed_namespace_op(op.clone()).await {
-        Ok(outcome) => {
-            info!(
-                namespace_id = %namespace_id_str,
-                ?outcome,
-                "applied a joiner's signed join op locally",
-            );
+    // What sealing removes is every non-member on the namespace topic being able
+    // to read which account joined which group, and when.
+    //
+    // The relay applies locally as part of publishing, so there is no separate
+    // apply here. It has to: publishing alone would leave the one node the joiner
+    // actually talked to with the stalest view of the membership it just
+    // admitted, and with no mesh peers nobody would fold it at all.
+    if let Err(err) = state.ctx_client.relay_signed_join(op).await {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("join could not be relayed: {err}"),
         }
-        Err(err) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: format!("signed_op was refused on apply: {err}"),
-            }
-            .into_response();
-        }
-    }
-
-    // Then published. The op is signed by the joiner's device key and every peer
-    // checks that on apply, so this node cannot alter who joined, which group, or
-    // with what role — it can only decline to carry it.
-    if let Err(err) = state
-        .node_client
-        .publish_signed_namespace_op(
-            namespace_id.to_bytes(),
-            delta_id,
-            parent_ids,
-            signed_op_bytes,
-        )
-        .await
-    {
-        return parse_api_error(err).into_response();
+        .into_response();
     }
 
     info!(namespace_id=%namespace_id_str, "admitted a joiner's signed join op");

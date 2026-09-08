@@ -445,6 +445,55 @@ impl<'a> GroupKeyring<'a> {
         Ok(EncryptedRootOp { nonce, ciphertext })
     }
 
+    /// Seal a joiner's already-signed op for relay by an admitter.
+    ///
+    /// Encrypts the whole `SignedNamespaceOp` rather than its inner `RootOp`, so
+    /// the joiner's signature travels inside the seal and is verified after
+    /// decryption. See [`NamespaceOp::RootRelaySealed`].
+    pub fn encrypt_relayed_op(
+        namespace_key: &[u8; 32],
+        op: &calimero_context_client::local_governance::SignedNamespaceOp,
+    ) -> EyreResult<calimero_governance_types::EncryptedRelayedOp> {
+        use calimero_crypto::SharedKey;
+
+        let plaintext =
+            borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh encode SignedNamespaceOp: {e}"))?;
+        let sk = PrivateKey::from(*namespace_key);
+        let shared_key = SharedKey::from_sk(&sk);
+
+        let (nonce, ciphertext) = shared_key
+            .encrypt(plaintext)
+            .ok_or(KeyringError::EncryptionFailed)?;
+
+        Ok(calimero_governance_types::EncryptedRelayedOp { nonce, ciphertext })
+    }
+
+    /// Open a relayed join sealed by [`Self::encrypt_relayed_op`].
+    ///
+    /// Yields the joiner's signed op. The caller must still verify its signature
+    /// — decryption proves only that a namespace keyholder sealed it, which is
+    /// the admitter, not the joiner.
+    pub fn decrypt_relayed_op(
+        namespace_key: &[u8; 32],
+        encrypted: &calimero_governance_types::EncryptedRelayedOp,
+    ) -> EyreResult<calimero_context_client::local_governance::SignedNamespaceOp> {
+        use calimero_crypto::SharedKey;
+
+        let sk = PrivateKey::from(*namespace_key);
+        let shared_key = SharedKey::from_sk(&sk);
+        let plaintext = shared_key
+            .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
+            .ok_or(KeyringError::DecryptionFailed)?;
+        borsh::from_slice(&plaintext).map_err(|e| {
+            tracing::warn!(
+                plaintext_len = plaintext.len(),
+                prefix = ?plaintext.first(),
+                "decrypted relay payload does not match the current SignedNamespaceOp schema"
+            );
+            eyre::eyre!("borsh decode SignedNamespaceOp: {e}")
+        })
+    }
+
     /// Prepare a root op for publishing: sealed if policy says so, cleartext if
     /// not.
     ///
