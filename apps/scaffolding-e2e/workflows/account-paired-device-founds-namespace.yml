@@ -1,4 +1,4 @@
-name: E2E Account - A Paired Device Founds A Namespace
+name: E2E Account - A Paired Device Founds A Namespace And Carries Its Certifier
 description: >
   A paired device is a device of the account, so it must be able to start a
   project as the account and put the device that certified it on that project's
@@ -24,13 +24,16 @@ description: >
     3. The phone still speaks as Alice's account and as the same device after
        founding C. This is the assertion that goes red before the fix: the
        creation succeeds, but as a fresh device of node-2's own account.
+    4. node-2's device listing shows the laptop's device bound in C. The phone
+       could only have published that link from a certificate it cached when it
+       folded A's genesis, endorsed with its own key as the account, and only
+       because it recognised the laptop as the device that certified it.
 
   node-2 is initialised the default way, root and all, because that is the
   posture the desktop ships and the one where the failure is silent.
 
   Not asserted here: node-1 listing C, which is the account namespace's job and
-  is pinned by its own scenario; and the laptop's device being bound in C,
-  which is the next PR's scenario step.
+  is pinned by its own scenario.
 
 force_pull_image: false
 
@@ -172,5 +175,22 @@ steps:
     statements:
       - 'json_equal({{founder_account}}, {{alice_account}})'
       - 'json_equal({{founder_device}}, {{paired_device}})'
+
+  # The creation binds known devices before it answers, so this reads rows the
+  # phone's own apply wrote. Retries cover the async publish landing locally.
+  - name: The phone carried the laptop into C
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{alice_device}}'
+    match:
+      isSelf: false
+      revoked: false
+    contains:
+      namespaces:
+        - '{{ns_c}}'
+    retries: 15
+    interval: 2
 
 stop_all_nodes: true
