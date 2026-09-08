@@ -514,12 +514,50 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .map_err(|e| eyre::eyre!("admitter endorsement did not decode: {e}"))?,
                 );
 
-                let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
+                let join_root = RootOp::MemberJoinedAt {
                     member: join_account.statement.account,
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,
-                });
+                };
+
+                // Sealed when this node already holds the namespace key, which on
+                // the ordinary path it does: the bundle above carried the key and
+                // it was stored before we got here (see the unwrap near the top of
+                // this handler). Sealing keeps off the namespace topic the one
+                // thing a cleartext join tells every non-member — which account
+                // joined which group, and when.
+                //
+                // `root_op_is_sealable` still says no for this variant, and that
+                // is not a contradiction: it answers for the variant, which has
+                // publishers that hold no key (a browser client signing offline
+                // never does), and it has to answer the same on every node. This
+                // asks the narrower question the publisher can actually answer,
+                // "do I hold the key right now", so a keyed joiner seals and an
+                // unkeyed one still joins.
+                //
+                // Cleartext is the fallback rather than a failure because the
+                // unkeyed joiner has nowhere else to go: its key arrives from a
+                // `KeyDelivery` an admin publishes on SEEING this op, so refusing
+                // to publish unsealed would be a deadlock, not a policy.
+                let member_joined_op = match calimero_governance_store::seal_root_op_if_keyed(
+                    &datastore,
+                    namespace_id.into(),
+                    &join_root,
+                ) {
+                    Ok(Some(sealed)) => sealed,
+                    Ok(None) => {
+                        info!(
+                            ?group_id,
+                            "publishing this join in the clear: no namespace key held yet, so                              it cannot be sealed and the key it needs arrives in answer to it"
+                        );
+                        NamespaceOp::Root(join_root)
+                    }
+                    Err(e) => {
+                        warn!(?e, ?group_id, "could not seal the join; publishing in the clear");
+                        NamespaceOp::Root(join_root)
+                    }
+                };
                 // Handed in rather than embedded: the endorsement rides the
                 // envelope, outside this node's signature, so it is attached
                 // after signing and before the local apply.

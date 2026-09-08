@@ -2904,6 +2904,36 @@ pub fn apply_received_group_key(
 /// namespace key, so its absence means the node's own state is wrong — and
 /// answering that by publishing unsealed would undo the encryption exactly when
 /// it is least safe to.
+/// Seal a root op under the namespace key when this node holds one, and say so
+/// when it does not.
+///
+/// For the two invitation joins, which [`root_op_is_sealable`] classifies as
+/// unsealable because their publisher is the JOINER and a joiner may hold no
+/// namespace key. "May" is the operative word: a joiner that synced a bundle
+/// carrying the key holds it before it publishes, and that is the ordinary path
+/// — so it can seal its own join, and the metadata stays off the topic.
+///
+/// `Ok(None)` is the case that keeps the unkeyed joiner working: it publishes in
+/// the clear, as it does today, because the alternative is a joiner that cannot
+/// join at all. That is why this is separate from
+/// [`seal_root_op_for_publish`], which refuses rather than returning `None` —
+/// there, an unkeyed publisher is a broken node; here it is a legitimate state.
+pub fn seal_root_op_if_keyed(
+    store: &Store,
+    namespace_id: NamespaceId,
+    op: &RootOp,
+) -> EyreResult<Option<NamespaceOp>> {
+    let ns_typed = ContextGroupId::from(namespace_id.to_bytes());
+    let Some((key_id, key)) = GroupKeyring::new(store, ns_typed).load_current_key()? else {
+        return Ok(None);
+    };
+    let encrypted = GroupKeyring::encrypt_root_op(&key, op)?;
+    Ok(Some(NamespaceOp::RootSealed {
+        key_id: key_id.into(),
+        encrypted,
+    }))
+}
+
 pub fn seal_root_op_for_publish(
     store: &Store,
     namespace_id: NamespaceId,

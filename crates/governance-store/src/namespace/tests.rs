@@ -9433,3 +9433,77 @@ async fn a_relayed_join_signed_with_nonce_zero_is_refused_by_name() {
         "and it must not have applied"
     );
 }
+
+/// A joiner seals its own join when it holds the namespace key, and still joins
+/// when it does not.
+///
+/// `root_op_is_sealable` answers for the VARIANT and must answer the same on
+/// every node, so it says no for the invitation joins: some of their publishers
+/// hold no namespace key, and a browser client signing offline never does. But
+/// the ordinary node-side joiner synced a bundle that carried the key and stored
+/// it before publishing, so it CAN seal — and what a cleartext join tells every
+/// non-member on the topic is exactly the thing worth hiding: which account
+/// joined which group, and when.
+///
+/// Both branches are pinned here because each is load-bearing in the opposite
+/// direction. Sealing when keyed is the privacy win. Falling back to cleartext
+/// when unkeyed is what keeps the unkeyed joiner able to join at all: its key
+/// arrives in a `KeyDelivery` an admin publishes on SEEING this op, so refusing
+/// to publish unsealed would deadlock the join rather than protect anything.
+#[test]
+fn a_joiner_seals_its_own_join_only_when_it_holds_the_namespace_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC1u8; 32]);
+    let ns_id: calimero_governance_types::NamespaceId = ns_gid.to_bytes().into();
+
+    let join = RootOp::MemberJoinedAt {
+        member: calimero_account::AccountId::from([0xC2u8; 32]),
+        signed_invitation: test_signed_invitation_with_admitters(
+            &calimero_primitives::identity::PrivateKey::from([0xC3u8; 32]),
+            ns_gid,
+            0,
+            vec![calimero_account::AccountId::from([0xC4u8; 32])],
+        ),
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(
+            &calimero_primitives::identity::PrivateKey::from([0xC5u8; 32]).public_key(),
+        ),
+    };
+
+    // No key yet: the joiner must still be able to publish.
+    let unkeyed = crate::seal_root_op_if_keyed(&store, ns_id, &join).expect("classify");
+    assert!(
+        unkeyed.is_none(),
+        "an unkeyed joiner must be told it cannot seal, not handed a seal under a key it \
+         does not have"
+    );
+
+    // The bundle's key lands, as it does before the publish on the ordinary path.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("store the namespace key the join bundle carried");
+
+    let keyed = crate::seal_root_op_if_keyed(&store, ns_id, &join)
+        .expect("classify")
+        .expect("a keyed joiner must seal its own join");
+    let NamespaceOp::RootSealed { key_id, encrypted } = &keyed else {
+        panic!("a keyed joiner's join must travel sealed, got {keyed:?}");
+    };
+    assert_eq!(
+        key_id.as_bytes(),
+        &GroupKeyring::key_id_for(&[0x5Au8; 32]),
+        "and sealed under the key it actually holds, so a receiver can resolve it"
+    );
+
+    // The seal must be openable back into the same op — a seal under the key id
+    // instead of the key would encrypt fine and never open.
+    let reopened = GroupKeyring::decrypt_root_op(&[0x5Au8; 32], encrypted)
+        .expect("the seal opens with the namespace key");
+    assert!(
+        matches!(reopened, RootOp::MemberJoinedAt { member, .. }
+            if member == calimero_account::AccountId::from([0xC2u8; 32])),
+        "and yields the join it was given"
+    );
+}
