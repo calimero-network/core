@@ -9563,3 +9563,95 @@ fn a_joiner_seals_its_own_join_only_when_it_holds_the_namespace_key() {
         "and yields the join it was given"
     );
 }
+
+/// The namespace-key boundary, which sealing a subgroup join must not move.
+///
+/// #3858 rejected handing a subgroup-invited joiner the namespace key (its
+/// "Option 1", dead) precisely because that key reads all namespace-level
+/// governance and every Open-chain subgroup's application state, and is retained
+/// after leaving unless rotated. Sealing under the *subgroup* key was chosen so
+/// no new principal receives the namespace key.
+///
+/// This pins the pull arm of that boundary: a member of only the subgroup asking
+/// for the NAMESPACE key is served nothing. The positive control matters as much
+/// as the refusal — the same requester asking for its own subgroup's key is
+/// served an envelope, so a fixture that simply failed to enrol anybody could
+/// not make this test pass.
+#[test]
+fn a_subgroup_only_member_is_served_no_namespace_key() {
+    use crate::build_group_key_delivery;
+    use crate::group_keys::GroupKeyring;
+
+    let namespace_id = [0x71u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0x72u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+
+    let joiner_sk = PrivateKey::from([0x73u8; 32]);
+    let joiner_pk = joiner_sk.public_key();
+    let responder_sk_bytes = [0x74u8; 32];
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    let store = test_store();
+    let (joiner_account, joiner_device, joiner_credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &joiner_credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+
+    // Keyed apart, and the joiner is a member of the SUBGROUP ONLY — never a
+    // direct row of the root. That is exactly the standing a subgroup-targeted
+    // invitation confers.
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x75; 32])
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&[0x76; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let requester = crate::KeyRequester {
+        identity: joiner_pk,
+        device: Some(joiner_device),
+    };
+
+    // The refusal. Empty rather than an error: the responder answers every
+    // request, and a non-member's answer carries no key.
+    let (ns_bytes, _) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        namespace_id,
+        requester.clone(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        ns_bytes.is_empty(),
+        "a member of only the subgroup must be served no namespace key"
+    );
+
+    // The positive control, on the same store and the same requester.
+    let (sub_bytes, _) =
+        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, requester, None)
+            .unwrap();
+    assert!(
+        !sub_bytes.is_empty(),
+        "precondition: the same requester IS served its own subgroup's key, so \
+         the refusal above is the membership gate and not a broken fixture"
+    );
+}

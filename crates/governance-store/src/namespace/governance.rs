@@ -504,6 +504,19 @@ impl<'a> NamespaceGovernance<'a> {
                 },
                 None,
             ) => {
+                // `info`, not `debug`: this is the audit record of a join this
+                // node is not entitled to read, and the reason an operator sees
+                // no membership for it here. At `debug` a node on the default
+                // filter emits nothing, so "why did this join never apply?" has
+                // no evidence either way — and neither does any test. For a peer
+                // outside the subgroup this is the expected steady state rather
+                // than a fault, which is why it is not a warning.
+                tracing::info!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    key_id = %hex::encode(key_id.as_bytes()),
+                    "cannot open a join sealed to group: no key for it is held here"
+                );
                 result.key_unwrap_failures.push(KeyUnwrapFailure {
                     group_id: group_id.to_bytes(),
                     reason: format!(
