@@ -789,7 +789,7 @@ impl<'a> NodeDeviceRepository<'a> {
             }))
     }
 
-    /// Keep the proof a link op carried for THIS device.
+    /// Keep the proof a link op carried for THIS device, and who endorsed it.
     ///
     /// Returns whether the proof was ours. The write is skipped for a node that
     /// holds the account's own root, which can self-sign and would lose that
@@ -800,7 +800,11 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the encoding or store failure.
-    pub fn remember_own_link(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<bool> {
+    pub fn remember_own_link(
+        &self,
+        proof: &AccountProof<DeviceCert>,
+        endorser: &PublicKey,
+    ) -> EyreResult<bool> {
         let Some(held) = self.get()? else {
             return Ok(false);
         };
@@ -814,6 +818,7 @@ impl<'a> NodeDeviceRepository<'a> {
         {
             return Ok(false);
         }
+        self.store_certifier(endorser)?;
         let supersedes = match self.imported_certificate()? {
             // Bytes that decode as nothing carry no epoch to lose to, so an
             // operator's garbage is replaced rather than pinned forever.
@@ -3075,13 +3080,53 @@ mod tests {
             statement: cert,
         };
 
-        assert!(repo.remember_own_link(&proof).expect("keep"));
+        assert!(repo
+            .remember_own_link(&proof, &PrivateKey::from([0x11; 32]).public_key())
+            .expect("keep"));
 
         let stored: AccountProof<DeviceCert> =
             borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
                 .expect("decode");
         assert_eq!(stored, proof, "byte-exact, root signature included");
         assert_eq!(stored.verify(held.account).map(|_| ()), Ok(()));
+    }
+
+    #[test]
+    fn keeping_our_own_link_also_records_who_endorsed_it() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        let cert = DeviceCert::sign(
+            &root_sk,
+            held.account,
+            held.device(),
+            &root(0x77),
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign");
+        let proof = AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let endorser = PrivateKey::from([0x11; 32]).public_key();
+
+        assert!(repo.remember_own_link(&proof, &endorser).expect("keep"));
+        assert_eq!(repo.certifier().expect("read"), Some(endorser));
+
+        let sibling = certified(&root_sk, [0x42; 32], [0x52; 32]);
+        let other = PrivateKey::from([0x12; 32]).public_key();
+        assert!(!repo.remember_own_link(&sibling, &other).expect("ignore"));
+        assert_eq!(
+            repo.certifier().expect("read"),
+            Some(endorser),
+            "a sibling's link names nobody's certifier"
+        );
     }
 
     /// A link for the held device, at `device_epoch`.
@@ -3129,7 +3174,10 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         assert!(repo
-            .remember_own_link(&paired_link(&held, &root_sk, 0))
+            .remember_own_link(
+                &paired_link(&held, &root_sk, 0),
+                &PrivateKey::from([0x11; 32]).public_key(),
+            )
             .expect("fold"));
 
         let stored: AccountProof<DeviceCert> =
@@ -3148,7 +3196,10 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         assert!(repo
-            .remember_own_link(&paired_link(&held, &root_sk, 1))
+            .remember_own_link(
+                &paired_link(&held, &root_sk, 1),
+                &PrivateKey::from([0x11; 32]).public_key(),
+            )
             .expect("fold"));
 
         let stored: AccountProof<DeviceCert> =
@@ -3170,7 +3221,9 @@ mod tests {
             .expect("store garbage");
 
         let proof = paired_link(&held, &root_sk, 0);
-        assert!(repo.remember_own_link(&proof).expect("fold"));
+        assert!(repo
+            .remember_own_link(&proof, &PrivateKey::from([0x11; 32]).public_key())
+            .expect("fold"));
 
         let stored: AccountProof<DeviceCert> =
             borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
@@ -3188,7 +3241,10 @@ mod tests {
         let own = repo.account_root().expect("read").expect("provisioned");
 
         assert!(!repo
-            .remember_own_link(&paired_link(&held, own.signing_key(), 0))
+            .remember_own_link(
+                &paired_link(&held, own.signing_key(), 0),
+                &PrivateKey::from([0x11; 32]).public_key(),
+            )
             .expect("fold"));
         assert!(repo.imported_certificate().expect("read").is_none());
     }
@@ -3205,7 +3261,9 @@ mod tests {
             .expect("adopt");
         let sibling = certified(&root_sk, [0x42; 32], [0x52; 32]);
 
-        assert!(!repo.remember_own_link(&sibling).expect("ignore"));
+        assert!(!repo
+            .remember_own_link(&sibling, &PrivateKey::from([0x11; 32]).public_key())
+            .expect("ignore"));
         assert!(repo.imported_certificate().expect("read").is_none());
     }
 

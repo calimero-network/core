@@ -19,6 +19,7 @@ use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
     RootKeyHandoff, SignedDeviceRevocation,
 };
+use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
@@ -130,7 +131,7 @@ pub(crate) fn apply_device_linked(
                 chain: chain.to_vec(),
                 statement: *cert,
             };
-            remember_own_link_if_ours(ctx, &proof);
+            remember_own_link_if_ours(ctx, &proof, &endorsement.member);
             crate::remember_sibling_cert_best_effort(ctx.store(), &proof);
             tracing::info!(
                 group_id = ?group_id,
@@ -159,8 +160,14 @@ pub(crate) fn apply_device_linked(
 
 /// Keep the proof if this link is about THIS node's device. Best-effort like the
 /// sibling cache: a node-local write must never refuse an op the group accepted.
-fn remember_own_link_if_ours(ctx: &GroupApplyCtx<'_>, proof: &AccountProof<DeviceCert>) {
-    if let Err(err) = crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(proof) {
+fn remember_own_link_if_ours(
+    ctx: &GroupApplyCtx<'_>,
+    proof: &AccountProof<DeviceCert>,
+    endorser: &PublicKey,
+) {
+    if let Err(err) =
+        crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(proof, endorser)
+    {
         tracing::warn!(device = %proof.statement.device, %err,
                        "could not keep this device's own certificate");
     }
