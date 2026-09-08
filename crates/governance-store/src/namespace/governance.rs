@@ -328,6 +328,24 @@ impl<'a> NamespaceGovernance<'a> {
                     None => None,
                 }
             }
+            // Same, resolved in the keyring of the group the envelope names
+            // rather than the namespace's. A peer outside that subgroup lands on
+            // `None` and parks the op, which is the intended reading for it: the
+            // join is authorized by the subgroup's own members.
+            NamespaceOp::RootSealedForGroup {
+                group_id,
+                key_id,
+                encrypted,
+            } => {
+                match GroupKeyring::new(self.store, *group_id).load_key_by_id(key_id.as_bytes())? {
+                    Some(key) => {
+                        let inner = GroupKeyring::decrypt_root_op(&key, encrypted)?;
+                        inner.validate_after_unsealing()?;
+                        Some(inner)
+                    }
+                    None => None,
+                }
+            }
             _ => None,
         };
 
@@ -383,10 +401,72 @@ impl<'a> NamespaceGovernance<'a> {
                      advisory"
                 );
             }
+            // The same rule for a join whose invitation targets a SUBGROUP, and
+            // it has to be decided here rather than in `root_op_is_sealable`.
+            //
+            // That function is `const` and sees only the op, which is enough for
+            // every other variant. This one turns on whether the invitation's
+            // `group_id` IS the namespace root, and the op does not carry the
+            // namespace it was published to — only the store knows. So the
+            // variant stays unsealable there (a namespace-root joiner genuinely
+            // holds no key and must publish in the clear; see that arm) and the
+            // narrower question is asked here, where `self.namespace_id` exists.
+            //
+            // Unlike the namespace-root case there is no circular dependency to
+            // excuse cleartext: a subgroup-targeted invitation's join bundle
+            // carries the subgroup key, `join_group` stores it before the
+            // publish, and #3860 makes the responder refuse rather than serve a
+            // key that covers nothing. A cleartext arrival therefore means the
+            // publisher skipped a seal it could have performed, which is the
+            // disclosure this refusal exists to make impossible rather than
+            // merely discouraged.
+            if let RootOp::MemberJoined {
+                signed_invitation, ..
+            }
+            | RootOp::MemberJoinedAt {
+                signed_invitation, ..
+            } = root
+            {
+                let target = signed_invitation.invitation.group_id;
+                if target.to_bytes() != self.namespace_id.to_bytes() {
+                    eyre::bail!(
+                        "refusing a subgroup-targeted join that arrived in the clear: the \
+                         invitation names group {}, whose key the joiner holds, so this join is \
+                         publishable sealed and accepting it unsealed would leak which account \
+                         joined which group to every peer on the namespace topic",
+                        hex::encode(target.to_bytes())
+                    );
+                }
+            }
         }
 
         match (&op.op, opened_root.as_ref()) {
-            (NamespaceOp::Root(root), _) | (NamespaceOp::RootSealed { .. }, Some(root)) => {
+            // `RootSealedForGroup` folds through the ordinary arm, and that is
+            // also the whole of its replay story — deliberately, and unlike the
+            // relayed join below.
+            //
+            // A relay mints a FRESH envelope around a join that already exists,
+            // so the envelope dedup at the top of this function cannot see the
+            // duplicate and that arm needs its own `contains_op` +
+            // `NonceWindow` pair. Here the envelope IS the joiner's own signed
+            // op: the sealed payload is a bare `RootOp`, signed by the joiner,
+            // with no nested `SignedNamespaceOp`. So a re-publish carries the
+            // same content hash and the `contains_op(delta_id)` guard above
+            // suppresses it, exactly as it does for a cleartext join.
+            //
+            // Nor can a third party mint one. Authoring this variant means
+            // signing it, and `join_op_proves_ownership` requires
+            // `signer == account.statement.sign_pk` — so a subgroup keyholder
+            // re-sealing somebody else's join produces an op every peer refuses.
+            // That is the substitution the relay guard exists to stop, and it is
+            // already impossible on this path.
+            //
+            // A per-signer nonce burn was considered and left out: it would be
+            // machinery against a threat this shape does not have, and a nonce
+            // burned on a legitimate apply is a permanent failure.
+            (NamespaceOp::Root(root), _)
+            | (NamespaceOp::RootSealed { .. }, Some(root))
+            | (NamespaceOp::RootSealedForGroup { .. }, Some(root)) => {
                 root_events = self.apply_root_op(op, root)?;
 
                 let effects = self.root_op_side_effects(op, root, 0)?;
@@ -406,6 +486,30 @@ impl<'a> NamespaceGovernance<'a> {
                     reason: format!(
                         "no namespace key {} held yet for a sealed root op",
                         hex::encode(key_id.as_bytes())
+                    ),
+                });
+            }
+            // Sealed to a subgroup whose key this node does not hold. Reported
+            // against THAT group, not the namespace, so the retry pass asks for
+            // the key that would actually open it.
+            //
+            // For a peer that is simply not in the subgroup this is the steady
+            // state rather than a transient miss, and that is the design: the
+            // op is stored, authenticated by its outer signature and served on,
+            // just never opened. It is the same standing an encrypted `GroupOp`
+            // for a foreign group already has.
+            (
+                NamespaceOp::RootSealedForGroup {
+                    group_id, key_id, ..
+                },
+                None,
+            ) => {
+                result.key_unwrap_failures.push(KeyUnwrapFailure {
+                    group_id: group_id.to_bytes(),
+                    reason: format!(
+                        "no key {} held yet for a root op sealed to group {}",
+                        hex::encode(key_id.as_bytes()),
+                        hex::encode(group_id.to_bytes())
                     ),
                 });
             }
@@ -624,10 +728,24 @@ impl<'a> NamespaceGovernance<'a> {
     /// forwarding path that never held the key — the wire-form answer stands,
     /// which is the behaviour before this existed.
     pub(crate) fn ack_timeout_for(&self, op: &NamespaceOp) -> Duration {
-        let NamespaceOp::RootSealed { key_id, encrypted } = op else {
-            return timeout_for_namespace_op(op);
+        // Both sealed shapes are opened here, each in the keyring that can
+        // actually open it. `RootSealedForGroup` is named explicitly rather than
+        // left to `timeout_for_namespace_op`'s wildcard: the wildcard's answer
+        // for it happens to be the member-change budget a join wants, and a
+        // right answer reached by coincidence stops being right the moment the
+        // wildcard's default changes.
+        let opened = match op {
+            NamespaceOp::RootSealed { key_id, encrypted } => {
+                open_sealed_root_op(self.store, self.namespace_id, key_id.as_bytes(), encrypted)
+            }
+            NamespaceOp::RootSealedForGroup {
+                group_id,
+                key_id,
+                encrypted,
+            } => open_sealed_root_op_for_group(self.store, *group_id, key_id.as_bytes(), encrypted),
+            _ => return timeout_for_namespace_op(op),
         };
-        match open_sealed_root_op(self.store, self.namespace_id, key_id.as_bytes(), encrypted) {
+        match opened {
             Ok(Some(root)) => timeout_for_namespace_op(&NamespaceOp::Root(root)),
             // Not an error worth logging at warn: a publisher that cannot open
             // its own sealed op is a real oddity, but the only consequence here
@@ -1583,11 +1701,20 @@ impl<'a> NamespaceGovernance<'a> {
                 continue;
             }
             let key_id = entry.key_id;
+            // Which keyring can open this op. The two namespace-sealed shapes
+            // resolve in the namespace's; a subgroup-sealed join resolves in the
+            // group it names, which is the reason that field is cleartext.
+            // Looking every shape up in the namespace keyring would leave a
+            // subgroup join parked forever even on a peer holding its key.
+            let keyring_group = match &entry.signed_op.op {
+                NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
+                _ => ns_typed,
+            };
             // Still not held: the key that arrived was for something else. Not an
             // error, and not a reason to stop — a later delivery may bring it.
-            let Some(key) = GroupKeyring::new(self.store, ns_typed)
+            let Some(key) = GroupKeyring::new(self.store, keyring_group)
                 .load_key_by_id(key_id.as_bytes())
-                .map_err(|e| eyre::eyre!("load namespace key for sealed root op: {e}"))?
+                .map_err(|e| eyre::eyre!("load key for sealed root op: {e}"))?
             else {
                 continue;
             };
@@ -1597,7 +1724,8 @@ impl<'a> NamespaceGovernance<'a> {
             // gates would check the admitter's signer against the joiner's
             // credential and refuse every replayed relay.
             let opened: Option<(SignedNamespaceOp, RootOp)> = match &entry.signed_op.op {
-                NamespaceOp::RootSealed { encrypted, .. } => {
+                NamespaceOp::RootSealed { encrypted, .. }
+                | NamespaceOp::RootSealedForGroup { encrypted, .. } => {
                     match GroupKeyring::decrypt_root_op(&key, encrypted) {
                         Ok(root) => Some((entry.signed_op.clone(), root)),
                         Err(e) => {
@@ -2842,6 +2970,63 @@ pub fn open_sealed_root_op(
         Some(key) => Ok(Some(GroupKeyring::decrypt_root_op(&key, encrypted)?)),
         None => Ok(None),
     }
+}
+
+/// Open a [`NamespaceOp::RootSealedForGroup`], resolving `key_id` in the keyring
+/// of the group the envelope names.
+///
+/// The group is read off the envelope rather than derived, which is the reason
+/// that field is cleartext: a receiver holding keys for several groups beneath
+/// this namespace has no other way to know which keyring `key_id` lives in, and
+/// trying each in turn is guessing.
+///
+/// `None` means the key is not held — ordinary for a peer outside the subgroup,
+/// and the answer that leaves the op parked for the retry pass rather than
+/// dropped.
+pub fn open_sealed_root_op_for_group(
+    store: &Store,
+    group_id: ContextGroupId,
+    key_id: &[u8; 32],
+    encrypted: &calimero_governance_types::EncryptedRootOp,
+) -> EyreResult<Option<RootOp>> {
+    match GroupKeyring::new(store, group_id).load_key_by_id(key_id)? {
+        Some(key) => Ok(Some(GroupKeyring::decrypt_root_op(&key, encrypted)?)),
+        None => Ok(None),
+    }
+}
+
+/// Seal a subgroup-targeted join under the key that covers `group_id`, when this
+/// node holds it.
+///
+/// The counterpart to [`seal_root_op_if_keyed`], which seals under the namespace
+/// key. A joiner admitted into a subgroup holds that subgroup's key and not the
+/// namespace's, so the namespace-key version finds nothing and the join would go
+/// out in the clear — the disclosure #3858 describes.
+///
+/// The encrypting group comes from [`crate::key_covering_group`], so an Open
+/// chain resolves to the namespace and a Restricted one to the subgroup itself.
+/// That keeps this in step with every publisher and stops an Open-chain subgroup
+/// being sealed under a key row nothing encrypts to (#3859).
+///
+/// `None` — no key held — is a real case on the namespace-root path, where the
+/// joiner's key arrives only in answer to the join it is trying to publish. The
+/// caller falls back to cleartext there; the apply-side refusal is written to
+/// permit exactly that and no more.
+pub fn seal_root_op_for_group_if_keyed(
+    store: &Store,
+    group_id: ContextGroupId,
+    op: &RootOp,
+) -> EyreResult<Option<NamespaceOp>> {
+    let covering = crate::key_covering_group(store, &group_id)?;
+    let Some((key_id, key)) = GroupKeyring::new(store, covering).load_current_key()? else {
+        return Ok(None);
+    };
+    let encrypted = GroupKeyring::encrypt_root_op(&key, op)?;
+    Ok(Some(NamespaceOp::RootSealedForGroup {
+        group_id: covering,
+        key_id: key_id.into(),
+        encrypted,
+    }))
 }
 
 /// Build an ECDH-wrapped group key to deliver to `requester` in response

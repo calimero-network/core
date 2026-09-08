@@ -50,6 +50,9 @@ fn backfill_op_kinds(deltas: &[([u8; 32], Vec<u8>)]) -> String {
                 // governance reads as a list of "Unknown" — which is what this
                 // whole function exists to avoid.
                 NamespaceOp::RootSealed { .. } => "Root(sealed)".to_owned(),
+                NamespaceOp::RootSealedForGroup { group_id, .. } => {
+                    format!("Root(sealed for {})", hex::encode(group_id.to_bytes()))
+                }
                 NamespaceOp::Group { .. } => "Group(encrypted)".to_owned(),
                 _ => "Unknown".to_owned(),
             },
@@ -1773,6 +1776,9 @@ impl SyncManager {
                                         }
                                         calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
                                             "RootSealed".to_owned()
+                                        }
+                                        calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup { .. } => {
+                                            "RootSealedForGroup".to_owned()
                                         }
                                         calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
                                             "Group".to_owned()
