@@ -29,9 +29,10 @@ enum BindPlan {
 
 /// Does this node know `cert`'s device belongs in `namespace`?
 ///
-/// Only the holder stores scopes, so a paired device cannot answer for any
-/// sibling and binds none. A holder answers for its own account alone: a
-/// certificate of any other account is out of scope in every namespace.
+/// Only the holder stores scopes. A paired device knows one thing for certain:
+/// the device that certified it is unscoped, so that is the one sibling it binds.
+/// A holder answers for its own account alone: a certificate of any other
+/// account is out of scope in every namespace.
 fn in_scope_here(
     store: &Store,
     devices: &NodeDeviceRepository<'_>,
@@ -39,7 +40,7 @@ fn in_scope_here(
     cert: &KnownDeviceCert,
 ) -> EyreResult<bool> {
     if !devices.is_account_holder()? {
-        return Ok(false);
+        return Ok(devices.certifier()?.as_ref() == Some(&cert.proof.statement.sign_pk));
     }
     // A forced root import deletes the device row and keeps the cached
     // certificates, so a holder's own cache can name a discarded account.
@@ -419,6 +420,29 @@ mod tests {
             ),
             BindOutcome::OutOfScope
         );
+    }
+
+    /// Only the holder knows scopes. The one thing a paired device knows for sure
+    /// is that the device that certified it is unscoped, so that is who it binds.
+    #[test]
+    fn a_paired_device_binds_the_device_that_certified_it_and_no_other_sibling() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let store = paired_store(&root_sk);
+        let namespace = test_group_id();
+        namespace_serving(&store, &namespace, APP_ONE);
+        let certifier = known(&root_sk, 0x0C, vec![]);
+        let other = known(&root_sk, 0x0D, vec![]);
+        NodeDeviceRepository::new(&store)
+            .store_certifier(&certifier.proof.statement.sign_pk)
+            .expect("certifier");
+
+        assert_eq!(
+            planned(&store, &namespace, &certifier),
+            BindOutcome::Linked {
+                key_delivered: true
+            }
+        );
+        assert_eq!(planned(&store, &namespace, &other), BindOutcome::OutOfScope);
     }
 
     /// A forced root import discards the account without deleting the

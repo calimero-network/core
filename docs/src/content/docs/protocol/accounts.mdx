@@ -286,7 +286,8 @@ Only the **current** scope key is delivered. Peers retain rotated-out keys, so h
 
 A paired device keeps the certificate its own link carried, so it can found or join a namespace as the account without an import step.
 A device paired before this change holds no such certificate, so the holder relinks it, or a certificate signed offline is imported with `merod account import-cert`.
-It also caches the certificates of its sibling devices as it folds their links and credentials, but binds none of them into a namespace it gains: application scope is stored only on the holder, which remains the one node that decides where a device belongs.
+It also caches the certificates of its sibling devices as it folds their links and credentials, and when it gains a namespace it carries exactly one of them into it: the device that certified it, which is the holder and is unscoped by construction.
+Every other sibling waits for the holder to reach that namespace, because application scope is stored only on the holder.
 
 ### Pairing is repeated, not a snapshot
 
