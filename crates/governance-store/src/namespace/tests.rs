@@ -9632,14 +9632,9 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
 
     // The refusal. Empty rather than an error: the responder answers every
     // request, and a non-member's answer carries no key.
-    let (ns_bytes, _) = build_group_key_delivery(
-        &store,
-        namespace_id.into(),
-        namespace_id,
-        requester.clone(),
-        None,
-    )
-    .unwrap();
+    let (ns_bytes, _) =
+        build_group_key_delivery(&store, namespace_id.into(), namespace_id, requester, None)
+            .unwrap();
     assert!(
         ns_bytes.is_empty(),
         "a member of only the subgroup must be served no namespace key"
