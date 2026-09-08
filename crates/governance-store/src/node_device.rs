@@ -760,6 +760,35 @@ impl<'a> NodeDeviceRepository<'a> {
             .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
     }
 
+    /// Record the member key that endorsed this node's own link: the device that
+    /// certified it, and the one sibling a non-holder may bind unscoped.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn store_certifier(&self, member: &PublicKey) -> EyreResult<()> {
+        self.store.handle().put(
+            &calimero_store::key::NodeDeviceCertifier::new(),
+            &calimero_store::key::NodeDeviceCertifierValue {
+                member_pk: **member,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// The member key that certified this node's device, if a link has told it.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn certifier(&self) -> EyreResult<Option<PublicKey>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&calimero_store::key::NodeDeviceCertifier::new())?
+            .map(|value: calimero_store::key::NodeDeviceCertifierValue| {
+                PublicKey::from(value.member_pk)
+            }))
+    }
+
     /// Keep the proof a link op carried for THIS device.
     ///
     /// Returns whether the proof was ours. The write is skipped for a node that
@@ -2965,6 +2994,17 @@ mod tests {
             repo.imported_certificate().expect("read").as_deref(),
             Some(bytes.as_slice()),
         );
+    }
+
+    #[test]
+    fn the_certifier_is_absent_until_stored_and_then_round_trips() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.certifier().expect("read"), None);
+
+        let member = PrivateKey::from([0x71; 32]).public_key();
+        repo.store_certifier(&member).expect("store");
+        assert_eq!(repo.certifier().expect("read"), Some(member));
     }
 
     /// Re-importing must replace, not refuse.

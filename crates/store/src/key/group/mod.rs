@@ -2535,6 +2535,55 @@ impl FromKeyParts for NodeDeviceCertificate {
     }
 }
 
+/// Prefix for [`NodeDeviceCertifier`].
+pub const NODE_DEVICE_CERTIFIER_PREFIX: u8 = 0x4D;
+
+/// The member key that endorsed this node's own device link: the device that
+/// certified it. A **singleton**, like [`NodeDeviceCertificate`].
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceCertifier(Key<(GroupPrefix,)>);
+
+impl NodeDeviceCertifier {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_CERTIFIER_PREFIX])))
+    }
+}
+
+impl Default for NodeDeviceCertifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeDeviceCertifier {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeDeviceCertifier {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+/// What a [`NodeDeviceCertifier`] row carries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceCertifierValue {
+    pub member_pk: [u8; 32],
+}
+
 impl Default for NodeDeviceIdentity {
     fn default() -> Self {
         Self::new()
@@ -3580,6 +3629,7 @@ mod tests {
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
+            ("NODE_DEVICE_CERTIFIER", NODE_DEVICE_CERTIFIER_PREFIX),
             ("NODE_ACCOUNT_DEVICE_CERT", NODE_ACCOUNT_DEVICE_CERT_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
