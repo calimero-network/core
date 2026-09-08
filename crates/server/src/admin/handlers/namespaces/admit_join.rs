@@ -248,6 +248,32 @@ pub async fn handler(
         }
     }
 
+    // Re-serialized, NOT relayed as received.
+    //
+    // The endorsement attached above rides the envelope, so the bytes this
+    // endpoint was handed do not contain it — and `verify_admitter_endorsement`
+    // refuses a join that carries none, on every peer, by design ("stripping it
+    // makes the apply refuse the join — fail closed"). Publishing the received
+    // bytes is therefore exactly the case `sign_apply_and_publish` attaches the
+    // endorsement early to avoid: an op applied locally that every peer refuses.
+    // The membership then reaches other nodes only if one of them later syncs
+    // governance from this node, and nowhere at all if this node leaves first.
+    //
+    // The op id does not move. `to_signable` does not copy the endorsement and
+    // `content_hash` is taken over the signable form, so `delta_id` computed
+    // above still names this op — that is the property that lets a relay attach
+    // consent without forking the DAG.
+    let endorsed_op_bytes = match bytes_to_publish(&op) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("endorsed op could not be re-encoded for publish: {e}"),
+            }
+            .into_response();
+        }
+    };
+
     // Then published. The op is signed by the joiner's device key and every peer
     // checks that on apply, so this node cannot alter who joined, which group, or
     // with what role — it can only decline to carry it.
@@ -257,7 +283,7 @@ pub async fn handler(
             namespace_id.to_bytes(),
             delta_id,
             parent_ids,
-            signed_op_bytes,
+            endorsed_op_bytes,
         )
         .await
     {
@@ -304,6 +330,16 @@ const fn carries_a_join(op: &NamespaceOp) -> bool {
     )
 }
 
+/// The bytes to put on the topic for a relayed join.
+///
+/// Deliberately a re-encode of the op this node endorsed and applied, rather
+/// than the bytes it was handed. The endorsement is attached after decoding and
+/// lives outside the joiner's signature, so the received bytes are the
+/// *unendorsed* form — and an unendorsed join is refused by every peer.
+fn bytes_to_publish(op: &SignedNamespaceOp) -> Result<Vec<u8>, std::io::Error> {
+    borsh::to_vec(op)
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
@@ -312,6 +348,103 @@ mod tests {
 
     #[test]
     fn a_join_is_carried() {
+        assert!(carries_a_join(&a_join_op()));
+    }
+
+    /// Governance that is not a join must be refused.
+    ///
+    /// This is the rule that stops a designated admitter being used to publish
+    /// arbitrary namespace governance signed by whoever asked.
+    #[test]
+    fn governance_that_is_not_a_join_is_refused() {
+        let admin_changed = NamespaceOp::Root(RootOp::AdminChanged {
+            new_admin: calimero_account::AccountId::from([0x11; 32]),
+        });
+        assert!(!carries_a_join(&admin_changed));
+
+        let policy = NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: Vec::new(),
+        });
+        assert!(!carries_a_join(&policy));
+    }
+
+    /// The relay must publish the op it endorsed, not the bytes it was handed.
+    ///
+    /// The endorsement rides the envelope, outside the joiner's signature, so
+    /// the bytes a keyholder hands this endpoint carry none — the admitter
+    /// attaches its own after decoding. Publishing the received bytes therefore
+    /// strips the consent back off, and `verify_admitter_endorsement` refuses a
+    /// join that carries none on every peer ("no endorsement, no membership").
+    /// The admitter had already applied the endorsed op locally, so the failure
+    /// was silent and one-sided: the endpoint answered `published: true`, this
+    /// node showed the member joined, and every peer that received the
+    /// broadcast refused it. The membership then reached others only if one of
+    /// them later synced governance from this node — and nowhere at all if this
+    /// node left first.
+    ///
+    /// The second assertion is the one that makes the fix safe rather than just
+    /// effective: re-encoding must NOT move the op id. `to_signable` does not
+    /// copy the endorsement and `content_hash` is taken over the signable form,
+    /// so the `delta_id` the handler computed before endorsing still names the
+    /// op it publishes. Were that not so, attaching consent would fork the DAG.
+    #[test]
+    fn the_published_bytes_carry_the_endorsement_the_relay_attached() {
+        use calimero_context_client::local_governance::AdmitterEndorsement;
+        use calimero_context_client::local_governance::SignedNamespaceOp;
+
+        use super::bytes_to_publish;
+
+        let mut op = SignedNamespaceOp {
+            version: 1,
+            namespace_id: calimero_context_config::types::ContextGroupId::from([0x7Au8; 32])
+                .to_bytes()
+                .into(),
+            parent_op_hashes: vec![],
+            signer: calimero_primitives::identity::PublicKey::from([0x7Bu8; 32]),
+            nonce: 1,
+            op: a_join_op(),
+            signature: [0x7Cu8; 64],
+            admitter_endorsement: None,
+        };
+
+        // What the keyholder hands the endpoint: signed, but unendorsed. It has
+        // no node and no place in the admitters list, so it cannot supply one.
+        let received = borsh::to_vec(&op).expect("the unendorsed op encodes");
+        let id_before = op.content_hash().expect("the op has a content hash");
+
+        // What the admitter does as it relays.
+        op.admitter_endorsement = Some(Box::new(AdmitterEndorsement {
+            signer: calimero_primitives::identity::PublicKey::from([0x7Du8; 32]),
+            signature: [0x7Eu8; 64],
+        }));
+
+        let published = bytes_to_publish(&op).expect("the endorsed op encodes");
+        assert_ne!(
+            published, received,
+            "precondition: the endorsement must change the encoding, or this test proves nothing"
+        );
+
+        let decoded: SignedNamespaceOp =
+            borsh::from_slice(&published).expect("the published bytes decode");
+        assert!(
+            decoded.admitter_endorsement.is_some(),
+            "the bytes put on the topic must carry the consent this node attached; \
+             relaying the received bytes strips it and every peer refuses the join"
+        );
+
+        assert_eq!(
+            decoded
+                .content_hash()
+                .expect("the decoded op has a content hash"),
+            id_before,
+            "and endorsing must not move the op id, or the delta_id computed before \
+             endorsing names a different op and attaching consent forks the DAG"
+        );
+    }
+
+    /// A join op with placeholder credentials, for tests that care about the
+    /// envelope rather than the join's contents.
+    fn a_join_op() -> NamespaceOp {
         let genesis = calimero_account::AccountGenesis::new(
             calimero_primitives::identity::PublicKey::from([0u8; 32]),
         );
@@ -344,27 +477,10 @@ mod tests {
             bytecode_id: None,
         };
 
-        assert!(carries_a_join(&NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_account::AccountId::from([0u8; 32]),
             signed_invitation: invitation,
             account: Box::new(credential),
-        })));
-    }
-
-    /// Governance that is not a join must be refused.
-    ///
-    /// This is the rule that stops a designated admitter being used to publish
-    /// arbitrary namespace governance signed by whoever asked.
-    #[test]
-    fn governance_that_is_not_a_join_is_refused() {
-        let admin_changed = NamespaceOp::Root(RootOp::AdminChanged {
-            new_admin: calimero_account::AccountId::from([0x11; 32]),
-        });
-        assert!(!carries_a_join(&admin_changed));
-
-        let policy = NamespaceOp::Root(RootOp::PolicyUpdated {
-            policy_bytes: Vec::new(),
-        });
-        assert!(!carries_a_join(&policy));
+        })
     }
 }
