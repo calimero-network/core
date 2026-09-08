@@ -761,6 +761,28 @@ impl<'a> NodeDeviceRepository<'a> {
             .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
     }
 
+    /// Keep the proof a link op carried for THIS device.
+    ///
+    /// Returns whether the proof was ours. Idempotent: the same link is folded
+    /// once per namespace, and rewriting identical bytes is skipped.
+    ///
+    /// # Errors
+    /// Propagates the encoding or store failure.
+    pub fn remember_own_link(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<bool> {
+        let Some(held) = self.get()? else {
+            return Ok(false);
+        };
+        let cert = &proof.statement;
+        if held.device() != cert.device || held.account != cert.account {
+            return Ok(false);
+        }
+        let bytes = borsh::to_vec(proof)?;
+        if self.imported_certificate()?.as_deref() != Some(bytes.as_slice()) {
+            self.store_imported_certificate(&bytes)?;
+        }
+        Ok(true)
+    }
+
     /// Just what the unwrap paths need: this node's device id and agreement
     /// secret, without resolving the account that owns them.
     ///
@@ -2881,6 +2903,57 @@ mod tests {
                 .as_deref(),
             Some(&[7u8; 16][..]),
         );
+    }
+
+    /// The only root-signed credential a paired node is ever handed arrives inside
+    /// its own link. Keeping it is what lets the node found and join as the account.
+    #[test]
+    fn a_paired_device_keeps_the_proof_of_its_own_link() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        let cert = DeviceCert::sign(
+            &root_sk,
+            held.account,
+            held.device(),
+            &root(0x77),
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign");
+        let proof = AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: cert,
+        };
+
+        assert!(repo.remember_own_link(&proof).expect("keep"));
+
+        let stored: AccountProof<DeviceCert> =
+            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
+                .expect("decode");
+        assert_eq!(stored, proof, "byte-exact, root signature included");
+        assert_eq!(stored.verify(held.account).map(|_| ()), Ok(()));
+    }
+
+    /// A cert for a different device of the same account is not this node's own
+    /// link, so it must not be picked up as if it were.
+    #[test]
+    fn a_link_for_another_device_of_the_same_account_is_not_kept_as_our_own() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let _ = repo
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        let sibling = certified(&root_sk, [0x42; 32], [0x52; 32]);
+
+        assert!(!repo.remember_own_link(&sibling).expect("ignore"));
+        assert!(repo.imported_certificate().expect("read").is_none());
     }
 
     /// Cold start: a root-free node adopts an account from its PUBLIC root key.
