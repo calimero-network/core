@@ -103,6 +103,20 @@ pub fn build(
     let root = devices
         .require_account_root()
         .wrap_err("join credential: could not resolve this node's account root")?;
+
+    // `ensure_enrolled` re-mints a row adopted under another account. For a paired
+    // device that is a destroyed pairing, so refuse until its link has been folded.
+    if let Some(existing) = &existing {
+        eyre::ensure!(
+            existing.account == root.account(),
+            "join credential: this node's device belongs to account {} but its root owns {}; \
+             it is paired into another account and holds no certificate yet, so it cannot \
+             found or join until its link has been folded",
+            existing.account,
+            root.account(),
+        );
+    }
+
     let enrolled = devices
         .ensure_enrolled(namespace_id)
         .wrap_err("join credential: could not mint this node's device")?;
@@ -318,5 +332,35 @@ mod tests {
             .expect_err("undecodable bytes cannot be presented");
         let msg = format!("{err:#}");
         assert!(msg.contains("import-cert"), "{msg}");
+    }
+
+    /// A paired device that has not yet folded its own link holds no certificate.
+    /// Re-minting it under this node's root would found as a stranger and destroy
+    /// the pairing, so the build refuses instead.
+    #[test]
+    fn a_paired_device_without_its_certificate_is_refused_not_re_minted() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let repo = NodeDeviceRepository::new(&store);
+        let _own_root = repo.provision_account_root().expect("this node's root");
+        let alice_root = PrivateKey::from([0x31; 32]);
+        let paired = repo
+            .adopt_account(AccountGenesis::new(alice_root.public_key()))
+            .expect("pair into Alice's account");
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+
+        let err = build(&store, &ContextGroupId::from([0xAA; 32]), &signing_pk)
+            .expect_err("no certificate yet, so no credential");
+        assert!(
+            err.to_string().contains("paired into another account"),
+            "{err}"
+        );
+
+        let still = repo.get().expect("read").expect("row kept");
+        assert_eq!(
+            still.device(),
+            paired.device(),
+            "the paired device was not re-minted"
+        );
+        assert_eq!(still.account, paired.account);
     }
 }
