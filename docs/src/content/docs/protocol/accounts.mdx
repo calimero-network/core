@@ -310,6 +310,8 @@ Naming applications widens the **stored** scope before anything is published, si
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
 
+A paired device keeps the certificate its own link carried, so it can found or join a namespace as the account without an import step.
+
 ## Reading your account
 
 An `AccountId` appears on no wire and in no operation, so a node has to be asked
