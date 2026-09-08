@@ -8915,3 +8915,116 @@ fn a_sealed_root_op_is_given_the_ack_budget_its_cleartext_variant_earns() {
         "and a cheap op must not be promoted: the fix is exactness, not a raise"
     );
 }
+
+/// A sealed `KeyDelivery` that was buffered must actually DELIVER when replayed.
+///
+/// The sealed-root retry replays through `apply_root_op`, which folds the op and
+/// nothing else. Everything else a `KeyDelivery` does — unwrapping the envelope
+/// and storing the key it carries — lived in `apply_signed_op`'s match, which the
+/// retry does not run. So a node that received the delivery before its namespace
+/// key applied the op on replay and still had no subgroup key: the one thing the
+/// op exists to do was the one thing the replay skipped, and nothing failed.
+///
+/// The shape is the ordinary one since #3847 sealed this variant. An admin
+/// delivers a subgroup key to a member that holds no namespace key yet, so the
+/// member cannot open the carrier; the key it needs is inside an op it cannot
+/// read. When the namespace key later lands, this retry is what has to finish
+/// the job.
+///
+/// This also pins that the chain TERMINATES, and that is not incidental. The
+/// replay has no nonce dedup — it re-feeds every sealed root op in the log — so
+/// a `KeyDelivery` whose effect re-drives its own group reaches this same op
+/// again one level down, forever. Raise `MAX_RETRY_REENTRY` and this test does
+/// not fail, it aborts the process on a stack overflow, from an op any peer can
+/// send. That is why #3850 deferred wiring these effects in rather than adding
+/// the call and moving on.
+#[test]
+fn a_replayed_sealed_key_delivery_stores_the_key_it_carries() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xE1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The deliverer: an admin who holds the keys and signs the op.
+    let admin_sk = PrivateKey::from([0x31u8; 32]);
+    let admin_pk = admin_sk.public_key();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // This node: the recipient. A namespace member with an identity on file,
+    // which is what `apply_received_group_key_envelope` resolves to decrypt.
+    let our_sk = PrivateKey::from([0x32u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    // The subgroup the delivered key belongs to. Nested, so the cross-namespace
+    // pin in the envelope apply resolves it to this namespace rather than
+    // refusing a key for a group it cannot place.
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let namespace_key = [0x5Au8; 32];
+    let subgroup_key = [0x77u8; 32];
+
+    // Sealed by hand, NOT through `seal_for_test`: that helper mints the
+    // namespace key into this store, and a node that already holds the key is
+    // exactly the state this test needs to start outside of.
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+    let delivery = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], 1, sealed)
+        .expect("the admin signs the delivery");
+    crate::NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&delivery)
+        .expect("land the delivery in the log, unopened");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: the subgroup key is unreachable while the carrier is sealed"
+    );
+
+    // The namespace key arrives — by delivery or by pull, both land here.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+    super::governance::retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("the retry pass runs");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("the replayed delivery must store the subgroup key it carries");
+    assert_eq!(
+        stored.1, subgroup_key,
+        "and it must be the key the envelope actually carried, not some other entry"
+    );
+}
