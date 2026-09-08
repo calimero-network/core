@@ -125,8 +125,13 @@ pub(crate) fn apply_device_linked(
 
     match outcome {
         Ok(binding) => {
-            remember_own_link_if_ours(ctx, genesis, chain, cert);
-            remember_if_this_accounts_own(ctx, genesis, chain, cert);
+            let proof = AccountProof {
+                genesis: *genesis,
+                chain: chain.to_vec(),
+                statement: *cert,
+            };
+            remember_own_link_if_ours(ctx, &proof);
+            crate::remember_sibling_cert_best_effort(ctx.store(), &proof);
             tracing::info!(
                 group_id = ?group_id,
                 account = %binding.account,
@@ -154,37 +159,11 @@ pub(crate) fn apply_device_linked(
 
 /// Keep the proof if this link is about THIS node's device. Best-effort like the
 /// sibling cache: a node-local write must never refuse an op the group accepted.
-fn remember_own_link_if_ours(
-    ctx: &GroupApplyCtx<'_>,
-    genesis: &AccountGenesis,
-    chain: &[RootKeyHandoff],
-    cert: &DeviceCert,
-) {
-    let proof = AccountProof {
-        genesis: *genesis,
-        chain: chain.to_vec(),
-        statement: *cert,
-    };
-    if let Err(err) = crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(&proof) {
-        tracing::warn!(device = %cert.device, %err,
+fn remember_own_link_if_ours(ctx: &GroupApplyCtx<'_>, proof: &AccountProof<DeviceCert>) {
+    if let Err(err) = crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(proof) {
+        tracing::warn!(device = %proof.statement.device, %err,
                        "could not keep this device's own certificate");
     }
-}
-
-/// Cache a sibling's certificate, keyed on the account this node's DEVICE speaks
-/// for: on a paired node that is not the account its own root owns.
-fn remember_if_this_accounts_own(
-    ctx: &GroupApplyCtx<'_>,
-    genesis: &AccountGenesis,
-    chain: &[RootKeyHandoff],
-    cert: &DeviceCert,
-) {
-    let proof = AccountProof {
-        genesis: *genesis,
-        chain: chain.to_vec(),
-        statement: *cert,
-    };
-    crate::remember_sibling_cert_best_effort(ctx.store(), &proof);
 }
 
 /// `GroupOp::AccountDeviceUnlinked` — withdraw a device.

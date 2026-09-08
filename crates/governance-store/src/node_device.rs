@@ -1101,7 +1101,7 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read or write failure.
-    pub fn remember_device_cert_if_new(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
+    fn remember_device_cert_if_new(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
         if self.device_cert(proof.statement.device)?.is_some() {
             return Ok(());
         }
@@ -1113,7 +1113,7 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read or write failure.
-    pub fn remember_sibling_cert(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
+    fn remember_sibling_cert(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
         let Some(held) = self.get()? else {
             return Ok(());
         };
