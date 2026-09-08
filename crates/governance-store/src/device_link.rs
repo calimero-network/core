@@ -27,6 +27,27 @@ enum BindPlan {
     Skip(BindOutcome),
 }
 
+/// Does this node know `cert`'s device belongs in `namespace`?
+///
+/// Only the holder stores scopes, so a paired device cannot answer for any
+/// sibling and binds none.
+fn in_scope_here(
+    store: &Store,
+    devices: &NodeDeviceRepository<'_>,
+    namespace: &ContextGroupId,
+    cert: &KnownDeviceCert,
+) -> EyreResult<bool> {
+    if !devices.is_account_holder()? {
+        return Ok(false);
+    }
+    // A namespace whose metadata has not synced names no application, and is
+    // reachable only by a scope that names none either.
+    let application = MetaRepository::new(store)
+        .load(namespace)?
+        .map(|meta| meta.target.application_id);
+    Ok(cert.covers(application))
+}
+
 /// Everything that decides whether the pair of publishes is worth making,
 /// cheapest question first.
 fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> EyreResult<BindPlan> {
@@ -36,13 +57,7 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     if devices.get()?.is_some_and(|held| held.device() == device) {
         return Ok(BindPlan::Skip(BindOutcome::OwnDevice));
     }
-    // The namespace's target application, read the way the pairing fan-out reads
-    // it. A namespace whose metadata has not synced names none, and is reachable
-    // only by a scope that names none either.
-    let application = MetaRepository::new(store)
-        .load(namespace)?
-        .map(|meta| meta.target.application_id);
-    if !cert.covers(application) {
+    if !in_scope_here(store, &devices, namespace, cert)? {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
 
@@ -362,6 +377,31 @@ mod tests {
             },
             BindPlan::Skip(outcome) => outcome,
         }
+    }
+
+    /// A node whose device was adopted under another account's root: a paired
+    /// phone. Its own root is present, as `merod init` leaves it, and irrelevant.
+    fn paired_store(root_sk: &PrivateKey) -> Store {
+        let store = test_store();
+        let _ = NodeDeviceRepository::new(&store)
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        store
+    }
+
+    /// Only the holder stores scopes, so a cached certificate on a paired device
+    /// says nothing about where that device belongs.
+    #[test]
+    fn a_paired_device_binds_no_cached_sibling() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let store = paired_store(&root_sk);
+        let namespace = test_group_id();
+        namespace_serving(&store, &namespace, APP_ONE);
+
+        assert_eq!(
+            planned(&store, &namespace, &known(&root_sk, 0x0C, vec![])),
+            BindOutcome::OutOfScope
+        );
     }
 
     #[test]
