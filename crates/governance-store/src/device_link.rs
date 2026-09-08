@@ -30,7 +30,8 @@ enum BindPlan {
 /// Does this node know `cert`'s device belongs in `namespace`?
 ///
 /// Only the holder stores scopes, so a paired device cannot answer for any
-/// sibling and binds none.
+/// sibling and binds none. A holder answers for its own account alone: a
+/// certificate of any other account is out of scope in every namespace.
 fn in_scope_here(
     store: &Store,
     devices: &NodeDeviceRepository<'_>,
@@ -38,6 +39,14 @@ fn in_scope_here(
     cert: &KnownDeviceCert,
 ) -> EyreResult<bool> {
     if !devices.is_account_holder()? {
+        return Ok(false);
+    }
+    // A forced root import deletes the device row and keeps the cached
+    // certificates, so a holder's own cache can name a discarded account.
+    let Some(root) = devices.account_root()? else {
+        return Ok(false);
+    };
+    if cert.proof.statement.account != root.account() {
         return Ok(false);
     }
     // A namespace whose metadata has not synced names no application, and is
@@ -292,7 +301,6 @@ pub async fn bind_device_everywhere(
 #[cfg(test)]
 mod tests {
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};
-    use calimero_primitives::identity::PublicKey;
     use calimero_store::key::GroupMetaValue;
 
     use super::*;
@@ -304,13 +312,6 @@ mod tests {
 
     fn app(id: [u8; 32]) -> calimero_primitives::application::ApplicationId {
         calimero_primitives::application::ApplicationId::from(id)
-    }
-
-    /// The account root [`crate::test_fixtures::enrol_member`] derives for a
-    /// signing key, so a second device can be certified into the same account the
-    /// fixture already made a member.
-    fn account_root_of(sign_pk: &PublicKey) -> PrivateKey {
-        PrivateKey::from(*(*sign_pk))
     }
 
     /// A device of `root_sk`'s account, with `seed` deciding its id.
@@ -379,6 +380,19 @@ mod tests {
         }
     }
 
+    /// The root `test_store` provisioned: the account a holder node speaks for,
+    /// and so the only one whose devices it may bind.
+    fn holder_root(store: &Store) -> PrivateKey {
+        PrivateKey::from(
+            *NodeDeviceRepository::new(store)
+                .account_root()
+                .expect("read the account root")
+                .expect("an initialised node has one")
+                .signing_key()
+                .as_bytes(),
+        )
+    }
+
     /// A node whose device was adopted under another account's root: a paired
     /// phone. Its own root is present, as `merod init` leaves it, and irrelevant.
     fn paired_store(root_sk: &PrivateKey) -> Store {
@@ -389,17 +403,39 @@ mod tests {
         store
     }
 
-    /// Only the holder stores scopes, so a cached certificate on a paired device
-    /// says nothing about where that device belongs.
+    /// A node that cached certificates of its own account and was then adopted
+    /// into another: only the holder stores scopes, so the cache decides nothing.
     #[test]
     fn a_paired_device_binds_no_cached_sibling() {
-        let root_sk = PrivateKey::from([0x31; 32]);
-        let store = paired_store(&root_sk);
+        let store = paired_store(&PrivateKey::from([0x31; 32]));
         let namespace = test_group_id();
         namespace_serving(&store, &namespace, APP_ONE);
 
         assert_eq!(
-            planned(&store, &namespace, &known(&root_sk, 0x0C, vec![])),
+            planned(
+                &store,
+                &namespace,
+                &known(&holder_root(&store), 0x0C, vec![])
+            ),
+            BindOutcome::OutOfScope
+        );
+    }
+
+    /// A forced root import discards the account without deleting the
+    /// certificates cached for it, and leaves the node a holder again - so the
+    /// account is checked here rather than assumed from the row's presence.
+    #[test]
+    fn a_certificate_of_another_account_is_not_bound_here() {
+        let store = test_store();
+        let namespace = test_group_id();
+        namespace_serving(&store, &namespace, APP_ONE);
+
+        assert_eq!(
+            planned(
+                &store,
+                &namespace,
+                &known(&PrivateKey::from([0x32; 32]), 0x0D, vec![])
+            ),
             BindOutcome::OutOfScope
         );
     }
@@ -409,7 +445,7 @@ mod tests {
         let store = test_store();
         let ns = test_group_id();
         namespace_serving(&store, &ns, APP_ONE);
-        let root = PrivateKey::from([0x51; 32]);
+        let root = holder_root(&store);
 
         for scope in [vec![], vec![APP_ONE], vec![APP_TWO, APP_ONE]] {
             assert_eq!(
@@ -427,7 +463,7 @@ mod tests {
         let store = test_store();
         let ns = test_group_id();
         namespace_serving(&store, &ns, APP_ONE);
-        let root = PrivateKey::from([0x52; 32]);
+        let root = holder_root(&store);
 
         assert_eq!(
             planned(&store, &ns, &known(&root, 0x62, vec![APP_TWO])),
@@ -445,7 +481,7 @@ mod tests {
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("store a scope key");
-        let root = PrivateKey::from([0x53; 32]);
+        let root = holder_root(&store);
 
         assert_eq!(
             planned(&store, &ns, &known(&root, 0x63, vec![])),
@@ -466,7 +502,7 @@ mod tests {
         let store = test_store();
         let ns = test_group_id();
         namespace_serving(&store, &ns, APP_ONE);
-        let root = PrivateKey::from([0x54; 32]);
+        let root = holder_root(&store);
         let cert = known(&root, 0x65, vec![APP_ONE]);
 
         AccountBindingRepository::new(&store)
@@ -484,7 +520,7 @@ mod tests {
         let store = test_store();
         let ns = test_group_id();
         namespace_serving(&store, &ns, APP_ONE);
-        let root = PrivateKey::from([0x55; 32]);
+        let root = holder_root(&store);
         let cert = known(&root, 0x66, vec![APP_ONE]);
 
         let _binding = AccountBindingRepository::new(&store)
@@ -525,7 +561,7 @@ mod tests {
                 },
             )
             .expect("save the namespace metadata");
-        let root = PrivateKey::from([0x56; 32]);
+        let root = holder_root(&store);
 
         assert_eq!(
             planned(&store, &ns, &known(&root, 0x67, vec![])),
@@ -578,7 +614,7 @@ mod tests {
         let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
             namespace_publish_fixture().await;
         let ns = ContextGroupId::from(ns_id.to_bytes());
-        let root = account_root_of(&sk.public_key());
+        let root = holder_root(&store);
         let devices = NodeDeviceRepository::new(&store);
 
         let in_scope = certify(&root, 0x71, [0x71; 32]);
@@ -637,7 +673,7 @@ mod tests {
         // A second namespace this node takes part in but holds no key for, which is
         // the ordinary "not caught up yet" state rather than a fault.
         let keyless = ContextGroupId::from([0xEE; 32]);
-        let root = account_root_of(&sk.public_key());
+        let root = holder_root(&store);
         let cert = KnownDeviceCert {
             proof: certify(&root, 0x77, [0x77; 32]),
             applications: Vec::new(),
@@ -687,7 +723,7 @@ mod tests {
         let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
             namespace_publish_fixture().await;
         let ns = ContextGroupId::from(ns_id.to_bytes());
-        let root = account_root_of(&sk.public_key());
+        let root = holder_root(&store);
         let devices = NodeDeviceRepository::new(&store);
 
         // An all-zero agreement key is a degenerate X25519 point: the scope key
@@ -759,7 +795,7 @@ mod tests {
         let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
             namespace_publish_fixture().await;
         let ns = ContextGroupId::from(ns_id.to_bytes());
-        let root = account_root_of(&sk.public_key());
+        let root = holder_root(&store);
 
         let revoked = certify(&root, 0x75, [0x75; 32]);
         NodeDeviceRepository::new(&store)
@@ -794,7 +830,7 @@ mod tests {
         let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
             namespace_publish_fixture().await;
         let ns = ContextGroupId::from(ns_id.to_bytes());
-        let root = account_root_of(&sk.public_key());
+        let root = holder_root(&store);
         let cert = certify(&root, 0x76, [0x76; 32]);
         NodeDeviceRepository::new(&store)
             .remember_device_cert(&cert, &[])

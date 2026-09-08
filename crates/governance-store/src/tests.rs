@@ -10432,7 +10432,10 @@ mod parked_op_retries_to_success {
 mod account_plane_apply {
     use super::*;
     use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff};
-    use calimero_context_client::local_governance::GroupOp;
+    use calimero_context_client::local_governance::{
+        GroupOp, JoinAccountCredential, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
 
@@ -10480,7 +10483,7 @@ mod account_plane_apply {
         let root = devices.provision_account_root().unwrap();
         // The cache now keys on the account this node's OWN enrolled device speaks
         // for, so a sibling link is only ever cached once this node has one.
-        devices.adopt_account(root.genesis()).unwrap();
+        let _held = devices.ensure_enrolled(&gid).unwrap();
         let account = root.account();
         let device = DeviceId::mint(account, [7u8; 16]);
         let cert = DeviceCert::sign(
@@ -10597,7 +10600,9 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
         let devices = crate::NodeDeviceRepository::new(&store);
-        let _own = devices.provision_account_root().unwrap();
+        // A holder's own device row, without which the cache would refuse at its
+        // first guard and never reach the account comparison this pins.
+        let _held = devices.ensure_enrolled(&gid).unwrap();
 
         let stranger_root = key(9);
         let genesis = AccountGenesis::new(stranger_root.public_key());
@@ -10635,6 +10640,174 @@ mod account_plane_apply {
             live_for(&store, &gid, account).len(),
             1,
             "the link itself must land - only the cache is scoped to our own account"
+        );
+        assert!(devices.device_cert(device).unwrap().is_none());
+    }
+
+    /// A namespace with an Open subgroup `member` may inherit into: the least
+    /// state a self-service join needs to reach the credential it carries.
+    fn open_subgroup_for(store: &Store, member: AccountId) -> ([u8; 32], ContextGroupId) {
+        let ns_id = [0xB7u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let subgroup = ContextGroupId::from([0xB8u8; 32]);
+        let admin = enrol_member(store, &ns_gid, &key(1).public_key());
+
+        let meta = MetaRepository::new(store);
+        meta.save(&ns_gid, &sample_meta_with_admin(admin)).unwrap();
+        meta.save(&subgroup, &sample_meta_with_admin(admin))
+            .unwrap();
+        let members = MembershipRepository::new(store);
+        members
+            .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        members
+            .add_member(&subgroup, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        members
+            .add_member(&ns_gid, &member, GroupMemberRole::Member)
+            .unwrap();
+        NamespaceRepository::new(store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        let caps = CapabilitiesRepository::new(store);
+        caps.set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+        caps.set_member_capability(
+            &ns_gid,
+            &member,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+
+        (ns_id, subgroup)
+    }
+
+    /// Fold `joiner_sk`'s inherited join of the Open subgroup, carrying `account`
+    /// as the credential the join binds.
+    fn join_open_subgroup(
+        store: &Store,
+        (ns_id, subgroup): ([u8; 32], ContextGroupId),
+        joiner_sk: &PrivateKey,
+        member: AccountId,
+        account: Box<JoinAccountCredential>,
+    ) {
+        let signed = SignedNamespaceOp::sign(
+            joiner_sk,
+            ns_id.into(),
+            vec![],
+            1,
+            crate::test_fixtures::seal_for_test(
+                store,
+                ContextGroupId::from(ns_id),
+                RootOp::MemberJoinedOpen {
+                    member,
+                    group_id: subgroup,
+                    account,
+                },
+            ),
+        )
+        .unwrap();
+        apply_signed_namespace_op(store, &signed).expect("the inherited open join applies");
+    }
+
+    /// The join feed into the same cache. A sibling's certificate reaches this
+    /// node inside the join op that device signs and nowhere else, so without
+    /// this write it could never be carried into a namespace gained later.
+    #[test]
+    fn a_siblings_join_credential_is_remembered_here() {
+        let store = test_store();
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.provision_account_root().unwrap();
+        let account = root.account();
+        let namespace = open_subgroup_for(&store, account);
+        let _held = devices
+            .ensure_enrolled(&ContextGroupId::from(namespace.0))
+            .unwrap();
+
+        let sibling_sk = key(0x21);
+        let credential = crate::test_fixtures::join_account_for(
+            root.signing_key(),
+            root.genesis(),
+            &sibling_sk.public_key(),
+            [0x21; 32],
+            0,
+        );
+        let device = credential.statement.device;
+
+        join_open_subgroup(&store, namespace, &sibling_sk, account, credential);
+
+        let held = devices
+            .device_cert(device)
+            .unwrap()
+            .expect("a sibling device of this account must be remembered from its join");
+        assert!(
+            held.applications.is_empty(),
+            "the wire carries no scope, so the widest one is the only honest guess"
+        );
+    }
+
+    /// The genesis feed. The founder is the one member no join op ever admits, so
+    /// its credential is seen here only in the genesis it signs.
+    #[test]
+    fn a_sibling_founding_a_namespace_is_remembered_here() {
+        let store = test_store();
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.provision_account_root().unwrap();
+        let _held = devices.ensure_enrolled(&test_group_id()).unwrap();
+
+        let founder_sk = key(0x24);
+        let credential = crate::test_fixtures::join_account_for(
+            root.signing_key(),
+            root.genesis(),
+            &founder_sk.public_key(),
+            [0x24; 32],
+            0,
+        );
+        let device = credential.statement.device;
+        let signed = SignedNamespaceOp::sign(
+            &founder_sk,
+            [0xB9u8; 32].into(),
+            vec![],
+            0,
+            NamespaceOp::Root(RootOp::NamespaceCreated {
+                founder: root.account(),
+                account: credential,
+            }),
+        )
+        .unwrap();
+
+        apply_signed_namespace_op(&store, &signed).expect("the genesis establishes the namespace");
+
+        let held = devices
+            .device_cert(device)
+            .unwrap()
+            .expect("a founder that is a sibling device of this account must be remembered");
+        assert!(
+            held.applications.is_empty(),
+            "the widest scope, as on the wire"
+        );
+    }
+
+    /// And only for siblings, through the join feed as through the link: a
+    /// stranger's device is somebody else's to extend.
+    #[test]
+    fn a_strangers_join_credential_is_not_remembered_here() {
+        let store = test_store();
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let _held = devices.ensure_enrolled(&test_group_id()).unwrap();
+
+        let stranger_sk = key(0x23);
+        let credential = crate::test_fixtures::real_join_account(&stranger_sk.public_key());
+        let account = credential.statement.account;
+        let device = credential.statement.device;
+        let namespace = open_subgroup_for(&store, account);
+
+        join_open_subgroup(&store, namespace, &stranger_sk, account, credential);
+
+        assert_eq!(
+            live_for(&store, &ContextGroupId::from(namespace.0), account).len(),
+            1,
+            "the join itself must land - only the cache is scoped to our own account"
         );
         assert!(devices.device_cert(device).unwrap().is_none());
     }
