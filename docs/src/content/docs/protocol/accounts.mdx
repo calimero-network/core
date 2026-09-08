@@ -284,6 +284,9 @@ The device converges within a few beacon intervals - beacons fire roughly every 
 
 Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
 
+A paired device keeps the certificate its own link carried, so it can found or join a namespace as the account without an import step.
+A device paired before this change holds no such certificate, so the holder relinks it, or a certificate signed offline is imported with `merod account import-cert`.
+
 ### Pairing is repeated, not a snapshot
 
 A pairing binds the device wherever the holder takes part *at that moment*.
@@ -309,8 +312,6 @@ Naming applications widens the **stored** scope before anything is published, si
 
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
-
-A paired device keeps the certificate its own link carried, so it can found or join a namespace as the account without an import step.
 
 ## Reading your account
 
