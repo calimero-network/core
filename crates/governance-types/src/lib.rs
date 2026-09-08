@@ -778,8 +778,34 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         // invitations -- and only them, which is the kind of partial break that
         // reads as a client bug.
         //
-        // Sealing either therefore needs a different publisher (the admitter,
-        // who already endorses the join and does hold the key), not a flag flip.
+        // A different PUBLISHER does not fix it, and it is worth being exact
+        // about why, because "hand it to the admitter" is the obvious next idea
+        // and it does not work.
+        //
+        // The admitter already relays: `admit_join.rs` exists so a keyholder
+        // with no node can be admitted at all, and that node does hold the
+        // namespace key. So the transmitting party is already the right one.
+        // What blocks the seal is the SIGNATURE, not the transport.
+        // `SignedNamespaceOp::to_signable` copies `op` verbatim, so the joiner's
+        // signature covers the exact `NamespaceOp` value -- swapping
+        // `Root(MemberJoined)` for `RootSealed` invalidates it, and moves the op
+        // id with it. The joiner cannot sign the sealed form (no key, as above),
+        // and the admitter cannot re-sign it: `join_op_proves_ownership` requires
+        // `signer == account.statement.sign_pk`, checked by every peer at apply,
+        // and that check is exactly what stops an admitter substituting a
+        // different member. Endorsement can ride along because it sits OUTSIDE
+        // the signature; the op body cannot.
+        //
+        // Nor is signing-then-sealing available. `seal_root_op_for_publish` runs
+        // BEFORE `sign` on every sealed op deliberately: the signature then
+        // covers the ciphertext, which is what lets a peer holding no namespace
+        // key verify a sealed op without decrypting it. Moving the signature
+        // inside the seal -- verify after decrypt -- would seal these two, at the
+        // cost of keyless verification for every sealed root op, so a non-member
+        // would store skeletons it cannot authenticate.
+        //
+        // Sealing these two is therefore a change to how a sealed op is signed
+        // and verified, i.e. another wire break, not a publisher swap.
         RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. } => false,
         // Published by an admin or member who holds the key, like the ones
         // above. It reads as an exception because its RECIPIENT does not hold
