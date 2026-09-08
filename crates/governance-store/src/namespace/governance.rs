@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use calimero_governance_types::NamespaceId;
 
 use crate::{
@@ -491,6 +493,39 @@ impl<'a> NamespaceGovernance<'a> {
     /// [`SignedNamespaceOp::admitter_endorsement`]. Taken here rather than left
     /// to the caller so the op is endorsed before it is applied and published:
     /// attaching it afterwards would apply an op locally that peers refuse.
+    /// The ack budget `op` deserves, opening a sealed root op to classify it.
+    ///
+    /// [`timeout_for_namespace_op`] sees only the wire form, and there a sealed
+    /// root op is an opaque blob — so every one of them fell to the
+    /// member-change default. `GroupDeleted` and `KeyDelivery` quietly lost the
+    /// heavy budget they were given when they travelled in the clear, and those
+    /// are exactly the two that need it: a cascade delete touches every
+    /// descendant row and an envelope unwrap can be large. At 5s instead of 10s
+    /// the publisher reports `Degraded` for an op that was propagating fine.
+    ///
+    /// Raising the wire-form default to heavy would have fixed those two by
+    /// making every other sealed op wait 10s instead of 2s before reporting a
+    /// failure — a worse trade than the bug, on the common admin path.
+    ///
+    /// So classify exactly, which the publisher alone can do: sealing REQUIRES
+    /// the namespace key, so a node that sealed this op holds the key to read it
+    /// back. When it does not open — a rotation raced the publish, or this is a
+    /// forwarding path that never held the key — the wire-form answer stands,
+    /// which is the behaviour before this existed.
+    pub(crate) fn ack_timeout_for(&self, op: &NamespaceOp) -> Duration {
+        let NamespaceOp::RootSealed { key_id, encrypted } = op else {
+            return timeout_for_namespace_op(op);
+        };
+        match open_sealed_root_op(self.store, self.namespace_id, key_id.as_bytes(), encrypted) {
+            Ok(Some(root)) => timeout_for_namespace_op(&NamespaceOp::Root(root)),
+            // Not an error worth logging at warn: a publisher that cannot open
+            // its own sealed op is a real oddity, but the only consequence here
+            // is the ack budget, and the fallback is the value this code used
+            // before it could do better.
+            Ok(None) | Err(_) => timeout_for_namespace_op(op),
+        }
+    }
+
     pub async fn sign_apply_and_publish_returning_op(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -516,7 +551,7 @@ impl<'a> NamespaceGovernance<'a> {
         // cleartext `GroupOp` label; observing them here too would double-count.
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
-        let op_timeout = timeout_for_namespace_op(&op);
+        let op_timeout = self.ack_timeout_for(&op);
         refuse_unsealed_sealable_root(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
@@ -730,7 +765,7 @@ impl<'a> NamespaceGovernance<'a> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
-        let op_timeout = timeout_for_namespace_op(&op);
+        let op_timeout = self.ack_timeout_for(&op);
         refuse_unsealed_sealable_root(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
