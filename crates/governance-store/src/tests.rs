@@ -10478,6 +10478,9 @@ mod account_plane_apply {
 
         let devices = crate::NodeDeviceRepository::new(&store);
         let root = devices.provision_account_root().unwrap();
+        // The cache now keys on the account this node's OWN enrolled device speaks
+        // for, so a sibling link is only ever cached once this node has one.
+        devices.adopt_account(root.genesis()).unwrap();
         let account = root.account();
         let device = DeviceId::mint(account, [7u8; 16]);
         let cert = DeviceCert::sign(

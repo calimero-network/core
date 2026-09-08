@@ -96,6 +96,7 @@ pub use self::contexts::{
 };
 pub use self::deny_list::DenyListRepository;
 pub use self::device_link::{bind_device_everywhere, bind_known_devices};
+pub(crate) use self::node_device::remember_sibling_cert_best_effort;
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 

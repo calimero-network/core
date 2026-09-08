@@ -229,6 +229,10 @@ pub(super) fn record_join_credential(
         &account.statement,
     )?;
 
+    if outcome.is_ok() {
+        crate::remember_sibling_cert_best_effort(ctx.store(), account);
+    }
+
     // The endorsement, materialized. `AccountDeviceLinked` carries an explicit
     // `AccountMemberEndorsement` because an account root is a member nowhere, so
     // its gate has to ask whether some member vouched. A join already answers

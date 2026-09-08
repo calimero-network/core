@@ -113,6 +113,9 @@ fn bind_founder(
     let bindings = crate::AccountBindingRepository::new(store);
     let outcome =
         bindings.apply_link(ns_gid, &account.genesis, &account.chain, &account.statement)?;
+    if outcome.is_ok() {
+        crate::remember_sibling_cert_best_effort(store, account);
+    }
     if let Err(rejected) = &outcome {
         if rejected.is_permanent() {
             // Refuse the genesis rather than establish a namespace its founder

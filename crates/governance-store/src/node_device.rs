@@ -1108,6 +1108,22 @@ impl<'a> NodeDeviceRepository<'a> {
         self.remember_device_cert(proof, &[])
     }
 
+    /// Cache a certificate of a sibling: another device of the account this node's
+    /// device speaks for. Widest scope, never overwriting one already known.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn remember_sibling_cert(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
+        let Some(held) = self.get()? else {
+            return Ok(());
+        };
+        let cert = &proof.statement;
+        if held.account != cert.account || held.device() == cert.device {
+            return Ok(());
+        }
+        self.remember_device_cert_if_new(proof)
+    }
+
     /// The certificate this node holds for `device`, if it has one.
     ///
     /// # Errors
@@ -1193,6 +1209,15 @@ impl<'a> NodeDeviceRepository<'a> {
         let key = NodeDeviceIdentity::new();
         self.store.handle().delete(&key)?;
         Ok(())
+    }
+}
+
+/// The apply-time form: a node-local cache write must never refuse an op the
+/// group accepted, so failures are logged and swallowed.
+pub(crate) fn remember_sibling_cert_best_effort(store: &Store, proof: &AccountProof<DeviceCert>) {
+    if let Err(err) = NodeDeviceRepository::new(store).remember_sibling_cert(proof) {
+        tracing::warn!(device = %proof.statement.device, %err,
+                       "could not remember a sibling device's certificate");
     }
 }
 
@@ -1298,6 +1323,52 @@ mod tests {
             "a cert nothing else is known about reaches every namespace"
         );
         assert_eq!(repo.device_certs().expect("scan").len(), 2);
+    }
+
+    /// A sibling is a device of the account THIS node's device speaks for, which
+    /// on a paired node is not the account its own root owns.
+    #[test]
+    fn a_paired_device_caches_its_siblings_and_nobody_else() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+
+        let sibling = certified(&root_sk, [0x42; 32], [0x52; 32]);
+        repo.remember_sibling_cert(&sibling).expect("cache");
+        assert!(repo
+            .device_cert(sibling.statement.device)
+            .expect("read")
+            .is_some());
+
+        let stranger = certified(&PrivateKey::from([0x33; 32]), [0x43; 32], [0x53; 32]);
+        repo.remember_sibling_cert(&stranger).expect("ignore");
+        assert!(repo
+            .device_cert(stranger.statement.device)
+            .expect("read")
+            .is_none());
+
+        let own = DeviceCert::sign(
+            &root_sk,
+            held.account,
+            held.device(),
+            &root(0x77),
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign");
+        repo.remember_sibling_cert(&AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: own,
+        })
+        .expect("ignore own");
+        assert!(repo.device_cert(held.device()).expect("read").is_none());
+
+        assert_eq!(repo.device_certs().expect("scan").len(), 1);
     }
 
     /// An empty scope is every application, and a named one is only its own -
