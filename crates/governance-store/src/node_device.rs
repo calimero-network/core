@@ -800,6 +800,22 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(true)
     }
 
+    /// Does this node's own root own the account its device speaks for?
+    ///
+    /// A node with a root and no device yet counts: it enrols under that root on
+    /// its first join. A paired node holds a device of somebody else's account.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_account_holder(&self) -> EyreResult<bool> {
+        let Some(root) = self.account_root()? else {
+            return Ok(false);
+        };
+        Ok(self
+            .get()?
+            .is_none_or(|held| held.account == root.account()))
+    }
+
     /// Just what the unwrap paths need: this node's device id and agreement
     /// secret, without resolving the account that owns them.
     ///
@@ -3080,6 +3096,33 @@ mod tests {
 
         assert!(!repo.remember_own_link(&sibling).expect("ignore"));
         assert!(repo.imported_certificate().expect("read").is_none());
+    }
+
+    /// The holder is the node whose root owns the account its device speaks for.
+    /// A node that has a root and no device yet is the holder too: it enrols under
+    /// that root on its first join.
+    #[test]
+    fn a_root_that_owns_the_device_makes_a_holder() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        assert!(repo.is_account_holder().expect("root, no device"));
+        let _ = repo.ensure_enrolled(&test_group_id()).expect("enrol");
+        assert!(repo.is_account_holder().expect("root owns the device"));
+    }
+
+    #[test]
+    fn an_adopted_device_or_a_missing_root_is_not_the_holder() {
+        let other = AccountGenesis::new(PrivateKey::from([0x99; 32]).public_key());
+
+        let paired = test_store();
+        let repo = NodeDeviceRepository::new(&paired);
+        let _ = repo.adopt_account(other).expect("adopt");
+        assert!(!repo.is_account_holder().expect("device of another account"));
+
+        let rootless = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&rootless);
+        let _ = repo.adopt_account(other).expect("adopt");
+        assert!(!repo.is_account_holder().expect("no root at all"));
     }
 
     /// Cold start: a root-free node adopts an account from its PUBLIC root key.
