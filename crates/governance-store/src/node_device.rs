@@ -721,10 +721,9 @@ impl<'a> NodeDeviceRepository<'a> {
 
     /// Store a device certificate this node's account root signed **elsewhere**.
     ///
-    /// The bytes are kept verbatim — the exact encoding `merod account sign-cert`
-    /// printed — because the proof is self-certifying and a decode/re-encode round
-    /// trip that is not byte-exact yields a signature that no longer verifies. The
-    /// failure would surface at a peer as a refused join, nowhere near here.
+    /// The bytes are kept verbatim, exactly as `merod account sign-cert` printed
+    /// them, because they came from outside and this node, holding no root,
+    /// cannot re-derive them if they are lost.
     ///
     /// Overwrites any previous one: re-certifying a device at a higher epoch is the
     /// supported way to rotate its keys, and refusing the second import would make
@@ -763,8 +762,12 @@ impl<'a> NodeDeviceRepository<'a> {
 
     /// Keep the proof a link op carried for THIS device.
     ///
-    /// Returns whether the proof was ours. Idempotent: the same link is folded
-    /// once per namespace, and rewriting identical bytes is skipped.
+    /// Returns whether the proof was ours. The write is skipped for a node that
+    /// holds the account's own root, which can self-sign and would lose that
+    /// fallback to a stored import, and for a link whose `device_epoch` does not
+    /// advance on what is already stored: a link op re-runs on every re-gossip and
+    /// every DAG replay, so an equal-or-older epoch overwriting a deliberate
+    /// re-certification would undo it again after each replay.
     ///
     /// # Errors
     /// Propagates the encoding or store failure.
@@ -776,9 +779,23 @@ impl<'a> NodeDeviceRepository<'a> {
         if held.device() != cert.device || held.account != cert.account {
             return Ok(false);
         }
-        let bytes = borsh::to_vec(proof)?;
-        if self.imported_certificate()?.as_deref() != Some(bytes.as_slice()) {
-            self.store_imported_certificate(&bytes)?;
+        if self
+            .account_root()?
+            .is_some_and(|root| root.account() == held.account)
+        {
+            return Ok(false);
+        }
+        let supersedes = match self.imported_certificate()? {
+            // Bytes that decode as nothing carry no epoch to lose to, so an
+            // operator's garbage is replaced rather than pinned forever.
+            Some(stored) => match borsh::from_slice::<AccountProof<DeviceCert>>(&stored) {
+                Ok(kept) => cert.device_epoch > kept.statement.device_epoch,
+                Err(_) => true,
+            },
+            None => true,
+        };
+        if supersedes {
+            self.store_imported_certificate(&borsh::to_vec(proof)?)?;
         }
         Ok(true)
     }
@@ -2938,6 +2955,115 @@ mod tests {
                 .expect("decode");
         assert_eq!(stored, proof, "byte-exact, root signature included");
         assert_eq!(stored.verify(held.account).map(|_| ()), Ok(()));
+    }
+
+    /// A link for the held device, at `device_epoch`.
+    fn paired_link(
+        held: &NodeDevice,
+        root_sk: &PrivateKey,
+        device_epoch: u32,
+    ) -> AccountProof<DeviceCert> {
+        let cert = DeviceCert::sign(
+            root_sk,
+            held.account,
+            held.device(),
+            &root(0x77),
+            &held.kem_public_key(),
+            0,
+            device_epoch,
+        )
+        .expect("sign");
+        AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: cert,
+        }
+    }
+
+    /// A paired node holding an imported proof of its device at `device_epoch`.
+    fn paired_node_holding(device_epoch: u32) -> (Store, PrivateKey, NodeDevice) {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        let proof = paired_link(&held, &root_sk, device_epoch);
+        repo.store_imported_certificate(&borsh::to_vec(&proof).expect("encode"))
+            .expect("import");
+        (store, root_sk, held)
+    }
+
+    /// Replaying the original link must not undo a re-certification the operator
+    /// imported, or every replay would strand the device on a stale epoch.
+    #[test]
+    fn a_replayed_older_link_does_not_clobber_an_imported_certificate() {
+        let (store, root_sk, held) = paired_node_holding(1);
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert!(repo
+            .remember_own_link(&paired_link(&held, &root_sk, 0))
+            .expect("fold"));
+
+        let stored: AccountProof<DeviceCert> =
+            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
+                .expect("decode");
+        assert_eq!(
+            stored.statement.device_epoch, 1,
+            "the epoch-1 certificate must survive the replay"
+        );
+    }
+
+    /// Rotation still has to land: a link at a higher epoch supersedes what is held.
+    #[test]
+    fn a_link_at_a_higher_epoch_replaces_the_stored_certificate() {
+        let (store, root_sk, held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert!(repo
+            .remember_own_link(&paired_link(&held, &root_sk, 1))
+            .expect("fold"));
+
+        let stored: AccountProof<DeviceCert> =
+            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
+                .expect("decode");
+        assert_eq!(stored.statement.device_epoch, 1);
+    }
+
+    /// Bytes that decode as nothing have no epoch to compare, so they cannot win.
+    #[test]
+    fn undecodable_stored_bytes_are_replaced_by_a_link() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        repo.store_imported_certificate(&[0xFF; 8])
+            .expect("store garbage");
+
+        let proof = paired_link(&held, &root_sk, 0);
+        assert!(repo.remember_own_link(&proof).expect("fold"));
+
+        let stored: AccountProof<DeviceCert> =
+            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
+                .expect("decode");
+        assert_eq!(stored, proof);
+    }
+
+    /// A node holding the account root can always self-sign, and an import for its
+    /// own device would make the credential path prefer that certificate forever.
+    #[test]
+    fn the_account_holder_keeps_no_import_for_its_own_device() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let held = repo.ensure_enrolled(&test_group_id()).expect("enrol");
+        let own = repo.account_root().expect("read").expect("provisioned");
+
+        assert!(!repo
+            .remember_own_link(&paired_link(&held, own.signing_key(), 0))
+            .expect("fold"));
+        assert!(repo.imported_certificate().expect("read").is_none());
     }
 
     /// A cert for a different device of the same account is not this node's own
