@@ -144,8 +144,18 @@ impl<'a> NamespaceRetryService<'a> {
             if !MembershipRepository::new(self.store).has_direct_member(&gid, &my_account)? {
                 continue;
             }
-            // `has_namespace_key` is already known false here; only the group's
-            // own keyring can still supply a key (a `Restricted` subgroup).
+            // Only a group covered by its OWN keyring can be recovered here.
+            //
+            // A group on an Open chain is covered by the namespace key, which
+            // `has_namespace_key` already established is absent — and no peer can
+            // supply the group's own row for it either, because nothing is
+            // encrypted under that row. Flagging it would emit a key request
+            // nobody can satisfy, and the namespace key is not an answer we may
+            // ask for on a subgroup's behalf: a member of the subgroup alone is
+            // not entitled to it. So there is nothing recoverable here; skip.
+            if crate::key_covering_group(self.store, &gid)? != gid {
+                continue;
+            }
             let has_key = GroupKeyring::new(self.store, gid)
                 .load_current_key()
                 .map_err(|e| eyre::eyre!("load_current_key(group): {e}"))?
