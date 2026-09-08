@@ -103,7 +103,7 @@ pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 
 pub use self::group_keys::{
-    EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
+    key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{

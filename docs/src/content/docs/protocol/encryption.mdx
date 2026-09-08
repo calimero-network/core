@@ -56,6 +56,20 @@ This is the master map. "Encrypted?" refers to **payload-layer** encryption; eve
 
 The pattern: **bulk payloads that should be group-private are encrypted under the group key; the metadata that makes routing, causal ordering, and authorization work is cleartext.** Confidentiality protects *what changed*, not *that something changed, by whom, and in what shape*.
 
+### Which group's key covers a group
+
+"The group key" above is not always the key of the group whose data it is. One predicate decides, `CapabilitiesRepository::is_open_chain_to_namespace` (`crates/governance-store/src/capabilities.rs`), and `calimero_governance_store::key_covering_group` is the single helper that applies it:
+
+- **Every ancestor up to the namespace is `Open`** → the **namespace key**. An Open subgroup's contents are namespace-scoped by construction: parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited into it, so there is no boundary for a separate key to enforce. Both its governance ops and its state deltas are encrypted under the namespace key.
+- **Anything else** → the **group's own key**. That includes a `Restricted` subgroup, an `Open` subgroup sitting behind a `Restricted` ancestor (the wall breaks the chain — a one-hop visibility check gets this case wrong), and the namespace root, which the predicate answers `false` for against itself. A namespace is, in this respect, a Restricted group in its own right.
+
+Two consequences worth stating, because both have bitten:
+
+**A subgroup's key row exists even when nothing uses it.** `create_group` mints a key for every subgroup at birth regardless of visibility, because a later `SubgroupVisibilitySet -> Restricted` establishes no key of its own — that row is what the flip turns into the group's real key, and an apply handler could not mint one consistently across peers. So for an Open chain the row is a key **nothing is encrypted under**. Serving or adopting it is worse than serving nothing: the recipient records "key present" and then decrypts nothing, with no error on either side. Every site that reads a keyring for a group must go through `key_covering_group`, not the group's own id.
+
+**The namespace key is not a subgroup member's to hold.** It reads all namespace-level governance and every Open-chain subgroup's application state, and it is retained after leaving unless rotated. So a member admitted to a subgroup alone may not be given it — which means an invitation targeting an Open-chain subgroup cannot be satisfied at all, and is refused rather than answered with a key. Such a member is invited into the namespace root instead, after which inheritance carries them into the Open subgroup (`MemberJoinedOpen`).
+
+
 ## What an observer on the gossip topic can see
 
 The gossip topic for a context is `TopicHash::from_raw(context_id)`, and gossipsub messages are signed but not encrypted. So any node subscribed to the topic — including one that holds no group key and can decrypt nothing — can still read the full delta envelope and reconstruct a surprising amount:

@@ -6049,6 +6049,62 @@ fn groups_member_but_keyless_reports_then_clears() {
     );
 }
 
+/// An Open-chain subgroup is never reported as recoverable, however keyless it
+/// looks.
+///
+/// The scan runs only when the namespace key is absent, and an Open-chain
+/// subgroup is covered by exactly that key — so there is nothing a peer could
+/// send. Reporting it emits a key request nobody can satisfy, and the namespace
+/// key is not an answer that may be requested on a subgroup's behalf: a member
+/// of the subgroup alone is not entitled to it. A Restricted sibling in the same
+/// shape IS reported, which is what keeps this a visibility test rather than
+/// "subgroups are skipped".
+#[test]
+fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
+    use calimero_context_config::VisibilityMode;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+
+    let namespace_id = [0xE5u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_id_account = enrol_member(&store, &ns_gid, &my_id);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+
+    let open_sub = ContextGroupId::from([0xE6u8; 32]);
+    let restricted_sub = ContextGroupId::from([0xE7u8; 32]);
+    nest_for_test(&store, &ns_gid, &open_sub);
+    nest_for_test(&store, &ns_gid, &restricted_sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    // A direct member of both, holding no key anywhere — including no namespace
+    // key, which is the only state in which this scan does any work.
+    for gid in [&open_sub, &restricted_sub] {
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_id_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![restricted_sub.to_bytes()],
+        "only the Restricted subgroup is recoverable; the Open one is covered by \
+         the namespace key and has nothing to pull"
+    );
+}
+
 #[test]
 fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     // Regression for the whole group-* e2e suite going red: a joiner gets

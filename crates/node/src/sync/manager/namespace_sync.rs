@@ -733,7 +733,72 @@ impl SyncManager {
             return Ok(());
         }
 
-        let key_envelope_bytes = match GroupKeyring::new(&store, group_id).load_current_key()? {
+        // WHICH key covers the group being joined, not "the group's own row".
+        //
+        // A subgroup is minted a key row at birth regardless of visibility, and
+        // for a group on an Open chain that row is a key nothing is ever
+        // encrypted under — everything in such a group is namespace-keyed. So
+        // serving it would hand the joiner a key that opens nothing, and because
+        // a key DID arrive, neither side logs a thing: the join reports success
+        // and every op and delta afterwards fails to decrypt. `key_covering_group`
+        // is the same mapping every writer uses.
+        let key_group_id = calimero_governance_store::key_covering_group(&store, &group_id)?;
+
+        let covered_by_namespace = key_group_id != group_id;
+
+        // An invitation ADMITTING someone new into an Open-chain subgroup is
+        // refused here rather than answered with a key.
+        //
+        // The key that covers it is the NAMESPACE key, and this joiner is being
+        // admitted to the subgroup alone — it is not a member of the root, so it
+        // may not hold a key that reads all namespace-level governance and every
+        // Open subgroup's application state (and would keep reading it after
+        // leaving, unless rotated). There is no key it may have, so the join
+        // cannot succeed, and saying so is the whole fix: the alternative is the
+        // silent admission above.
+        //
+        // The joiner's route in is an invitation to the namespace root, after
+        // which inheritance carries it into the Open subgroup for free
+        // (`MemberJoinedOpen`).
+        //
+        // Gated on `already_member` for the same reason the re-entry check above
+        // is: this governs ADMISSION, and a current member is not being admitted.
+        // They land here on an ordinary re-sync or a retried join round and still
+        // need the backfill and context rows below — refusing those would turn a
+        // key question they have already settled (an inherited member holds the
+        // namespace key; a subgroup-only one is not entitled to it either way)
+        // into a broken re-sync. They get no key envelope; that is all.
+        if covered_by_namespace && !already_member {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                group_id = %hex::encode(group_id.to_bytes()),
+                %joiner_public_key,
+                "rejecting namespace join: an Open-chain subgroup is covered by the \
+                 namespace key, which a subgroup-only member may not hold"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "group is on an Open chain to its namespace and is covered by the \
+                             namespace key; invite this member into the namespace root instead, \
+                             and inheritance will carry them into this subgroup"
+                        .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // `None` for a namespace-covered group: an already-member re-syncing gets
+        // the backfill without a key envelope, never the subgroup's unused birth
+        // row. A new joiner never reaches this line.
+        let covering_key = if covered_by_namespace {
+            None
+        } else {
+            GroupKeyring::new(&store, key_group_id).load_current_key()?
+        };
+        let key_envelope_bytes = match covering_key {
             Some((_key_id, group_key)) => {
                 let ns_identity =
                     NamespaceRepository::new(&store).resolve_identity_record(&namespace)?;
@@ -744,7 +809,7 @@ impl SyncManager {
                         match GroupKeyring::wrap_for_member(
                             &sender_sk,
                             &joiner_public_key,
-                            &group_id.to_bytes(),
+                            &key_group_id.to_bytes(),
                             &group_key,
                         ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
@@ -966,6 +1031,38 @@ impl SyncManager {
                 crate::sync::stream::send(stream, &msg, None).await?;
                 return Ok(());
             }
+        }
+
+        // Same mapping as the invitation responder above: serve the key that
+        // COVERS the subgroup, never its birth row.
+        //
+        // On an Open chain there is no subgroup key to serve — the requester
+        // reached this subgroup by inheritance, so it is a namespace member and
+        // the namespace key it already holds (or pulls) covers the subgroup
+        // outright. Answering with the birth row instead would have it adopt a
+        // key nothing is encrypted under, and record that as "key present".
+        // `join_subgroup_inheritance` skips the request entirely in that case;
+        // this arm is what makes a stray one diagnosable rather than silently
+        // wrong.
+        let key_group_id = calimero_governance_store::key_covering_group(&store, &subgroup_gid)?;
+        if key_group_id != subgroup_gid {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                subgroup_id = %hex::encode(subgroup_id),
+                %joiner_public_key,
+                "refusing open-subgroup key request: subgroup is covered by the namespace key"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "subgroup is on an Open chain to its namespace and holds no key of \
+                             its own; the namespace key covers it"
+                        .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
         }
 
         let key_envelope_bytes = match GroupKeyring::new(&store, subgroup_gid).load_current_key()? {

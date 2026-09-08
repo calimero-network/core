@@ -92,9 +92,35 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // (1) but failed (2) — e.g. transient publish error — must
                 // be safe to retry without re-fetching the key, and must
                 // still re-attempt the publish.
-                let key_already_local = GroupKeyring::new(&datastore, group_id)
-                    .load_current_key()?
-                    .is_some();
+                //
+                // WHICH key covers this subgroup decides whether there is
+                // anything to fetch at all.
+                //
+                // On an Open chain there is not: the subgroup is covered by the
+                // namespace key, which this caller holds by virtue of being the
+                // namespace member that inherits inward. The subgroup's own row
+                // — minted at birth for every subgroup, whatever its visibility
+                // — is a key nothing is encrypted under, so adopting it would
+                // record "key present" while opening nothing. Skipping keeps the
+                // post-condition honest: the key that decrypts this subgroup is
+                // local. A caller that genuinely lacks the namespace key still
+                // fails loudly just below, where `seal_root_op_for_publish`
+                // refuses to publish `MemberJoinedOpen` without it.
+                let key_group_id =
+                    calimero_governance_store::key_covering_group(&datastore, &group_id)?;
+                let covered_by_namespace = key_group_id != group_id;
+                let key_already_local = covered_by_namespace
+                    || GroupKeyring::new(&datastore, group_id)
+                        .load_current_key()?
+                        .is_some();
+                if covered_by_namespace {
+                    info!(
+                        ?group_id,
+                        %joiner_identity,
+                        "join_subgroup_inheritance: subgroup is on an Open chain and covered by \
+                         the namespace key; no subgroup key to fetch"
+                    );
+                }
                 if !key_already_local {
                     // Direct-stream key fetch: ask any peer holding the
                     // subgroup key for it via the dedicated
