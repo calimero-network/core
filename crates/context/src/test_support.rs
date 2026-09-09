@@ -94,8 +94,8 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
 }
 
 /// A second device of this node's account, certified by its root exactly as
-/// `pair_device_complete` would, and scoped to `applications` (empty is every
-/// application).
+/// `pair_device_complete` would, recorded in the account namespace's registry
+/// and scoped to `applications` (empty is every application).
 ///
 /// The id is `seed` repeated rather than minted, so the store's key-ordered scan
 /// visits these devices in a known order.
@@ -128,6 +128,15 @@ pub fn certify_device(
         )
         .expect("the account root signs its own device cert"),
     };
+    // The registry lives in the account namespace, which a node holding a root
+    // names from that root before anything has created it.
+    let namespace = devices
+        .account_namespace()
+        .expect("read the account namespace")
+        .expect("a store with an account root names one");
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
+        .record(&proof, applications, 0)
+        .expect("record the device in the account namespace");
     devices
         .remember_device_cert(&proof, applications)
         .expect("remember the device");
