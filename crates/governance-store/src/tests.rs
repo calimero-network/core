@@ -10974,6 +10974,7 @@ mod account_plane_apply {
     use calimero_store::Store;
 
     use crate::op_events::OpEvent;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use crate::{AccountBindingRepository, AccountDeviceRegistry, AccountRoot};
 
     fn key(seed: u8) -> PrivateKey {
@@ -12124,10 +12125,10 @@ mod account_plane_apply {
     }
 
     /// The mirror of the case above: the signer speaks for exactly the account
-    /// the statements name, but holds only `Member` at the cut. Membership in a
-    /// namespace is not authority over its registry.
+    /// the statements name, but holds only `Member`. Membership in a namespace
+    /// is not authority over its registry.
     #[test]
-    fn a_member_that_is_not_an_admin_at_the_cut_records_nothing() {
+    fn a_member_that_is_not_an_admin_records_nothing() {
         let store = test_store();
         let gid = test_group_id();
         let owner_sk = key(1);
@@ -12157,6 +12158,87 @@ mod account_plane_apply {
                 .is_none(),
             "the account's own device still needs an admin to record it"
         );
+    }
+
+    /// The gate has to decide at the op's cut, not from the rows this replica
+    /// happens to have folded: an admin here and not there would write the row
+    /// on one replica and skip it on the other.
+    #[test]
+    fn an_admin_only_in_live_rows_is_refused_at_the_cut() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let device = DeviceId::from([0x78; 32]);
+        let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
+
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+            &CUT,
+            &FixedAuthorizer(false),
+        )
+        .unwrap();
+
+        assert!(
+            events.is_empty(),
+            "nothing was recorded, so nothing is owed"
+        );
+        assert!(
+            AccountDeviceRegistry::new(&store, gid)
+                .device(device)
+                .unwrap()
+                .is_none(),
+            "a live admin row cannot stand in for admin at the cut"
+        );
+    }
+
+    /// The mirror: the cut says admin and the live rows say plain member, and
+    /// the cut is what the row is written on.
+    #[test]
+    fn a_cut_that_says_admin_records_even_without_live_rows() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &root.account(), GroupMemberRole::Member)
+            .unwrap();
+
+        let device = DeviceId::from([0x79; 32]);
+        let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
+
+        let (handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert!(handled);
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountDeviceCertified {
+                group_id: gid.to_bytes(),
+                device,
+            }]
+        );
+        assert!(AccountDeviceRegistry::new(&store, gid)
+            .device(device)
+            .unwrap()
+            .is_some());
     }
 
     /// The other side of the account equality: the signer is the account the
