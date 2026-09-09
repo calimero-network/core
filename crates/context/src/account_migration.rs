@@ -59,17 +59,28 @@ async fn run(
         .ensure_account_namespace(EnsureAccountNamespaceRequest)
         .await?
     else {
+        warn!(
+            certificates = cached.len(),
+            "the account namespace could not be ensured; leaving the cached certificates \
+             where they are"
+        );
         return Ok(());
     };
-    let Some((_signer_pk, signer_sk)) = NamespaceRepository::new(store).identity(&namespace)?
+    let Some((_signer_pk, signer_sk_bytes)) =
+        NamespaceRepository::new(store).identity(&namespace)?
     else {
         eyre::bail!("the account namespace exists but this node takes no part in it");
     };
-    let signer_sk = PrivateKey::from(signer_sk);
+    let signer_sk = PrivateKey::from(signer_sk_bytes);
 
     let registry = AccountDeviceRegistry::new(store, namespace);
     let mut landed = true;
     for cert in &cached {
+        // The registry is authoritative, so a row already on the DAG - which a
+        // relink may have narrowed since - supersedes what the cache remembers.
+        if registry.device(cert.device())?.is_some() {
+            continue;
+        }
         publish_device_certified(
             store,
             node_client,
@@ -87,8 +98,8 @@ async fn run(
         landed &= registry.device(cert.device())?.is_some();
     }
 
-    // Only once every op is on the DAG. A row left behind is republished by the
-    // next start, at a fresh scope epoch carrying the same statement.
+    // Only once every op is on the DAG. A row left behind is retried by the next
+    // start, which publishes only what the registry does not already hold.
     if !landed {
         warn!(
             certificates = cached.len(),
@@ -119,7 +130,7 @@ mod tests {
     use calimero_store::Store;
 
     use super::run;
-    use crate::test_support::actor;
+    use crate::test_support::{actor, certify_device};
 
     const APP_ONE: [u8; 32] = [0x11; 32];
 
@@ -197,25 +208,64 @@ mod tests {
             .expect("read")
             .expect("the migration ensured it");
         let registry = AccountDeviceRegistry::new(&store, namespace);
+        let (scoped_row, scoped_epoch) = registry
+            .device(scoped)
+            .expect("read")
+            .expect("the scoped device is in the registry");
+        assert_eq!(scoped_row.applications, vec![app(APP_ONE)]);
         assert_eq!(
-            registry
-                .device(scoped)
-                .expect("read")
-                .expect("the scoped device is in the registry")
-                .0
-                .applications,
-            vec![app(APP_ONE)],
+            scoped_epoch, 0,
+            "a device the registry did not hold starts at the first scope epoch"
         );
-        assert!(registry
+        let (wide_row, wide_epoch) = registry
             .device(wide)
             .expect("read")
-            .expect("the unscoped device is in the registry")
-            .0
-            .applications
-            .is_empty());
+            .expect("the unscoped device is in the registry");
+        assert!(wide_row.applications.is_empty());
+        assert_eq!(wide_epoch, 0);
         assert!(
             devices.legacy_device_certs().expect("read").is_empty(),
             "the rows must be gone, or every start republishes them"
+        );
+    }
+
+    /// The registry is authoritative. A device already on the DAG keeps the scope
+    /// the DAG gave it - a relink may have narrowed it since the cache was written
+    /// - and the stale row is dropped rather than replayed over it.
+    #[actix::test]
+    async fn a_device_the_registry_already_holds_is_left_alone() {
+        let (store, root) = holder_store();
+        let device = certify_device(&store, 0x64, &[app(APP_ONE)]);
+        let _stale = cached_row(&store, root.signing_key(), 0x64, &[]);
+
+        let harness = actor::over(store.clone()).await;
+        run(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            &harness.context_client,
+        )
+        .await
+        .expect("the migration runs");
+
+        let devices = NodeDeviceRepository::new(&store);
+        let namespace = devices
+            .account_namespace()
+            .expect("read")
+            .expect("the holder names it");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(device)
+            .expect("read")
+            .expect("the device the registry already held");
+        assert_eq!(
+            recorded.applications,
+            vec![app(APP_ONE)],
+            "the registry's scope wins over the cache's"
+        );
+        assert_eq!(epoch, 0, "and nothing republished it at a fresh epoch");
+        assert!(
+            devices.legacy_device_certs().expect("read").is_empty(),
+            "the stale row is still drained, or every start reconsiders it"
         );
     }
 
