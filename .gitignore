@@ -1,5 +1,6 @@
 # mero(d)
 data/
+fixture-registry/
 corpus/
 certs/
 **/contracts/*

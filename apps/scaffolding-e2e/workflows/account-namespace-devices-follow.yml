@@ -14,13 +14,20 @@ description: >
   What each step is load-bearing for:
 
     1. The laptop names its account namespace before anything created it. The id
-       is derived from the root, so the desktop can put it in an invite first.
+       is derived from the root, so the laptop can put it in an invite first.
     2. Pair-init on the phone takes the id alone. Pair-complete on the laptop
        creates the namespace and binds the phone into it.
-    3. The laptop's namespace listing stays empty: the account namespace is not
-       a project and is never shown as one.
-    4. The phone resolves its own binding there, which proves it pulled the
+    3. That pairing reports the account key delivered. A binding without the key
+       is a device that can read nothing in the namespace it belongs to.
+    4. Both sides name the same id, so the phone followed what the laptop
+       derived rather than recording a namespace of its own.
+    5. The laptop's namespace listing stays empty: the account namespace is not
+       a project and is never shown as one, though the laptop does list the
+       phone bound in it.
+    6. The phone resolves its own binding there, which proves it pulled the
        account namespace's DAG and key and folded its own link.
+    7. The phone ends certified and holding no account root: it speaks as a
+       device of Alice's account rather than as an account of its own.
 
   Not asserted here: anything written into the account namespace. What the
   account records there, and what a device does with it, are the next PRs.

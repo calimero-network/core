@@ -34,6 +34,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 
 | Group | Handlers |
 | --- | --- |
+| Account devices | `pair_device_init`, `pair_device_complete`, `ensure_account_namespace` (creates the holder's account namespace on first use and names it), `relink_device`, `revoke_device` |
 | Context lifecycle | `create_context`, `delete_context`, `join_context`, `leave_context`, `resync_context`, `execute` (+ `execute/{signing,storage,governance_position,upgrade_gate}`), `sync`, `get_context_metadata`, `set_context_metadata`, `acquire_context_lock` |
 | Group lifecycle | `create_group`, `delete_group`, `join_group`, `leave_group`, `add_group_members`, `remove_group_members`, `update_member_role`, `set_member_auto_follow`, `rotate_group_key`, `create_group_invitation` |
 | Group upgrades | `upgrade_group`, `retry_group_upgrade`, `get_group_upgrade_status`, `get_migration_status`, `abort_migration` |
