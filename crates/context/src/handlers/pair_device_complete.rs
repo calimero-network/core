@@ -50,7 +50,7 @@ use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    GroupKeyring, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+    AccountDeviceRegistry, GroupKeyring, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
@@ -428,12 +428,17 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 // the op reaches the topic. A publish failure leaves the pairing
                 // standing: the key was delivered and a relink republishes this.
                 if let Some(account_namespace) = account_namespace {
+                    // The next statement for this device, the way a relink mints
+                    // one: only a higher epoch supersedes, and a re-pairing must.
+                    let scope_epoch = AccountDeviceRegistry::new(&store, account_namespace)
+                        .device(device)?
+                        .map_or(0, |(_cert, epoch)| epoch.saturating_add(1));
                     let scope = DeviceScope::sign(
                         account_root.signing_key(),
                         account,
                         device,
                         cert.applications.clone(),
-                        0,
+                        scope_epoch,
                         0,
                     )
                     .map_err(|err| eyre::eyre!("failed to sign the device scope: {err}"))?;
@@ -983,12 +988,47 @@ mod tests {
             .account_namespace()
             .expect("read")
             .expect("pairing ensured the account namespace");
-        let (recorded, epoch) =
-            calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
-                .device(response.device)
-                .expect("read")
-                .expect("the paired device is in the registry");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(response.device)
+            .expect("read")
+            .expect("the paired device is in the registry");
         assert_eq!(recorded.applications, vec![app(APP_ONE)]);
         assert_eq!(epoch, 0);
+    }
+
+    /// Pairing the same device again replaces the scope the first pairing
+    /// recorded, which is how a holder narrows what a device may speak for.
+    #[actix::test]
+    async fn re_pairing_a_device_supersedes_the_scope_it_recorded() {
+        let store = a_holder_taking_part_in(NS_A, APP_ONE);
+        let harness = actor::over(store.clone()).await;
+        let offer = pairing_offer(&store, [0x71; 16]);
+
+        for application in [APP_TWO, APP_ONE] {
+            let _response = harness
+                .manager
+                .send(PairDeviceCompleteRequest {
+                    applications: vec![app(application)],
+                    device: offer.device,
+                    kem_pk: offer.kem_pk,
+                    sign_pk: offer.sign_pk,
+                    statement: offer.statement,
+                    confirmation_code: offer.confirmation_code.clone(),
+                })
+                .await
+                .expect("the manager answers")
+                .expect("the holder certifies the device");
+        }
+
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("pairing ensured the account namespace");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(offer.device)
+            .expect("read")
+            .expect("the paired device is in the registry");
+        assert_eq!(recorded.applications, vec![app(APP_ONE)]);
+        assert_eq!(epoch, 1);
     }
 }
