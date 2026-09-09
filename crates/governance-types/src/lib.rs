@@ -621,7 +621,8 @@ pub enum GroupOp {
         device: DeviceId,
     },
     /// Record a device of this namespace's account in its registry. The apply
-    /// admits only an admin writing about its own account's devices.
+    /// admits only an admin writing about the account the statements name; the
+    /// publishers, not the apply, confine this op to the account namespace.
     ///
     /// Both statements are root-signed and self-contained, so a receiver checks
     /// them without having folded anything about the account, and the full
