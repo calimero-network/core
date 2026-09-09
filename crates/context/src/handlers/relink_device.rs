@@ -448,6 +448,9 @@ mod tests {
                 .expect("read")
                 .expect("the relink recorded the device");
         assert_eq!(recorded.applications, vec![app(APP_ONE), app(APP_TWO)]);
-        assert_eq!(epoch, 0, "the first statement for this device");
+        assert_eq!(
+            epoch, 1,
+            "the certification itself is epoch 0; the relink is the statement after it"
+        );
     }
 }
