@@ -623,11 +623,18 @@ impl NodeClient {
     /// the peer is the authority on it and the answer cannot go stale, which a
     /// DHT provider record can. Kept as published API for out-of-tree callers,
     /// alongside its write side [`NodeClient::announce_blob_to_kad`].
+    #[deprecated(note = "blob discovery is by probing the context's subscribers over \
+                CALIMERO_BLOB_PROTOCOL, not by DHT lookup: a kad record is \
+                opportunistic and goes stale, while a peer is the authority on \
+                its own custody. Use `NodeClient::get_blob`.")]
     pub async fn find_blob_providers(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
     ) -> eyre::Result<Vec<PeerId>> {
+        // Deprecated all the way down: this method IS the kad read, so it can
+        // only be implemented in terms of the deprecated network call.
+        #[allow(deprecated, reason = "this wrapper is itself the deprecated API")]
         self.network_client
             .query_blob(*blob_id, Some(*context_id))
             .await
@@ -636,10 +643,17 @@ impl NodeClient {
     /// Publish a DHT provider record for a blob. Application bytecode an
     /// http node holds is skipped: it does not serve those bytes either.
     ///
-    /// **No in-tree caller**, and the counterpart of `find_blob_providers`
-    /// above: producers now announce to the context's availability nodes via
-    /// [`NodeClient::announce_blob_to_network`] instead. Kept as published API
-    /// so an out-of-tree caller that wants the kad record can still write one.
+    /// Called by [`NodeClient::announce_blob_to_network`], which writes the kad
+    /// record *as well as* announcing to the context's availability nodes. The
+    /// record exists purely for peers that have not upgraded: they discover
+    /// blobs by DHT lookup and by nothing else, so a node that stopped writing
+    /// it would become invisible to them. Nothing in this tree reads it —
+    /// see [`NodeClient::find_blob_providers`] — so it is deprecated on the
+    /// read side and on its own, and will go once no such peer remains.
+    #[deprecated(note = "producers announce to a context's availability nodes over \
+                CALIMERO_BLOB_ANNOUNCE_PROTOCOL; the kad record is written only \
+                for peers that still discover blobs by DHT lookup. Use \
+                `NodeClient::announce_blob_to_network`, which does both.")]
     pub async fn announce_blob_to_kad(
         &self,
         blob_id: &BlobId,
@@ -649,6 +663,9 @@ impl NodeClient {
         if !self.may_share_blob(blob_id)? {
             return Ok(());
         }
+        // Deprecated all the way down: this method IS the kad write, so it can
+        // only be implemented in terms of the deprecated network call.
+        #[allow(deprecated, reason = "this wrapper is itself the deprecated API")]
         self.network_client
             .announce_blob(*blob_id, *context_id, size)
             .await
@@ -682,14 +699,22 @@ impl NodeClient {
     /// whole context about every blob, which is precisely the fan-out this
     /// design exists to avoid.
     ///
-    /// **Returns as soon as the work is scheduled, without waiting for it.**
-    /// The announce is best-effort by design and its outcome is nothing the
-    /// uploader can act on, so making a user-facing upload wait on it buys
+    /// **Both announce routes run.** Besides the anchor notice, this still
+    /// writes the deprecated kad provider record
+    /// ([`NodeClient::announce_blob_to_kad`]) for peers that have not upgraded:
+    /// those discover blobs by DHT lookup and by nothing else, so a node that
+    /// stopped writing the record would become invisible to them. The reverse
+    /// direction needs nothing — an un-upgraded peer answers an ordinary blob
+    /// request, so a probing node still finds it — which is why it is only the
+    /// write that mixed versions depend on. Nothing in this tree reads the
+    /// record.
+    ///
+    /// **Returns as soon as the anchor work is scheduled, without waiting for
+    /// it.** That announce is best-effort by design and its outcome is nothing
+    /// the uploader can act on, so making a user-facing upload wait on it buys
     /// nothing: the blob is already stored, and one unreachable availability
     /// node would otherwise put a full announce timeout on the admin upload
-    /// handler's response. The kad put this replaced did not block that way
-    /// either — `put_record` at `Quorum::One` returns before the record is
-    /// confirmed anywhere. The detached work stays bounded by the network
+    /// handler's response. The detached work stays bounded by the network
     /// layer's per-announce timeout.
     ///
     /// So `Ok(())` means "scheduled", never "delivered": a caller that needs to
@@ -699,23 +724,47 @@ impl NodeClient {
     /// **Known gap:** an availability node that is offline right now misses
     /// this blob and has no catch-up path — see the module docs of
     /// `calimero_node::handlers::blob_announce`.
-    #[allow(
-        clippy::unused_async,
-        reason = "async is the published signature and all three producers await it; \
-                  desugaring it would churn every call site for nothing"
-    )]
     pub async fn announce_blob_to_network(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
         size: u64,
     ) -> eyre::Result<()> {
-        // An announce is an invitation to fetch, so it is bound by the same
-        // withholding policy as the kad announce: a node in registry-only mode
-        // does not serve application bytecode, and must not invite an
-        // availability node to come and take it either.
+        // An announce is an invitation to fetch, so BOTH routes below are bound
+        // by this one withholding policy: a node in registry-only mode does not
+        // serve application bytecode, so it must neither publish a record
+        // saying it has those bytes nor invite an availability node to come and
+        // take them.
         if !self.may_share_blob(blob_id)? {
             return Ok(());
+        }
+
+        // The kad write is awaited; the anchor announce below is not. The
+        // asymmetry is the point: `put_record` at `Quorum::One` returns once the
+        // record is queued locally, so this costs one actor round trip and no
+        // remote peer's reachability can stall it — unlike a direct stream to an
+        // availability node, which is exactly the full-timeout risk the detached
+        // path exists to keep off a user-facing upload.
+        //
+        // Its failure is swallowed rather than returned: the write that produced
+        // this blob has already been reported successful and the blob stays
+        // findable by probing, so there is nothing for a caller to do with the
+        // error. Swallowed, but never silent.
+        #[allow(
+            deprecated,
+            reason = "deliberate compatibility path, not an oversight: a peer \
+                      still running the pre-probe code discovers blobs only by \
+                      DHT lookup, so the record has to keep being written until \
+                      no such peer remains"
+        )]
+        if let Err(err) = self.announce_blob_to_kad(blob_id, context_id, size).await {
+            tracing::debug!(
+                %blob_id,
+                %context_id,
+                %err,
+                "failed to write the blob's kad provider record; peers that \
+                 probe are unaffected"
+            );
         }
 
         let client = self.clone();
