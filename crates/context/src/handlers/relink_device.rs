@@ -125,7 +125,9 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
 
                 info!(%account, %device, ?outcomes, "relinked a device of this account");
 
-                crate::account_namespace::publish_device_certified(
+                // The statement is the only durable record of the widening, so a
+                // response carrying a scope nothing recorded would be a lie.
+                if !crate::account_namespace::publish_device_certified(
                     &store,
                     &node_client,
                     &ack_router,
@@ -136,7 +138,12 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
                     &scope,
                     "relink_device",
                 )
-                .await;
+                .await
+                {
+                    eyre::bail!(
+                        "the widened scope for {device} was not recorded in the account namespace"
+                    );
+                }
 
                 Ok(RelinkDeviceResponse::new(account, device, scope, outcomes))
             }
@@ -404,9 +411,18 @@ mod tests {
     async fn a_repair_binds_the_device_in_every_namespace_this_node_takes_part_in() {
         let store = a_node_holding_its_own_account();
         a_namespace_this_node_can_publish_in(&store);
+        let harness = actor::over(store.clone()).await;
+        // A holder has one, and the relink's closing statement has nowhere to
+        // land without it.
+        let namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
         let device = certify_device(&store, 0x35, &[]);
 
-        let harness = actor::over(store.clone()).await;
         let repaired = harness
             .manager
             .send(RelinkDeviceRequest {
@@ -417,15 +433,16 @@ mod tests {
             .expect("the manager answers")
             .expect("the repair runs");
 
-        assert_eq!(
-            repaired.outcomes,
-            vec![(
-                ContextGroupId::from(NS),
-                calimero_context_client::group::BindOutcome::Linked {
-                    key_delivered: true
-                }
-            )]
-        );
+        let linked = calimero_context_client::group::BindOutcome::Linked {
+            key_delivered: true,
+        };
+        // Order follows the key scan over a randomly minted account namespace id,
+        // so the pair is asserted rather than the sequence.
+        assert_eq!(repaired.outcomes.len(), 2, "got: {:?}", repaired.outcomes);
+        assert!(repaired
+            .outcomes
+            .contains(&(ContextGroupId::from(NS), linked)));
+        assert!(repaired.outcomes.contains(&(namespace, linked)));
         assert!(
             AccountBindingRepository::new(&store)
                 .is_device_linked(&NS.into(), device)
@@ -484,5 +501,34 @@ mod tests {
             .expect("read")
             .expect("row");
         assert_eq!(epoch, 2, "a second relink must supersede the first");
+    }
+
+    /// A widening the registry never took must not answer with the new scope.
+    /// The statement is the only durable record of it, so reporting a widening
+    /// every other device still judges the device against the old scope for is
+    /// the one failure this endpoint must not have.
+    #[actix::test]
+    async fn a_widening_the_registry_did_not_record_is_an_error() {
+        let store = a_node_holding_its_own_account();
+        a_namespace_this_node_can_publish_in(&store);
+        let device = certify_device(&store, 0x37, &[app(APP_ONE)]);
+
+        // Nothing created the account namespace here, so this node is not an
+        // admin of the one its root names and the certified op's apply refuses.
+        let harness = actor::over(store.clone()).await;
+        let refused = harness
+            .manager
+            .send(RelinkDeviceRequest {
+                device,
+                applications: vec![app(APP_TWO)],
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the widened scope reached no registry");
+
+        assert!(
+            refused.to_string().contains(&device.to_string()),
+            "the refusal has to name the device; got: {refused}"
+        );
     }
 }

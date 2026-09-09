@@ -81,7 +81,7 @@ async fn run(
         if registry.device(cert.device())?.is_some() {
             continue;
         }
-        publish_device_certified(
+        landed &= publish_device_certified(
             store,
             node_client,
             ack_router,
@@ -93,9 +93,6 @@ async fn run(
             "account_migration",
         )
         .await;
-        // The publish warns rather than failing, so the row its own apply wrote
-        // is the only thing that says the statement landed.
-        landed &= registry.device(cert.device())?.is_some();
     }
 
     // Only once every op is on the DAG. A row left behind is retried by the next

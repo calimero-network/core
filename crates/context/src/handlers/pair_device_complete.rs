@@ -414,7 +414,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 // After the bind, so the device already holds the account key when
                 // the op reaches the topic. A failure here is not the caller's.
                 if let Some(account_namespace) = account_namespace {
-                    crate::account_namespace::publish_device_certified(
+                    let _recorded = crate::account_namespace::publish_device_certified(
                         &store,
                         &node_client,
                         &ack_router,

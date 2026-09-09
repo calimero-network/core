@@ -75,7 +75,7 @@ async fn record_holder_device(
             return;
         }
     };
-    publish_device_certified(
+    let _recorded = publish_device_certified(
         datastore,
         node_client,
         ack_router,
