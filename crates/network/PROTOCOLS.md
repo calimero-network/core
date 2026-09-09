@@ -179,7 +179,11 @@ Protocol ID: /calimero/kad/1.0.0
 
 **Blob discovery uses ordinary Kad records, not `StartProviding` / `GetProviders`.** To announce a blob, a node `put_record`s a record keyed by `context_id ‖ blob_id` whose value is `local_peer_id ‖ size` (size as little-endian `u64`), with `Quorum::One`. To discover, a node `get_record`s the same `context_id ‖ blob_id` key and dials the advertised peer. Keys are always context-scoped — global (context-less) blob queries are not supported.
 
-**No in-tree caller uses this for blobs.** The record API remains published (`NodeClient::announce_blob_to_kad` / `find_blob_providers`) but the standard path announces to availability nodes over `CALIMERO_BLOB_ANNOUNCE_PROTOCOL` and discovers by probing the context's peers, because custody is a property of a peer's own blob store and so cannot go stale the way a record can. Kad remains in use for peer routing.
+**Nothing in-tree READS this for blobs, but the record is still WRITTEN.** Discovery is by probing the context's peers, because custody is a property of a peer's own blob store and so cannot go stale the way a record can — so `NodeClient::find_blob_providers` (and `NetworkClient::query_blob` behind it) is deprecated and unused.
+
+`NodeClient::announce_blob_to_network` nonetheless writes the record, alongside the availability-node notice it sends over `CALIMERO_BLOB_ANNOUNCE_PROTOCOL`. A peer that has not upgraded discovers blobs by DHT lookup and by nothing else, so an upgraded node that stopped writing the record would become invisible to it; the other direction needs nothing, since an un-upgraded peer answers an ordinary blob request and is therefore still probeable. `NodeClient::announce_blob_to_kad` is deprecated too and exists for that compatibility write, which goes once no un-upgraded peer remains.
+
+Kad remains in use for peer routing.
 
 ## Gossipsub Topics
 
