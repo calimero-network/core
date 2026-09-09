@@ -38,7 +38,10 @@ description: >
        scopes to app A alone. The device therefore LISTENS on both and is BOUND
        in one of them. That asymmetry is the whole design: a subscription the
        holder never reaches costs nothing, and a binding published where the
-       device is not listening is picked up whenever it does subscribe.
+       device is not listening is picked up whenever it does subscribe. The
+       pairing runs through a script rather than merobox's `account_pair` step,
+       because only a script can hand `pair-init` the account namespace id -
+       a device that does not follow it hears nothing the account records.
 
     2. `GET /admin-api/account/devices` on the holder must report the row as
        scoped to exactly app A, and bound in app A's namespace and the account
@@ -52,10 +55,13 @@ description: >
        persisted is what makes step 4 possible.
 
     4. node-1 creates a THIRD namespace, targeting app A, and nothing re-pairs.
-       The device must be bound there anyway. This is the acceptance for
-       carrying known devices into a namespace as it is gained: before it, every
+       Two halves, and both are load-bearing. The holder's: the device is bound
+       in A2, because a node carries every in-scope device of its account into a
+       namespace it gains. The device's: node-2 LISTS A2, because node-1 wrote
+       one line into the account namespace and node-2 followed it. The second is
+       the acceptance criterion this scenario exists for - before it, every
        namespace created after a pairing was one the paired device silently
-       never saw.
+       never saw, and no restart helped.
 
     5. node-1 registers a context, and node-2 must end up holding app A's
        bytecode. It follows no context and is a member of nothing, so it never
@@ -336,19 +342,29 @@ steps:
 
   # The namespace set and the application scope are chosen independently on
   # purpose. node-2 subscribes to A1 and B1; node-1 certifies it for app A only.
-  - name: Pair node-2 onto Alice's account, scoped to app A
-    type: account_pair
-    node: account-scope-node-2
-    holder: account-scope-node-1
-    root_key: '{{alice_root}}'
-    namespaces:
+  # Through a script: merobox's account_pair step has no field for the account
+  # namespace, and cannot template two captures into one comma-joined argument.
+  - name: Pair node-2 onto Alice's account, listening on A1
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-scope-node-1
+      - account-scope-node-2
       - '{{ns_a1}}'
-      - '{{ns_b1}}'
-    applications:
       - '{{app_a}}'
-    outputs:
-      key_delivered: keyDelivered
-      credential: credential
+
+  # A second call, not one - pair-init's namespace set is additive, so node-2
+  # ends up listening on A1 and B1, same as the single call this stands in for.
+  - name: Extend the pairing so node-2 also listens on B1
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-scope-node-1
+      - account-scope-node-2
+      - '{{ns_b1}}'
+      - '{{app_a}}'
 
   # node-2's own view of the account it adopted, which its `pair-init` wrote
   # synchronously before the step returned - so there is nothing to wait for.
@@ -359,17 +375,13 @@ steps:
       paired_account: accountId
       paired_device: deviceId
 
-  # One account, two distinct replicas. Sharing a device id would have the two
-  # share counter slots and an HLC seed and silently lose each other's writes,
-  # so the inequality matters as much as the equality. Without the key and the
-  # credential the device can reach none of the state every step below reads.
-  - name: The phone joined Alice's account, carrying a key and a credential
+  # One account, two distinct replicas - sharing a device id would collide
+  # counters and an HLC seed. Key delivery is asserted inside the script.
+  - name: The phone joined Alice's account as a second device
     type: json_assert
     statements:
       - 'json_equal({{paired_account}}, {{alice_account}})'
       - 'json_not_equal({{paired_device}}, {{alice_device}})'
-      - 'json_equal({{key_delivered}}, true)'
-      - 'json_not_equal({{credential}}, "")'
 
   # ── The scope landed where it was aimed, and nowhere else ──────────
 
@@ -500,6 +512,19 @@ steps:
         - '{{ns_a1}}'
         - '{{ns_b1}}'
         - '{{ns_a2}}'
+
+  # The acceptance criterion this scenario exists for: node-2 lists A2 only
+  # because it followed the account namespace that node-1 wrote one line into.
+  - name: The paired device lists A2, which nothing ever told it about
+    type: assert_api_response
+    node: account-scope-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_a2}}'
+    match:
+      targetApplicationId: '{{app_a}}'
+    retries: 45
+    interval: 2
 
   # ── The device ends up able to RUN the application ─────────────────
 
