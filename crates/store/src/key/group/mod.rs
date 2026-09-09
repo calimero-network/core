@@ -1854,7 +1854,8 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
 
-/// Device certificates of this node's own account (see [`NodeAccountDeviceCert`]).
+/// Device certificates a pre-registry holder cached, read now only by the startup
+/// migration that publishes them (see [`NodeAccountDeviceCert`]).
 /// Distinct from [`NODE_DEVICE_CERTIFICATE_PREFIX`], which holds the single
 /// certificate signed for THIS device elsewhere.
 pub const NODE_ACCOUNT_DEVICE_CERT_PREFIX: u8 = 0x4C;
@@ -2362,9 +2363,9 @@ impl Debug for GroupAccountDevice {
 /// The certificate and scope a [`GroupAccountDevice`] row carries.
 ///
 /// The whole proof rather than its fields, for the same reason
-/// [`NodeAccountDeviceCertValue`] keeps one: the replicated binding row drops
-/// the root signature, so this is the only replicated place a link can be
-/// rebuilt from.
+/// [`NodeAccountDeviceCertValue`] kept one before the migration drained it: the
+/// replicated binding row drops the root signature, so this is the only
+/// replicated place a link can be rebuilt from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDeviceValue {

@@ -316,9 +316,8 @@ mod tests {
         assert!(entry.revoked);
     }
 
-    /// The account namespace is a participating namespace in production, since
-    /// creating it goes through the ordinary create-group path. A device
-    /// revoked there must still be listed, with `revoked: true`.
+    /// The account namespace participates like any other in production, so a
+    /// device revoked there must still be listed, with `revoked: true`.
     #[test]
     fn a_device_revoked_in_the_account_namespace_is_listed_as_revoked() {
         let (store, root) = seeded_account();

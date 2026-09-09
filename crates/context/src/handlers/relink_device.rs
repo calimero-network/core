@@ -30,10 +30,7 @@ use crate::ContextManager;
 /// The certificate a relink will re-publish, and the scope it will use.
 ///
 /// Every refusal lives here, in the order a caller can act on: wrong machine,
-/// unknown device, spent id. The widened scope is returned rather than written:
-/// the statement the handler publishes into the account namespace is what makes
-/// it durable, and what every LATER namespace gain on any device is judged
-/// against.
+/// unknown device, spent id. The widened scope is returned rather than written.
 fn resolve_target(
     store: &Store,
     device: DeviceId,

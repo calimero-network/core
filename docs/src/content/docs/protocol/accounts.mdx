@@ -311,6 +311,8 @@ Binding a device somewhere new needs the stored certificate, a fresh endorsement
 So every certificate the holder signs is written into the account namespace's device registry, together with the applications the root scoped that device to: the replicated binding row records the certificate's payload but not the account root's signature, and a link cannot be rebuilt without it.
 The registry replicates, so the certificate is not the holder's alone - every device of the account holds it, which is what lets a device that signed nothing carry a sibling anywhere.
 A holder upgraded from before the registry publishes its cached certificates into the account namespace once, on its first start, and then drops them.
+That publishes rows, not devices: a device paired before the registry existed does not follow the account namespace until it is `pair-init`ed once with the id and then relinked.
+A root restored on a second machine cached the widest scope for every device it merely folded, so it may publish one of them wide; the holder that certified that device narrows it again on its next start, at a higher scope epoch.
 
 Two things then use it.
 A node that **gains** a namespace - by joining one, or by creating one - extends every device of its account into it, once it holds that namespace's scope key: after the key arrives on a join, and after the genesis applies on a creation, because a link's endorser is resolved through the binding rows that genesis writes.

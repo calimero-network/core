@@ -347,6 +347,7 @@ mod tests {
 
     /// Put a device in the account namespace's registry, the way the certified
     /// op's apply does, and name that namespace so a bind can find it.
+    /// Derived while the store still holds a root, so a later account swap reads it.
     fn register(store: &Store, proof: &AccountProof<DeviceCert>, applications: &[[u8; 32]]) {
         let namespace = account_namespace_of(store);
         NodeDeviceRepository::new(store)
@@ -359,9 +360,7 @@ mod tests {
     }
 
     /// The namespace [`register`] writes into and [`bind_known_devices`] reads
-    /// from: whatever this store's own `account_namespace` resolves to right
-    /// now - the holder's derivation for a plain `test_store`, since none of
-    /// these fixtures mint this node's own device up front.
+    /// from: whatever this store's own `account_namespace` resolves to right now.
     fn account_namespace_of(store: &Store) -> ContextGroupId {
         NodeDeviceRepository::new(store)
             .account_namespace()
@@ -397,12 +396,7 @@ mod tests {
     /// The account namespace as the holder creates it: an unset target, a key,
     /// and the node-local row that names it.
     fn account_namespace_serving(store: &Store) -> ContextGroupId {
-        let devices = NodeDeviceRepository::new(store);
-        let namespace = devices
-            .account_root()
-            .expect("read the root")
-            .expect("test_store provisions a root")
-            .account_namespace();
+        let namespace = account_namespace_of(store);
         MetaRepository::new(store)
             .save(
                 &namespace,
@@ -419,7 +413,7 @@ mod tests {
         let _key_id = GroupKeyring::new(store, namespace)
             .store_key(&[0x43; 32])
             .expect("store the account key");
-        devices
+        NodeDeviceRepository::new(store)
             .store_account_namespace(&namespace)
             .expect("record the account namespace");
         namespace
@@ -942,13 +936,13 @@ mod tests {
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
 
-        // This node's own account root would otherwise win the read outright;
-        // adopting root's account as its device is what makes the row - and so
-        // the naming below - the thing that decides.
+        // This node's own root would otherwise win the read outright; adopting
+        // root's account is what leaves the naming below as the thing that decides.
         let devices = NodeDeviceRepository::new(&store);
         let _adopted = devices
             .ensure_enrolled_into(&[ns], AccountGenesis::new(root.public_key()))
             .expect("adopt the account the row will need to name");
+        assert!(devices.holder_root().expect("read").is_none());
 
         assert!(
             bind_known_devices(&store, &node_client, &ack_router, &ns, &sk)
