@@ -1048,6 +1048,15 @@ impl Message for PairDeviceCompleteRequest {
     type Result = eyre::Result<PairDeviceCompleteResponse>;
 }
 
+/// Create this account's namespace on the holder if it does not exist yet, and
+/// name it. Answers `None` on a node that is not the holder of its account.
+#[derive(Debug)]
+pub struct EnsureAccountNamespaceRequest;
+
+impl Message for EnsureAccountNamespaceRequest {
+    type Result = eyre::Result<Option<ContextGroupId>>;
+}
+
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.
 ///
 /// A leaver cannot rotate for themselves — they would have to mint the very key they

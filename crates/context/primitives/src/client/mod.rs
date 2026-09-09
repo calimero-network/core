@@ -27,16 +27,16 @@ use crate::group::{
     BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateGroupInvitationRequest,
     CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
     DeleteGroupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse,
-    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
-    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
-    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
-    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
-    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
-    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    DetachContextFromGroupRequest, EnsureAccountNamespaceRequest, GetCascadeStatusRequest,
+    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
+    GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
+    IssueOwnershipProofResponse, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
+    JoinGroupResponse, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
+    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
+    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
     PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
@@ -2239,6 +2239,12 @@ impl ContextClient {
         PairDeviceComplete,
         PairDeviceCompleteRequest,
         eyre::Result<crate::group::PairDeviceCompleteResponse>
+    );
+    forward_to_actor!(
+        ensure_account_namespace,
+        EnsureAccountNamespace,
+        EnsureAccountNamespaceRequest,
+        eyre::Result<Option<ContextGroupId>>
     );
     forward_to_actor!(
         revoke_device,

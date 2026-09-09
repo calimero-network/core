@@ -18,6 +18,7 @@ pub mod delete_context;
 pub mod delete_group;
 pub mod delete_namespace;
 pub mod detach_context_from_group;
+pub mod ensure_account_namespace;
 pub mod execute;
 pub mod get_cascade_status;
 pub mod get_context_metadata;
@@ -199,6 +200,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::PairDeviceComplete { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::EnsureAccountNamespace { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RevokeDevice { request, outcome } => {
