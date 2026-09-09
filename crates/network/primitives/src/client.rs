@@ -302,7 +302,17 @@ impl NetworkClient {
 
     // Blob discovery methods
 
-    /// Announce a blob to the DHT for a specific context
+    /// Announce a blob to the DHT for a specific context.
+    ///
+    /// Deprecated but still written: a peer that has not upgraded discovers
+    /// blobs by DHT lookup and by nothing else, so dropping the record would
+    /// hide this node's blobs from it.
+    #[deprecated(
+        note = "the kad record is a compatibility path for peers that have not \
+                upgraded; producers announce to a context's availability nodes \
+                over CALIMERO_BLOB_ANNOUNCE_PROTOCOL. Use \
+                `NetworkClient::announce_blob_to_peer`."
+    )]
     pub async fn announce_blob(
         &self,
         blob_id: BlobId,
@@ -326,7 +336,14 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    /// Query the DHT for peers that have a specific blob
+    /// Query the DHT for peers that have a specific blob.
+    ///
+    /// Nothing in this tree reads the record: a peer is the authority on its own
+    /// custody, so discovery probes the context's subscribers instead of trusting
+    /// an opportunistic record that goes stale on restart.
+    #[deprecated(note = "blob discovery probes a context's subscribers over \
+                CALIMERO_BLOB_PROTOCOL rather than reading a kad record. Use \
+                `NetworkClient::probe_blob`.")]
     pub async fn query_blob(
         &self,
         blob_id: BlobId,

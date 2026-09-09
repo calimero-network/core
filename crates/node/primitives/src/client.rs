@@ -1129,6 +1129,15 @@ mod publish_on_namespace_now_tests {
                     let _prev = self.publish_count.fetch_add(1, Ordering::SeqCst);
                     let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
+                // The kad provider record `announce_blob_to_network` still
+                // writes for un-upgraded peers. Answered immediately, which is
+                // what `put_record` at `Quorum::One` does in production: the
+                // record is queued locally and no remote peer is waited on. It
+                // is deliberately NOT counted — `announce_count` is the
+                // availability-node notice these tests are about.
+                NetworkMessage::AnnounceBlob { outcome, .. } => {
+                    let _ = outcome.send(Ok(()));
+                }
                 NetworkMessage::SendBlobAnnouncement { outcome, .. } => {
                     // Answer late, off the mailbox, so the announce future is
                     // genuinely pending while the test checks that its caller
