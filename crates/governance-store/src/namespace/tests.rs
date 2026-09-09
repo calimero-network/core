@@ -5881,7 +5881,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
-        None,
+        &[],
     )
     .unwrap();
 
@@ -5934,7 +5934,7 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
-        None,
+        &[],
     )
     .unwrap();
     assert!(divergence.is_none());
@@ -6677,7 +6677,7 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
-        Some(real_key_id),
+        &[real_key_id],
     )
     .unwrap();
     assert!(divergence.is_none());
@@ -6718,7 +6718,7 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
         subgroup_id,
         &honest_bytes,
         honest_identity,
-        Some(real_key_id),
+        &[real_key_id],
     )
     .unwrap();
     assert_eq!(
@@ -6850,7 +6850,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
-        None,
+        &[],
     )
     .unwrap();
 
@@ -6989,7 +6989,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         subgroup_id,
         &envelope_bytes,
         responder_identity,
-        None,
+        &[],
     )
     .unwrap();
 
@@ -10567,4 +10567,202 @@ fn a_stranded_key_delivery_is_still_refused_from_an_ordinary_member() {
         "naming an unfolded group must not buy an ordinary member a delivery: the \
          fallback asks for namespace authority, which it does not have"
     );
+}
+
+/// Authorization is not enough: an anchor's delivery must still carry the key
+/// an already-signed op names.
+///
+/// The anchor gate answers *who may deliver*. It cannot answer *what was
+/// delivered*, and the two are separate powers: an admin of a group legitimately
+/// delivers its key, and that is not the same as being allowed to choose which
+/// key the group uses. A `KeyDelivery` names no `key_id` of its own — and one
+/// added to it would be signed by the deliverer alongside the key it chose,
+/// matching by construction — so the id has to come from a DIFFERENT signed op.
+/// A buffered `NamespaceOp::Group` envelope is exactly that: authored by a group
+/// member, naming the `key_id` its ciphertext was encrypted under.
+///
+/// This is the half of #3871 that the anchor gate alone left open, and it needs
+/// no wire change to close.
+#[test]
+fn an_anchors_key_delivery_is_refused_when_it_is_not_the_awaited_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0x70u8; 32]);
+    let sub_gid = ContextGroupId::from([0x71u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The subgroup's admin: a genuine anchor, so the gate from the previous
+    // commit passes and this test is about content and nothing else.
+    let admin_sk = PrivateKey::from([0x72u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0x73u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0x74u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    // A buffered group op names the subgroup's REAL key. This is the third-party
+    // attestation the binding rests on.
+    let real_key = [0x75u8; 32];
+    let real_key_id = GroupKeyring::key_id_for(&real_key);
+    let buffered = SignedNamespaceOp::sign(
+        &admin_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes().into(),
+            key_id: real_key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&buffered)
+        .unwrap();
+
+    // The same admin now delivers a DIFFERENT key.
+    let substituted = [0xEEu8; 32];
+    assert_ne!(GroupKeyring::key_id_for(&substituted), real_key_id);
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &substituted)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the admin signs the delivery");
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "being allowed to deliver this group's key is not being allowed to choose \
+         it: the substituted key does not hash to the id a signed op names, so it \
+         must not be stored"
+    );
+}
+
+/// The positive control: the same anchor, the same store, the awaited key.
+///
+/// Without this the refusal above could be a fixture that refuses everything,
+/// and the binding would look like it worked while having broken delivery
+/// outright.
+#[test]
+fn a_key_delivery_matching_the_awaited_key_is_applied() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0x80u8; 32]);
+    let sub_gid = ContextGroupId::from([0x81u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0x82u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0x83u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0x84u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let real_key = [0x85u8; 32];
+    let real_key_id = GroupKeyring::key_id_for(&real_key);
+    let buffered = SignedNamespaceOp::sign(
+        &admin_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes().into(),
+            key_id: real_key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&buffered)
+        .unwrap();
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &real_key).unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the admin signs the delivery");
+    gov.apply_signed_op(&op).expect("apply the delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("the key a signed op names must still be delivered");
+    assert_eq!(stored.1, real_key);
 }
