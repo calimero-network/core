@@ -68,7 +68,7 @@ steps:
   - name: Install Rust blobs app on the owner
     type: install_application
     node: blob-tee-owner
-    path: "res/blobs.wasm"
+    path: "../../dist/com.calimero.blobs-0.0.0.mpk"
     dev: true
     outputs:
       app_id: applicationId
