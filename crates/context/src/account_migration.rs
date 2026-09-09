@@ -76,11 +76,31 @@ async fn run(
     let registry = AccountDeviceRegistry::new(store, namespace);
     let mut landed = true;
     for cert in &cached {
-        // The registry is authoritative, so a row already on the DAG - which a
-        // relink may have narrowed since - supersedes what the cache remembers.
-        if registry.device(cert.device())?.is_some() {
+        // Only this account's own root can sign a scope for it, so a row naming
+        // another account is one no start could ever publish.
+        if cert.proof.statement.account != root.account() {
+            warn!(
+                device = %cert.device(),
+                account = %cert.proof.statement.account,
+                "a cached device certificate names another account; dropping it"
+            );
             continue;
         }
+        // The registry is authoritative, except where the cache is strictly
+        // narrower: an empty registry scope covers every application, so a cached
+        // list of them is a narrowing and the next epoch is what makes it win.
+        let publishes = match registry.device(cert.device())? {
+            None => true,
+            Some((row, _epoch)) => row.applications.is_empty() && !cert.applications.is_empty(),
+        };
+        if !publishes {
+            continue;
+        }
+        info!(
+            device = %cert.device(),
+            applications = ?cert.applications,
+            "publishing a cached device certificate into the account namespace"
+        );
         landed &= publish_device_certified(
             store,
             node_client,
@@ -96,7 +116,7 @@ async fn run(
     }
 
     // Only once every op is on the DAG. A row left behind is retried by the next
-    // start, which publishes only what the registry does not already hold.
+    // start, which republishes nothing the registry already holds as narrowly.
     if !landed {
         warn!(
             certificates = cached.len(),
@@ -263,6 +283,83 @@ mod tests {
         assert!(
             devices.legacy_device_certs().expect("read").is_empty(),
             "the stale row is still drained, or every start reconsiders it"
+        );
+    }
+
+    /// The one direction the cache may still move the registry. A second holder
+    /// that only folded a device's link cached the widest scope for it and may
+    /// have published that; the holder that did the pairing knows the narrow one,
+    /// and its next start says so at a fresh epoch.
+    #[actix::test]
+    async fn a_wide_registry_row_is_narrowed_by_the_cached_pairing_scope() {
+        let (store, root) = holder_store();
+        let device = certify_device(&store, 0x65, &[]);
+        let _pairing = cached_row(&store, root.signing_key(), 0x65, &[app(APP_ONE)]);
+
+        let harness = actor::over(store.clone()).await;
+        run(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            &harness.context_client,
+        )
+        .await
+        .expect("the migration runs");
+
+        let devices = NodeDeviceRepository::new(&store);
+        let namespace = devices
+            .account_namespace()
+            .expect("read")
+            .expect("the holder names it");
+        let (narrowed, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(device)
+            .expect("read")
+            .expect("the device is in the registry");
+        assert_eq!(
+            narrowed.applications,
+            vec![app(APP_ONE)],
+            "an empty registry scope covers every application, so the cache narrows it"
+        );
+        assert_eq!(
+            epoch, 1,
+            "the narrower statement has to supersede the wide one"
+        );
+        assert!(devices.legacy_device_certs().expect("read").is_empty());
+    }
+
+    /// Only the account's own root can sign a scope for it. A row certifying a
+    /// device of another account can never be published from here, so it is
+    /// dropped rather than retried on every start forever.
+    #[actix::test]
+    async fn a_row_for_another_account_is_dropped_without_publishing() {
+        let (store, _root) = holder_store();
+        let stranger = cached_row(&store, &PrivateKey::from([0x72; 32]), 0x66, &[]);
+
+        let harness = actor::over(store.clone()).await;
+        run(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            &harness.context_client,
+        )
+        .await
+        .expect("the migration runs");
+
+        let devices = NodeDeviceRepository::new(&store);
+        let namespace = devices
+            .account_namespace()
+            .expect("read")
+            .expect("the holder names it");
+        assert!(
+            AccountDeviceRegistry::new(&store, namespace)
+                .device(stranger)
+                .expect("read")
+                .is_none(),
+            "nothing this account's root could sign was published"
+        );
+        assert!(
+            devices.legacy_device_certs().expect("read").is_empty(),
+            "the row is dropped, or every start retries what can never land"
         );
     }
 
