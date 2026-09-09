@@ -178,6 +178,7 @@ impl<'a> NamespaceOpLogService<'a> {
                 encrypted,
             } => crate::open_sealed_root_op_for_group(
                 self.store,
+                self.namespace_id,
                 *group_id,
                 key_id.as_bytes(),
                 encrypted,

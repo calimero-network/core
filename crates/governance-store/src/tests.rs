@@ -2666,9 +2666,15 @@ fn a_restricted_subgroup_join_seals_under_the_subgroup_key() {
     );
 
     // Opens with the subgroup key, byte-identically.
-    let opened = crate::open_sealed_root_op_for_group(&store, sub, key_id.as_bytes(), encrypted)
-        .unwrap()
-        .expect("a subgroup member opens it");
+    let opened = crate::open_sealed_root_op_for_group(
+        &store,
+        ns.to_bytes().into(),
+        sub,
+        key_id.as_bytes(),
+        encrypted,
+    )
+    .unwrap()
+    .expect("a subgroup member opens it");
     assert_eq!(
         borsh::to_vec(&opened).unwrap(),
         expected,
@@ -2679,10 +2685,23 @@ fn a_restricted_subgroup_join_seals_under_the_subgroup_key() {
     // closes: a namespace peer outside the subgroup holds `ns_key_id` and learns
     // nothing from this op.
     assert!(
-        crate::open_sealed_root_op_for_group(&store, ns, &ns_key_id, encrypted).is_err()
-            || crate::open_sealed_root_op_for_group(&store, ns, &ns_key_id, encrypted)
-                .unwrap()
-                .is_none(),
+        crate::open_sealed_root_op_for_group(
+            &store,
+            ns.to_bytes().into(),
+            ns,
+            &ns_key_id,
+            encrypted,
+        )
+        .is_err()
+            || crate::open_sealed_root_op_for_group(
+                &store,
+                ns.to_bytes().into(),
+                ns,
+                &ns_key_id,
+                encrypted,
+            )
+            .unwrap()
+            .is_none(),
         "the namespace key must not open a subgroup-sealed join"
     );
 }
@@ -2781,6 +2800,152 @@ fn an_unkeyed_joiner_does_not_seal() {
             .is_none(),
         "an unkeyed joiner must fall back to cleartext rather than fail"
     );
+}
+
+/// The group-sealed envelope carries an invitation join and NOTHING else.
+///
+/// Found by security review of #3858. The variant folds through the generic
+/// root-op arm, so without an explicit restriction it is a general-purpose
+/// envelope for any root op that opens with a SUBGROUP key — a privilege
+/// widening, not a looser type. `RootOp::KeyDelivery` is the escalation that
+/// makes it concrete: its apply handler is a deliberate no-op and its effect
+/// runs in the side effects, which store the delivered key without binding it to
+/// a signed op. Carried by `RootSealed` it needs the NAMESPACE key; carried here
+/// it would need only *some* group's key, so a plain `Member` of one Restricted
+/// subgroup could have a key of its own choosing written into a co-member's
+/// keyring for an unrelated group, and then read that group's traffic.
+///
+/// The sibling relay path draws the same line — `open_relayed_join` refuses
+/// anything that is not a join — and this arm did not, which is the whole bug.
+#[test]
+fn a_group_sealed_envelope_refuses_anything_but_a_join() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_client::local_governance::RootOp;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xF0; 32]);
+    let sub = ContextGroupId::from([0xF1; 32]);
+    let victim_group = ContextGroupId::from([0xF2; 32]);
+    nest_for_test(&store, &ns, &sub);
+    nest_for_test(&store, &ns, &victim_group);
+
+    // The attacker holds only `sub`'s key.
+    let sub_key = [0xF3; 32];
+    let sub_key_id = GroupKeyring::new(&store, sub).store_key(&sub_key).unwrap();
+
+    // A key of the attacker's choosing, wrapped for a victim identity, naming a
+    // group the attacker is not in. Minting this needs no secret beyond the
+    // attacker's own key and the victim's PUBLIC identity key.
+    let attacker_sk = PrivateKey::from([0xF4; 32]);
+    let victim_pk = PrivateKey::from([0xF5; 32]).public_key();
+    let envelope = GroupKeyring::wrap_for_member(
+        &attacker_sk,
+        &victim_pk,
+        &victim_group.to_bytes(),
+        &[0xEE; 32],
+    )
+    .unwrap();
+    let delivery = RootOp::KeyDelivery {
+        group_id: victim_group,
+        envelope,
+    };
+
+    // Sealing it is not prevented — a publisher can always encrypt whatever it
+    // likes under a key it holds. The receiver is what must refuse.
+    let encrypted = GroupKeyring::encrypt_root_op(&sub_key, &delivery).unwrap();
+    let err = crate::open_sealed_root_op_for_group(
+        &store,
+        ns.to_bytes().into(),
+        sub,
+        &sub_key_id,
+        &encrypted,
+    )
+    .expect_err("a group-sealed KeyDelivery must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("not an invitation join"),
+        "refused for the right reason, got: {msg}"
+    );
+}
+
+/// The sealing group is not the joiner's to choose freely.
+///
+/// Also from the #3858 review. The envelope's `group_id` picks the keyring that
+/// opens the op and therefore which peers apply it. Unchecked, a joiner could
+/// seal an otherwise-valid join under an unrelated group's key so that THAT
+/// group's members fold it — they hold none of the target's `MemberRemoved` /
+/// `MemberLeft` rows, so none of the gates depending on them can fire, while the
+/// target's real members park the op forever. No key disclosure follows (those
+/// nodes hold no key for the target), but the joiner's membership row survives
+/// on a node set it picked, which falsifies the claim the variant is documented
+/// on: that a subgroup join is read and authorized by that subgroup.
+///
+/// Checked against the two values `key_covering_group` can emit — the target
+/// itself, or the namespace root that covers an Open chain — rather than
+/// re-derived at the receiver. Re-deriving would read local visibility rows, so
+/// two peers mid-flip would disagree about admissibility, which is divergence
+/// dressed up as validation.
+#[test]
+fn a_group_sealed_join_must_name_a_group_that_could_have_sealed_it() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_client::local_governance::RootOp;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xA0; 32]);
+    let target = ContextGroupId::from([0xA1; 32]);
+    let unrelated = ContextGroupId::from([0xA2; 32]);
+    nest_for_test(&store, &ns, &target);
+    nest_for_test(&store, &ns, &unrelated);
+
+    let admin_sk = PrivateKey::from([0xA8; 32]);
+    let joiner_sk = PrivateKey::from([0xA9; 32]);
+    let join = RootOp::MemberJoinedAt {
+        member: crate::test_fixtures::account_for(&joiner_sk.public_key()),
+        signed_invitation: signed_invitation_for(&admin_sk, target, [0xAA; 32]),
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    };
+
+    // Sealed under an unrelated group's key, and labelled as such.
+    let unrelated_key = [0xAB; 32];
+    let unrelated_key_id = GroupKeyring::new(&store, unrelated)
+        .store_key(&unrelated_key)
+        .unwrap();
+    let encrypted = GroupKeyring::encrypt_root_op(&unrelated_key, &join).unwrap();
+
+    let err = crate::open_sealed_root_op_for_group(
+        &store,
+        ns.to_bytes().into(),
+        unrelated,
+        &unrelated_key_id,
+        &encrypted,
+    )
+    .expect_err("a join sealed under an unrelated group must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("neither is the invitation's target"),
+        "refused for the right reason, got: {msg}"
+    );
+
+    // The two legitimate labels both pass. The target's own key is the
+    // Restricted case; the namespace root is what an Open chain resolves to.
+    for (label, key) in [(target, [0xAC; 32]), (ns, [0xAD; 32])] {
+        let key_id = GroupKeyring::new(&store, label).store_key(&key).unwrap();
+        let sealed = GroupKeyring::encrypt_root_op(&key, &join).unwrap();
+        assert!(
+            crate::open_sealed_root_op_for_group(
+                &store,
+                ns.to_bytes().into(),
+                label,
+                &key_id,
+                &sealed,
+            )
+            .unwrap()
+            .is_some(),
+            "a join sealed under {} must open",
+            hex::encode(label.to_bytes())
+        );
+    }
 }
 
 #[test]

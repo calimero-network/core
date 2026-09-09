@@ -341,6 +341,15 @@ impl<'a> NamespaceGovernance<'a> {
                     Some(key) => {
                         let inner = GroupKeyring::decrypt_root_op(&key, encrypted)?;
                         inner.validate_after_unsealing()?;
+                        // This envelope carries a join and nothing else. Refused
+                        // rather than parked: the payload is decrypted and known
+                        // bad, so there is nothing a later key delivery would
+                        // change.
+                        ensure_subgroup_sealed_carries_a_join(
+                            *group_id,
+                            self.namespace_id,
+                            &inner,
+                        )?;
                         Some(inner)
                     }
                     None => None,
@@ -461,9 +470,28 @@ impl<'a> NamespaceGovernance<'a> {
             // That is the substitution the relay guard exists to stop, and it is
             // already impossible on this path.
             //
-            // A per-signer nonce burn was considered and left out: it would be
-            // machinery against a threat this shape does not have, and a nonce
-            // burned on a legitimate apply is a permanent failure.
+            // One correction to the above, because the tempting version of this
+            // argument is wrong: a re-publish does NOT carry the same content
+            // hash. `GroupKeyring::seal` draws a fresh nonce per call, so
+            // re-sealing the same inner join yields new ciphertext, a new
+            // envelope hash, and `contains_op` does not recognise it. The retry
+            // pass re-opens parked ops with no dedup of its own either.
+            //
+            // What actually stops a replay is the apply itself, one layer down.
+            // A second apply for a member who still holds a direct row returns
+            // early at the row check before mutating anything. For one who has
+            // since been removed or left, the full gates run and
+            // `require_invitation_admits` bails on the re-entry block or the
+            // consumed-invitation row; that error propagates with `?`, so the
+            // deny-list clear in the side effects never runs and the removal
+            // stands. So a resurrection is refused on its merits rather than by
+            // dedup — which is the stronger place for it to be refused, but it
+            // is not the reason the comment above used to give.
+            //
+            // A per-signer nonce burn is still left out: the gates above already
+            // refuse the outcomes that matter, and a nonce burned on a
+            // legitimate apply is a permanent failure. Worth revisiting only if
+            // a replay is found that those gates admit.
             (NamespaceOp::Root(root), _)
             | (NamespaceOp::RootSealed { .. }, Some(root))
             | (NamespaceOp::RootSealedForGroup { .. }, Some(root)) => {
@@ -755,7 +783,13 @@ impl<'a> NamespaceGovernance<'a> {
                 group_id,
                 key_id,
                 encrypted,
-            } => open_sealed_root_op_for_group(self.store, *group_id, key_id.as_bytes(), encrypted),
+            } => open_sealed_root_op_for_group(
+                self.store,
+                self.namespace_id,
+                *group_id,
+                key_id.as_bytes(),
+                encrypted,
+            ),
             _ => return timeout_for_namespace_op(op),
         };
         match opened {
@@ -1737,8 +1771,7 @@ impl<'a> NamespaceGovernance<'a> {
             // gates would check the admitter's signer against the joiner's
             // credential and refuse every replayed relay.
             let opened: Option<(SignedNamespaceOp, RootOp)> = match &entry.signed_op.op {
-                NamespaceOp::RootSealed { encrypted, .. }
-                | NamespaceOp::RootSealedForGroup { encrypted, .. } => {
+                NamespaceOp::RootSealed { encrypted, .. } => {
                     match GroupKeyring::decrypt_root_op(&key, encrypted) {
                         Ok(root) => Some((entry.signed_op.clone(), root)),
                         Err(e) => {
@@ -1746,6 +1779,33 @@ impl<'a> NamespaceGovernance<'a> {
                                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                                 error = %format!("{e:#}"),
                                 "skipping a sealed root op that would not open on retry"
+                            );
+                            None
+                        }
+                    }
+                }
+                // Split from the arm above rather than sharing it: a namespace-
+                // sealed op legitimately carries any sealable root op, while
+                // this one carries a join only. Sharing the arm is what let an
+                // arbitrary root op in here, and the retry pass is a second
+                // door to the same apply — a node that lacked the sealing key on
+                // arrival opens it here instead.
+                NamespaceOp::RootSealedForGroup {
+                    group_id,
+                    encrypted,
+                    ..
+                } => {
+                    match GroupKeyring::decrypt_root_op(&key, encrypted).and_then(|root| {
+                        ensure_subgroup_sealed_carries_a_join(*group_id, self.namespace_id, &root)
+                            .map(|()| root)
+                    }) {
+                        Ok(root) => Some((entry.signed_op.clone(), root)),
+                        Err(e) => {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                error = %format!("{e:#}"),
+                                "skipping a group-sealed root op that would not open, or that \
+                                 carried something other than a join, on retry"
                             );
                             None
                         }
@@ -2998,14 +3058,100 @@ pub fn open_sealed_root_op(
 /// dropped.
 pub fn open_sealed_root_op_for_group(
     store: &Store,
+    namespace_id: NamespaceId,
     group_id: ContextGroupId,
     key_id: &[u8; 32],
     encrypted: &calimero_governance_types::EncryptedRootOp,
 ) -> EyreResult<Option<RootOp>> {
     match GroupKeyring::new(store, group_id).load_key_by_id(key_id)? {
-        Some(key) => Ok(Some(GroupKeyring::decrypt_root_op(&key, encrypted)?)),
+        Some(key) => {
+            let inner = GroupKeyring::decrypt_root_op(&key, encrypted)?;
+            ensure_subgroup_sealed_carries_a_join(group_id, namespace_id, &inner)?;
+            Ok(Some(inner))
+        }
         None => Ok(None),
     }
+}
+
+/// A [`NamespaceOp::RootSealedForGroup`] carries an invitation join and nothing
+/// else.
+///
+/// Without this the variant is a general-purpose envelope for ANY root op that
+/// opens with a SUBGROUP key, and that is a privilege widening rather than a
+/// looser type. Sealing a join under a subgroup key is authority to admit a
+/// member to that subgroup; it is not authority to publish arbitrary namespace
+/// governance that the namespace's own members cannot read. The sibling relay
+/// path draws the same line for the same reason — see `open_relayed_join`,
+/// which refuses anything that is not a join with "a relay carries an
+/// invitation join only".
+///
+/// The concrete escalation this closes is `RootOp::KeyDelivery`. Its apply
+/// handler is a deliberate no-op and its whole effect runs in
+/// `root_op_side_effects`, which stores the delivered key without binding it to
+/// a signed op (`expected_key_id: None`). Reachable only through
+/// [`NamespaceOp::RootSealed`] it needed the NAMESPACE key; reachable through
+/// this variant it would need only *some* group's key, so a plain `Member` of
+/// one Restricted subgroup could have a key of its own choosing written into a
+/// co-member's keyring for an unrelated group — and then read that group's
+/// traffic. Exactly the boundary this variant exists to defend, crossed the
+/// other way.
+///
+/// Written to REFUSE on the catch-all rather than to match the two accepted
+/// variants exhaustively: the safe direction for a new root op is "not carried
+/// by this envelope", and a new variant that ought to be sealed this way should
+/// have to say so deliberately.
+fn ensure_subgroup_sealed_carries_a_join(
+    envelope_group: ContextGroupId,
+    namespace_id: NamespaceId,
+    op: &RootOp,
+) -> EyreResult<()> {
+    let signed_invitation = match op {
+        RootOp::MemberJoined {
+            signed_invitation, ..
+        }
+        | RootOp::MemberJoinedAt {
+            signed_invitation, ..
+        } => signed_invitation,
+        other => eyre::bail!(
+            "refusing a group-sealed root op that is not an invitation join: {}, but this \
+             envelope opens with a subgroup key and carries a join only",
+            calimero_governance_types::NamespaceOp::Root(other.clone()).op_kind_label()
+        ),
+    };
+
+    // And the envelope must be addressed to a group that could actually have
+    // sealed THIS join.
+    //
+    // The envelope's `group_id` picks the keyring that opens the op, and so
+    // picks which peers apply it. Unchecked, a joiner could seal its own
+    // otherwise-valid join under an unrelated group's key and have that group's
+    // members — rather than the target subgroup's — be the ones that fold it:
+    // they hold none of the target's `MemberRemoved` / `MemberLeft` rows, so
+    // none of the gates that depend on them can fire, and the target's real
+    // members park the op forever. The result is a membership row for the
+    // joiner surviving on a node set it chose. Not a disclosure — those nodes
+    // hold no key for the target group and so cannot be induced to serve one —
+    // but a lasting split in one group's membership view, and it would falsify
+    // the very claim this variant is documented on, that a subgroup join is
+    // read and authorized by that subgroup.
+    //
+    // Checked against the only two values `key_covering_group` can emit for this
+    // invitation rather than by re-deriving it here. Re-deriving would read this
+    // node's own visibility rows, and two peers mid-flip would disagree about
+    // whether an op is admissible — divergence dressed as validation. These two
+    // values need no local state at all.
+    let target = signed_invitation.invitation.group_id;
+    let ns_group = ContextGroupId::from(namespace_id.to_bytes());
+    if envelope_group != target && envelope_group != ns_group {
+        eyre::bail!(
+            "refusing a group-sealed join whose envelope names group {}, which neither is the \
+             invitation's target {} nor covers it as the namespace root: the sealing group \
+             decides which peers authorize this join, so it may not be chosen freely",
+            hex::encode(envelope_group.to_bytes()),
+            hex::encode(target.to_bytes())
+        );
+    }
+    Ok(())
 }
 
 /// Seal a subgroup-targeted join under the key that covers `group_id`, when this
