@@ -976,13 +976,21 @@ jobs:
           # Do NOT weaken either half. If the control goes GREEN, the scenario
           # has stopped exercising the defect and the Fugue run beside it proves
           # nothing — that is the failure mode #3853 records.
+          #
+          # `registry_fetch: false` on both: the scenario installs the bundle
+          # directly on EVERY node, before isolation begins, because master
+          # acquires bytecode lazily and a node cut off from its peers has
+          # nobody to fetch from. Nothing is pulled from the fixture registry as
+          # a result, which is correct here and not a missing-registry bug.
           - workflow: fugue-collab-figure2
             file: workflows/fugue-collab-figure2.yml
             app: fugue-collab
+            registry_fetch: false
           - workflow: rga-figure2-control
             file: workflows/rga-figure2-control.yml
             app: collaborative-editor
             expect_red: true
+            registry_fetch: false
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init
