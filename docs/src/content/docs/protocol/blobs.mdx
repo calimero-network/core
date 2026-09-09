@@ -215,11 +215,22 @@ Probes go out in **batches of 8**, concurrently within a batch and sequentially
 between batches, stopping at the first peer that answers `found: true`. The
 winner is then asked for the bytes over the transfer protocol below.
 
-Candidates are ordered **before** they are batched, availability nodes first. On
-a context large enough that the sweep runs out of time or hits its ceiling
-(below), that ordering decides which peers are asked at all, not merely in what
-order: an availability node listed last by the subscriber set might never be
-probed, while first it answers in one round trip.
+Candidates are ordered **before** they are batched: availability nodes first,
+then peers that recently served this node a blob in the same context, then the
+rest in whatever order the subscriber set gave them. On a context large enough
+that the sweep runs out of time or hits its ceiling (below), that ordering
+decides which peers are asked at all, not merely in what order: an availability
+node listed last by the subscriber set might never be probed, while first it
+answers in one round trip.
+
+The recent-provider tier is a hint, not state. It is **memory-only** — nothing
+is persisted and nothing is replicated — and bounded both per context and in how
+many contexts it tracks, so it cannot grow with network activity. A node that
+has just started has an empty one and orders candidates exactly as it would
+without it. It records a **successful fetch**, not a probe that answered `found:
+true`: a probe says a peer claims custody, whereas a completed fetch says it
+served bytes that hashed to the id asked for, which is the only one of the two a
+lying or unreachable peer cannot manufacture.
 
 The search is bounded three ways, and all three are load-bearing:
 

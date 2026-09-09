@@ -516,10 +516,13 @@ impl NodeClient {
                     // probed at all, not just in what order. Putting
                     // availability nodes first is therefore what keeps a large
                     // context findable, on top of turning the common case into
-                    // a single round trip.
+                    // a single round trip; peers that recently served this
+                    // node a blob here take the tail's front for the same
+                    // reason, one guess weaker.
                     order_candidates(
                         candidates,
                         &self.member_roles.anchors_for_context(context_id),
+                        &self.recent_providers.for_context(context_id),
                     )
                 },
                 |peer_id| async move {
@@ -609,6 +612,14 @@ impl NodeClient {
                         }
                         return None;
                     }
+
+                    // Recorded here and nowhere else: at this point the peer
+                    // served the bytes, they hashed to the id that was asked
+                    // for, and the transfer finished. A probe answering "yes"
+                    // proves none of that, and a peer that lies or drops the
+                    // connection must not earn a place at the front of the next
+                    // sweep for having claimed custody.
+                    self.recent_providers.record(context_id, peer_id);
 
                     // Return the newly stored blob as a stream
                     Some(self.blob_manager.get_blob_stream(*blob_id))
@@ -1139,6 +1150,7 @@ impl NodeClient {
                 order_candidates(
                     candidates,
                     &self.member_roles.anchors_for_context(context_id),
+                    &self.recent_providers.for_context(context_id),
                 )
             },
             |peer_id| async move {
