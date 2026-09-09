@@ -1,4 +1,22 @@
-description: A workflow exercising the backward-insertion RGA interleaving defect
+description: >
+  Two-node concurrent editing over RGA. NOT the acceptance test for the Fugue
+  rework, despite what the comments further down still say — measured against
+  this tree it PASSES on RGA, which is exactly what a scenario that fails to
+  pose the question looks like (#3853).
+
+  The reason is that RGA orders same-origin siblings by id, so the outcome turns
+  on the relative ORDER of the ids, not on concurrency alone. Here each writer
+  types its passage and then its heading back-to-back, giving P1<H1<P2<H2 — and
+  each heading still lands beside its own passage. Nor does omitting
+  `wait_for_sync` create concurrency: gossip on loopback propagates in
+  milliseconds while the HTTP round-trips take tens of them, so back-to-back
+  calls simply serialise.
+
+  The real acceptance pair is `apps/fugue-collab/workflows/fugue-collab-figure2.yml`
+  and its control `../rga-figure2-control.yml`, which go round-robin
+  (P1<P2<P3<H1<H2<H3) and assert isolation before every write.
+
+  Kept as an ordinary two-node concurrent-editing smoke test, which it is.
 name: Collaborative Editor Concurrent Workflow
 
 # Force pull Docker images even if they exist locally

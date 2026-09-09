@@ -954,16 +954,33 @@ jobs:
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
-          # Red-expected acceptance test for the Fugue rework (Stack 0). It
-          # asserts a defect RGA is proven to have (backward-insertion
-          # interleaving, paper Figure 2) — see the workflow file's own
-          # comments. It is EXPECTED TO FAIL until Fugue lands, and
-          # `expect_red: true` (consumed by the job-level `continue-on-error`
-          # above) keeps that failure from red-ing the workflow run. Do NOT
-          # "fix" this by weakening its assertions — a green run here before
-          # Fugue lands means the evidence base broke, not the defect.
-          - workflow: collaborative-editor-concurrent
-            file: workflows/collaborative-editor-concurrent.yml
+          # The acceptance PAIR for the Fugue rework. Both halves are required:
+          # a green Fugue run means nothing on its own, because it is only
+          # evidence if the identical scenario FAILS on RGA.
+          #
+          # `collaborative-editor-concurrent` used to sit here as the sole
+          # red-expected entry, and it did not work: measured against this tree
+          # it PASSES on RGA (#3853). Backward interleaving is Table 1's "can
+          # occur", not "must occur" — RGA orders same-origin siblings by id, so
+          # a writer that types its passage and heading back-to-back yields
+          # P1<H1<P2<H2 and each heading still lands beside its own passage.
+          # Merely making the edits concurrent does not pose the question.
+          #
+          # The scenario below poses it by going ROUND-ROBIN: every writer
+          # appends its passage, and only then does each go back for its
+          # heading, giving P1<P2<P3<H1<H2<H3 so every heading sorts ahead of
+          # every passage. Isolation is forced by stopping the other nodes and
+          # is ASSERTED before each of the six writes, so a leaked peer edit
+          # fails loudly rather than quietly making the run vacuous.
+          #
+          # Do NOT weaken either half. If the control goes GREEN, the scenario
+          # has stopped exercising the defect and the Fugue run beside it proves
+          # nothing — that is the failure mode #3853 records.
+          - workflow: fugue-collab-figure2
+            file: workflows/fugue-collab-figure2.yml
+            app: fugue-collab
+          - workflow: rga-figure2-control
+            file: workflows/rga-figure2-control.yml
             app: collaborative-editor
             expect_red: true
           - workflow: kv-store-init
