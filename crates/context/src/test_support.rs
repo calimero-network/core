@@ -307,6 +307,7 @@ pub(crate) mod actor {
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_node_primitives::client::NodeClient;
     use calimero_node_primitives::test_fixtures::node_client_over;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -352,6 +353,7 @@ pub(crate) mod actor {
     /// rows it wrote.
     pub(crate) struct Harness {
         pub manager: Addr<ContextManager>,
+        pub node_client: NodeClient,
         pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
@@ -414,7 +416,7 @@ pub(crate) mod actor {
         let context = LazyRecipient::new();
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
-        let manager = ContextManager::new(store, node_client, context_client.clone(), None);
+        let manager = ContextManager::new(store, node_client.clone(), context_client.clone(), None);
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager
@@ -422,6 +424,7 @@ pub(crate) mod actor {
 
         Harness {
             manager,
+            node_client,
             context_client,
             subscribed,
             _dirs: (data_dir, blob_dir),
