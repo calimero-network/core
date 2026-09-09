@@ -160,6 +160,18 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
             }
         };
 
+    let account_namespace_id = match NodeDeviceRepository::new(store).account_namespace() {
+        Ok(namespace) => namespace.map(|namespace| hex::encode(namespace.to_bytes())),
+        Err(err) => {
+            error!(error = ?err, "Failed to read this node's account namespace");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read this node's account namespace".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: NodeIdentityApiResponse {
             data: NodeIdentityApiResponseData {
@@ -178,6 +190,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 device_agreement_key: agreement_key,
                 holds_account_root,
                 device_certified,
+                account_namespace_id,
             },
         },
     }

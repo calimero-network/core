@@ -3537,6 +3537,12 @@ pub struct NodeIdentityApiResponseData {
     /// Defaulted, so a response from a node predating the field still deserializes.
     #[serde(default)]
     pub device_certified: bool,
+
+    /// Hex-encoded id of the account namespace this node follows. On the holder
+    /// it is derived from the root and reported before the namespace exists, so
+    /// an invite can carry it; on a paired device it is what pair-init recorded.
+    #[serde(default)]
+    pub account_namespace_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
