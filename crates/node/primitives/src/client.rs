@@ -36,9 +36,11 @@ pub use alias::AliasExists;
 pub mod application;
 mod blob;
 mod provider_order;
+mod recent_providers;
 
 pub use blob::{BlobManager, BlobPresence};
 pub use provider_order::{order_candidates, MemberRoles, MemberRolesSlot};
+pub use recent_providers::RecentProviders;
 
 /// Parameters for a direct namespace join request.
 #[derive(Debug)]
@@ -228,6 +230,11 @@ pub struct NodeClient {
     /// state that backs it exists (see [`MemberRolesSlot`]); shared by every
     /// clone of this client, so installing it once reaches all of them.
     member_roles: MemberRolesSlot,
+    /// Peers that recently served this node a blob, per context. Ordered after
+    /// the anchors when picking blob-probe candidates. Memory-only and
+    /// bounded — see [`RecentProviders`] — so an empty one is the cold-start
+    /// state, not an error.
+    recent_providers: RecentProviders,
 }
 
 impl NodeClient {
@@ -258,6 +265,7 @@ impl NodeClient {
             known_subscribers: Arc::new(DashMap::new()),
             registry: RegistryConfig::default(),
             member_roles: MemberRolesSlot::default(),
+            recent_providers: RecentProviders::default(),
         }
     }
 
