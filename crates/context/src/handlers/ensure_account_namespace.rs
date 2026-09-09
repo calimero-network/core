@@ -4,6 +4,10 @@
 //! The creation is skipped when a meta row already exists, so a crash between
 //! the row and the creation heals on the next call, and so does losing the race
 //! to a concurrent first pairing.
+//!
+//! Every call also records the holder's own device in the namespace's registry
+//! when no row is there, so a namespace created before the registry existed, or
+//! one whose publish failed, heals the same way.
 
 use std::sync::Arc;
 
@@ -11,7 +15,9 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
 use calimero_context_client::local_governance::AckRouter;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{AccountRoot, MetaRepository, NodeDeviceRepository};
+use calimero_governance_store::{
+    AccountDeviceRegistry, AccountRoot, MetaRepository, NodeDeviceRepository,
+};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
@@ -20,7 +26,7 @@ use tracing::{debug, info, warn};
 use crate::account_namespace::publish_device_certified;
 use crate::ContextManager;
 
-/// The holder's own registry row.
+/// The holder's own registry row, published whenever it is missing.
 ///
 /// A device paired later binds the holder into a namespace it founds, and only
 /// this row carries the root signature that needs.
@@ -33,6 +39,31 @@ async fn record_holder_device(
     signer_sk: &PrivateKey,
     root: &AccountRoot,
 ) {
+    // Read before the credential is built, so the common case where the row is
+    // already there costs one lookup rather than a certificate signature.
+    let devices = NodeDeviceRepository::new(datastore);
+    match devices.get().map(|own| own.map(|own| own.device())) {
+        Ok(Some(device)) => {
+            match AccountDeviceRegistry::new(datastore, namespace_id).device(device) {
+                Ok(Some(_recorded)) => return,
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        ?namespace_id,
+                        "could not read the holder's registry row"
+                    );
+                    return;
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(?err, ?namespace_id, "could not read this node's device row");
+            return;
+        }
+    }
+
     let credential = match crate::join_credential::build(datastore, &namespace_id, signer_pk) {
         Ok(credential) => credential,
         Err(err) => {
@@ -77,11 +108,10 @@ impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
         if let Err(err) = devices.store_account_namespace(&namespace_id) {
             return ActorResponse::reply(Err(err));
         }
-        match MetaRepository::new(&self.datastore).load(&namespace_id) {
-            Ok(Some(_)) => return ActorResponse::reply(Ok(Some(namespace_id))),
-            Ok(None) => {}
+        let exists = match MetaRepository::new(&self.datastore).load(&namespace_id) {
+            Ok(meta) => meta.is_some(),
             Err(err) => return ActorResponse::reply(Err(err)),
-        }
+        };
 
         // Resolved here because the node's signing key is a singleton, so the
         // identity this mints is the one `create_group` will find.
@@ -98,45 +128,46 @@ impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
         let context_client = self.context_client.clone();
         ActorResponse::r#async(
             async move {
-                match context_client
-                    .create_group(CreateGroupRequest {
-                        group_id: Some(namespace_id),
-                        bytecode_id: None,
-                        application_id: None,
-                        name: None,
-                        parent_group_id: None,
-                        restricted: true,
-                    })
-                    .await
-                {
-                    Ok(_created) => {
-                        info!(?namespace_id, "created this account's namespace");
-                        record_holder_device(
-                            &datastore,
-                            &node_client,
-                            &ack_router,
-                            namespace_id,
-                            &signer_pk,
-                            &signer_sk,
-                            &root,
-                        )
-                        .await;
-                    }
-                    // Two first pairings race here; the one that loses finds the
-                    // namespace created and has nothing left to do.
-                    Err(err) => {
-                        if MetaRepository::new(&datastore)
-                            .load(&namespace_id)?
-                            .is_none()
-                        {
-                            return Err(err);
+                if !exists {
+                    match context_client
+                        .create_group(CreateGroupRequest {
+                            group_id: Some(namespace_id),
+                            bytecode_id: None,
+                            application_id: None,
+                            name: None,
+                            parent_group_id: None,
+                            restricted: true,
+                        })
+                        .await
+                    {
+                        Ok(_created) => info!(?namespace_id, "created this account's namespace"),
+                        // Two first pairings race here; the one that loses finds
+                        // the namespace created and only has the row left to do.
+                        Err(err) => {
+                            if MetaRepository::new(&datastore)
+                                .load(&namespace_id)?
+                                .is_none()
+                            {
+                                return Err(err);
+                            }
+                            debug!(
+                                ?namespace_id,
+                                "another call created this account's namespace"
+                            );
                         }
-                        debug!(
-                            ?namespace_id,
-                            "another call created this account's namespace"
-                        );
                     }
                 }
+
+                record_holder_device(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    namespace_id,
+                    &signer_pk,
+                    &signer_sk,
+                    &root,
+                )
+                .await;
                 Ok(Some(namespace_id))
             }
             .into_actor(self),
@@ -154,7 +185,7 @@ mod tests {
     use calimero_governance_store::{AccountDeviceRegistry, MetaRepository, NodeDeviceRepository};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::GroupTarget;
+    use calimero_store::key::{GroupAccountDevice, GroupTarget};
     use calimero_store::Store;
 
     use crate::test_support::actor;
@@ -270,6 +301,53 @@ mod tests {
             "the holder speaks for every application"
         );
         assert_eq!(recorded.proof.statement.device, own.device());
+    }
+
+    /// A namespace created before the registry existed, or one whose publish
+    /// failed, leaves the holder unrecorded. The next ensure has to put it back,
+    /// because a device paired later binds the holder from that row alone.
+    #[actix::test]
+    async fn a_holder_whose_row_is_missing_gets_one_on_the_next_ensure() {
+        let store = holder_store();
+        let devices = NodeDeviceRepository::new(&store);
+
+        let harness = actor::over(store.clone()).await;
+        let namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("created")
+            .expect("the holder creates its account namespace");
+        let own = devices
+            .get()
+            .expect("read")
+            .expect("creating the namespace minted this node's device");
+
+        let row = GroupAccountDevice::new(namespace.to_bytes(), *own.device().as_bytes());
+        store.handle().delete(&row).expect("drop the holder's row");
+        assert!(AccountDeviceRegistry::new(&store, namespace)
+            .device(own.device())
+            .expect("read")
+            .is_none());
+
+        let again = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("a second call finds the namespace");
+        assert_eq!(again, Some(namespace));
+
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(own.device())
+            .expect("read")
+            .expect("the holder's row is back");
+        assert_eq!(epoch, 0, "nothing stored, so the statement starts over");
+        assert!(
+            recorded.applications.is_empty(),
+            "the holder speaks for every application"
+        );
     }
 
     /// A node paired into another account holds a root, but not that account's,
