@@ -1,7 +1,7 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{ListNamespacesRequest, NamespaceSummary};
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, MetadataRepository};
+use calimero_governance_store::{MetaRepository, MetadataRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
@@ -21,12 +21,18 @@ pub(crate) fn namespace_rows_for_applications(
     store: &Store,
     applications: &[ApplicationId],
 ) -> eyre::Result<Vec<([u8; 32], GroupMetaValue)>> {
-    let entries = MetaRepository::new(store).enumerate_all(0, usize::MAX)?;
+    // The account namespace is not a project, and it targets no application.
+    let account_namespace = NodeDeviceRepository::new(store)
+        .account_namespace()?
+        .map(|namespace| namespace.to_bytes());
+    let entries = MetaRepository::new(store)
+        .enumerate_all(0, usize::MAX)?
+        .into_iter()
+        .filter(|(group_id, _)| Some(*group_id) != account_namespace);
     if applications.is_empty() {
-        return Ok(entries);
+        return Ok(entries.collect());
     }
     Ok(entries
-        .into_iter()
         .filter(|(_, meta)| applications.contains(&meta.target.application_id))
         .collect())
 }
@@ -114,6 +120,7 @@ mod tests {
     };
     use calimero_governance_store::{
         ApplyError, MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
+        NodeDeviceRepository,
     };
 
     fn test_summary(namespace_id: [u8; 32]) -> NamespaceSummary {
@@ -203,6 +210,28 @@ mod tests {
             3,
             "no application named is every row, not none"
         );
+    }
+
+    /// The account namespace is not a project. Everything that resolves rows
+    /// through here - both listings and the pairing fan-out - never sees it.
+    #[test]
+    fn the_account_namespace_is_never_a_row() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let meta = MetaRepository::new(&store);
+        meta.save(&[0x01; 32].into(), &test_meta([0x10; 32]))
+            .expect("save a project");
+        meta.save(&[0x4E; 32].into(), &test_meta([0x00; 32]))
+            .expect("save the account namespace");
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&[0x4E; 32].into())
+            .expect("record it");
+
+        let rows: Vec<_> = namespace_rows_for_applications(&store, &[])
+            .expect("resolve")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(rows, vec![[0x01; 32]]);
     }
 
     #[test]
