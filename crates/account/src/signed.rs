@@ -64,7 +64,8 @@ pub(crate) fn sign_payload(
 
 /// A statement an account's **root** key signs, naming the epoch that signed it.
 ///
-/// Implemented by [`crate::DeviceCert`] and [`crate::DeviceRevocation`].
+/// Implemented by [`crate::DeviceCert`], [`crate::DeviceRevocation`] and
+/// [`crate::DeviceScope`].
 /// Deliberately **not** implemented by [`crate::AccountMemberEndorsement`], which
 /// is signed by a granted *member* key rather than by the account root — that is
 /// the whole reason the endorsement exists, and leaving it outside this trait is

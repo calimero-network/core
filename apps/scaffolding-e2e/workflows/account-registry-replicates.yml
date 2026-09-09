@@ -25,6 +25,8 @@ description: >
     4. The phone sees the laptop's device too. Already true before the change,
        since the namespace genesis records the founder's binding - kept because
        it is the shape PR 5 builds on.
+    5. The phone still answers `deviceCertified` on its own identity route, so
+       recording the scope did not cost it the standing it paired for.
 
   Not asserted here: any device acting on the registry. Binding a sibling from
   it is the next PR.
@@ -63,8 +65,6 @@ steps:
     type: create_namespace
     node: account-registry-node-1
     application_id: '{{app}}'
-    outputs:
-      ns_a: namespaceId
 
   # merobox's account_pair step has no field for the account namespace id, so a
   # script drives pair-init and pair-complete and does its own polling.
