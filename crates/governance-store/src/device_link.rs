@@ -38,11 +38,13 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     }
     // The namespace's target application, read the way the pairing fan-out reads
     // it. A namespace whose metadata has not synced names none, and is reachable
-    // only by a scope that names none either.
+    // only by a scope that names none either. The account namespace targets
+    // nothing by design and every device of the account belongs in it.
+    let is_account_namespace = devices.account_namespace()? == Some(*namespace);
     let application = MetaRepository::new(store)
         .load(namespace)?
         .map(|meta| meta.target.application_id);
-    if !cert.covers(application) {
+    if !is_account_namespace && !cert.covers(application) {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
 
@@ -355,6 +357,32 @@ mod tests {
             .expect("store a scope key");
     }
 
+    /// The account namespace as the holder creates it: an unset target, a key,
+    /// and the node-local row that names it.
+    fn account_namespace_serving(store: &Store) -> ContextGroupId {
+        let namespace = ContextGroupId::from([0x4E; 32]);
+        MetaRepository::new(store)
+            .save(
+                &namespace,
+                &GroupMetaValue {
+                    target: calimero_store::key::GroupTarget::default(),
+                    created_at: 1_700_000_000,
+                    admin_identity: calimero_account::AccountId::from([0x01; 32]),
+                    owner_identity: calimero_account::AccountId::from([0x01; 32]),
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the account namespace metadata");
+        let _key_id = GroupKeyring::new(store, namespace)
+            .store_key(&[0x43; 32])
+            .expect("store the account key");
+        NodeDeviceRepository::new(store)
+            .store_account_namespace(&namespace)
+            .expect("record the account namespace");
+        namespace
+    }
+
     fn planned(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> BindOutcome {
         match plan(store, namespace, cert).expect("plan") {
             BindPlan::Publish(_) => BindOutcome::Linked {
@@ -415,6 +443,54 @@ mod tests {
         );
         assert_eq!(
             planned(&store, &ns, &known(&root, 0x64, vec![APP_ONE])),
+            BindOutcome::OutOfScope,
+        );
+    }
+
+    /// Every device of the account belongs in the account namespace, whatever
+    /// its scope: it targets no application, so no scope could name it.
+    #[test]
+    fn a_scoped_device_is_bound_into_the_account_namespace() {
+        let store = test_store();
+        let account_namespace = account_namespace_serving(&store);
+        let root = PrivateKey::from([0x52; 32]);
+
+        assert_eq!(
+            planned(
+                &store,
+                &account_namespace,
+                &known(&root, 0x62, vec![APP_TWO])
+            ),
+            BindOutcome::Linked {
+                key_delivered: true
+            },
+        );
+    }
+
+    /// The exemption is for the account namespace alone. Any other namespace
+    /// whose target is unset still skips a scoped device, as before.
+    #[test]
+    fn an_unset_target_elsewhere_still_skips_a_scoped_device() {
+        let store = test_store();
+        let _account_namespace = account_namespace_serving(&store);
+        let other = ContextGroupId::from([0x4F; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &other,
+                &GroupMetaValue {
+                    target: calimero_store::key::GroupTarget::default(),
+                    created_at: 1_700_000_000,
+                    admin_identity: calimero_account::AccountId::from([0x01; 32]),
+                    owner_identity: calimero_account::AccountId::from([0x01; 32]),
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save");
+        let root = PrivateKey::from([0x52; 32]);
+
+        assert_eq!(
+            planned(&store, &other, &known(&root, 0x62, vec![APP_TWO])),
             BindOutcome::OutOfScope,
         );
     }
