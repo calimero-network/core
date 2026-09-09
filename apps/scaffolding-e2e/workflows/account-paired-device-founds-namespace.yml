@@ -25,12 +25,17 @@ description: >
        founding C. This is the assertion that goes red before the fix: the
        creation succeeds, but as a fresh device of node-2's own account.
 
+    4. The laptop is bound in C, published by the phone. A founder that is not
+       the holder carries every sibling whose scope covers what it founded.
+
   node-2 is initialised the default way, root and all, because that is the
   posture the desktop ships and the one where the failure is silent.
 
   Not asserted here: node-1 listing C, which is the account namespace's job and
-  is pinned by its own scenario; and the laptop's device being bound in C,
-  which is the next PR's scenario step.
+  is pinned by its own scenario. What IS asserted, as of the registry, is step
+  4: the phone carries the laptop into C. The phone signed no certificate for
+  the laptop and never could - only the account root can - so the certificate
+  it publishes there can only have been read out of the account namespace.
 
 force_pull_image: false
 
@@ -85,17 +90,19 @@ steps:
       alice_device: deviceId
       alice_root: accountRootPublicKey
 
-  # No application scope: the phone may speak for every app, which is what a
-  # holder-only world already assumed of it.
-  - name: Pair node-2 onto Alice's account, listening on A
-    type: account_pair
-    node: paired-founder-node-2
-    holder: paired-founder-node-1
-    root_key: '{{alice_root}}'
-    namespaces:
+  # Scoped to app A, the application C targets, and following the account
+  # namespace as well as A. merobox's account_pair step names neither, and both
+  # are load-bearing: the account namespace is where the laptop's certificate
+  # is written down, and the scope is what lets the phone tell it has folded it.
+  - name: Pair node-2 onto Alice's account, listening on A and the account namespace
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - paired-founder-node-1
+      - paired-founder-node-2
       - '{{ns_a}}'
-    outputs:
-      key_delivered: keyDelivered
+      - '{{app}}'
 
   - name: What node-2 speaks as
     type: node_identity
@@ -109,7 +116,6 @@ steps:
     statements:
       - 'json_equal({{paired_account}}, {{alice_account}})'
       - 'json_not_equal({{paired_device}}, {{alice_device}})'
-      - 'json_equal({{key_delivered}}, true)'
 
   # Polled: node-2 is a member of nothing, so no barrier can wait on it. Listing
   # A with its target proves the phone pulled A's DAG and key and folded the
@@ -156,6 +162,23 @@ steps:
       namespaceId: '{{ns_c}}'
     match:
       targetApplicationId: '{{app}}'
+
+  # The assertion this PR exists for. The phone founded C, so the phone is the
+  # only node that can bind the laptop there - and the only thing that can tell
+  # it the laptop's certificate is the account namespace's registry. Before
+  # this, a founder that was not the holder had an empty certificate cache and
+  # carried nobody.
+  - name: The phone carried the laptop into C
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{alice_device}}'
+    contains:
+      namespaces:
+        - '{{ns_c}}'
+    retries: 30
+    interval: 2
 
   # The assertion that catches the silent failure. Before the fix a node holding
   # its own root re-minted its device under that root to sign the founder
