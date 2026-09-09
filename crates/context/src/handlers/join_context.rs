@@ -53,7 +53,7 @@ const BINDING_LOOKUP_TIMEOUT: Duration = GROUP_LOOKUP_TIMEOUT;
 /// already waits for a few lines above, and asking once was the only reason
 /// pair-then-immediately-join worked by luck rather than by construction.
 ///
-/// The apply path already reasons this way about the same row: `key_is_member_at_cut`
+/// The apply path already reasons this way about the same row: `endorser_is_member`
 /// treats "bound to no account" as possibly meaning "the link simply has not
 /// arrived", and parks instead of refusing. This is the join-side counterpart.
 ///

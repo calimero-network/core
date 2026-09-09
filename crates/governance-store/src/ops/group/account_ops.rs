@@ -14,7 +14,7 @@
 use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
-use crate::{AccountBindingRepository, BindingRejected, MembershipRepository, MetaRepository};
+use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
     DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
@@ -88,7 +88,7 @@ pub(crate) fn apply_device_linked(
         );
         return Ok(());
     };
-    if !key_is_member_at_cut(ctx, &endorsement.member, "endorser")? {
+    if !endorser_is_member(ctx, &endorsement.member)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }
@@ -114,7 +114,7 @@ pub(crate) fn apply_device_linked(
     if !credential_can_never_succeed {
         // The endorsement names the SIGNING KEY that made it — a signature can
         // name nothing else — but the row records the account that key speaks
-        // for, because that is what a membership check consults. `key_is_member_at_cut`
+        // for, because that is what a membership check consults. `endorser_is_member`
         // above already refused an unresolvable key, so this resolves.
         if let Some(endorser) =
             crate::member_account_in_namespace(ctx.store(), &group_id, &endorsement.member)?
@@ -221,9 +221,13 @@ fn remember_if_this_accounts_own(
 /// A narrower gate than the link's, and deliberately: a link is admissible from
 /// any member endorsing any account, because it grants nothing the account did
 /// not already hold. The registry is different - it is what other devices bind
-/// FROM - so only the account that owns this namespace may write it. The signer
-/// must be a member at the cut and must speak for the namespace's admin account,
-/// and both statements must verify against that same account.
+/// FROM - so the signer must be an admin at the cut and speak for the account the
+/// statements name, and both statements must verify against that account.
+///
+/// Authority is read at the cut and never from the group's meta row, whose
+/// `admin_identity` moves under `TransferOwnership`: deciding from live meta
+/// would let two replicas at different fold depths settle one op differently,
+/// with no later op able to reconcile them.
 ///
 /// A scope at or below the stored epoch is accepted as a no-op, the way a
 /// re-stated link is: the op still occupies its place in the DAG.
@@ -233,38 +237,41 @@ pub(crate) fn apply_device_certified(
     scope: &AccountProof<DeviceScope>,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
+    let account = certificate.statement.account;
 
-    if !key_is_member_at_cut(ctx, ctx.signer(), "signer")? {
+    // `?` rather than a swallowed `false`, as the unlink gate does: an
+    // unresolvable cut must park the op for retry, not read as "not an admin".
+    if !ctx.permissions().is_admin(ctx.signer())? {
+        tracing::warn!(
+            group_id = ?group_id,
+            signer = %ctx.signer(),
+            %account,
+            "account device certified: the signer is not an admin at this op's cut"
+        );
         return Ok(());
     }
-    let Some(meta) = MetaRepository::new(ctx.store()).load(&group_id)? else {
-        tracing::warn!(group_id = ?group_id,
-                       "account device certified: no meta row, so no account owns this namespace here");
-        return Ok(());
-    };
-    let owner = meta.admin_identity;
-    let signer_account = crate::member_account_in_namespace(ctx.store(), &group_id, ctx.signer())?;
-    if signer_account != Some(owner) {
+    let signer_account = ctx.signer_account()?;
+    if signer_account != Some(account) {
         tracing::warn!(
             group_id = ?group_id,
             signer = %ctx.signer(),
             ?signer_account,
-            %owner,
-            "account device certified: only the account that owns this namespace may write \
-             its registry"
+            %account,
+            "account device certified: the signer does not speak for the account the \
+             statements name"
         );
         return Ok(());
     }
 
-    if let Err(err) = certificate.verify(owner) {
-        tracing::warn!(group_id = ?group_id, %owner, %err,
+    if let Err(err) = certificate.verify(account) {
+        tracing::warn!(group_id = ?group_id, %account, %err,
                        "account device certified: the certificate did not verify");
         return Ok(());
     }
     // Narrowed to the certificate's device before verifying, so a valid scope for
     // one device can never be presented as another's.
     let device = certificate.statement.device;
-    if let Err(err) = scope.authorises(owner, device) {
+    if let Err(err) = scope.authorises(account, device) {
         tracing::warn!(group_id = ?group_id, %device, %err,
                        "account device certified: the scope did not authorise this device");
         return Ok(());
@@ -425,12 +432,11 @@ pub(crate) fn apply_device_unlinked(
     Ok(())
 }
 
-/// Is the account `key` speaks for a member of this group at the op's cut?
+/// Is `endorser` a member of this group at the op's causal cut?
 ///
-/// The key asked about is a member key - the endorser's, or the signer's - never
-/// the account root: the root is a dedicated offline key and is a member nowhere,
-/// so asking about it would refuse every link. That is why the link carries an
-/// endorsement at all.
+/// The key asked about is the **endorser's**, never the account root: the root is
+/// a dedicated offline key and is a member nowhere, so asking about it would
+/// refuse every link. That is why the link carries an endorsement at all.
 ///
 /// Direct or inherited both count: a member who reaches the group through an
 /// Open-subgroup chain holds every right the endorsed account's devices would
@@ -446,34 +452,34 @@ pub(crate) fn apply_device_unlinked(
 /// projection disagrees records nothing for an op the publisher recorded, and the
 /// two `scope_root`s part company with no later op able to reconcile them. Logging
 /// only "not a member" leaves that indistinguishable from an ordinary refusal.
-fn key_is_member_at_cut(
+fn endorser_is_member(
     ctx: &GroupApplyCtx<'_>,
-    key: &calimero_primitives::identity::PublicKey,
-    role: &str,
+    endorser: &calimero_primitives::identity::PublicKey,
 ) -> EyreResult<bool> {
-    // The caller names a member KEY, but membership is recorded against the
-    // account it speaks for, so resolve before asking either plane. A key bound
-    // to no account here speaks for nobody - the same refusal an unknown key
-    // gets, reached one step earlier.
-    let member_key = *key;
-    let Some(member) = crate::member_account_in_namespace(ctx.store(), ctx.group_id(), key)? else {
+    // The endorsement names a member KEY, but membership is recorded against
+    // the account it speaks for, so resolve before asking either plane. An
+    // endorser whose key is bound to no account here vouches for nobody — the
+    // same refusal an unknown key gets, reached one step earlier.
+    let endorser_key = *endorser;
+    let Some(endorser) = crate::member_account_in_namespace(ctx.store(), ctx.group_id(), endorser)?
+    else {
         // "Bound to no account" is a LIVE answer — binding rows are plane state
-        // that a replica folds like any other, so a key this node cannot
+        // that a replica folds like any other, so an endorser this node cannot
         // resolve yet may be one whose link simply has not arrived. Returning a
         // refusal here would decide from live rows exactly where the at-cut gate
         // below refuses to, and two replicas at different fold depths would
         // record different outcomes for the same op. So a live answer is only
         // permitted where a live answer is sound at all; otherwise park.
-        ctx.ensure_live_fallback_is_sound(&member_key)?;
+        ctx.ensure_live_fallback_is_sound(&endorser_key)?;
         return Ok(false);
     };
-    let member = &member;
-    let projected = ctx.projection_membership_path(member);
+    let endorser = &endorser;
+    let projected = ctx.projection_membership_path(endorser);
     let path = match projected {
         Some(projected) => projected,
         None => {
-            ctx.ensure_live_fallback_is_sound(&member_key)?;
-            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), member)? {
+            ctx.ensure_live_fallback_is_sound(&endorser_key)?;
+            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), endorser)? {
                 MembershipPath::None => AtCutMembershipPath::None,
                 MembershipPath::Direct => AtCutMembershipPath::Direct,
                 MembershipPath::Inherited { .. } => AtCutMembershipPath::Inherited,
@@ -486,19 +492,18 @@ fn key_is_member_at_cut(
         // Read live too, purely to classify the refusal. Best-effort: a store
         // fault here must not turn a decided refusal into an error.
         let live = MembershipRepository::new(ctx.store())
-            .check_path(ctx.group_id(), member)
+            .check_path(ctx.group_id(), endorser)
             .ok();
         let live_is_member = live.map(|path| path != MembershipPath::None);
         tracing::warn!(
             group_id = ?ctx.group_id(),
-            role,
-            account = %member,
+            %endorser,
             verdict = if projected.is_some() { "projection" } else { "live-fallback" },
             ?live_is_member,
             cut_len = ctx.cut().len(),
             cut_head = ?ctx.cut().first().map(hex::encode),
             divergence_risk = projected.is_some() && live_is_member == Some(true),
-            "a key's account is not a member at this op's cut"
+            "endorser is not a member at this op's cut"
         );
     }
     Ok(is_member)

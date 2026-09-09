@@ -238,7 +238,7 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
 /// link and records it; node-1 refuses the same op with "account is not a member
 /// of this group" and the two `scope_root`s part company for good.
 ///
-/// The gate that refused is `key_is_member_at_cut`, resolved against the projection
+/// The gate that refused is `endorser_is_member`, resolved against the projection
 /// at the op's cut — and the only structural difference between the link that was
 /// accepted and the one that was refused is that the second one's cut CONTAINS the
 /// first link. So the question this pins is exactly that: does a cut whose

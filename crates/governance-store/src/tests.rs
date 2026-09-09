@@ -10973,6 +10973,7 @@ mod account_plane_apply {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
 
+    use crate::op_events::OpEvent;
     use crate::{AccountBindingRepository, AccountDeviceRegistry, AccountRoot};
 
     fn key(seed: u8) -> PrivateKey {
@@ -11989,9 +11990,9 @@ mod account_plane_apply {
             .apply_link(gid, &root.genesis(), &[], &cert)
             .unwrap()
             .expect("the founder's own device binds");
-        MetaRepository::new(store)
-            .save(gid, &sample_meta_with_admin(account))
-            .unwrap();
+        // A plain meta row: the Admin membership row below is what the registry
+        // gate reads, and `sample_meta_with_admin` would make it admin regardless.
+        MetaRepository::new(store).save(gid, &test_meta()).unwrap();
         MembershipRepository::new(store)
             .add_member(gid, &account, GroupMemberRole::Admin)
             .unwrap();
@@ -12047,16 +12048,27 @@ mod account_plane_apply {
         let app = ApplicationId::from([0x33; 32]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![app], 0);
 
-        sign_apply_local_group_op_borsh(
+        let (handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &owner_sk,
-            GroupOp::AccountDeviceCertified {
+            &owner_sk.public_key(),
+            &GroupOp::AccountDeviceCertified {
                 certificate: Box::new(certificate),
                 scope: Box::new(scope),
             },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         )
         .unwrap();
+        assert!(handled);
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountDeviceCertified {
+                group_id: gid.to_bytes(),
+                device,
+            }],
+            "the row changed, so exactly one wake-up is owed"
+        );
 
         let (recorded, epoch) = AccountDeviceRegistry::new(&store, gid)
             .device(device)
@@ -12070,19 +12082,22 @@ mod account_plane_apply {
         );
     }
 
-    /// A member of the namespace who is not the account it belongs to writes
-    /// nothing. Otherwise anyone in a group could scope somebody else's devices.
+    /// An admin of the namespace who is not the account the statements name
+    /// writes nothing. Otherwise an admin could scope somebody else's devices,
+    /// and the registry is what other devices bind FROM.
+    ///
+    /// The signer is an ADMIN deliberately: it leaves the account equality as the
+    /// only condition this case breaks.
     #[test]
     fn a_signer_of_another_account_records_nothing() {
         let store = test_store();
         let gid = test_group_id();
         let root = account_namespace_owned_by_this_node(&store, &gid, &key(1));
 
-        // A second member of the same namespace, speaking for a different account.
         let stranger_sk = key(4);
         let stranger = enrol_member(&store, &gid, &stranger_sk.public_key());
         MembershipRepository::new(&store)
-            .add_member(&gid, &stranger, GroupMemberRole::Member)
+            .add_member(&gid, &stranger, GroupMemberRole::Admin)
             .unwrap();
 
         let device = DeviceId::from([0x72; 32]);
@@ -12104,13 +12119,50 @@ mod account_plane_apply {
                 .device(device)
                 .unwrap()
                 .is_none(),
-            "a member of the namespace is not the account that owns it"
+            "an admin of the namespace is not the account the statements name"
         );
     }
 
-    /// A certificate of another account, presented by the owner. Both proofs are
-    /// verified against the OWNER, so somebody else's genuine certificate is
-    /// still refused here.
+    /// The mirror of the case above: the signer speaks for exactly the account
+    /// the statements name, but holds only `Member` at the cut. Membership in a
+    /// namespace is not authority over its registry.
+    #[test]
+    fn a_member_that_is_not_an_admin_at_the_cut_records_nothing() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &root.account(), GroupMemberRole::Member)
+            .unwrap();
+
+        let device = DeviceId::from([0x77; 32]);
+        let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            AccountDeviceRegistry::new(&store, gid)
+                .device(device)
+                .unwrap()
+                .is_none(),
+            "the account's own device still needs an admin to record it"
+        );
+    }
+
+    /// The other side of the account equality: the signer is the account the
+    /// namespace belongs to, and the certificate names somebody else. Refused
+    /// before either signature is checked, so relaying a genuine certificate of
+    /// another account records nothing here.
     #[test]
     fn a_certificate_of_another_account_records_nothing() {
         let store = test_store();
@@ -12138,6 +12190,60 @@ mod account_plane_apply {
             .is_none());
     }
 
+    /// A certificate that CLAIMS the owner's account but is anchored on a
+    /// stranger's genesis, carried beside a genuine owner-signed scope for the
+    /// same device. Every other gate passes; only verifying the certificate
+    /// against the account catches it.
+    #[test]
+    fn a_strangers_certificate_beside_an_owner_signed_scope_records_nothing() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+        let owner = root.account();
+
+        let device = DeviceId::from([0x76; 32]);
+        let stranger_sk = key(6);
+        let certificate = AccountProof {
+            genesis: AccountGenesis::new(stranger_sk.public_key()),
+            chain: vec![],
+            statement: DeviceCert::sign(
+                &stranger_sk,
+                owner,
+                device,
+                &key(9).public_key(),
+                &KemPublicKey::from([9u8; 32]),
+                0,
+                0,
+            )
+            .unwrap(),
+        };
+        let scope = AccountProof {
+            genesis: root.genesis(),
+            chain: vec![],
+            statement: DeviceScope::sign(root.signing_key(), owner, device, vec![], 0, 0).unwrap(),
+        };
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            AccountDeviceRegistry::new(&store, gid)
+                .device(device)
+                .unwrap()
+                .is_none(),
+            "naming an account is not being signed by it"
+        );
+    }
+
     /// A replayed older scope must not re-narrow a device the account has since
     /// widened.
     #[test]
@@ -12154,18 +12260,27 @@ mod account_plane_apply {
             certified(root.signing_key(), device, vec![app_one, app_two], 1);
         let (_again, narrow) = certified(root.signing_key(), device, vec![app_one], 0);
 
+        let mut emitted = Vec::new();
         for scope in [widened, narrow] {
-            sign_apply_local_group_op_borsh(
+            let (_handled, _divergence, events) = crate::apply_group_op_mutations(
                 &store,
                 &gid,
-                &owner_sk,
-                GroupOp::AccountDeviceCertified {
+                &owner_sk.public_key(),
+                &GroupOp::AccountDeviceCertified {
                     certificate: Box::new(certificate.clone()),
                     scope: Box::new(scope),
                 },
+                &[],
+                &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
             )
             .unwrap();
+            emitted.push(events);
         }
+        assert_eq!(emitted[0].len(), 1, "the first scope wrote the row");
+        assert!(
+            emitted[1].is_empty(),
+            "a stale scope changed nothing, so it must wake nobody"
+        );
 
         let (recorded, epoch) = AccountDeviceRegistry::new(&store, gid)
             .device(device)
