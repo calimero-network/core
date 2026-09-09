@@ -45,7 +45,10 @@ pub enum PeerBehavior {
 pub struct FakePeer {
     pub peer_id: PeerId,
     pub behavior: PeerBehavior,
-    pub queries: Arc<AtomicUsize>, // pinned at zero when a route must not run
+    /// How often this peer was asked about a blob, by either route: a DHT
+    /// provider query or a direct probe. Pinned at zero when a route must not
+    /// run at all.
+    pub queries: Arc<AtomicUsize>,
 }
 
 impl Actor for FakePeer {
@@ -79,7 +82,13 @@ impl Handler<NetworkMessage> for FakePeer {
             // provider record, so holding the blob — announced or not — is what
             // makes a peer answer yes. `ServesUnannounced` is exactly the case
             // probing exists to rescue: the DHT never named this peer.
+            //
+            // A probe counts towards `queries` for the same reason a provider
+            // query does: both are this node asking a peer about a blob, and
+            // that — not the wire shape it takes — is what the counter's
+            // readers assert on.
             NetworkMessage::ProbeBlob { outcome, .. } => {
+                let _previous = self.queries.fetch_add(1, Ordering::SeqCst);
                 let answer = match &self.behavior {
                     PeerBehavior::Serves(_) | PeerBehavior::ServesUnannounced(_) => true,
                     PeerBehavior::NoProviders | PeerBehavior::QueryFails => false,
@@ -107,7 +116,8 @@ pub fn fake_peer_network(behavior: PeerBehavior) -> (NetworkClient, actix::Addr<
     (network, addr)
 }
 
-/// As [`fake_peer_network`], plus the counter of blob queries the peer saw.
+/// As [`fake_peer_network`], plus the counter of how often the peer was asked
+/// about a blob — provider queries and direct probes alike.
 pub fn counting_peer_network(
     behavior: PeerBehavior,
 ) -> (NetworkClient, actix::Addr<FakePeer>, Arc<AtomicUsize>) {
