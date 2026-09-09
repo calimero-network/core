@@ -69,6 +69,28 @@ Two consequences worth stating, because both have bitten:
 
 **The namespace key is not a subgroup member's to hold.** It reads all namespace-level governance and every Open-chain subgroup's application state, and it is retained after leaving unless rotated. So a member admitted to a subgroup alone may not be given it — which means an invitation targeting an Open-chain subgroup cannot be satisfied at all, and is refused rather than answered with a key. Such a member is invited into the namespace root instead, after which inheritance carries them into the Open subgroup (`MemberJoinedOpen`).
 
+### A subgroup join seals under the subgroup key
+
+A join whose invitation targets a **subgroup** is published sealed under the key covering that subgroup, as `NamespaceOp::RootSealedForGroup { group_id, key_id, encrypted }`.
+
+This is the one root op a joiner can seal for itself, and the reason is which key it ends up holding. A subgroup-targeted invitation's join bundle delivers *that group's* key — `join_group` stores it before publishing — so on a Restricted chain the joiner holds the subgroup key at publish time. It never holds the namespace key, which is why `RootSealed` cannot carry this op and why `root_op_is_sealable` answers `false` for the `MemberJoined` / `MemberJoinedAt` variants.
+
+`group_id` travels in the clear, and it is load-bearing rather than a leak: the receiver has to know which keyring to resolve `key_id` in. `RootSealed` can omit it because the namespace is implied by the topic; here the encrypting group is one of many beneath that namespace, and trying each keyring in turn is the guessing the `key_id` fields exist to prevent.
+
+The encrypting group is chosen by `key_covering_group`, so a Restricted chain seals under the subgroup and an Open chain under the namespace — never under a key row nothing encrypts to.
+
+**Who may read it, and why that set suffices.** The readers are the subgroup's own members: its admins and any admitted TEE node, both of which already hold its key (TEE admission writes a normal member row, so `current_key_recipients` reaches it). No namespace admin outside the subgroup reads the join, and none needs to, because every invariant a subgroup join touches is already written by ops sealed to that same set:
+
+- the **deny-list** row a join clears is only ever written by `MemberRemoved` / `MemberLeft`, which are `GroupOp`s — so only subgroup members ever hold one;
+- **re-entry blocks** and invitation-consumption records are per-`(group_id, identity)` and written by those same exits; both columns are hash-neutral, so a non-member not deriving them cannot surface as divergence;
+- **`count_admins`** is per-group and consulted only from those ops, and a join only ever adds a member.
+
+State deltas are unaffected for an independent reason: they travel a **per-context** topic, so a peer outside the subgroup is not subscribed to its contexts and never resolves an at-cut membership verdict for one. Governance ops travel the namespace topic, which is where the sealed join lands and where it is opaque by design — the same standing an encrypted `GroupOp` for a foreign group already has.
+
+**The envelope carries a join and nothing else.** Every path that opens it checks that, because the variant otherwise becomes a general-purpose envelope for any root op that opens with a *subgroup* key — a privilege widening rather than a looser type. `RootOp::KeyDelivery` is the concrete case: it applies with no authorization and its side effect stores the delivered key without binding it to a signed op, so carried here it would let a plain member of one Restricted subgroup write a key of its own choosing into a co-member's keyring for an unrelated group, and then read that group's traffic. Carried only by `RootSealed` it required the namespace key. The same check pins the envelope's `group_id` to one of the two values `key_covering_group` can emit for that invitation — the target subgroup, or the namespace root that covers an Open chain — since the sealing group decides which peers authorize the join and is therefore not the joiner's to pick. It is compared against those two values rather than re-derived at the receiver: re-deriving reads local visibility rows, and two peers mid-flip would then disagree about whether an op is admissible.
+
+A cleartext subgroup-targeted join is **refused at apply**, so sealing is a rule rather than a convention. The decision lives there and not in `root_op_is_sealable` because that function is `const` and sees only the op, which cannot tell whether the invitation's `group_id` is the namespace root. A namespace-root joiner genuinely holds no key — its key arrives only in answer to the join it is publishing — so that join is still published, and accepted, in the clear.
+
 
 ## What an observer on the gossip topic can see
 

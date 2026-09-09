@@ -169,6 +169,22 @@ impl<'a> NamespaceOpLogService<'a> {
             )
             .ok()
             .flatten(),
+            // Opened in the group's keyring instead. Left to the wildcard this
+            // folded as a hole even for a subgroup member holding the key, which
+            // is the abstention this reader is built to avoid.
+            NamespaceOp::RootSealedForGroup {
+                group_id,
+                key_id,
+                encrypted,
+            } => crate::open_sealed_root_op_for_group(
+                self.store,
+                self.namespace_id,
+                *group_id,
+                key_id.as_bytes(),
+                encrypted,
+            )
+            .ok()
+            .flatten(),
             _ => None,
         };
 
@@ -300,8 +316,13 @@ impl<'a> NamespaceOpLogService<'a> {
             // the same reason a sealed root op is, and leaving it out of this
             // walk would leave the membership unapplied with nothing to
             // re-drive it.
+            // All three parked shapes, so one retry pass drains them. A
+            // subgroup-sealed join is stuck for the same reason the other two
+            // are — its key has not arrived — and omitting it would leave the
+            // membership unapplied with nothing to re-drive it.
             let (NamespaceOp::RootSealed { key_id, .. }
-            | NamespaceOp::RootRelaySealed { key_id, .. }) = signed_op.op
+            | NamespaceOp::RootRelaySealed { key_id, .. }
+            | NamespaceOp::RootSealedForGroup { key_id, .. }) = signed_op.op
             else {
                 continue;
             };
@@ -525,7 +546,9 @@ impl<'a> NamespaceOpLogService<'a> {
             };
             if matches!(
                 signed_op.op,
-                NamespaceOp::Root(_) | NamespaceOp::RootSealed { .. }
+                NamespaceOp::Root(_)
+                    | NamespaceOp::RootSealed { .. }
+                    | NamespaceOp::RootSealedForGroup { .. }
             ) {
                 entries.push(signed_op);
             }

@@ -743,6 +743,53 @@ pub enum NamespaceOp {
         key_id: KeyId,
         encrypted: EncryptedRelayedOp,
     },
+    /// A join whose invitation targets a SUBGROUP, sealed under the key that
+    /// covers that subgroup.
+    ///
+    /// This is the one root op a joiner can seal itself, and the reason is the
+    /// key it ends up holding. A subgroup-targeted invitation's join bundle
+    /// carries the key for *that group* — `join_group` stores it before the
+    /// publish — so on a Restricted chain the joiner holds the subgroup key at
+    /// publish time. It never holds the namespace key, which is why
+    /// [`NamespaceOp::RootSealed`] cannot carry this op and why
+    /// [`root_op_is_sealable`] answers `false` for the variant.
+    ///
+    /// `group_id` is cleartext and load-bearing: the receiver has to know WHICH
+    /// keyring to resolve `key_id` in. [`NamespaceOp::RootSealed`] can omit it
+    /// because the namespace is implied by the topic the op arrived on; here the
+    /// encrypting group is one of many beneath that namespace, and trying each
+    /// keyring in turn is the guessing the `key_id` fields exist to avoid.
+    ///
+    /// The encrypting group is chosen by
+    /// [`calimero_governance_store::key_covering_group`], the same predicate
+    /// every publisher uses, so an Open-chain subgroup resolves to the namespace
+    /// key rather than to a key row nothing encrypts to (#3859). Combined with
+    /// the responder refusal added in #3860 an Open-chain invitation never
+    /// reaches this path at all, which keeps this variant about the Restricted
+    /// case it was designed for.
+    ///
+    /// Who can read it: the subgroup's own members — its admins and any admitted
+    /// TEE node, both of which hold the subgroup key. That set is sufficient to
+    /// authorize the join because every invariant a subgroup join touches is
+    /// already written by ops sealed to the same set: the deny-list and re-entry
+    /// rows come from `MemberRemoved` / `MemberLeft`, which are `GroupOp`s, and
+    /// `count_admins` is per-group and consulted only from those same ops. A
+    /// namespace admin outside the subgroup neither reads this op nor needs to.
+    ///
+    /// Appended, for the reason [`NamespaceOp::RootSealed`] and
+    /// [`NamespaceOp::RootRelaySealed`] were: borsh numbers variants by
+    /// position, so `Root`, `Group`, `RootSealed` and `RootRelaySealed` keep
+    /// discriminants 0-3 and every existing op still encodes byte-identically.
+    /// An older node rejects the unknown discriminant outright rather than
+    /// misreading it.
+    RootSealedForGroup {
+        /// The group whose key sealed this op — the invitation's target, or its
+        /// covering namespace when that target is on an Open chain.
+        group_id: ContextGroupId,
+        /// `sha256(group_key)` — which epoch of `group_id`'s key encrypted this.
+        key_id: KeyId,
+        encrypted: EncryptedRootOp,
+    },
 }
 
 /// Whether a [`RootOp`] is published sealed.
@@ -1178,6 +1225,10 @@ impl NamespaceOp {
             // Likewise opaque, and distinct from `root_sealed` because the
             // payload is a whole signed op rather than a bare root op.
             NamespaceOp::RootRelaySealed { .. } => "root_relay_sealed",
+            // Opaque like the two above, and distinct from them because the
+            // sealing key is a subgroup's rather than the namespace's — which is
+            // the whole difference worth seeing in a metric.
+            NamespaceOp::RootSealedForGroup { .. } => "root_sealed_for_group",
             NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
             NamespaceOp::Root(RootOp::GroupReparented { .. }) => "group_reparented",
             NamespaceOp::Root(RootOp::GroupDeleted { .. }) => "group_deleted",
@@ -1703,6 +1754,11 @@ impl SignedNamespaceOp {
             // but not readably, and answering from the envelope would mean
             // answering `None` for an op that has one. Callers that need it must
             // decrypt first.
+            // This one DOES name its group readably, and that is deliberate:
+            // the receiver cannot resolve `key_id` without knowing which
+            // keyring to look in. Answering it here is therefore honest rather
+            // than a leak of something the envelope was hiding.
+            NamespaceOp::RootSealedForGroup { group_id, .. } => Some(*group_id),
             NamespaceOp::Root(_)
             | NamespaceOp::RootSealed { .. }
             | NamespaceOp::RootRelaySealed { .. } => None,
@@ -2111,6 +2167,9 @@ impl NamespaceOp {
             // the inner signed op is validated (and its signature verified)
             // after decryption.
             Self::RootRelaySealed { encrypted, .. } => encrypted.validate(),
+            // Envelope only, as for `RootSealed`. `group_id` and `key_id` are
+            // fixed-width and need no bounding.
+            Self::RootSealedForGroup { encrypted, .. } => encrypted.validate(),
             Self::Group {
                 encrypted,
                 key_rotation,

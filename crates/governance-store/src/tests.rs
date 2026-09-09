@@ -2598,6 +2598,356 @@ fn key_covering_group_maps_an_open_chain_to_the_namespace() {
     );
 }
 
+/// The wire form of a Restricted-chain subgroup join, and the disclosure it
+/// closes.
+///
+/// #3858: a subgroup-targeted invitation's join bundle delivers that subgroup's
+/// key and never the namespace's, so the namespace-key seal in `join_group`
+/// found nothing and the join went out as `NamespaceOp::Root(..)` — readable by
+/// every peer on the namespace topic.
+///
+/// The last two assertions are the ones that make this a privacy test rather
+/// than a shape test: the subgroup key opens it and the NAMESPACE key does not.
+/// A seal that both keys opened would encode the same disclosure in a different
+/// variant and every structural assertion above would still pass.
+#[test]
+fn a_restricted_subgroup_join_seals_under_the_subgroup_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xC0; 32]);
+    let sub = ContextGroupId::from([0xC1; 32]);
+    nest_for_test(&store, &ns, &sub);
+
+    // No visibility row ⇒ Restricted, so the subgroup's own key is the one in
+    // use. Both groups are keyed, and with DIFFERENT keys — sharing one would
+    // make the "the namespace key cannot open it" assertion below pass for the
+    // wrong reason.
+    let ns_key_id = GroupKeyring::new(&store, ns)
+        .store_key(&[0xA1; 32])
+        .unwrap();
+    let sub_key_id = GroupKeyring::new(&store, sub)
+        .store_key(&[0xA2; 32])
+        .unwrap();
+    assert_ne!(ns_key_id, sub_key_id, "the fixture must key the two apart");
+
+    let admin_sk = PrivateKey::from([0xC8; 32]);
+    let joiner_sk = PrivateKey::from([0xC9; 32]);
+    let join = RootOp::MemberJoinedAt {
+        member: crate::test_fixtures::account_for(&joiner_sk.public_key()),
+        signed_invitation: signed_invitation_for(&admin_sk, sub, [0xCA; 32]),
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    };
+    let expected = borsh::to_vec(&join).unwrap();
+
+    let sealed = crate::seal_root_op_for_group_if_keyed(&store, sub, &join)
+        .unwrap()
+        .expect("a keyed joiner seals");
+
+    let NamespaceOp::RootSealedForGroup {
+        group_id,
+        key_id,
+        encrypted,
+    } = &sealed
+    else {
+        panic!("a subgroup-targeted join must seal to its group, got {sealed:?}");
+    };
+
+    // The group travels in the clear because the receiver has to know which
+    // keyring to resolve `key_id` in. Pinned because getting it wrong is not a
+    // decode failure — it sends the receiver to the namespace keyring, where a
+    // subgroup `key_id` is simply absent, and the join parks forever.
+    assert_eq!(*group_id, sub, "the envelope names the sealing group");
+    assert_eq!(
+        key_id.as_bytes(),
+        &sub_key_id,
+        "and the epoch of that group's key"
+    );
+
+    // Opens with the subgroup key, byte-identically.
+    let opened = crate::open_sealed_root_op_for_group(
+        &store,
+        ns.to_bytes().into(),
+        sub,
+        key_id.as_bytes(),
+        encrypted,
+    )
+    .unwrap()
+    .expect("a subgroup member opens it");
+    assert_eq!(
+        borsh::to_vec(&opened).unwrap(),
+        expected,
+        "the join survives the round trip unchanged"
+    );
+
+    // And does NOT open with the namespace key. This is the disclosure #3858
+    // closes: a namespace peer outside the subgroup holds `ns_key_id` and learns
+    // nothing from this op.
+    assert!(
+        crate::open_sealed_root_op_for_group(
+            &store,
+            ns.to_bytes().into(),
+            ns,
+            &ns_key_id,
+            encrypted,
+        )
+        .is_err()
+            || crate::open_sealed_root_op_for_group(
+                &store,
+                ns.to_bytes().into(),
+                ns,
+                &ns_key_id,
+                encrypted,
+            )
+            .unwrap()
+            .is_none(),
+        "the namespace key must not open a subgroup-sealed join"
+    );
+}
+
+/// The Open-chain case, which must NOT be sealed under the subgroup's unused
+/// key row.
+///
+/// An Open-chain subgroup's contents are encrypted under the namespace key
+/// (#3859), and its own key row is one nothing encrypts to. Sealing here picks
+/// the encrypting group with the same `key_covering_group` predicate every
+/// publisher uses, so this resolves to the namespace and stays readable by the
+/// members who actually hold the covering key.
+///
+/// #3860 makes the responder refuse an Open-chain invitation outright, so this
+/// path should not arise in practice. It is pinned anyway: the seal must not
+/// depend on that refusal holding, or a later change there turns a refusal into
+/// a silently unreadable membership.
+#[test]
+fn an_open_chain_subgroup_join_seals_under_the_namespace_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xD0; 32]);
+    let sub = ContextGroupId::from([0xD1; 32]);
+    nest_for_test(&store, &ns, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Open)
+        .unwrap();
+
+    let ns_key_id = GroupKeyring::new(&store, ns)
+        .store_key(&[0xB1; 32])
+        .unwrap();
+    let _unused_row = GroupKeyring::new(&store, sub)
+        .store_key(&[0xB2; 32])
+        .unwrap();
+
+    let admin_sk = PrivateKey::from([0xD8; 32]);
+    let joiner_sk = PrivateKey::from([0xD9; 32]);
+    let join = RootOp::MemberJoinedAt {
+        member: crate::test_fixtures::account_for(&joiner_sk.public_key()),
+        signed_invitation: signed_invitation_for(&admin_sk, sub, [0xDA; 32]),
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    };
+
+    let sealed = crate::seal_root_op_for_group_if_keyed(&store, sub, &join)
+        .unwrap()
+        .expect("a keyed joiner seals");
+    let NamespaceOp::RootSealedForGroup {
+        group_id, key_id, ..
+    } = &sealed
+    else {
+        panic!("expected a group-sealed join, got {sealed:?}");
+    };
+    assert_eq!(
+        *group_id, ns,
+        "an Open chain seals under the namespace, not under the subgroup's unused row"
+    );
+    assert_eq!(
+        key_id.as_bytes(),
+        &ns_key_id,
+        "and under the namespace's key epoch"
+    );
+}
+
+/// A joiner holding no key at all still publishes, and publishes in the clear.
+///
+/// This is the case the apply-side refusal is written around: the namespace-root
+/// join path has a joiner whose key arrives only in answer to the join it is
+/// trying to publish, so `None` here must stay a fallback rather than become an
+/// error. If this ever returns `Some`, sealing has acquired a key it cannot
+/// have, and if it starts erroring, nobody can join a namespace at all.
+#[test]
+fn an_unkeyed_joiner_does_not_seal() {
+    use calimero_context_client::local_governance::RootOp;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xE0; 32]);
+    let sub = ContextGroupId::from([0xE1; 32]);
+    nest_for_test(&store, &ns, &sub);
+    // Deliberately no `store_key` for either group.
+
+    let admin_sk = PrivateKey::from([0xE8; 32]);
+    let joiner_sk = PrivateKey::from([0xE9; 32]);
+    let join = RootOp::MemberJoinedAt {
+        member: crate::test_fixtures::account_for(&joiner_sk.public_key()),
+        signed_invitation: signed_invitation_for(&admin_sk, sub, [0xEA; 32]),
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    };
+
+    assert!(
+        crate::seal_root_op_for_group_if_keyed(&store, sub, &join)
+            .unwrap()
+            .is_none(),
+        "an unkeyed joiner must fall back to cleartext rather than fail"
+    );
+}
+
+/// The group-sealed envelope carries an invitation join and NOTHING else.
+///
+/// Found by security review of #3858. The variant folds through the generic
+/// root-op arm, so without an explicit restriction it is a general-purpose
+/// envelope for any root op that opens with a SUBGROUP key — a privilege
+/// widening, not a looser type. `RootOp::KeyDelivery` is the escalation that
+/// makes it concrete: its apply handler is a deliberate no-op and its effect
+/// runs in the side effects, which store the delivered key without binding it to
+/// a signed op. Carried by `RootSealed` it needs the NAMESPACE key; carried here
+/// it would need only *some* group's key, so a plain `Member` of one Restricted
+/// subgroup could have a key of its own choosing written into a co-member's
+/// keyring for an unrelated group, and then read that group's traffic.
+///
+/// The sibling relay path draws the same line — `open_relayed_join` refuses
+/// anything that is not a join — and this arm did not, which is the whole bug.
+#[test]
+fn a_group_sealed_envelope_refuses_anything_but_a_join() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_client::local_governance::RootOp;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xF0; 32]);
+    let sub = ContextGroupId::from([0xF1; 32]);
+    let victim_group = ContextGroupId::from([0xF2; 32]);
+    nest_for_test(&store, &ns, &sub);
+    nest_for_test(&store, &ns, &victim_group);
+
+    // The attacker holds only `sub`'s key.
+    let sub_key = [0xF3; 32];
+    let sub_key_id = GroupKeyring::new(&store, sub).store_key(&sub_key).unwrap();
+
+    // A key of the attacker's choosing, wrapped for a victim identity, naming a
+    // group the attacker is not in. Minting this needs no secret beyond the
+    // attacker's own key and the victim's PUBLIC identity key.
+    let attacker_sk = PrivateKey::from([0xF4; 32]);
+    let victim_pk = PrivateKey::from([0xF5; 32]).public_key();
+    let envelope = GroupKeyring::wrap_for_member(
+        &attacker_sk,
+        &victim_pk,
+        &victim_group.to_bytes(),
+        &[0xEE; 32],
+    )
+    .unwrap();
+    let delivery = RootOp::KeyDelivery {
+        group_id: victim_group,
+        envelope,
+    };
+
+    // Sealing it is not prevented — a publisher can always encrypt whatever it
+    // likes under a key it holds. The receiver is what must refuse.
+    let encrypted = GroupKeyring::encrypt_root_op(&sub_key, &delivery).unwrap();
+    let err = crate::open_sealed_root_op_for_group(
+        &store,
+        ns.to_bytes().into(),
+        sub,
+        &sub_key_id,
+        &encrypted,
+    )
+    .expect_err("a group-sealed KeyDelivery must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("not an invitation join"),
+        "refused for the right reason, got: {msg}"
+    );
+}
+
+/// The sealing group is not the joiner's to choose freely.
+///
+/// Also from the #3858 review. The envelope's `group_id` picks the keyring that
+/// opens the op and therefore which peers apply it. Unchecked, a joiner could
+/// seal an otherwise-valid join under an unrelated group's key so that THAT
+/// group's members fold it — they hold none of the target's `MemberRemoved` /
+/// `MemberLeft` rows, so none of the gates depending on them can fire, while the
+/// target's real members park the op forever. No key disclosure follows (those
+/// nodes hold no key for the target), but the joiner's membership row survives
+/// on a node set it picked, which falsifies the claim the variant is documented
+/// on: that a subgroup join is read and authorized by that subgroup.
+///
+/// Checked against the two values `key_covering_group` can emit — the target
+/// itself, or the namespace root that covers an Open chain — rather than
+/// re-derived at the receiver. Re-deriving would read local visibility rows, so
+/// two peers mid-flip would disagree about admissibility, which is divergence
+/// dressed up as validation.
+#[test]
+fn a_group_sealed_join_must_name_a_group_that_could_have_sealed_it() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_client::local_governance::RootOp;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xA0; 32]);
+    let target = ContextGroupId::from([0xA1; 32]);
+    let unrelated = ContextGroupId::from([0xA2; 32]);
+    nest_for_test(&store, &ns, &target);
+    nest_for_test(&store, &ns, &unrelated);
+
+    let admin_sk = PrivateKey::from([0xA8; 32]);
+    let joiner_sk = PrivateKey::from([0xA9; 32]);
+    let join = RootOp::MemberJoinedAt {
+        member: crate::test_fixtures::account_for(&joiner_sk.public_key()),
+        signed_invitation: signed_invitation_for(&admin_sk, target, [0xAA; 32]),
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    };
+
+    // Sealed under an unrelated group's key, and labelled as such.
+    let unrelated_key = [0xAB; 32];
+    let unrelated_key_id = GroupKeyring::new(&store, unrelated)
+        .store_key(&unrelated_key)
+        .unwrap();
+    let encrypted = GroupKeyring::encrypt_root_op(&unrelated_key, &join).unwrap();
+
+    let err = crate::open_sealed_root_op_for_group(
+        &store,
+        ns.to_bytes().into(),
+        unrelated,
+        &unrelated_key_id,
+        &encrypted,
+    )
+    .expect_err("a join sealed under an unrelated group must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("neither is the invitation's target"),
+        "refused for the right reason, got: {msg}"
+    );
+
+    // The two legitimate labels both pass. The target's own key is the
+    // Restricted case; the namespace root is what an Open chain resolves to.
+    for (label, key) in [(target, [0xAC; 32]), (ns, [0xAD; 32])] {
+        let key_id = GroupKeyring::new(&store, label).store_key(&key).unwrap();
+        let sealed = GroupKeyring::encrypt_root_op(&key, &join).unwrap();
+        assert!(
+            crate::open_sealed_root_op_for_group(
+                &store,
+                ns.to_bytes().into(),
+                label,
+                &key_id,
+                &sealed,
+            )
+            .unwrap()
+            .is_some(),
+            "a join sealed under {} must open",
+            hex::encode(label.to_bytes())
+        );
+    }
+}
+
 #[test]
 fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     use super::namespace::MAX_NAMESPACE_DEPTH;
@@ -4188,7 +4538,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
     // `MemberJoined` arm was a no-op, so a rejoined member kept a stale
     // `GroupDeniedMember` row and every peer permanently dropped the
     // rejoiner's state-delta traffic at the receive filter.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -4258,12 +4608,17 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member,
-            signed_invitation,
-            joined_at: 1,
-            account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-        }),
+        sealed_join_for_test(
+            &store,
+            ns_id,
+            subgroup,
+            RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                joined_at: 1,
+                account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+            },
+        ),
     )
     .unwrap();
     // On the envelope, after signing: the endorsement is outside the joiner's
@@ -5522,6 +5877,77 @@ fn reentry_fixture(
     (ns_id, ns_gid, subgroup, admin)
 }
 
+/// Sealing a subgroup join is a rule, not a convention.
+///
+/// The refusal is what makes the guarantee hold against a publisher that skips
+/// the seal — without it, sealing is honoured only as long as every publisher
+/// chooses to, which is the state #3858 describes as advisory.
+///
+/// Both directions are pinned, and the second is the one that keeps the refusal
+/// honest: a NAMESPACE-root join must still be accepted in the clear. That
+/// joiner holds no key, its key arrives only in answer to the join it is trying
+/// to publish, and refusing it would mean nobody can join a namespace at all.
+#[test]
+fn a_cleartext_subgroup_join_is_refused_but_a_namespace_root_join_is_not() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let admin_sk = PrivateKey::from([0x91u8; 32]);
+    let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_sk.public_key());
+
+    let joiner_sk = PrivateKey::from([0x92u8; 32]);
+    let joiner = crate::test_fixtures::account_for(&joiner_sk.public_key());
+
+    let cleartext_join = |target: ContextGroupId, nonce_seed: u8| {
+        let signed = SignedNamespaceOp::sign(
+            &joiner_sk,
+            ns_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member: joiner,
+                signed_invitation: signed_invitation_for(&admin_sk, target, [nonce_seed; 32]),
+                joined_at: 1,
+                account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+            }),
+        )
+        .unwrap();
+        let mut signed = signed;
+        signed.admitter_endorsement = Some(Box::new(
+            calimero_governance_types::AdmitterEndorsement::sign(
+                &admin_sk,
+                &ns_id,
+                &joiner,
+                &[nonce_seed; 32],
+            )
+            .expect("the admin endorses the join"),
+        ));
+        signed
+    };
+
+    let err = apply_signed_namespace_op(&store, &cleartext_join(subgroup, 0x93))
+        .expect_err("a cleartext subgroup-targeted join must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("subgroup-targeted join that arrived in the clear"),
+        "refused for the right reason, got: {msg}"
+    );
+
+    // The namespace root, same shape, still accepted. Whatever this returns it
+    // must not be the refusal above — the join may still fail some later gate
+    // this fixture does not satisfy, and that would be a different message.
+    match apply_signed_namespace_op(&store, &cleartext_join(ns_gid, 0x94)) {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = format!("{e:#}");
+            assert!(
+                !msg.contains("subgroup-targeted join that arrived in the clear"),
+                "a namespace-root join must never hit the subgroup refusal, got: {msg}"
+            );
+        }
+    }
+}
+
 /// An admin-signed, non-expiring open invitation to `group_id` bearing `nonce`.
 fn signed_invitation_for(
     admin_sk: &PrivateKey,
@@ -5555,6 +5981,46 @@ fn signed_invitation_for(
     }
 }
 
+/// The wire form production publishes for a join, given the group its
+/// invitation targets.
+///
+/// A namespace-root join stays cleartext: that joiner holds no key, and its key
+/// arrives only in answer to the join itself. A SUBGROUP-targeted join travels
+/// sealed under the key covering that subgroup (#3858) — the joiner holds it,
+/// delivered in the join bundle — and the apply refuses a cleartext one, so a
+/// fixture publishing it in the clear would be under-building the state rather
+/// than exercising a real one.
+///
+/// The covering key is minted here when the store has none, which is exactly
+/// what the join bundle would have delivered. Without it the seal returns `None`
+/// and the fixture silently falls back to the cleartext form the apply refuses —
+/// a test failing on its own fixture rather than on its subject.
+fn sealed_join_for_test(
+    store: &Store,
+    ns_id: [u8; 32],
+    target: ContextGroupId,
+    join: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    use calimero_context_client::local_governance::NamespaceOp;
+
+    if target.to_bytes() == ns_id {
+        return NamespaceOp::Root(join);
+    }
+    let covering = crate::key_covering_group(store, &target).expect("resolve the covering group");
+    if crate::GroupKeyring::new(store, covering)
+        .load_current_key()
+        .expect("read the covering keyring")
+        .is_none()
+    {
+        let _ = crate::GroupKeyring::new(store, covering)
+            .store_key(&[0x5B; 32])
+            .expect("mint the key the join bundle would have delivered");
+    }
+    crate::seal_root_op_for_group_if_keyed(store, target, &join)
+        .expect("seal the join")
+        .expect("the covering key was just ensured, so the seal must produce a sealed op")
+}
+
 /// Apply a `RootOp::MemberJoinedAt` signed by the joiner themselves, endorsed
 /// by `admitter_sk`.
 ///
@@ -5571,7 +6037,7 @@ fn apply_member_joined(
     nonce: u64,
     admitter_sk: &PrivateKey,
 ) -> EyreResult<()> {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     let member = crate::test_fixtures::account_for(&member_sk.public_key());
     let admitter_endorsement = Box::new(
@@ -5584,24 +6050,21 @@ fn apply_member_joined(
         .expect("sign admitter endorsement"),
     );
 
-    let signed = SignedNamespaceOp::sign(
-        member_sk,
-        ns_id.into(),
-        vec![],
-        nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedAt {
-            // The member and the credential beside it have to name the SAME
-            // account: the apply verifies the credential certifies the signer
-            // and speaks for the declared member. A synthetic member beside an
-            // unrelated credential is refused before the op reaches whatever
-            // the test meant to exercise.
-            member,
-            signed_invitation,
-            joined_at: 1,
-            account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-        }),
-    )
-    .unwrap();
+    let target = signed_invitation.invitation.group_id;
+    let join = RootOp::MemberJoinedAt {
+        // The member and the credential beside it have to name the SAME
+        // account: the apply verifies the credential certifies the signer
+        // and speaks for the declared member. A synthetic member beside an
+        // unrelated credential is refused before the op reaches whatever
+        // the test meant to exercise.
+        member,
+        signed_invitation,
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+    };
+
+    let wire = sealed_join_for_test(store, ns_id, target, join);
+    let signed = SignedNamespaceOp::sign(member_sk, ns_id.into(), vec![], nonce, wire).unwrap();
     // On the envelope, after signing — see above.
     let mut signed = signed;
     signed.admitter_endorsement = Some(admitter_endorsement);

@@ -1744,18 +1744,25 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(
-                &admin_sk,
-                subgroup,
-                1,
-                [0x42; 32],
-                calimero_context::test_support::account_for(&admin_sk.public_key()),
-            ),
-            joined_at: 1,
-            account: test_join_account_for(&joiner),
-        }),
+        // The invitation targets a SUBGROUP, so the join travels sealed
+        // (#3858) and the apply refuses a cleartext one. `published_join`
+        // picks the wire form production would.
+        calimero_context::test_support::published_join(
+            &store,
+            &ns,
+            RootOp::MemberJoinedAt {
+                member: calimero_context::test_support::account_for(&joiner),
+                signed_invitation: sign_invitation(
+                    &admin_sk,
+                    subgroup,
+                    1,
+                    [0x42; 32],
+                    calimero_context::test_support::account_for(&admin_sk.public_key()),
+                ),
+                joined_at: 1,
+                account: test_join_account_for(&joiner),
+            },
+        ),
     )
     .expect("sign join");
     join_ns.admitter_endorsement = Some(endorse(
@@ -1766,7 +1773,11 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     ));
     calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let joined = [0xD1; 32];
-    proj.ingest_op(&op_from_namespace_op(&join_ns, None, joined, hlc(1), &[s2]));
+    // Through `opened_op`, not the envelope alone: the join is now sealed to the
+    // subgroup, and the projection folds the OPENED root. Feeding the envelope
+    // would fold a `Noop` and the membership this test asserts on would never
+    // appear.
+    proj.ingest_op(&opened_op(&store, &ns, &join_ns, joined, hlc(1), &[s2]));
 
     // Complete and readable: the grant path answers.
     assert_eq!(
@@ -1819,13 +1830,9 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
         [0xE0; 32],
         [0xEF; 32],
     );
-    proj_sibling.ingest_op(&op_from_namespace_op(
-        &join_ns,
-        None,
-        joined,
-        hlc(1),
-        &[s2b],
-    ));
+    // Opened, for the same reason the first projection needs it: the join is
+    // sealed to the subgroup, and an envelope fed alone folds a `Noop`.
+    proj_sibling.ingest_op(&opened_op(&store, &ns, &join_ns, joined, hlc(1), &[s2b]));
     proj_sibling.ingest_op(&sibling_hole);
     assert_eq!(
         proj_sibling.member_at_cut_authoritative(&store, subgroup, &joiner, &[sibling_hole.id()]),

@@ -211,6 +211,14 @@ fn root_ops_for(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<Root
                     ),
                 }
             }
+            // Skipped deliberately, not by omission. A subgroup-sealed op is
+            // always a `MemberJoined` / `MemberJoinedAt`, never a
+            // `MemberJoinedViaTeeAttestation` — that one is published by the
+            // admitter under the namespace key — so opening it here would cost a
+            // decrypt per op to find nothing this reader wants. An admitted TEE
+            // node still reads its own subgroup's joins; it does so through the
+            // ordinary apply path, not this admission scan.
+            NamespaceOp::RootSealedForGroup { .. } => {}
             _ => {}
         }
     }
