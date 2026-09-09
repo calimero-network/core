@@ -1,12 +1,16 @@
 //! Create the holder's account namespace on first use, and name it.
 
+use calimero_account::{AccountProof, DeviceScope};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::CreateGroupRequest;
+use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, NodeDeviceRepository};
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::{MetaRepository, NamespaceRepository, NodeDeviceRepository};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 /// Answers `None` on a node that is not the holder of its account.
 pub(crate) async fn ensure_account_namespace(
@@ -20,23 +24,79 @@ pub(crate) async fn ensure_account_namespace(
     let namespace_id = root.account_namespace();
 
     devices.store_account_namespace(&namespace_id)?;
-    let exists = MetaRepository::new(store).load(&namespace_id)?.is_some();
-    if !exists {
-        match context_client
-            .create_group(CreateGroupRequest {
-                group_id: Some(namespace_id),
-                bytecode_id: None,
-                application_id: None,
-                name: None,
-                parent_group_id: None,
-                restricted: true,
-            })
+    if MetaRepository::new(store).load(&namespace_id)?.is_some() {
+        return Ok(Some(namespace_id));
+    }
+
+    // Resolved here because the node's signing key is a singleton, so the
+    // identity this mints is the one `create_group` will find.
+    let (_namespace, signer_pk, signer_sk_bytes) =
+        NamespaceRepository::new(store).participate_in(&namespace_id)?;
+    let signer_sk = PrivateKey::from(signer_sk_bytes);
+
+    match context_client
+        .create_group(CreateGroupRequest {
+            group_id: Some(namespace_id),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        })
+        .await
+    {
+        Ok(_created) => {
+            info!(?namespace_id, "created this account's namespace");
+
+            // The holder belongs in the registry it just created: a device
+            // paired later binds the holder into a namespace it founds, and
+            // only this row carries the root signature that needs.
+            let credential = crate::join_credential::build(store, &namespace_id, &signer_pk)?;
+            let genesis = credential.genesis;
+            let scope = DeviceScope::sign(
+                root.signing_key(),
+                credential.statement.account,
+                credential.statement.device,
+                Vec::new(),
+                0,
+                0,
+            )
+            .map_err(|err| eyre::eyre!("failed to sign this device's scope: {err}"))?;
+            match calimero_governance_store::sign_apply_and_publish(
+                store,
+                context_client.node_client(),
+                context_client.ack_router(),
+                &namespace_id,
+                &signer_sk,
+                GroupOp::AccountDeviceCertified {
+                    certificate: credential,
+                    scope: Box::new(AccountProof {
+                        genesis,
+                        chain: vec![],
+                        statement: scope,
+                    }),
+                },
+            )
             .await
-        {
-            Ok(_created) => info!(?namespace_id, "created this account's namespace"),
-            // Losing the race to a concurrent first pairing is not an error.
-            Err(_) if MetaRepository::new(store).load(&namespace_id)?.is_some() => {}
-            Err(err) => return Err(err),
+            {
+                Ok(report) => report.observe("ensure_account_namespace", "AccountDeviceCertified"),
+                Err(err) => warn!(
+                    ?err,
+                    ?namespace_id,
+                    "created the account namespace, but could not record this device in it"
+                ),
+            }
+        }
+        // Two first pairings race here; the one that loses finds the
+        // namespace created and has nothing left to do.
+        Err(err) => {
+            if MetaRepository::new(store).load(&namespace_id)?.is_none() {
+                return Err(err);
+            }
+            debug!(
+                ?namespace_id,
+                "another call created this account's namespace"
+            );
         }
     }
     Ok(Some(namespace_id))
@@ -48,7 +108,7 @@ mod tests {
 
     use calimero_account::AccountGenesis;
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::{MetaRepository, NodeDeviceRepository};
+    use calimero_governance_store::{AccountDeviceRegistry, MetaRepository, NodeDeviceRepository};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupTarget;
@@ -92,7 +152,38 @@ mod tests {
         assert_eq!(meta.target, GroupTarget::default());
     }
 
-    /// A node paired into another account mints no namespace for the root it holds.
+    /// A device that founds a namespace has to be able to bind the holder into
+    /// it, and only the registry can tell it the holder's certificate. So the
+    /// holder records itself when it creates the namespace.
+    #[actix::test]
+    async fn creation_records_the_holders_own_device() {
+        let store = holder_store();
+        let devices = NodeDeviceRepository::new(&store);
+
+        let harness = actor::over(store.clone()).await;
+        let namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("created")
+            .expect("the holder creates its account namespace");
+
+        let own = devices
+            .get()
+            .expect("read")
+            .expect("creating the namespace minted this node's device");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(own.device())
+            .expect("read")
+            .expect("the holder is in its own registry");
+        assert_eq!(epoch, 0);
+        assert!(
+            recorded.applications.is_empty(),
+            "the holder speaks for every application"
+        );
+        assert_eq!(recorded.proof.statement.device, own.device());
+    }
+
+    /// A node paired into another account holds a root, but not that account's,
+    /// and must never mint a namespace for the account it merely holds a root of.
     #[actix::test]
     async fn a_node_that_is_not_the_holder_ensures_nothing() {
         let store = holder_store();
