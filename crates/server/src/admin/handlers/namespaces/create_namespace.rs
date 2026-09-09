@@ -48,7 +48,7 @@ pub async fn handler(
             parent_group_id: None,
             group_id: None,
             bytecode_id,
-            application_id: req.application_id,
+            application_id: Some(req.application_id),
             name: req.name,
             // Root creation has no `GroupCreated` op; `restricted` is ignored
             // here (kept Restricted for struct completeness). (#2771)

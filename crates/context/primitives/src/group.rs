@@ -39,7 +39,9 @@ pub struct GroupUpgradeInfo {
 pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
     pub bytecode_id: Option<BytecodeId>,
-    pub application_id: ApplicationId,
+    /// The application a root group targets. `None` only for a root that runs no
+    /// application, the account namespace; a subgroup inherits its parent's.
+    pub application_id: Option<ApplicationId>,
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
     /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
