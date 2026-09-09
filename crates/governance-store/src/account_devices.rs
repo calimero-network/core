@@ -128,7 +128,6 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PrivateKey;
-
     use calimero_store::Store;
 
     use crate::test_fixtures::test_store;
@@ -191,6 +190,13 @@ mod tests {
         let (cert, epoch) = registry.device(device).expect("read").expect("row");
         assert_eq!(cert.applications, vec![app(1), app(2)]);
         assert_eq!(epoch, 1);
+
+        assert!(
+            !registry.record(&proof, &[], 0).expect("stale epoch"),
+            "an epoch below the stored one never supersedes it"
+        );
+        let (_, epoch) = registry.device(device).expect("read").expect("row");
+        assert_eq!(epoch, 1);
     }
 
     /// A device revoked here must never be served to a binder: the tombstone a
@@ -233,13 +239,26 @@ mod tests {
         let store = test_store();
         let mine = AccountDeviceRegistry::new(&store, ContextGroupId::from(NS));
         let theirs = AccountDeviceRegistry::new(&store, ContextGroupId::from([0x4E; 32]));
-        let proof = proof(&store, 0x61);
-        assert!(mine.record(&proof, &[app(1)], 0).expect("record"));
+        let mine_proof = proof(&store, 0x61);
+        let their_proof = proof(&store, 0x62);
+        assert!(mine.record(&mine_proof, &[app(1)], 0).expect("record"));
+        // A row under the foreign namespace, so `mine.devices()` walks into it and
+        // the key filter has to reject it rather than just running out of rows.
+        assert!(theirs.record(&their_proof, &[app(2)], 0).expect("record"));
 
-        assert_eq!(mine.devices().expect("read").len(), 1);
-        assert!(theirs.devices().expect("read").is_empty());
+        let served: Vec<_> = mine
+            .devices()
+            .expect("read")
+            .into_iter()
+            .map(|cert| cert.device())
+            .collect();
+        assert_eq!(served, vec![mine_proof.statement.device]);
+        assert!(mine
+            .device(their_proof.statement.device)
+            .expect("read")
+            .is_none());
         assert!(theirs
-            .device(proof.statement.device)
+            .device(mine_proof.statement.device)
             .expect("read")
             .is_none());
     }
