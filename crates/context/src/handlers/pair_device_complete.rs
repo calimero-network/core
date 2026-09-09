@@ -255,6 +255,8 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                     .ensure_account_namespace(EnsureAccountNamespaceRequest)
                     .await?;
 
+                // Resolved before any check, because the scope is what the checks are about:
+                // which namespaces have to hold an identity and a key for this pairing to work.
                 let mut targets = namespaces_in_scope(&store, &applications)?;
                 if let Some(account_namespace) = account_namespace {
                     if !targets.contains(&account_namespace) {
