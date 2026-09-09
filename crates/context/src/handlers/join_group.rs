@@ -262,13 +262,22 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 };
 
                 // Unwrap and store the group key.
+                //
+                // The join response wins over whatever the keyring already
+                // holds, and that is a deliberate reversal (#3891). This used to
+                // skip on "a key is already present", which reads as harmless
+                // caution and is the step that makes a wrong key PERMANENT: the
+                // response is authenticated and addressed to this joiner for
+                // this group, so it is better evidence of the group's key than
+                // an entry of unknown provenance that happens to be in the
+                // keyring. Preferring the local one meant a key planted before
+                // the join could never be corrected — the membership-driven pull
+                // reports only *keyless* groups, so nothing re-drives a node
+                // holding the wrong key, and a delivery may no longer replace a
+                // held key (#3887). This was the last correction path and it was
+                // declining to correct.
                 if !join_result.has_key() {
                     warn!("join response contained no group key");
-                } else if GroupKeyring::new(&datastore, group_id).load_current_key()?.is_some() {
-                    info!(
-                        ?group_id,
-                        "group key already present locally, skipping store from join response"
-                    );
                 } else {
                     let envelope: calimero_context_client::local_governance::KeyEnvelope =
                         borsh::from_slice(&join_result.key_envelope_bytes)
@@ -280,13 +289,46 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         None,
                         &envelope,
                     )?;
-                    crate::group_key_pull::adopt_pulled_group_key(
-                        &datastore,
-                        namespace_id.into(),
-                        group_id,
-                        &group_key,
-                    )?;
-                    info!("received group key via direct join response");
+                    let offered_key_id = GroupKeyring::key_id_for(&group_key);
+                    let held_key_id = GroupKeyring::new(&datastore, group_id)
+                        .load_current_key()?
+                        .map(|(key_id, _)| key_id);
+
+                    match join_key_action(held_key_id, offered_key_id) {
+                        JoinKeyAction::AlreadyHeld => {
+                            info!(?group_id, "join response carried the group key already held");
+                        }
+                        // Worth shouting about. Either something planted a key
+                        // for this group before the join, or the group rotated
+                        // and this node is behind. Both resolve the same way --
+                        // take the authenticated one -- but an operator should
+                        // see that a displacement happened.
+                        JoinKeyAction::Displace { held_key_id } => {
+                            warn!(
+                                ?group_id,
+                                held_key_id = %hex::encode(held_key_id),
+                                adopted_key_id = %hex::encode(offered_key_id),
+                                "the join response's group key differs from the one already held; \
+                                 adopting the join response's key and displacing the local one, \
+                                 which was not attested by this join"
+                            );
+                            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                                &datastore,
+                                namespace_id.into(),
+                                group_id,
+                                &group_key,
+                            )?;
+                        }
+                        JoinKeyAction::Seed => {
+                            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                                &datastore,
+                                namespace_id.into(),
+                                group_id,
+                                &group_key,
+                            )?;
+                            info!("received group key via direct join response");
+                        }
+                    }
                 }
 
                 // Issue #2256 / PR #2368: write the namespace's
@@ -862,6 +904,43 @@ impl Handler<JoinGroupRequest> for ContextManager {
     }
 }
 
+/// What to do with the group key a join response carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinKeyAction {
+    /// Nothing held for this group: store it.
+    Seed,
+    /// The key held is the one offered. Storing it again is a no-op.
+    AlreadyHeld,
+    /// A DIFFERENT key is held. Take the join response's and displace it.
+    Displace { held_key_id: [u8; 32] },
+}
+
+/// Decide between the key a join response carried and the one already held.
+///
+/// The join response wins, and that is a deliberate reversal (#3891). This
+/// decision used to be "if any key is present, skip" — which reads as harmless
+/// caution and is the step that makes a wrong key PERMANENT. The response is
+/// authenticated and addressed to this joiner for this group, so it is better
+/// evidence of the group's key than an entry of unknown provenance that happens
+/// to be in the keyring.
+///
+/// It was also the last correction path left. The membership-driven pull reports
+/// only *keyless* groups (`groups_member_but_keyless`), so nothing re-drives a
+/// node holding the wrong key; and a delivery may no longer replace a held key
+/// (#3887). So a key planted before the join could never be corrected, and this
+/// function was the thing declining to correct it.
+///
+/// Split out from the handler so the decision is testable without mocking the
+/// join transport: it is the security-relevant half, and the rest of that block
+/// is unwrapping and storing.
+fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> JoinKeyAction {
+    match held_key_id {
+        None => JoinKeyAction::Seed,
+        Some(held) if held == offered_key_id => JoinKeyAction::AlreadyHeld,
+        Some(held) => JoinKeyAction::Displace { held_key_id: held },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -876,6 +955,49 @@ mod tests {
 
     use super::*;
     use crate::test_support::{actor, certify_device};
+
+    /// A join response's key displaces an unattested held key (#3891).
+    ///
+    /// The reversal, and the case a poisoned node depends on. Before this,
+    /// holding *any* key meant the join response's was skipped — so a key
+    /// planted before the join stayed, and nothing else could correct it: the
+    /// membership-driven pull enumerates only keyless groups, and #3887 stopped
+    /// a delivery from replacing a held key. The join response is authenticated
+    /// and addressed to this joiner for this group, so it is the better
+    /// evidence.
+    #[test]
+    fn a_join_responses_key_displaces_a_different_held_key() {
+        let planted = [0xAA; 32];
+        let authentic = [0xBB; 32];
+        assert_eq!(
+            join_key_action(Some(planted), authentic),
+            JoinKeyAction::Displace {
+                held_key_id: planted
+            },
+            "the join response wins over a key of unknown provenance, and the displaced \
+             id is carried out so the log can name it"
+        );
+    }
+
+    /// Re-joining is idempotent and quiet.
+    ///
+    /// This is what keeps the reversal from being noisy: a retry, or a second
+    /// join of a group whose key is already correct, must not report a
+    /// displacement, because storing the same key again changes nothing.
+    #[test]
+    fn a_join_response_carrying_the_held_key_is_a_no_op() {
+        let key_id = [0xCC; 32];
+        assert_eq!(
+            join_key_action(Some(key_id), key_id),
+            JoinKeyAction::AlreadyHeld
+        );
+    }
+
+    /// The ordinary first join: nothing held, so seed it.
+    #[test]
+    fn a_join_response_seeds_when_no_key_is_held() {
+        assert_eq!(join_key_action(None, [0xDD; 32]), JoinKeyAction::Seed);
+    }
 
     const APP: [u8; 32] = [0xD1; 32];
     const GROUP: [u8; 32] = [0xD2; 32];
