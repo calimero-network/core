@@ -2,16 +2,23 @@
 //!
 //! Probing is a bounded search, so *which* peers land in the first batch decides
 //! whether one round trip suffices. Availability nodes are always on, publicly
-//! dialable, and hold everything for the contexts they follow, so they go first.
+//! dialable, and hold everything for the contexts they follow, so they go
+//! first. Behind them go peers that recently served this node a blob in the
+//! same context — see `super::recent_providers` — because same context means
+//! same members and much the same working set, so the peer that had the last
+//! blob is a better guess than an arbitrary subscriber. Everything else keeps
+//! the order the network layer returned, which is what the whole list was
+//! before either tier existed.
 //!
 //! Ordering is applied BEFORE the candidate list is chunked into probe batches,
-//! and the sweep is capped at `PROBE_BATCH * MAX_PROBE_BATCHES` = 32 candidates
-//! (see `blob.rs`). So on a context larger than that, this ordering does not
-//! merely decide the order in which candidates are asked — it decides WHICH
-//! candidates are asked at all. An availability node placed 33rd by the
-//! subscriber set would never be probed; placed first, it answers on the first
-//! round trip. That makes anchor-first a correctness-relevant ordering on large
-//! contexts, not just a latency optimisation.
+//! and a sweep stops at `DISCOVERY_DEADLINE` — or at `MAX_PROBE_CANDIDATES`
+//! candidates at the very latest (see `blob.rs`). So on a context whose
+//! subscriber set outruns either bound, this ordering does not merely decide
+//! the order in which candidates are asked — it decides WHICH candidates are
+//! asked at all. An availability node placed last by the subscriber set might
+//! never be probed; placed first, it answers on the first round trip. That
+//! makes anchor-first a correctness-relevant ordering on large contexts, not
+//! just a latency optimisation.
 //!
 //! The role information lives in `calimero-node`'s governance/peer-identity
 //! plumbing, which is `pub(crate)` there — and `calimero-node` depends on this
@@ -76,17 +83,27 @@ impl MemberRolesSlot {
     }
 }
 
-/// Order probe candidates: anchors first, then everything else, preserving the
-/// caller's order within each group and dropping duplicates.
+/// Order probe candidates: anchors, then recent providers, then everything
+/// else, preserving the caller's order within each tier and dropping
+/// duplicates.
+///
+/// A peer named in `anchors` or `recent` that is not in `candidates` is NOT
+/// invented: only the subscriber set decides who exists, and both hint lists
+/// can name a peer that has since gone away.
+///
+/// `recent` empty is the cold-start case and the only failure mode this tier
+/// has: the result is then exactly what anchors-then-the-rest produced before
+/// it existed.
 #[must_use]
 pub fn order_candidates(
     candidates: Vec<libp2p::PeerId>,
     anchors: &[libp2p::PeerId],
+    recent: &[libp2p::PeerId],
 ) -> Vec<libp2p::PeerId> {
     let mut ordered: Vec<libp2p::PeerId> = Vec::with_capacity(candidates.len());
-    for anchor in anchors {
-        if candidates.contains(anchor) && !ordered.contains(anchor) {
-            ordered.push(*anchor);
+    for hinted in anchors.iter().chain(recent) {
+        if candidates.contains(hinted) && !ordered.contains(hinted) {
+            ordered.push(*hinted);
         }
     }
     for candidate in candidates {
@@ -110,34 +127,74 @@ mod tests {
     #[test]
     fn anchors_are_probed_first() {
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ordered = order_candidates(candidates, &[peer(3)]);
+        let ordered = order_candidates(candidates, &[peer(3)], &[]);
         assert_eq!(ordered, vec![peer(3), peer(1), peer(2)]);
     }
 
     #[test]
     fn an_anchor_that_is_not_a_candidate_is_not_invented() {
-        let ordered = order_candidates(vec![peer(1)], &[peer(9)]);
+        let ordered = order_candidates(vec![peer(1)], &[peer(9)], &[]);
         assert_eq!(ordered, vec![peer(1)]);
     }
 
     #[test]
     fn ordering_is_stable_and_deduplicated() {
-        let ordered = order_candidates(vec![peer(1), peer(2), peer(1)], &[peer(2), peer(2)]);
+        let ordered = order_candidates(vec![peer(1), peer(2), peer(1)], &[peer(2), peer(2)], &[]);
         assert_eq!(ordered, vec![peer(2), peer(1)]);
     }
 
-    /// The reason ordering runs before batching: an anchor sitting past the
-    /// 32-candidate sweep cap is not merely probed late, it is never probed.
+    /// The reason ordering runs before batching: an anchor deep in the
+    /// candidate list is not merely probed late, it may never be probed at all
+    /// once the sweep runs out of deadline or hits its ceiling.
     #[test]
     fn an_anchor_beyond_the_sweep_cap_is_pulled_into_the_first_batch() {
-        let mut candidates: Vec<libp2p::PeerId> = (0..40_u8).map(peer).collect();
-        let anchor = peer(39);
+        let mut candidates: Vec<libp2p::PeerId> = (0..255_u8).map(peer).collect();
+        let anchor = peer(254);
         assert_eq!(candidates.last(), Some(&anchor));
 
-        candidates = order_candidates(candidates, &[anchor]);
+        candidates = order_candidates(candidates, &[anchor], &[]);
 
         assert_eq!(candidates[0], anchor);
-        assert_eq!(candidates.len(), 40, "no candidate is dropped");
+        assert_eq!(candidates.len(), 255, "no candidate is dropped");
+    }
+
+    /// The tail is where this matters: without a recent-provider list the order
+    /// after the anchors is whatever `subscribed_peers` happened to return.
+    #[test]
+    fn a_recent_provider_is_probed_before_the_rest_of_the_tail() {
+        let candidates = vec![peer(1), peer(2), peer(3), peer(4)];
+        let ordered = order_candidates(candidates, &[peer(1)], &[peer(4)]);
+        assert_eq!(ordered, vec![peer(1), peer(4), peer(2), peer(3)]);
+    }
+
+    /// The cold-start guarantee, stated as an equality rather than a claim: an
+    /// empty cache orders exactly as the anchors-only ordering did.
+    #[test]
+    fn an_empty_recent_list_reproduces_the_previous_ordering() {
+        let candidates = vec![peer(1), peer(2), peer(3), peer(4)];
+        assert_eq!(
+            order_candidates(candidates.clone(), &[peer(3)], &[]),
+            vec![peer(3), peer(1), peer(2), peer(4)],
+        );
+        // And with no hints at all, the caller's own order survives untouched.
+        assert_eq!(order_candidates(candidates.clone(), &[], &[]), candidates);
+    }
+
+    /// Anchors outrank recent providers, and a peer in both tiers is listed
+    /// once.
+    #[test]
+    fn anchors_outrank_recent_providers_and_an_overlap_is_deduplicated() {
+        let candidates = vec![peer(1), peer(2), peer(3)];
+        let ordered = order_candidates(candidates, &[peer(3)], &[peer(3), peer(2)]);
+        assert_eq!(ordered, vec![peer(3), peer(2), peer(1)]);
+    }
+
+    /// Same rule as for anchors: a remembered provider that has left the
+    /// context is not conjured back into the candidate list.
+    #[test]
+    fn a_recent_provider_that_is_not_a_candidate_is_not_invented() {
+        let ordered = order_candidates(vec![peer(1)], &[], &[peer(9)]);
+        assert_eq!(ordered, vec![peer(1)]);
     }
 
     #[test]

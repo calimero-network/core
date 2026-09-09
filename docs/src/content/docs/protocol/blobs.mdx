@@ -215,25 +215,47 @@ Probes go out in **batches of 8**, concurrently within a batch and sequentially
 between batches, stopping at the first peer that answers `found: true`. The
 winner is then asked for the bytes over the transfer protocol below.
 
-Candidates are ordered **before** they are batched, availability nodes first.
-Because a sweep asks at most 32 candidates (below), that ordering decides which
-peers are asked at all on a large context, not merely in what order: an
-availability node listed 33rd by the subscriber set would never be probed,
-while first it answers in one round trip.
+Candidates are ordered **before** they are batched: availability nodes first,
+then peers that recently served this node a blob in the same context, then the
+rest in whatever order the subscriber set gave them. On a context large enough
+that the sweep runs out of time or hits its ceiling (below), that ordering
+decides which peers are asked at all, not merely in what order: an availability
+node listed last by the subscriber set might never be probed, while first it
+answers in one round trip.
+
+The recent-provider tier is a hint, not state. It is **memory-only** — nothing
+is persisted and nothing is replicated — and bounded both per context and in how
+many contexts it tracks, so it cannot grow with network activity. A node that
+has just started has an empty one and orders candidates exactly as it would
+without it. It records a **successful fetch**, not a probe that answered `found:
+true`: a probe says a peer claims custody, whereas a completed fetch says it
+served bytes that hashed to the id asked for, which is the only one of the two a
+lying or unreachable peer cannot manufacture.
 
 The search is bounded three ways, and all three are load-bearing:
 
 | Bound | Value | What it stops |
 | --- | --- | --- |
 | Width | 8 probes outstanding | Fanning a miss out to the whole subscriber set at once |
-| Volume | 4 batches = 32 peers per sweep | Walking all 1024 possible subscribers one batch at a time |
 | Duration | 30 s over the whole path | A search outliving the HTTP request that asked for it |
+| Ceiling | 256 candidates per sweep | An instantly-answering 10 000-peer context turning one miss into 10 000 probes |
 
-The volume cap is a **deliberate incompleteness**: on a context large enough
-that the only holder sits beyond the first 32 candidates, the blob reads as
-absent. That is the escalation trigger for this design — a context that big
-needs real provider state (an anchor, a rendezvous, a sharded index), not a
-longer linear scan.
+**The duration is the bound that normally ends a sweep.** Batches run until the
+30 s budget is gone or the candidates are exhausted; how far that gets depends
+entirely on how fast peers answer. On a healthy network a probe answers in a few
+milliseconds, so the budget comfortably walks a whole context; against peers
+that stall to the 5 s probe timeout it manages about six batches.
+
+The ceiling is a safety valve, not the normal stop. It is also where the
+**deliberate incompleteness** now lives: a blob held only by a peer beyond
+candidate 256 still reads as absent. That remains the escalation trigger for
+this design — a context that big needs real provider state (an anchor, a
+rendezvous, a sharded index), not a longer linear scan.
+
+The cost of that incompleteness is asymmetric on purpose. A miss on a large
+context can now cost up to 256 probes instead of 32, but a miss is latency and
+the deadline already caps it, whereas a wrong "nobody has it" is a 404 for a
+blob that exists on a peer the node simply never asked.
 
 A winner that then fails to deliver — a dropped connection, a timeout, or bytes
 whose recomputed id does not match — is not evidence that the blob is gone, so
