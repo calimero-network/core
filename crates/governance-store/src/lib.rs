@@ -103,7 +103,7 @@ pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 
 pub use self::group_keys::{
-    EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
+    key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
@@ -129,11 +129,12 @@ pub use self::namespace::{
     known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     open_relayed_join_for_read, open_sealed_root_op, redrive_buffered_ops_for_group,
-    retry_encrypted_ops_for_group, seal_root_op_for_publish, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
-    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
-    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
-    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    retry_encrypted_ops_for_group, seal_root_op_for_publish, seal_root_op_if_keyed,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
+    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
+    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
+    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,

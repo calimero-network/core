@@ -1,5 +1,6 @@
 use crate::{
-    AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository, NamespaceRepository,
+    AccountBindingRepository, CapabilitiesRepository, DeviceSecret, KeyringError,
+    MembershipRepository, NamespaceRepository,
 };
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
@@ -1079,6 +1080,39 @@ impl<'a> GroupKeyring<'a> {
             new_key_id: new_key_id.into(),
             envelopes,
         })
+    }
+}
+
+/// The group whose keyring holds the key that covers `group_id` — the key its
+/// governance ops and state deltas are encrypted under.
+///
+/// For a group on an **Open chain** to its namespace this is the **namespace**:
+/// an Open subgroup's contents are namespace-scoped by construction, so every
+/// writer encrypts them under the namespace key. For anything else — a group
+/// behind a `Restricted` ancestor, and the namespace root itself, which
+/// [`CapabilitiesRepository::is_open_chain_to_namespace`] answers `false` for
+/// against itself — it is the group's own keyring.
+///
+/// This is the single place that mapping lives, and every site that *reads* a
+/// keyring for a group should go through it. A reader that assumes the group's
+/// own keyring instead can serve or adopt the key row a subgroup was minted at
+/// birth (see `create_group`), which for an Open chain is a key **nothing was
+/// ever encrypted under** — a failure that reads as a successful key delivery
+/// and then decrypts nothing. The writers already agree on this rule:
+/// `execute`'s state-delta path and `GroupGovernancePublisher` both pick their
+/// encrypting group this way, and `pending_rotation` decides rotation
+/// eligibility by it.
+///
+/// Errors propagate rather than defaulting: a failure here means the topology
+/// itself is unreadable (a cyclic parent edge, missing namespace meta), and
+/// guessing "the group's own key" would mis-encrypt for exactly the receivers
+/// the walk was meant to identify.
+pub fn key_covering_group(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
+    if CapabilitiesRepository::new(store).is_open_chain_to_namespace(group_id, &namespace_id)? {
+        Ok(namespace_id)
+    } else {
+        Ok(*group_id)
     }
 }
 

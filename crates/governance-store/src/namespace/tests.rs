@@ -6049,6 +6049,455 @@ fn groups_member_but_keyless_reports_then_clears() {
     );
 }
 
+/// An Open-chain subgroup is never reported as recoverable, however keyless it
+/// looks.
+///
+/// The scan runs only when the namespace key is absent, and an Open-chain
+/// subgroup is covered by exactly that key — so there is nothing a peer could
+/// send. Reporting it emits a key request nobody can satisfy, and the namespace
+/// key is not an answer that may be requested on a subgroup's behalf: a member
+/// of the subgroup alone is not entitled to it. A Restricted sibling in the same
+/// shape IS reported, which is what keeps this a visibility test rather than
+/// "subgroups are skipped".
+#[test]
+fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
+    use calimero_context_config::VisibilityMode;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+
+    let namespace_id = [0xE5u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_id_account = enrol_member(&store, &ns_gid, &my_id);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+
+    let open_sub = ContextGroupId::from([0xE6u8; 32]);
+    let restricted_sub = ContextGroupId::from([0xE7u8; 32]);
+    nest_for_test(&store, &ns_gid, &open_sub);
+    nest_for_test(&store, &ns_gid, &restricted_sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    // A direct member of both, holding no key anywhere — the namespace key
+    // included, so the Open subgroup has no covering key either and the
+    // contrast below is purely about visibility.
+    for gid in [&open_sub, &restricted_sub] {
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_id_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![restricted_sub.to_bytes()],
+        "only the Restricted subgroup is recoverable; the Open one is covered by \
+         the namespace key and has nothing to pull"
+    );
+}
+
+/// Holding the namespace key does not mean nothing is keyless.
+///
+/// `groups_member_but_keyless` short-circuits to empty as soon as the node holds
+/// the namespace key, on the reasoning that that key "decrypts the root group
+/// AND every `Open` subgroup, so its presence alone means no group here is
+/// keyless". That misses a **Restricted** subgroup the node has a direct row in:
+/// such a group is covered by its OWN key, which the namespace key does not
+/// open, so the node is a keyless member of it and the scan is the safety net
+/// that should say so.
+///
+/// Two ways to reach the state, both ordinary:
+///
+/// * a subgroup flips `Open -> Restricted` (`SubgroupVisibilitySet` distributes
+///   no key — the handler only writes the visibility row and queues an event),
+///   so a direct member that never needed the group's own key now does;
+/// * a `KeyDelivery` for a Restricted subgroup is simply missed — the node was
+///   offline, or the op arrived before its account binding folded — and the
+///   pull is what recovers it.
+///
+/// In both cases the node never emits a key request, so the membership stays
+/// undecryptable with nothing to re-drive it, and no error anywhere.
+#[test]
+fn groups_member_but_keyless_finds_a_restricted_subgroup_while_holding_the_namespace_key() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x51u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let sk_bytes = [0x52u8; 32];
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_account = enrol_member(&store, &ns_gid, &my_id);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+
+    let restricted_sub = ContextGroupId::from([0x53u8; 32]);
+    nest_for_test(&store, &ns_gid, &restricted_sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    // The node holds the NAMESPACE key — it is an ordinary namespace member —
+    // and has a direct row in the Restricted subgroup while holding no key for
+    // it. This is the post-flip state, and the missed-delivery state.
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x54; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&restricted_sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        GroupKeyring::new(&store, restricted_sub)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: no key for the subgroup"
+    );
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![restricted_sub.to_bytes()],
+        "a direct member of a Restricted subgroup is keyless for it even while          holding the namespace key, and must be reported so the pull can recover"
+    );
+}
+
+/// A keyed local identity in `namespace_id`, ready for the keyless-scan matrix
+/// below. Returns the namespace gid and the account this node acts as.
+///
+/// The identity record matters as much as the membership row: the scan resolves
+/// this node's signing key to an account per group, and a fixture that wrote
+/// only the row would make every case below return empty one step earlier —
+/// passing the negative tests for the wrong reason.
+fn keyless_scan_fixture(
+    store: &Store,
+    namespace_id: [u8; 32],
+    sk_seed: u8,
+) -> (ContextGroupId, calimero_account::AccountId) {
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let sk_bytes = [sk_seed; 32];
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_account = enrol_member(store, &ns_gid, &my_id);
+    NamespaceRepository::new(store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+    (ns_gid, my_account)
+}
+
+/// The root case the removed short-circuit used to answer, still answered.
+///
+/// Dropping the `has_namespace_key` early return must not cost the case it got
+/// right: a node with a direct row at the root and no namespace key is a keyless
+/// member of the root and has to be reported. The per-group loop reaches this
+/// because `key_covering_group(root) == root`.
+#[test]
+fn groups_member_but_keyless_still_reports_the_root_without_a_namespace_key() {
+    let store = test_store();
+    let namespace_id = [0x60u8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x61);
+
+    // The row has to be written explicitly: `keyless_scan_fixture` enrols the
+    // account BINDING (which is what lets the scan resolve this node's key to an
+    // account) and nothing else. No key anywhere.
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &my_account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![ns_gid.to_bytes()],
+        "a keyless direct member of the root must still be reported"
+    );
+}
+
+/// The scan is a KEY check, not a membership check.
+///
+/// Once the subgroup's own key is present the group drops out, even though the
+/// membership row and the Restricted visibility are unchanged. Without this, a
+/// scan that reported on membership alone would re-request a key it already
+/// holds on every retry pass.
+#[test]
+fn groups_member_but_keyless_is_silent_once_the_subgroup_key_is_held() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x62u8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x63);
+    let sub = ContextGroupId::from([0x64u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x65; 32])
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![sub.to_bytes()],
+        "precondition: keyless while the subgroup key is absent"
+    );
+
+    GroupKeyring::new(&store, sub)
+        .store_key(&[0x66; 32])
+        .unwrap();
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "the group drops out the moment its own key is held"
+    );
+}
+
+/// No direct row, nothing to pull.
+///
+/// An inherited member has no row (`MemberJoinedOpen` writes none — its path is
+/// computed live from `Open` visibility), and once a subgroup is Restricted
+/// there is no inherited path to it at all. Either way this node is not a member
+/// of it, and requesting its key would be asking for a key it is not entitled
+/// to — the responder's own `is_member` gate would refuse.
+#[test]
+fn groups_member_but_keyless_ignores_a_subgroup_without_a_direct_row() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x67u8; 32];
+    let (ns_gid, _my_account) = keyless_scan_fixture(&store, namespace_id, 0x68);
+    let sub = ContextGroupId::from([0x69u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6A; 32])
+        .unwrap();
+    // Deliberately no `add_member` for `sub`.
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "a group this node has no direct row in is not its key to request"
+    );
+}
+
+/// An `Open` subgroup behind a `Restricted` ancestor, with the namespace key
+/// held — the case that most needed the short-circuit gone.
+///
+/// The wall breaks the chain, so `key_covering_group` answers the leaf itself
+/// and the namespace key does not open it. A one-hop visibility check reads this
+/// group as Open and would wrongly conclude the held namespace key covers it.
+#[test]
+fn groups_member_but_keyless_finds_an_open_subgroup_behind_a_restricted_ancestor() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x6Bu8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x6C);
+    let mid = ContextGroupId::from([0x6Du8; 32]);
+    let leaf = ContextGroupId::from([0x6Eu8; 32]);
+    nest_for_test(&store, &ns_gid, &mid);
+    nest_for_test(&store, &mid, &leaf);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&mid, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&leaf, VisibilityMode::Open)
+        .unwrap();
+
+    // A direct row in the leaf only, and the namespace key held.
+    MembershipRepository::new(&store)
+        .add_member(&leaf, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6F; 32])
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![leaf.to_bytes()],
+        "an Open subgroup behind a Restricted wall is covered by its own key,          which the held namespace key does not open"
+    );
+}
+
+/// The contrast to the case above: a genuine Open chain, namespace key held.
+///
+/// Every hop is Open, so the covering key IS the namespace key and the node
+/// already holds it. Nothing is keyless and nothing is requested — which is what
+/// the removed short-circuit was reaching for, now reached per-group and for the
+/// right reason.
+#[test]
+fn groups_member_but_keyless_skips_a_deep_open_chain_while_holding_the_namespace_key() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x70u8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x77);
+    let mid = ContextGroupId::from([0x78u8; 32]);
+    let leaf = ContextGroupId::from([0x79u8; 32]);
+    nest_for_test(&store, &ns_gid, &mid);
+    nest_for_test(&store, &mid, &leaf);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&mid, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&leaf, VisibilityMode::Open)
+        .unwrap();
+    for gid in [&mid, &leaf] {
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x7A; 32])
+        .unwrap();
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "an Open chain is covered by the namespace key this node already holds"
+    );
+}
+
+/// Several keyless Restricted subgroups, reported once each and in a stable
+/// order.
+///
+/// The requester turns this list into one key request per group, so a duplicate
+/// is a duplicate request and an unstable order makes the retry pass
+/// non-deterministic between nodes.
+#[test]
+fn groups_member_but_keyless_reports_every_keyless_restricted_subgroup_once() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x7Bu8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x7C);
+    let a = ContextGroupId::from([0x01u8; 32]);
+    let b = ContextGroupId::from([0x02u8; 32]);
+    let keyed = ContextGroupId::from([0x03u8; 32]);
+    let caps = CapabilitiesRepository::new(&store);
+    for gid in [&a, &b, &keyed] {
+        nest_for_test(&store, &ns_gid, gid);
+        caps.set_subgroup_visibility(gid, VisibilityMode::Restricted)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x7D; 32])
+        .unwrap();
+    // One of the three is already keyed, so it must not appear.
+    GroupKeyring::new(&store, keyed)
+        .store_key(&[0x7E; 32])
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![a.to_bytes(), b.to_bytes()],
+        "both keyless Restricted subgroups, ascending by group id, and the keyed          one absent"
+    );
+}
+
+/// The headline scenario: a subgroup flips `Open -> Restricted` and its direct
+/// members become keyless for it.
+///
+/// `SubgroupVisibilitySet`'s handler writes the visibility row and queues an
+/// event and nothing else — it distributes no key. So a direct member holding
+/// only the namespace key, which covered the group while it was Open, now needs
+/// the group's own key and has no way to notice. `set_subgroup_visibility` here
+/// is the same store mutation that handler performs.
+///
+/// Before the fix this asserted empty on both sides of the flip: the scan
+/// short-circuited on the held namespace key and never looked at the group.
+#[test]
+fn groups_member_but_keyless_reports_a_subgroup_after_it_flips_to_restricted() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x7Fu8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x80);
+    let sub = ContextGroupId::from([0x81u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&sub, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x82; 32])
+        .unwrap();
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "while Open the namespace key covers it and nothing is missing"
+    );
+
+    caps.set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![sub.to_bytes()],
+        "after the flip the group is covered by its own key, which this member          does not hold and nothing delivered"
+    );
+}
+
+/// No namespace identity, no answer.
+///
+/// The scan resolves the missing key against THIS node's namespace identity, so
+/// a store without one has nothing to be keyless about. Pinned because the early
+/// return it takes is the one remaining early exit in the function, and folding
+/// it into the loop would make every group resolve an account for a key that
+/// does not exist.
+#[test]
+fn groups_member_but_keyless_is_empty_without_a_namespace_identity() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x83u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let sub = ContextGroupId::from([0x84u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x85; 32])
+        .unwrap();
+    // No `store_identity`, so no local identity to be keyless on behalf of.
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "without a namespace identity there is nothing to recover"
+    );
+}
+
 #[test]
 fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     // Regression for the whole group-* e2e suite going red: a joiner gets
@@ -9431,5 +9880,79 @@ async fn a_relayed_join_signed_with_nonce_zero_is_refused_by_name() {
             .is_member(&ns_gid, &member)
             .expect("read membership"),
         "and it must not have applied"
+    );
+}
+
+/// A joiner seals its own join when it holds the namespace key, and still joins
+/// when it does not.
+///
+/// `root_op_is_sealable` answers for the VARIANT and must answer the same on
+/// every node, so it says no for the invitation joins: some of their publishers
+/// hold no namespace key, and a browser client signing offline never does. But
+/// the ordinary node-side joiner synced a bundle that carried the key and stored
+/// it before publishing, so it CAN seal — and what a cleartext join tells every
+/// non-member on the topic is exactly the thing worth hiding: which account
+/// joined which group, and when.
+///
+/// Both branches are pinned here because each is load-bearing in the opposite
+/// direction. Sealing when keyed is the privacy win. Falling back to cleartext
+/// when unkeyed is what keeps the unkeyed joiner able to join at all: its key
+/// arrives in a `KeyDelivery` an admin publishes on SEEING this op, so refusing
+/// to publish unsealed would deadlock the join rather than protect anything.
+#[test]
+fn a_joiner_seals_its_own_join_only_when_it_holds_the_namespace_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC1u8; 32]);
+    let ns_id: calimero_governance_types::NamespaceId = ns_gid.to_bytes().into();
+
+    let join = RootOp::MemberJoinedAt {
+        member: calimero_account::AccountId::from([0xC2u8; 32]),
+        signed_invitation: test_signed_invitation_with_admitters(
+            &calimero_primitives::identity::PrivateKey::from([0xC3u8; 32]),
+            ns_gid,
+            0,
+            vec![calimero_account::AccountId::from([0xC4u8; 32])],
+        ),
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(
+            &calimero_primitives::identity::PrivateKey::from([0xC5u8; 32]).public_key(),
+        ),
+    };
+
+    // No key yet: the joiner must still be able to publish.
+    let unkeyed = crate::seal_root_op_if_keyed(&store, ns_id, &join).expect("classify");
+    assert!(
+        unkeyed.is_none(),
+        "an unkeyed joiner must be told it cannot seal, not handed a seal under a key it \
+         does not have"
+    );
+
+    // The bundle's key lands, as it does before the publish on the ordinary path.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("store the namespace key the join bundle carried");
+
+    let keyed = crate::seal_root_op_if_keyed(&store, ns_id, &join)
+        .expect("classify")
+        .expect("a keyed joiner must seal its own join");
+    let NamespaceOp::RootSealed { key_id, encrypted } = &keyed else {
+        panic!("a keyed joiner's join must travel sealed, got {keyed:?}");
+    };
+    assert_eq!(
+        key_id.as_bytes(),
+        &GroupKeyring::key_id_for(&[0x5Au8; 32]),
+        "and sealed under the key it actually holds, so a receiver can resolve it"
+    );
+
+    // The seal must be openable back into the same op — a seal under the key id
+    // instead of the key would encrypt fine and never open.
+    let reopened = GroupKeyring::decrypt_root_op(&[0x5Au8; 32], encrypted)
+        .expect("the seal opens with the namespace key");
+    assert!(
+        matches!(reopened, RootOp::MemberJoinedAt { member, .. }
+            if member == calimero_account::AccountId::from([0xC2u8; 32])),
+        "and yields the join it was given"
     );
 }

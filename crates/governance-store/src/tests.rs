@@ -2527,6 +2527,77 @@ fn is_open_chain_to_namespace_walks_parent_chain_correctly() {
         .unwrap());
 }
 
+/// The reader-side mapping every keyring lookup must go through.
+///
+/// A subgroup is minted a key row at birth whatever its visibility, so "the
+/// group's own keyring" is never an empty answer and therefore never a safe
+/// default: for a group on an Open chain that row is a key NOTHING is encrypted
+/// under, and a reader that serves it hands out something that opens nothing
+/// while looking like a successful key delivery. This pins the mapping the
+/// writers already use, so readers and writers cannot drift apart.
+#[test]
+fn key_covering_group_maps_an_open_chain_to_the_namespace() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xB0; 32]);
+    let mid = ContextGroupId::from([0xB1; 32]);
+    let leaf = ContextGroupId::from([0xB2; 32]);
+    nest_for_test(&store, &ns, &mid);
+    nest_for_test(&store, &mid, &leaf);
+
+    // The namespace root is covered by its own key. It is a group like any
+    // other and `is_open_chain_to_namespace` answers `false` for it against
+    // itself, which is what makes "a namespace is a Restricted group in its own
+    // right" true in the code and not just in the description.
+    assert_eq!(
+        crate::key_covering_group(&store, &ns).unwrap(),
+        ns,
+        "the namespace root is covered by its own key"
+    );
+
+    // No visibility row yet ⇒ Restricted ⇒ the subgroup's own key. The default
+    // matters: it is what a not-yet-written subgroup resolves to, and it must
+    // fail safe towards "own key" rather than towards the namespace key.
+    assert_eq!(
+        crate::key_covering_group(&store, &mid).unwrap(),
+        mid,
+        "a Restricted subgroup is covered by its own key"
+    );
+
+    // One Open hop to the namespace ⇒ the namespace key covers it.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Open)
+        .unwrap();
+    assert_eq!(
+        crate::key_covering_group(&store, &mid).unwrap(),
+        ns,
+        "an Open subgroup directly under the namespace is covered by the namespace key"
+    );
+
+    // Two Open hops ⇒ still the namespace key.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&leaf, VisibilityMode::Open)
+        .unwrap();
+    assert_eq!(
+        crate::key_covering_group(&store, &leaf).unwrap(),
+        ns,
+        "an Open chain of any length is covered by the namespace key"
+    );
+
+    // A Restricted wall anywhere above breaks the chain: `leaf` is Open but its
+    // contents are not namespace-scoped, so its own key covers it. This is the
+    // case a one-hop visibility check would get wrong.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Restricted)
+        .unwrap();
+    assert_eq!(
+        crate::key_covering_group(&store, &leaf).unwrap(),
+        leaf,
+        "an Open subgroup behind a Restricted ancestor is covered by its own key"
+    );
+}
+
 #[test]
 fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     use super::namespace::MAX_NAMESPACE_DEPTH;
