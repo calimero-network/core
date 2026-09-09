@@ -1522,7 +1522,7 @@ dependencies = [
  "calimero-sys",
  "ed25519-dalek 3.0.0",
  "eyre",
- "fragile",
+ "fragile 3.0.0",
  "futures-util",
  "ouroboros",
  "owo-colors",
@@ -3585,6 +3585,15 @@ name = "fragile"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8878864ba14bb86e818a412bfd6f18f9eabd4ec0f008a28e8f7eb61db532fcf9"
+dependencies = [
+ "futures-core",
+]
+
+[[package]]
+name = "fragile"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdb2ef9571de3fe79fb6b3b7f0567ddcce6b6c9cefdbc76af63895cf97b54649"
 dependencies = [
  "futures-core",
 ]
@@ -6124,7 +6133,7 @@ checksum = "1a6ceddfe3ce334925e96bf420fdb2dcee5bed6c632a168ece622676dadeaf8a"
 dependencies = [
  "cfg-if",
  "downcast",
- "fragile",
+ "fragile 2.1.0",
  "mockall_derive",
  "predicates",
  "predicates-tree",
