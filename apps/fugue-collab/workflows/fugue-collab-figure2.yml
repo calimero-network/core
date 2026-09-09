@@ -32,7 +32,7 @@ steps:
   - name: Install fugue-collab on Node 1
     type: install_application
     node: fugue-node-1
-    path: dist/com.calimero.fugue-collab-0.0.0.mpk
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
@@ -44,7 +44,7 @@ steps:
   - name: Install fugue-collab on Node 2
     type: install_application
     node: fugue-node-2
-    path: dist/com.calimero.fugue-collab-0.0.0.mpk
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
 
   # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
@@ -54,7 +54,7 @@ steps:
   - name: Install fugue-collab on Node 3
     type: install_application
     node: fugue-node-3
-    path: dist/com.calimero.fugue-collab-0.0.0.mpk
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
 
   - name: Create a 3-node mesh

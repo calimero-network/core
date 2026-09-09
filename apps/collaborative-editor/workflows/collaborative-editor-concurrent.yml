@@ -18,7 +18,7 @@ steps:
   - name: Install Collaborative Editor on Node 1
     type: install_application
     node: calimero-node-1
-    path: res/collaborative_editor.wasm
+    path: ../../dist/com.calimero.collaborative-editor-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

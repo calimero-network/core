@@ -447,6 +447,12 @@ jobs:
       - name: Build collaborative-editor bundle
         run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
 
+      - name: Build fugue-collab app
+        run: cargo mero build --manifest-path apps/fugue-collab/Cargo.toml
+
+      - name: Build fugue-collab bundle
+        run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-init app
         run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
@@ -519,6 +525,7 @@ jobs:
             apps/blobs/res/state-schema.json
             apps/abi_conformance/res/*
             apps/collaborative-editor/res/*
+            apps/fugue-collab/res/*
             apps/kv-store-init/res/*
             apps/kv-store-with-handlers/res/*
             apps/kv-store-with-user-and-frozen-storage/res/*
