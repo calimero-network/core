@@ -316,6 +316,50 @@ mod tests {
         assert!(entry.revoked);
     }
 
+    /// The account namespace is a participating namespace in production, since
+    /// creating it goes through the ordinary create-group path. A device
+    /// revoked there must still be listed, with `revoked: true`.
+    #[test]
+    fn a_device_revoked_in_the_account_namespace_is_listed_as_revoked() {
+        let (store, root) = seeded_account();
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a holder names an account namespace");
+        NamespaceRepository::new(&store)
+            .note_participation(&namespace)
+            .expect("join the account namespace, as creation does");
+        let device = remember_cert(
+            &store,
+            &root,
+            [0x77; 32],
+            &PrivateKey::from([0x88; 32]).public_key(),
+            &[],
+        );
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&namespace, device)
+            .expect("tombstone the device in the account namespace");
+
+        let entries = collect(&store).expect("collect").expect("has account");
+
+        let entry = entries
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the revoked device is still reported");
+        assert!(entry.revoked);
+        let registry = AccountDeviceRegistry::new(&store, namespace);
+        assert!(!registry
+            .devices()
+            .expect("read")
+            .iter()
+            .any(|cert| cert.device() == device));
+        assert!(registry
+            .all_devices()
+            .expect("read")
+            .iter()
+            .any(|cert| cert.device() == device));
+    }
+
     #[test]
     fn a_bound_but_uncached_device_appears_with_its_namespace() {
         let (store, root) = seeded_account();
