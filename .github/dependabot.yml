@@ -36,6 +36,23 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "wasmer-middlewares"
         update-types: ["version-update:semver-major"]
+
+      # libp2p 0.56 is the latest release and still requires multiaddr 0.18 and
+      # libp2p-identity 0.2, which it bakes into libp2p-swarm and libp2p-kad
+      # signatures. Bumping a satellite alone puts two Multiaddr/PeerId types in
+      # the graph and crates/network stops compiling -- 252 errors in #3721, and
+      # again in #3861 once a new satellite released. Nothing in core can
+      # reconcile it, so the group cannot help while the meta-crate lags.
+      #
+      # These are 0.x, so minor is the breaking axis and is ignored with major;
+      # patches still arrive. Drop this once a libp2p release requires
+      # multiaddr ^0.19 / libp2p-identity ^0.3.
+      - dependency-name: "multiaddr"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "libp2p-identity"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "prometheus-client"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       # Families that version in lockstep, matched first so no member is ever bumped alone:
       # each appears in the others' public API, so a lone bump lands two incompatible types.
