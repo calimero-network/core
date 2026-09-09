@@ -22,43 +22,10 @@ use calimero_store::Store;
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
     founder_account_for, namespace_genesis_for, namespace_genesis_naming,
-    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, seal_for_test, test_group_id,
+    test_meta, test_store,
 };
 use super::super::*;
-
-/// Seal a root op the way a publisher does, so a test exercises the path
-/// production takes rather than one only tests can use.
-///
-/// Apply refuses a sealable root op that arrives in the clear, which is the whole
-/// point of that rule — so a test that hand-built `NamespaceOp::Root(GroupCreated
-/// { .. })` was constructing something no peer will accept. Sealing here keeps
-/// those tests about what they were about (parents, cascades, idempotency) while
-/// putting them on the real path.
-///
-/// Mints the namespace key if the fixture has not, because a fixture that skips it
-/// is under-building the namespace: production keys a namespace at creation, since
-/// its root is a group and `create_group` keys whatever group it creates.
-///
-/// Non-sealable variants pass through untouched, so genesis and the joins still
-/// travel in the clear exactly as they must.
-fn seal_for_test(
-    store: &Store,
-    ns_gid: ContextGroupId,
-    op: calimero_context_client::local_governance::RootOp,
-) -> calimero_context_client::local_governance::NamespaceOp {
-    if crate::GroupKeyring::new(store, ns_gid)
-        .load_current_key()
-        .expect("read namespace keyring")
-        .is_none()
-    {
-        let _ = crate::GroupKeyring::new(store, ns_gid)
-            .store_key(&[0x5Au8; 32])
-            .expect("mint the namespace key the fixture omitted");
-    }
-    crate::seal_root_op_for_publish(store, ns_gid.to_bytes().into(), op)
-        .expect("seal a root op for a test")
-}
 
 /// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
 /// comes back SEALED, so the delivery metadata — which account, at which causal
@@ -380,26 +347,43 @@ async fn a_published_op_is_fed_to_the_local_apply_path() {
 /// second write path goes unfed.
 #[actix::test]
 async fn the_publish_only_path_also_feeds_the_local_apply_path() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_context_client::local_governance::RootOp;
     use calimero_node_primitives::messages::NodeMessage;
 
     let (store, node_client, ack_router, ns_id, sk, _tmp, mut node_msgs) =
         namespace_publish_fixture().await;
     // A `KeyDelivery` stands in for any publish-only op: it carries no local
     // mutation, so this path signs and publishes without applying first.
-    let op = NamespaceOp::Root(RootOp::KeyDelivery {
-        group_id: ns_id.to_bytes().into(),
-        envelope: calimero_context_client::local_governance::KeyEnvelope {
-            recipient: calimero_governance_types::EnvelopeRecipient::Member {
-                identity: sk.public_key(),
-                ephemeral_pk: sk.public_key(),
+    //
+    // Sealed, because `KeyDelivery` is sealable and the publisher now refuses
+    // the cleartext form — the same refusal every receiver has always made. The
+    // op is incidental to what this test is about (that the feed fires before
+    // the publish is awaited), but publishing it the way production does is not
+    // incidental: a fixture that publishes what nothing else can is a fixture
+    // that stops predicting anything.
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let namespace_key = [0x8Cu8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("mint the namespace key, as create_group does");
+    let op = crate::seal_root_op_for_publish(
+        &store,
+        ns_id,
+        RootOp::KeyDelivery {
+            group_id: ns_id.to_bytes().into(),
+            envelope: calimero_context_client::local_governance::KeyEnvelope {
+                recipient: calimero_governance_types::EnvelopeRecipient::Member {
+                    identity: sk.public_key(),
+                    ephemeral_pk: sk.public_key(),
+                },
+                sender: sk.public_key(),
+                nonce: [0u8; 12],
+                ciphertext: Vec::new(),
+                signature: [0u8; 64],
             },
-            sender: sk.public_key(),
-            nonce: [0u8; 12],
-            ciphertext: Vec::new(),
-            signature: [0u8; 64],
         },
-    });
+    )
+    .expect("seal the stand-in op");
 
     // The publish itself gathers no acks against the stub network; irrelevant
     // here — the feed fires before the publish is awaited, which is the point
@@ -6065,6 +6049,455 @@ fn groups_member_but_keyless_reports_then_clears() {
     );
 }
 
+/// An Open-chain subgroup is never reported as recoverable, however keyless it
+/// looks.
+///
+/// The scan runs only when the namespace key is absent, and an Open-chain
+/// subgroup is covered by exactly that key — so there is nothing a peer could
+/// send. Reporting it emits a key request nobody can satisfy, and the namespace
+/// key is not an answer that may be requested on a subgroup's behalf: a member
+/// of the subgroup alone is not entitled to it. A Restricted sibling in the same
+/// shape IS reported, which is what keeps this a visibility test rather than
+/// "subgroups are skipped".
+#[test]
+fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
+    use calimero_context_config::VisibilityMode;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+
+    let namespace_id = [0xE5u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_id_account = enrol_member(&store, &ns_gid, &my_id);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+
+    let open_sub = ContextGroupId::from([0xE6u8; 32]);
+    let restricted_sub = ContextGroupId::from([0xE7u8; 32]);
+    nest_for_test(&store, &ns_gid, &open_sub);
+    nest_for_test(&store, &ns_gid, &restricted_sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    // A direct member of both, holding no key anywhere — the namespace key
+    // included, so the Open subgroup has no covering key either and the
+    // contrast below is purely about visibility.
+    for gid in [&open_sub, &restricted_sub] {
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_id_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![restricted_sub.to_bytes()],
+        "only the Restricted subgroup is recoverable; the Open one is covered by \
+         the namespace key and has nothing to pull"
+    );
+}
+
+/// Holding the namespace key does not mean nothing is keyless.
+///
+/// `groups_member_but_keyless` short-circuits to empty as soon as the node holds
+/// the namespace key, on the reasoning that that key "decrypts the root group
+/// AND every `Open` subgroup, so its presence alone means no group here is
+/// keyless". That misses a **Restricted** subgroup the node has a direct row in:
+/// such a group is covered by its OWN key, which the namespace key does not
+/// open, so the node is a keyless member of it and the scan is the safety net
+/// that should say so.
+///
+/// Two ways to reach the state, both ordinary:
+///
+/// * a subgroup flips `Open -> Restricted` (`SubgroupVisibilitySet` distributes
+///   no key — the handler only writes the visibility row and queues an event),
+///   so a direct member that never needed the group's own key now does;
+/// * a `KeyDelivery` for a Restricted subgroup is simply missed — the node was
+///   offline, or the op arrived before its account binding folded — and the
+///   pull is what recovers it.
+///
+/// In both cases the node never emits a key request, so the membership stays
+/// undecryptable with nothing to re-drive it, and no error anywhere.
+#[test]
+fn groups_member_but_keyless_finds_a_restricted_subgroup_while_holding_the_namespace_key() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x51u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let sk_bytes = [0x52u8; 32];
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_account = enrol_member(&store, &ns_gid, &my_id);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+
+    let restricted_sub = ContextGroupId::from([0x53u8; 32]);
+    nest_for_test(&store, &ns_gid, &restricted_sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    // The node holds the NAMESPACE key — it is an ordinary namespace member —
+    // and has a direct row in the Restricted subgroup while holding no key for
+    // it. This is the post-flip state, and the missed-delivery state.
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x54; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&restricted_sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        GroupKeyring::new(&store, restricted_sub)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: no key for the subgroup"
+    );
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![restricted_sub.to_bytes()],
+        "a direct member of a Restricted subgroup is keyless for it even while          holding the namespace key, and must be reported so the pull can recover"
+    );
+}
+
+/// A keyed local identity in `namespace_id`, ready for the keyless-scan matrix
+/// below. Returns the namespace gid and the account this node acts as.
+///
+/// The identity record matters as much as the membership row: the scan resolves
+/// this node's signing key to an account per group, and a fixture that wrote
+/// only the row would make every case below return empty one step earlier —
+/// passing the negative tests for the wrong reason.
+fn keyless_scan_fixture(
+    store: &Store,
+    namespace_id: [u8; 32],
+    sk_seed: u8,
+) -> (ContextGroupId, calimero_account::AccountId) {
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let sk_bytes = [sk_seed; 32];
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_account = enrol_member(store, &ns_gid, &my_id);
+    NamespaceRepository::new(store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+    (ns_gid, my_account)
+}
+
+/// The root case the removed short-circuit used to answer, still answered.
+///
+/// Dropping the `has_namespace_key` early return must not cost the case it got
+/// right: a node with a direct row at the root and no namespace key is a keyless
+/// member of the root and has to be reported. The per-group loop reaches this
+/// because `key_covering_group(root) == root`.
+#[test]
+fn groups_member_but_keyless_still_reports_the_root_without_a_namespace_key() {
+    let store = test_store();
+    let namespace_id = [0x60u8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x61);
+
+    // The row has to be written explicitly: `keyless_scan_fixture` enrols the
+    // account BINDING (which is what lets the scan resolve this node's key to an
+    // account) and nothing else. No key anywhere.
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &my_account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![ns_gid.to_bytes()],
+        "a keyless direct member of the root must still be reported"
+    );
+}
+
+/// The scan is a KEY check, not a membership check.
+///
+/// Once the subgroup's own key is present the group drops out, even though the
+/// membership row and the Restricted visibility are unchanged. Without this, a
+/// scan that reported on membership alone would re-request a key it already
+/// holds on every retry pass.
+#[test]
+fn groups_member_but_keyless_is_silent_once_the_subgroup_key_is_held() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x62u8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x63);
+    let sub = ContextGroupId::from([0x64u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x65; 32])
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![sub.to_bytes()],
+        "precondition: keyless while the subgroup key is absent"
+    );
+
+    GroupKeyring::new(&store, sub)
+        .store_key(&[0x66; 32])
+        .unwrap();
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "the group drops out the moment its own key is held"
+    );
+}
+
+/// No direct row, nothing to pull.
+///
+/// An inherited member has no row (`MemberJoinedOpen` writes none — its path is
+/// computed live from `Open` visibility), and once a subgroup is Restricted
+/// there is no inherited path to it at all. Either way this node is not a member
+/// of it, and requesting its key would be asking for a key it is not entitled
+/// to — the responder's own `is_member` gate would refuse.
+#[test]
+fn groups_member_but_keyless_ignores_a_subgroup_without_a_direct_row() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x67u8; 32];
+    let (ns_gid, _my_account) = keyless_scan_fixture(&store, namespace_id, 0x68);
+    let sub = ContextGroupId::from([0x69u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6A; 32])
+        .unwrap();
+    // Deliberately no `add_member` for `sub`.
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "a group this node has no direct row in is not its key to request"
+    );
+}
+
+/// An `Open` subgroup behind a `Restricted` ancestor, with the namespace key
+/// held — the case that most needed the short-circuit gone.
+///
+/// The wall breaks the chain, so `key_covering_group` answers the leaf itself
+/// and the namespace key does not open it. A one-hop visibility check reads this
+/// group as Open and would wrongly conclude the held namespace key covers it.
+#[test]
+fn groups_member_but_keyless_finds_an_open_subgroup_behind_a_restricted_ancestor() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x6Bu8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x6C);
+    let mid = ContextGroupId::from([0x6Du8; 32]);
+    let leaf = ContextGroupId::from([0x6Eu8; 32]);
+    nest_for_test(&store, &ns_gid, &mid);
+    nest_for_test(&store, &mid, &leaf);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&mid, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&leaf, VisibilityMode::Open)
+        .unwrap();
+
+    // A direct row in the leaf only, and the namespace key held.
+    MembershipRepository::new(&store)
+        .add_member(&leaf, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6F; 32])
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![leaf.to_bytes()],
+        "an Open subgroup behind a Restricted wall is covered by its own key,          which the held namespace key does not open"
+    );
+}
+
+/// The contrast to the case above: a genuine Open chain, namespace key held.
+///
+/// Every hop is Open, so the covering key IS the namespace key and the node
+/// already holds it. Nothing is keyless and nothing is requested — which is what
+/// the removed short-circuit was reaching for, now reached per-group and for the
+/// right reason.
+#[test]
+fn groups_member_but_keyless_skips_a_deep_open_chain_while_holding_the_namespace_key() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x70u8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x77);
+    let mid = ContextGroupId::from([0x78u8; 32]);
+    let leaf = ContextGroupId::from([0x79u8; 32]);
+    nest_for_test(&store, &ns_gid, &mid);
+    nest_for_test(&store, &mid, &leaf);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&mid, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&leaf, VisibilityMode::Open)
+        .unwrap();
+    for gid in [&mid, &leaf] {
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x7A; 32])
+        .unwrap();
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "an Open chain is covered by the namespace key this node already holds"
+    );
+}
+
+/// Several keyless Restricted subgroups, reported once each and in a stable
+/// order.
+///
+/// The requester turns this list into one key request per group, so a duplicate
+/// is a duplicate request and an unstable order makes the retry pass
+/// non-deterministic between nodes.
+#[test]
+fn groups_member_but_keyless_reports_every_keyless_restricted_subgroup_once() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x7Bu8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x7C);
+    let a = ContextGroupId::from([0x01u8; 32]);
+    let b = ContextGroupId::from([0x02u8; 32]);
+    let keyed = ContextGroupId::from([0x03u8; 32]);
+    let caps = CapabilitiesRepository::new(&store);
+    for gid in [&a, &b, &keyed] {
+        nest_for_test(&store, &ns_gid, gid);
+        caps.set_subgroup_visibility(gid, VisibilityMode::Restricted)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &my_account, GroupMemberRole::Member)
+            .unwrap();
+    }
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x7D; 32])
+        .unwrap();
+    // One of the three is already keyed, so it must not appear.
+    GroupKeyring::new(&store, keyed)
+        .store_key(&[0x7E; 32])
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![a.to_bytes(), b.to_bytes()],
+        "both keyless Restricted subgroups, ascending by group id, and the keyed          one absent"
+    );
+}
+
+/// The headline scenario: a subgroup flips `Open -> Restricted` and its direct
+/// members become keyless for it.
+///
+/// `SubgroupVisibilitySet`'s handler writes the visibility row and queues an
+/// event and nothing else — it distributes no key. So a direct member holding
+/// only the namespace key, which covered the group while it was Open, now needs
+/// the group's own key and has no way to notice. `set_subgroup_visibility` here
+/// is the same store mutation that handler performs.
+///
+/// Before the fix this asserted empty on both sides of the flip: the scan
+/// short-circuited on the held namespace key and never looked at the group.
+#[test]
+fn groups_member_but_keyless_reports_a_subgroup_after_it_flips_to_restricted() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x7Fu8; 32];
+    let (ns_gid, my_account) = keyless_scan_fixture(&store, namespace_id, 0x80);
+    let sub = ContextGroupId::from([0x81u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&sub, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x82; 32])
+        .unwrap();
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "while Open the namespace key covers it and nothing is missing"
+    );
+
+    caps.set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![sub.to_bytes()],
+        "after the flip the group is covered by its own key, which this member          does not hold and nothing delivered"
+    );
+}
+
+/// No namespace identity, no answer.
+///
+/// The scan resolves the missing key against THIS node's namespace identity, so
+/// a store without one has nothing to be keyless about. Pinned because the early
+/// return it takes is the one remaining early exit in the function, and folding
+/// it into the loop would make every group resolve an account for a key that
+/// does not exist.
+#[test]
+fn groups_member_but_keyless_is_empty_without_a_namespace_identity() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x83u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let sub = ContextGroupId::from([0x84u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x85; 32])
+        .unwrap();
+    // No `store_identity`, so no local identity to be keyless on behalf of.
+
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty(),
+        "without a namespace identity there is nothing to recover"
+    );
+}
+
 #[test]
 fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     // Regression for the whole group-* e2e suite going red: a joiner gets
@@ -7172,7 +7605,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 /// from that op stalls on this replica alone. It must park for retry instead.
 #[test]
 fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -7235,11 +7668,15 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner_account,
-            group_id: subgroup_id.into(),
-            account: crate::test_fixtures::real_join_account(&joiner),
-        }),
+        seal_for_test(
+            &store,
+            ContextGroupId::from(namespace_id),
+            RootOp::MemberJoinedOpen {
+                member: joiner_account,
+                group_id: subgroup_id.into(),
+                account: crate::test_fixtures::real_join_account(&joiner),
+            },
+        ),
     )
     .expect("joiner signs MemberJoinedOpen");
 
@@ -7424,7 +7861,7 @@ fn apply_open_join_with(
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
     use super::NamespaceGovernance;
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     // The op names the account the CREDENTIAL certifies, not one derived from
     // the joiner's key: those are different values, and the apply checks the
@@ -7432,16 +7869,23 @@ fn apply_open_join_with(
     let gov = NamespaceGovernance::new(store, namespace_id.into());
     let head = gov.read_head_record().expect("read head");
     let joiner_account = account.statement.account;
+    // Sealed: the publisher is a member inheriting inward, so it holds the
+    // namespace key, and apply refuses this variant in the clear.
+    let op = seal_for_test(
+        store,
+        ContextGroupId::from(namespace_id),
+        RootOp::MemberJoinedOpen {
+            member: joiner_account,
+            group_id: subgroup_id.into(),
+            account,
+        },
+    );
     let join = SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner_account,
-            group_id: subgroup_id.into(),
-            account,
-        }),
+        op,
     )
     .expect("joiner signs MemberJoinedOpen");
     gov.apply_signed_op(&join)
@@ -7748,19 +8192,23 @@ fn a_tee_admission_binds_the_replicas_device() {
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
-            group_id: ns_gid,
-            member: replica,
-            quote_hash: [0x11; 32],
-            mrtd: "m1".to_owned(),
-            rtmr0: String::new(),
-            rtmr1: String::new(),
-            rtmr2: String::new(),
-            rtmr3: String::new(),
-            tcb_status: "ok".to_owned(),
-            role: GroupMemberRole::ReadOnlyTee,
-            account,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedViaTeeAttestation {
+                group_id: ns_gid,
+                member: replica,
+                quote_hash: [0x11; 32],
+                mrtd: "m1".to_owned(),
+                rtmr0: String::new(),
+                rtmr1: String::new(),
+                rtmr2: String::new(),
+                rtmr3: String::new(),
+                tcb_status: "ok".to_owned(),
+                role: GroupMemberRole::ReadOnlyTee,
+                account,
+            },
+        ),
     )
     .expect("verifier signs the admission");
     gov.apply_signed_op(&admit).expect("the admission applies");
@@ -7852,19 +8300,23 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
-            group_id: ns_gid,
-            member: replica,
-            quote_hash: [0x11; 32],
-            mrtd: "m1".to_owned(),
-            rtmr0: String::new(),
-            rtmr1: String::new(),
-            rtmr2: String::new(),
-            rtmr3: String::new(),
-            tcb_status: "ok".to_owned(),
-            role: GroupMemberRole::ReadOnlyTee,
-            account: stolen,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::MemberJoinedViaTeeAttestation {
+                group_id: ns_gid,
+                member: replica,
+                quote_hash: [0x11; 32],
+                mrtd: "m1".to_owned(),
+                rtmr0: String::new(),
+                rtmr1: String::new(),
+                rtmr2: String::new(),
+                rtmr3: String::new(),
+                tcb_status: "ok".to_owned(),
+                role: GroupMemberRole::ReadOnlyTee,
+                account: stolen,
+            },
+        ),
     )
     .expect("verifier signs the admission");
     // Refused OUTRIGHT, not "admitted without a binding". The membership row an
@@ -8596,6 +9048,78 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
     );
 }
 
+/// The publish side refuses a sealable root op offered in the clear, the same
+/// shape the receive side refuses on arrival.
+///
+/// Without this the two sides disagree about when the mistake is visible. The
+/// receiver has always refused; the publisher signed and broadcast, so the only
+/// symptom was every peer silently dropping the op — a signal that never reaches
+/// the node that caused it. #3846 shipped exactly that and its local test run was
+/// green.
+///
+/// `KeyDelivery` is the subject because it is the variant that was got wrong.
+#[test]
+fn signing_a_sealable_root_op_in_the_clear_is_refused_at_the_publisher() {
+    let ns_gid = ContextGroupId::from([0xD7u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let signer_sk = PrivateKey::from([0x51u8; 32]);
+    let signer_pk = signer_sk.public_key();
+
+    let store = test_store();
+    let signer_account = enrol_member(&store, &ns_gid, &signer_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &signer_pk, signer_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
+        .unwrap();
+
+    use calimero_context_client::local_governance::RootOp;
+
+    let namespace_key = [0x52u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&signer_sk, &signer_pk, &ns_gid.to_bytes(), &namespace_key)
+            .unwrap();
+    let cleartext =
+        calimero_context_client::local_governance::NamespaceOp::Root(RootOp::KeyDelivery {
+            group_id: namespace_id.into(),
+            envelope,
+        });
+
+    let err = super::governance::refuse_unsealed_sealable_root(&cleartext)
+        .expect_err("a cleartext sealable root op must not reach the signer");
+    let err = format!("{err:#}");
+    assert!(
+        err.contains("seal_root_op_for_publish"),
+        "the refusal must name the fix, not just the fault: {err}"
+    );
+
+    // And the sealed form of the very same op passes, so the guard rejects the
+    // MISTAKE rather than the variant.
+    let sealed = crate::seal_root_op_for_publish(
+        &store,
+        namespace_id.into(),
+        RootOp::KeyDelivery {
+            group_id: namespace_id.into(),
+            envelope: GroupKeyring::wrap_for_member(
+                &signer_sk,
+                &signer_pk,
+                &ns_gid.to_bytes(),
+                &namespace_key,
+            )
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    super::governance::refuse_unsealed_sealable_root(&sealed)
+        .expect("the sealed form of the same op must publish");
+}
+
 /// A member added to a subgroup, holding no binding in the owning namespace,
 /// is served nothing by the pull either — so it has no way to get the key at all.
 ///
@@ -8768,5 +9292,1279 @@ fn a_subgroup_member_outside_the_namespace_root_is_still_served_by_the_pull() {
         !envelope_bytes.is_empty(),
         "the pull must carry a subgroup member that the sealed push cannot reach, \
          or sealing KeyDelivery locked this member out of its own subgroup"
+    );
+}
+
+/// A sealed `GroupDeleted` keeps the heavy ack budget it had in the clear — and
+/// the wire form alone cannot know that.
+///
+/// `timeout_for_namespace_op` classifies from what is on the wire, and there a
+/// sealed root op is an opaque blob, so every one of them fell to the
+/// member-change default. `GroupDeleted` and `KeyDelivery` are the two that were
+/// deliberately given a longer budget — a cascade delete touches every
+/// descendant row, an envelope unwrap can be large — and sealing them silently
+/// halved it from 10s to 5s. The op still propagates; what breaks is the
+/// publisher's verdict, which reports `Degraded` for a delivery that was fine.
+///
+/// The third assertion is the one that says why this is not fixed by raising the
+/// wire-form default: a cheap op must NOT be promoted. Blanket-heavy would make
+/// every sealed `AdminChanged` wait 10s instead of 2s before reporting a real
+/// failure, which is a worse trade than the bug on the common admin path.
+#[test]
+fn a_sealed_root_op_is_given_the_ack_budget_its_cleartext_variant_earns() {
+    use calimero_context_client::local_governance::RootOp;
+
+    use super::governance::NamespaceGovernance;
+    use crate::governance_broadcast::{
+        timeout_for_namespace_op, OP_ACK_CHEAP_TIMEOUT, OP_ACK_HEAVY_TIMEOUT,
+        OP_ACK_MEMBER_CHANGE_TIMEOUT,
+    };
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE4u8; 32]);
+    let gov = NamespaceGovernance::new(&store, ns_gid.to_bytes().into());
+
+    let heavy = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::GroupDeleted {
+            root_group_id: ContextGroupId::from([0xE5u8; 32]),
+            cascade_group_ids: vec![],
+            cascade_context_ids: vec![],
+        },
+    );
+    assert!(
+        matches!(
+            heavy,
+            calimero_context_client::local_governance::NamespaceOp::RootSealed { .. }
+        ),
+        "precondition: this variant travels sealed, or the test proves nothing"
+    );
+    assert_eq!(
+        timeout_for_namespace_op(&heavy),
+        OP_ACK_MEMBER_CHANGE_TIMEOUT,
+        "the key-less classifier can only offer the floor for an opaque blob"
+    );
+    assert_eq!(
+        gov.ack_timeout_for(&heavy),
+        OP_ACK_HEAVY_TIMEOUT,
+        "the publisher holds the key, so it must give the budget the op earns"
+    );
+
+    let cheap = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::AdminChanged {
+            new_admin: calimero_account::AccountId::from([0xE6u8; 32]),
+        },
+    );
+    assert_eq!(
+        gov.ack_timeout_for(&cheap),
+        OP_ACK_CHEAP_TIMEOUT,
+        "and a cheap op must not be promoted: the fix is exactness, not a raise"
+    );
+}
+
+/// A sealed `KeyDelivery` that was buffered must actually DELIVER when replayed.
+///
+/// The sealed-root retry replays through `apply_root_op`, which folds the op and
+/// nothing else. Everything else a `KeyDelivery` does — unwrapping the envelope
+/// and storing the key it carries — lived in `apply_signed_op`'s match, which the
+/// retry does not run. So a node that received the delivery before its namespace
+/// key applied the op on replay and still had no subgroup key: the one thing the
+/// op exists to do was the one thing the replay skipped, and nothing failed.
+///
+/// The shape is the ordinary one since #3847 sealed this variant. An admin
+/// delivers a subgroup key to a member that holds no namespace key yet, so the
+/// member cannot open the carrier; the key it needs is inside an op it cannot
+/// read. When the namespace key later lands, this retry is what has to finish
+/// the job.
+///
+/// This also pins that the chain TERMINATES, and that is not incidental. The
+/// replay has no nonce dedup — it re-feeds every sealed root op in the log — so
+/// a `KeyDelivery` whose effect re-drives its own group reaches this same op
+/// again one level down, forever. Raise `MAX_RETRY_REENTRY` and this test does
+/// not fail, it aborts the process on a stack overflow, from an op any peer can
+/// send. That is why #3850 deferred wiring these effects in rather than adding
+/// the call and moving on.
+#[test]
+fn a_replayed_sealed_key_delivery_stores_the_key_it_carries() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xE1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The deliverer: an admin who holds the keys and signs the op.
+    let admin_sk = PrivateKey::from([0x31u8; 32]);
+    let admin_pk = admin_sk.public_key();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // This node: the recipient. A namespace member with an identity on file,
+    // which is what `apply_received_group_key_envelope` resolves to decrypt.
+    let our_sk = PrivateKey::from([0x32u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    // The subgroup the delivered key belongs to. Nested, so the cross-namespace
+    // pin in the envelope apply resolves it to this namespace rather than
+    // refusing a key for a group it cannot place.
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let namespace_key = [0x5Au8; 32];
+    let subgroup_key = [0x77u8; 32];
+
+    // Sealed by hand, NOT through `seal_for_test`: that helper mints the
+    // namespace key into this store, and a node that already holds the key is
+    // exactly the state this test needs to start outside of.
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+    let delivery = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], 1, sealed)
+        .expect("the admin signs the delivery");
+    crate::NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&delivery)
+        .expect("land the delivery in the log, unopened");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: the subgroup key is unreachable while the carrier is sealed"
+    );
+
+    // The namespace key arrives — by delivery or by pull, both land here.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+    super::governance::retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("the retry pass runs");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("the replayed delivery must store the subgroup key it carries");
+    assert_eq!(
+        stored.1, subgroup_key,
+        "and it must be the key the envelope actually carried, not some other entry"
+    );
+}
+
+/// A joiner's own signature — not the relay's — decides who joined.
+///
+/// This is the whole reason the relay nests a signed op instead of moving the
+/// signature inside the seal. The envelope is signed by the ADMITTER, so if the
+/// join's gates read the envelope they would compare the admitter's key against
+/// the joiner's credential and refuse every relayed join. They read the inner op
+/// instead, so `join_op_proves_ownership` still holds and the membership lands
+/// for the joiner.
+///
+/// The second half is the security property that makes this safe to add at all:
+/// a namespace keyholder can seal whatever it likes, so if the inner signature
+/// were not checked, any admitter could mint a membership for an account it does
+/// not control. Forging it must be refused.
+#[actix::test]
+async fn a_relayed_join_is_authenticated_by_the_joiner_not_the_admitter() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    // A joiner with a key of its own and no node: it signs, it does not publish.
+    let joiner_sk = PrivateKey::from([0x4Du8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+
+    let join = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member,
+        signed_invitation,
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    });
+    let mut inner =
+        SignedNamespaceOp::sign(&joiner_sk, ns_id, vec![], 1, join).expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+    assert!(
+        matches!(sealed, NamespaceOp::RootRelaySealed { .. }),
+        "precondition: the relay must travel sealed, or this test proves nothing"
+    );
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        .expect("the admitter signs the envelope");
+
+    gov.apply_signed_op(&outer)
+        .expect("a relayed join must apply");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "the join must land for the JOINER; reading the envelope's signer instead \
+         would compare the admitter's key against the joiner's credential and refuse it"
+    );
+
+    // And a relay whose inner signature does not verify is refused. Decryption
+    // proves only that a keyholder sealed it, which is the admitter.
+    let mut forged = inner.clone();
+    forged.signature[0] ^= 0xFF;
+    let forged_sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &forged);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let forged_outer =
+        SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, forged_sealed)
+            .expect("the admitter signs a well-formed envelope around a forged join");
+
+    let err = gov
+        .apply_signed_op(&forged_outer)
+        .expect_err("a relay carrying an unverifiable join must be refused");
+    assert!(
+        format!("{err:#}").contains("signature"),
+        "the refusal must name the signature, got: {err:#}"
+    );
+}
+
+/// A relay carries a join and nothing else.
+///
+/// Being able to seal on someone's behalf is authority to admit them, not
+/// authority to put arbitrary governance on the topic in a form peers cannot
+/// read. Without this a relay is a sealed injector: an admitter could wrap any
+/// signed op at all, and non-members could not even see what went past.
+#[actix::test]
+async fn a_relay_carrying_governance_that_is_not_a_join_is_refused() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    let other_sk = PrivateKey::from([0x4Eu8; 32]);
+    // A valid nonce, so this reaches the join-only check rather than being
+    // refused earlier for the nonce.
+    let inner = SignedNamespaceOp::sign(
+        &other_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::AdminChanged {
+            new_admin: crate::test_fixtures::account_for(&other_sk.public_key()),
+        }),
+    )
+    .expect("sign a non-join op");
+
+    let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        .expect("the admitter signs the envelope");
+
+    let err = gov
+        .apply_signed_op(&outer)
+        .expect_err("a relay is for joins only");
+    assert!(
+        format!("{err:#}").contains("invitation join only"),
+        "the refusal must say a relay carries a join only, got: {err:#}"
+    );
+}
+
+/// A relay that arrives before the namespace key must park, then land when the
+/// key does.
+///
+/// A relayed join is sealed under the namespace key, so a member that has not
+/// received that key yet cannot read it — the ordinary case for anyone still
+/// being bootstrapped. Dropping it would lose a membership permanently, since
+/// nothing re-sends a governance op that was accepted and discarded. It is
+/// parked instead, and the key-delivery retry pass is what completes it.
+///
+/// The park is asserted, not just the eventual apply: without a park recorded
+/// the retry pass has nothing to find, and the test would still pass on a build
+/// that applied the join eagerly for the wrong reason.
+#[actix::test]
+async fn a_relayed_join_parks_without_the_key_and_applies_once_it_arrives() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    let joiner_sk = PrivateKey::from([0x4Fu8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+
+    let join = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member,
+        signed_invitation,
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+    });
+    let mut inner =
+        SignedNamespaceOp::sign(&joiner_sk, ns_id, vec![], 1, join).expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    // Sealed under a key this store will then forget, so the receive path is the
+    // realistic one: the op is readable by a keyholder, and this node is not one
+    // yet.
+    // Sealed under a key this store does not hold yet — the realistic receive
+    // case. The key is never stored before the apply, so `load_key_by_id` misses
+    // and the op parks; `key_id` is derived from the key, so the same id resolves
+    // once it is delivered below.
+    let namespace_key = [0x5Au8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let encrypted = GroupKeyring::encrypt_relayed_op(&namespace_key, &inner).expect("seal");
+
+    // The envelope is signed by a DIFFERENT node than the one receiving it. That
+    // is the case a park exists for: the retry pass deliberately skips ops this
+    // node published itself, because publishing already applied them, so a test
+    // that let the receiver be its own admitter would park and then never
+    // replay — and would be testing the skip, not the retry.
+    let remote_admitter_sk = PrivateKey::from([0x50u8; 32]);
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(
+        &remote_admitter_sk,
+        ns_id,
+        vec![],
+        next_nonce,
+        NamespaceOp::RootRelaySealed {
+            key_id: key_id.into(),
+            encrypted,
+        },
+    )
+    .expect("the relaying node signs the envelope");
+
+    let parked = gov.apply_signed_op(&outer).expect("the op is accepted");
+    assert!(
+        !parked.key_unwrap_failures.is_empty(),
+        "a relay it cannot open must be reported as parked, or the retry pass has \
+         nothing to find and the membership is lost silently"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "precondition: the join must not have landed yet"
+    );
+
+    // The key arrives.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("the key is delivered");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the retry pass runs");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "once the key lands, the parked relay must complete the join"
+    );
+}
+
+/// Re-sealing an old join under a fresh envelope must not resurrect a removed
+/// member.
+///
+/// The idempotency guard dedups on the ENVELOPE's content hash, and a relay
+/// mints a fresh envelope around a join that already exists. Without a guard on
+/// the inner op, any namespace keyholder — any member, not only an admin — could
+/// take a member's old signed join, re-seal it, and have every peer fold it
+/// again. A direct member row is not deny-list gated, so that re-adds a member
+/// an admin removed: an admin decision undone by someone who does not hold
+/// admin.
+///
+/// Both arrival shapes are covered here because they need different answers: a
+/// join that arrived in the clear is in the op log under its own hash, and one
+/// that only ever arrived relayed is not, so the nonce window has to answer that
+/// one.
+#[actix::test]
+async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+
+    // Case 1: the join arrived RELAYED, so only envelopes are in the log and the
+    // nonce window is what remembers it.
+    let joiner_sk = PrivateKey::from([0x51u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+    let mut inner = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let relay_once = |inner: &SignedNamespaceOp| {
+        let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, inner);
+        let next_nonce = gov.read_head_record().expect("head").next_nonce;
+        SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+            .expect("sign the envelope")
+    };
+
+    let first = relay_once(&inner);
+    gov.apply_signed_op(&first).expect("the join applies");
+    assert!(
+        members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "precondition: the first relay must land the join"
+    );
+
+    members
+        .remove_member(&ns_gid, &member)
+        .expect("an admin removes the member");
+
+    let replay = relay_once(&inner);
+    assert_ne!(
+        replay.content_hash().expect("hash"),
+        first.content_hash().expect("hash"),
+        "precondition: the re-seal must produce a different op id, or the envelope's own \
+         content-hash guard would catch it and this test proves nothing"
+    );
+    gov.apply_signed_op(&replay)
+        .expect("a well-formed envelope is accepted; it must simply fold nothing");
+    assert!(
+        !members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a re-sealed relayed join must not resurrect a removed member"
+    );
+
+    // Case 2: the join arrived IN THE CLEAR, so the op log holds the inner op
+    // under its own hash and no nonce was ever burned for it.
+    let direct_sk = PrivateKey::from([0x52u8; 32]);
+    let direct_member = crate::test_fixtures::account_for(&direct_sk.public_key());
+    let (direct_invitation, direct_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &direct_member);
+    let mut cleartext = SignedNamespaceOp::sign(
+        &direct_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: direct_member,
+            signed_invitation: direct_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&direct_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    cleartext.admitter_endorsement = Some(direct_endorsement);
+
+    gov.apply_signed_op(&cleartext)
+        .expect("a cleartext invitation join still applies");
+    assert!(
+        members
+            .is_member(&ns_gid, &direct_member)
+            .expect("read membership"),
+        "precondition: the cleartext join must land"
+    );
+
+    members
+        .remove_member(&ns_gid, &direct_member)
+        .expect("an admin removes the member");
+
+    let laundered = relay_once(&cleartext);
+    gov.apply_signed_op(&laundered)
+        .expect("accepted, and must fold nothing");
+    assert!(
+        !members
+            .is_member(&ns_gid, &direct_member)
+            .expect("read membership"),
+        "wrapping an already-applied cleartext join in a relay must not resurrect it \
+         either — the op log holds that one under its own hash"
+    );
+}
+
+/// A relayed join signed with nonce 0 is refused loudly, not silently dropped.
+///
+/// The replay guard is keyed on the joiner's nonce, and `NonceWindow` mints
+/// nonces as `max_applied() + 1` — so 1 is the first valid one, 0 is never
+/// authored, and a fresh window has `floor == 0`, which makes `contains(0)`
+/// already true. Left unchecked, a join signed with nonce 0 would be mistaken
+/// for a replay and never applied, with nothing to show why: the client would
+/// see a well-formed op accepted and the membership never appear. Refusing it by
+/// name is the difference between a diagnosable client bug and an invisible one.
+#[actix::test]
+async fn a_relayed_join_signed_with_nonce_zero_is_refused_by_name() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    let joiner_sk = PrivateKey::from([0x53u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+    let mut inner = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs with an invalid nonce");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let outer = SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        .expect("sign the envelope");
+
+    let err = gov
+        .apply_signed_op(&outer)
+        .expect_err("a join signed with nonce 0 must be refused, not quietly dropped");
+    assert!(
+        format!("{err:#}").contains("nonce 0"),
+        "the refusal must name the nonce so the client can act on it, got: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "and it must not have applied"
+    );
+}
+
+/// A joiner seals its own join when it holds the namespace key, and still joins
+/// when it does not.
+///
+/// `root_op_is_sealable` answers for the VARIANT and must answer the same on
+/// every node, so it says no for the invitation joins: some of their publishers
+/// hold no namespace key, and a browser client signing offline never does. But
+/// the ordinary node-side joiner synced a bundle that carried the key and stored
+/// it before publishing, so it CAN seal — and what a cleartext join tells every
+/// non-member on the topic is exactly the thing worth hiding: which account
+/// joined which group, and when.
+///
+/// Both branches are pinned here because each is load-bearing in the opposite
+/// direction. Sealing when keyed is the privacy win. Falling back to cleartext
+/// when unkeyed is what keeps the unkeyed joiner able to join at all: its key
+/// arrives in a `KeyDelivery` an admin publishes on SEEING this op, so refusing
+/// to publish unsealed would deadlock the join rather than protect anything.
+#[test]
+fn a_joiner_seals_its_own_join_only_when_it_holds_the_namespace_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC1u8; 32]);
+    let ns_id: calimero_governance_types::NamespaceId = ns_gid.to_bytes().into();
+
+    let join = RootOp::MemberJoinedAt {
+        member: calimero_account::AccountId::from([0xC2u8; 32]),
+        signed_invitation: test_signed_invitation_with_admitters(
+            &calimero_primitives::identity::PrivateKey::from([0xC3u8; 32]),
+            ns_gid,
+            0,
+            vec![calimero_account::AccountId::from([0xC4u8; 32])],
+        ),
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(
+            &calimero_primitives::identity::PrivateKey::from([0xC5u8; 32]).public_key(),
+        ),
+    };
+
+    // No key yet: the joiner must still be able to publish.
+    let unkeyed = crate::seal_root_op_if_keyed(&store, ns_id, &join).expect("classify");
+    assert!(
+        unkeyed.is_none(),
+        "an unkeyed joiner must be told it cannot seal, not handed a seal under a key it \
+         does not have"
+    );
+
+    // The bundle's key lands, as it does before the publish on the ordinary path.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("store the namespace key the join bundle carried");
+
+    let keyed = crate::seal_root_op_if_keyed(&store, ns_id, &join)
+        .expect("classify")
+        .expect("a keyed joiner must seal its own join");
+    let NamespaceOp::RootSealed { key_id, encrypted } = &keyed else {
+        panic!("a keyed joiner's join must travel sealed, got {keyed:?}");
+    };
+    assert_eq!(
+        key_id.as_bytes(),
+        &GroupKeyring::key_id_for(&[0x5Au8; 32]),
+        "and sealed under the key it actually holds, so a receiver can resolve it"
+    );
+
+    // The seal must be openable back into the same op — a seal under the key id
+    // instead of the key would encrypt fine and never open.
+    let reopened = GroupKeyring::decrypt_root_op(&[0x5Au8; 32], encrypted)
+        .expect("the seal opens with the namespace key");
+    assert!(
+        matches!(reopened, RootOp::MemberJoinedAt { member, .. }
+            if member == calimero_account::AccountId::from([0xC2u8; 32])),
+        "and yields the join it was given"
+    );
+}
+
+/// The namespace-key boundary, which sealing a subgroup join must not move.
+///
+/// #3858 rejected handing a subgroup-invited joiner the namespace key (its
+/// "Option 1", dead) precisely because that key reads all namespace-level
+/// governance and every Open-chain subgroup's application state, and is retained
+/// after leaving unless rotated. Sealing under the *subgroup* key was chosen so
+/// no new principal receives the namespace key.
+///
+/// This pins the pull arm of that boundary: a member of only the subgroup asking
+/// for the NAMESPACE key is served nothing. The positive control matters as much
+/// as the refusal — the same requester asking for its own subgroup's key is
+/// served an envelope, so a fixture that simply failed to enrol anybody could
+/// not make this test pass.
+#[test]
+fn a_subgroup_only_member_is_served_no_namespace_key() {
+    use crate::build_group_key_delivery;
+    use crate::group_keys::GroupKeyring;
+
+    let namespace_id = [0x71u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0x72u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+
+    let joiner_sk = PrivateKey::from([0x73u8; 32]);
+    let joiner_pk = joiner_sk.public_key();
+    let responder_sk_bytes = [0x74u8; 32];
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    let store = test_store();
+    let (joiner_account, joiner_device, joiner_credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &joiner_credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+
+    // Keyed apart, and the joiner is a member of the SUBGROUP ONLY — never a
+    // direct row of the root. That is exactly the standing a subgroup-targeted
+    // invitation confers.
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x75; 32])
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&[0x76; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let requester = crate::KeyRequester {
+        identity: joiner_pk,
+        device: Some(joiner_device),
+    };
+
+    // The refusal. Empty rather than an error: the responder answers every
+    // request, and a non-member's answer carries no key.
+    let (ns_bytes, _) =
+        build_group_key_delivery(&store, namespace_id.into(), namespace_id, requester, None)
+            .unwrap();
+    assert!(
+        ns_bytes.is_empty(),
+        "a member of only the subgroup must be served no namespace key"
+    );
+
+    // The positive control, on the same store and the same requester.
+    let (sub_bytes, _) =
+        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, requester, None)
+            .unwrap();
+    assert!(
+        !sub_bytes.is_empty(),
+        "precondition: the same requester IS served its own subgroup's key, so \
+         the refusal above is the membership gate and not a broken fixture"
+    );
+}
+
+/// A `KeyDelivery` is accepted only from a trusted anchor of the group it
+/// delivers for (#3871).
+///
+/// The op's apply handler is a deliberate no-op and its whole effect runs in
+/// `root_op_side_effects`, which called the envelope apply with
+/// `expected_key_id: None` and no authorization on the signer at all. `None` is
+/// the unverifiable case by construction — a `KeyDelivery` carries no `key_id`
+/// to hash against — and the direct-pull path already decided what to do with
+/// an unverifiable key: `key_servers_allowed` accepts it from a trusted anchor
+/// and from nobody else. This path applied that rule to nobody.
+///
+/// So an ordinary namespace member could mint a wrap around a key of its own
+/// choosing (needing no secret beyond the victim's PUBLIC identity key), name
+/// any group in the namespace, and have it written into a co-member's keyring —
+/// then read that group's traffic, since the victim seals its own writes under
+/// the key it was handed. `store_key` writes at epoch 0 and `key_rank` orders
+/// epoch-0 keys by local `insertion_seq`, so the injected key does not merely
+/// sit in the keyring: it becomes the one the victim encrypts under.
+#[test]
+fn an_unauthorized_key_delivery_does_not_poison_the_keyring() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xA0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xA1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The subgroup's legitimate admin, and so its anchor. Not the attacker.
+    let admin_sk = PrivateKey::from([0xA2u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    // The attacker: an ordinary namespace `Member`. No admin role anywhere, and
+    // no membership row in the subgroup at all.
+    let attacker_sk = PrivateKey::from([0xA3u8; 32]);
+    let attacker_account = enrol_member(&store, &ns_gid, &attacker_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &attacker_account, GroupMemberRole::Member)
+        .unwrap();
+
+    // The victim: this node, with an identity on file for the envelope apply to
+    // resolve and decrypt with.
+    let our_sk = PrivateKey::from([0xA4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    // The namespace key: held by the victim so it can open the carrier, and the
+    // only thing the attacker needs in order to seal one.
+    let namespace_key = [0xA5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let chosen_key = [0xEEu8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&attacker_sk, &our_pk, &sub_gid.to_bytes(), &chosen_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id.into(),
+        vec![],
+        next_nonce,
+        sealed,
+    )
+    .expect("the attacker signs its own op");
+
+    // The DAG apply itself must still succeed: the delivery effect is
+    // best-effort by design, so a refusal is a skipped effect and not an op
+    // failure that would orphan everything causally after it.
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "an ordinary member is not an anchor of this subgroup, so the key it \
+         chose must never have been stored"
+    );
+}
+
+/// The positive control for the gate above, on the arrival path.
+///
+/// The refusal must be the anchor rule and not a broken fixture: the same store,
+/// the same victim, the same envelope shape, differing only in who signs. This
+/// is also the shape `add_group_members` and `admit_tee_node` publish — both
+/// admin-initiated — so it is what pins that the gate did not break real
+/// delivery.
+#[test]
+fn a_key_delivery_from_the_groups_admin_is_applied() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xB0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xB1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0xB2u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xB4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xB5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let subgroup_key = [0xB6u8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the admin signs the delivery");
+    gov.apply_signed_op(&op)
+        .expect("apply the admin's delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("an anchor's delivery must still be applied");
+    assert_eq!(
+        stored.1, subgroup_key,
+        "and it must be the key the envelope carried"
+    );
+}
+
+/// The gate is not subgroup-only: the namespace root is the worst target.
+///
+/// A node holds the namespace key by definition, so a delivery naming the root
+/// is not filling a gap — it is *replacing* the key the node already encrypts
+/// its governance under. `store_key` writes at epoch 0 and `key_rank` breaks
+/// epoch-0 ties on local `insertion_seq`, so the injected key is the newer
+/// epoch-0 entry and outranks the real one. That makes the namespace root the
+/// highest-value group to name, not the least, and a gate that only covered
+/// subgroups would leave the whole namespace open.
+#[test]
+fn an_unauthorized_key_delivery_cannot_replace_the_namespace_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC0u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0xC2u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let attacker_sk = PrivateKey::from([0xC3u8; 32]);
+    let attacker_account = enrol_member(&store, &ns_gid, &attacker_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &attacker_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xC4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xC5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    // Named for the ROOT, not a subgroup.
+    let chosen_key = [0xEEu8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&attacker_sk, &our_pk, &ns_gid.to_bytes(), &chosen_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: ns_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id.into(),
+        vec![],
+        next_nonce,
+        sealed,
+    )
+    .expect("the attacker signs its own op");
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    let (_, current) = GroupKeyring::new(&store, ns_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("the namespace key must still be there");
+    assert_eq!(
+        current, namespace_key,
+        "the node must still encrypt under the real namespace key, not the one \
+         an ordinary member handed it"
+    );
+}
+
+/// An admitted TEE node is an anchor, so its delivery is not refused.
+///
+/// `trusted_anchors` counts `ReadOnlyTee` alongside `Admin`, and that is
+/// load-bearing rather than incidental: a TEE node legitimately holds group keys
+/// and hands them out, which is exactly what `admit_tee_node` sets up. A gate
+/// that recognised only `Admin` would pass every test above and still break TEE
+/// delivery in production.
+#[test]
+fn a_key_delivery_from_an_admitted_tee_node_is_applied() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xD0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xD1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::from([0xD2u8; 32]);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    // The subgroup's own meta names a DIFFERENT admin, so the TEE is not
+    // sneaking in as the group's owner — it is an anchor purely by its role.
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+
+    let tee_sk = PrivateKey::from([0xD3u8; 32]);
+    let tee_account = enrol_member(&store, &ns_gid, &tee_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&sub_gid, &tee_account, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xD4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xD5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let subgroup_key = [0xD6u8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&tee_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&tee_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the TEE node signs the delivery");
+    gov.apply_signed_op(&op).expect("apply the TEE's delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("an admitted TEE node is an anchor, so its delivery must apply");
+    assert_eq!(stored.1, subgroup_key);
+}
+
+/// A delivery that races ahead of its group's `GroupCreated` still applies, if
+/// the signer is an anchor of the NAMESPACE.
+///
+/// This is the stranded-delivery case: `add_group_members` publishes the key
+/// alongside the group's creation, and the key can arrive first. Until
+/// `GroupCreated` folds there is no meta and no member row, so the group's own
+/// anchor set is empty — and a gate that refused on an empty set would refuse
+/// exactly the deliveries the op exists for. `local_governance_node_e2e`'s
+/// `restricted_ctx_redriven_after_group_created` is the end-to-end version of
+/// this, but it compiles only under `--features mock-attestation`, so the rule
+/// gets a home here too.
+#[test]
+fn a_stranded_key_delivery_applies_from_a_namespace_anchor() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE8u8; 32]);
+    let sub_gid = ContextGroupId::from([0xE9u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // A namespace admin, and NOTHING for the subgroup: no meta, no member row,
+    // and deliberately no parent edge either — `GroupCreated` writes all three,
+    // and it has not applied.
+    let admin_sk = PrivateKey::from([0xEAu8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xEBu8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .unwrap()
+            .is_none(),
+        "precondition: the subgroup must be unfolded, or this tests the ordinary path"
+    );
+
+    let namespace_key = [0xECu8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let subgroup_key = [0xEDu8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the namespace admin signs the delivery");
+    gov.apply_signed_op(&op)
+        .expect("apply the stranded delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("a namespace anchor may seed a key for a group that has not folded yet");
+    assert_eq!(stored.1, subgroup_key);
+}
+
+/// The stranded-delivery fallback is not a hole.
+///
+/// The relaxation above is the one place this gate answers a different question,
+/// so it is the one place worth attacking: if "the group's anchors are unknown"
+/// meant "anyone may deliver", an attacker would simply name a group the victim
+/// has not folded — which it can always do, since it picks the id. The fallback
+/// requires authority over the NAMESPACE instead, and an ordinary member has
+/// none, so the escalation stays closed on exactly the path that opens it.
+#[test]
+fn a_stranded_key_delivery_is_still_refused_from_an_ordinary_member() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xF8u8; 32]);
+    let sub_gid = ContextGroupId::from([0xF9u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0xFAu8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The attacker: an ordinary namespace member, naming an unfolded group.
+    let attacker_sk = PrivateKey::from([0xFBu8; 32]);
+    let attacker_account = enrol_member(&store, &ns_gid, &attacker_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &attacker_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xFCu8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xFDu8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&attacker_sk, &our_pk, &sub_gid.to_bytes(), &[0xEEu8; 32])
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id.into(),
+        vec![],
+        next_nonce,
+        sealed,
+    )
+    .expect("the attacker signs its own op");
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "naming an unfolded group must not buy an ordinary member a delivery: the \
+         fallback asks for namespace authority, which it does not have"
     );
 }

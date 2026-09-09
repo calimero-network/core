@@ -2101,9 +2101,11 @@ async fn internal_execute(
     let account = principal.account;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
-    // Still both derived from this node's own identity, so behaviour is
-    // unchanged. This is the single site that has to change for a run to be
-    // attributed to the caller instead — see `principal::Principal`.
+    // Self-authored: both halves are this node's own identity. Delegated: both
+    // come from the warrant, resolved in the match above — which is what keeps a
+    // `User` leaf's owner equal to its delta's author and so survives
+    // `user_leaf_author_is_its_owner` on the receive path. See
+    // `principal::Principal`.
     let (mut outcome, storage, private_storage) = execute(
         guard,
         module,

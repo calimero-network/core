@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::AdmitTeeNodeRequest;
-use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -233,19 +233,31 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     let namespace_id =
                         calimero_governance_store::NamespaceRepository::new(&datastore)
                             .resolve(&group_id)?;
-                    let op = NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
-                        group_id,
-                        member,
-                        quote_hash,
-                        mrtd,
-                        rtmr0,
-                        rtmr1,
-                        rtmr2,
-                        rtmr3,
-                        tcb_status,
-                        role: GroupMemberRole::ReadOnlyTee,
-                        account,
-                    });
+                    // Sealed. The ADMITTER publishes this, and an admitter holds
+                    // the namespace key by definition, so the seal costs nothing
+                    // here. The TEE node it admits does not hold that key -- it
+                    // reads its own admission only after the pull hands it one,
+                    // the same order `KeyDelivery` was put on in #3847. What
+                    // sealing removes is every non-member on the namespace topic
+                    // being able to read which fleet replica was admitted, with
+                    // its attestation measurements, and when.
+                    let op = calimero_governance_store::seal_root_op_for_publish(
+                        &datastore,
+                        namespace_id.to_bytes().into(),
+                        RootOp::MemberJoinedViaTeeAttestation {
+                            group_id,
+                            member,
+                            quote_hash,
+                            mrtd,
+                            rtmr0,
+                            rtmr1,
+                            rtmr2,
+                            rtmr3,
+                            tcb_status,
+                            role: GroupMemberRole::ReadOnlyTee,
+                            account,
+                        },
+                    )?;
                     // The namespace publisher always returns a report; the group
                     // one returns `Option` because a group op can be applied
                     // without a publish. Normalise to the wider shape.

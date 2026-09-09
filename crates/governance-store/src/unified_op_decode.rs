@@ -136,19 +136,40 @@ fn build_op(
 /// `None` for every other op — those carry no credential, and their author is
 /// resolved from the folded view by `account_for_author` rather than from the
 /// op itself.
+fn root_credential(root: &RootOp) -> Option<&calimero_account::DeviceCert> {
+    match root {
+        RootOp::MemberJoined { account, .. }
+        | RootOp::MemberJoinedOpen { account, .. }
+        | RootOp::MemberJoinedAt { account, .. }
+        | RootOp::NamespaceCreated { account, .. }
+        | RootOp::MemberJoinedViaTeeAttestation { account, .. } => Some(&account.statement),
+        _ => None,
+    }
+}
+
 fn carried_authorship(
     op: &NamespaceOp,
     decrypted_group_op: Option<&GroupOp>,
+    opened_root: Option<&RootOp>,
     signer: PublicKey,
 ) -> Option<Authorship> {
     let cert = match op {
-        NamespaceOp::Root(
-            RootOp::MemberJoined { account, .. }
-            | RootOp::MemberJoinedOpen { account, .. }
-            | RootOp::MemberJoinedAt { account, .. }
-            | RootOp::NamespaceCreated { account, .. }
-            | RootOp::MemberJoinedViaTeeAttestation { account, .. },
-        ) => &account.statement,
+        NamespaceOp::Root(root) => root_credential(root)?,
+        // Sealed, and the certificate is inside it. Three of the four joins are
+        // published sealed, and a join is precisely the op that CREATES the
+        // signer's binding — so the credential it carries is the only thing that
+        // can name its author, and it is now behind the namespace key. Reading it
+        // from the cleartext arm alone left every sealed join `unattributed`,
+        // which is a principal no genesis can produce: the fold would then record
+        // the binding against nobody and every later gate comparing the author
+        // would fail closed on an honest join.
+        NamespaceOp::RootSealed { .. } => root_credential(opened_root?)?,
+        // A subgroup-sealed join is the same case and needs the same reading:
+        // it is a join, so the credential it carries is the only thing that can
+        // name its author. Left to the wildcard below it returned `None` and the
+        // join folded `unattributed` — the fail-closed outcome described above,
+        // on the one op shape that cannot afford it.
+        NamespaceOp::RootSealedForGroup { .. } => root_credential(opened_root?)?,
         // A device link rides an ENCRYPTED group op, so its certificate is only
         // legible once the op decrypts. An undecryptable one folds to a `Noop`
         // and keeps the stand-in — it carries no readable claim to attribute to.
@@ -238,6 +259,17 @@ pub fn op_from_namespace_op_with_binding(
                 ),
             },
         },
+        // Same abstention, attributed to the SUBGROUP rather than the namespace
+        // root. That is the honest group here: a peer outside the subgroup
+        // cannot see this op, and saying so against the group whose key it is
+        // sealed to is what lets a reader tell "I am blind to this subgroup"
+        // from "I am blind to the namespace". Reporting the root instead would
+        // have every non-member claim a hole in namespace-level ancestry it can
+        // in fact read completely.
+        NamespaceOp::RootSealedForGroup { group_id, .. } => match opened_root {
+            Some(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+            None => OpPayload::Opaque { group: *group_id },
+        },
         // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a
         // `Noop` graph node (same as an undecryptable/unfoldable op above),
         // preserving causal structure without inventing a payload.
@@ -263,7 +295,7 @@ pub fn op_from_namespace_op_with_binding(
     // Resolving inside the fold would not be safe: the fold walks raw logs in
     // arrival order, so reading a binding there answers "has the link folded
     // yet" and splits the root by delivery order.
-    let authorship = carried_authorship(&signed.op, decrypted_group_op, signed.signer)
+    let authorship = carried_authorship(&signed.op, decrypted_group_op, opened_root, signed.signer)
         .or_else(|| {
             signer_binding.map(|(account, device)| Authorship {
                 account,

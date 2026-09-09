@@ -2352,6 +2352,33 @@ impl ContextClient {
             .wrap_err("context manager dropped the response channel")?
     }
 
+    /// Seal a joiner's signed join under the namespace key and publish it under
+    /// this node's signature.
+    ///
+    /// For an admitter relaying a join on behalf of a keyholder that has no node
+    /// of its own. The joiner's signature travels inside the seal and is what
+    /// peers check to decide who joined; this node's signature only says who
+    /// carried it. Applies locally as part of publishing, so the caller does not
+    /// also apply.
+    pub async fn relay_signed_join(
+        &self,
+        op: crate::local_governance::SignedNamespaceOp,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::RelaySignedJoin {
+                request: crate::messages::RelaySignedJoinRequest { op },
+                outcome: sender,
+            })
+            .await
+            .wrap_err("context manager mailbox closed")?;
+
+        receiver
+            .await
+            .wrap_err("context manager dropped the response channel")?
+    }
+
     /// Returns the number of ops in this namespace's governance DAG whose
     /// parents have not yet been applied locally (the "pending" queue size).
     ///
