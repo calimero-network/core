@@ -16,8 +16,9 @@ use tracing::warn;
 /// Record `certificate` and `applications` in `namespace`'s registry, at the
 /// next scope epoch for that device.
 ///
-/// Never fails the caller: every step runs after the work the request was made
-/// for, so a failure warns and the next pairing or relink republishes it.
+/// `true` only when the registry took the statement. Never fails the caller:
+/// every step runs after the work the request was made for, so a failure warns
+/// and the next pairing or relink republishes it.
 #[allow(clippy::too_many_arguments, reason = "orthogonal publish-path args")]
 pub async fn publish_device_certified(
     store: &Store,
@@ -29,13 +30,14 @@ pub async fn publish_device_certified(
     certificate: &AccountProof<DeviceCert>,
     applications: &[ApplicationId],
     site: &'static str,
-) {
+) -> bool {
     let device = certificate.statement.device;
-    let scope_epoch = match AccountDeviceRegistry::new(store, namespace).device(device) {
+    let registry = AccountDeviceRegistry::new(store, namespace);
+    let scope_epoch = match registry.device(device) {
         Ok(stored) => stored.map_or(0, |(_cert, epoch)| epoch.saturating_add(1)),
         Err(err) => {
             warn!(%device, %err, "could not read the device's registry row, so it was not recorded");
-            return;
+            return false;
         }
     };
 
@@ -52,7 +54,7 @@ pub async fn publish_device_certified(
         Ok(statement) => statement,
         Err(err) => {
             warn!(%device, %err, "could not sign the device's scope, so it was not recorded");
-            return;
+            return false;
         }
     };
 
@@ -79,6 +81,21 @@ pub async fn publish_device_certified(
         Ok(report) => report.observe(site, "AccountDeviceCertified"),
         Err(err) => {
             warn!(%device, %err, "the device was not recorded in the account namespace");
+            return false;
+        }
+    }
+
+    // The op's own local apply is the only durable write, and an apply that
+    // refuses the statement warns rather than failing - so the row is what says it.
+    match registry.device(device) {
+        Ok(Some((_cert, epoch))) if epoch == scope_epoch => true,
+        Ok(_) => {
+            warn!(%device, "the account namespace did not take the device's scope");
+            false
+        }
+        Err(err) => {
+            warn!(%device, %err, "could not confirm the device's registry row");
+            false
         }
     }
 }
