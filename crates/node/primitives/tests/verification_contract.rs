@@ -2,6 +2,7 @@
 //! rejected AND leaves nothing behind.
 
 use actix::{Actor, Context, Handler};
+use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_primitives::blobs::BlobId;
@@ -40,7 +41,9 @@ impl Handler<NetworkMessage> for LyingPeer {
                 let _ignored = outcome.send(vec![self.peer_id]);
             }
             NetworkMessage::ProbeBlob { outcome, .. } => {
-                let _ignored = outcome.send(Ok(true));
+                let _ignored = outcome.send(Ok(BlobProbe::Held {
+                    size: Some(BYTES.len() as u64),
+                }));
             }
             NetworkMessage::QueryBlob { outcome, .. } => {
                 let _ignored = outcome.send(Ok(vec![self.peer_id]));

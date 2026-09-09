@@ -22,6 +22,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
+use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::MessageId;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
@@ -173,12 +174,12 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::RequestBlob { outcome, .. } => {
                 let _ = outcome.send(Ok(None));
             }
-            // No transport, so no peer holds anything. `false` (not an error)
+            // No transport, so no peer holds anything. `Absent` (not an error)
             // is the honest answer here: the probe protocol reports a peer that
             // cannot be reached as a non-holder, and a caller searching for a
             // holder should see this stub's neighbours as simply not having it.
             NetworkMessage::ProbeBlob { outcome, .. } => {
-                let _ = outcome.send(Ok(false));
+                let _ = outcome.send(Ok(BlobProbe::Absent));
             }
             // No transport, so nothing to announce to. Announcing is
             // best-effort at the call site, so the error is the honest answer

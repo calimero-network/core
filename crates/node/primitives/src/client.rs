@@ -37,7 +37,7 @@ pub mod application;
 mod blob;
 mod provider_order;
 
-pub use blob::BlobManager;
+pub use blob::{BlobManager, BlobPresence};
 pub use provider_order::{order_candidates, MemberRoles, MemberRolesSlot};
 
 /// Parameters for a direct namespace join request.

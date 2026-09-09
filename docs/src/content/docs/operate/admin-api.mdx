@@ -353,9 +353,36 @@ split.
 | --- | --- | --- |
 | PUT | `/admin-api/blobs` | Upload a blob. |
 | GET | `/admin-api/blobs` | List blobs. |
-| GET | `/admin-api/blobs/:blob_id` | Download a blob. |
-| HEAD | `/admin-api/blobs/:blob_id` | Get blob info/metadata (headers only). |
+| GET | `/admin-api/blobs/:blob_id` | Download a blob. Optional `?context_id=<id>`: if this node does not hold the blob, look for it among the context's peers and download it from one. |
+| HEAD | `/admin-api/blobs/:blob_id` | Get blob info/metadata (headers only). Optional `?context_id=<id>`: see below. |
 | DELETE | `/admin-api/blobs/:blob_id` | Delete a blob. |
+
+### `HEAD` with `?context_id=`
+
+Without the parameter, `HEAD` answers only about blobs this node holds — one
+local store read, and a 404 for anything else.
+
+With it, a local miss falls through to the same bounded peer search `GET` uses,
+but stops at the header a holder sends before its first chunk: **`HEAD` never
+transfers the blob**. Discovery is opt-in for a reason — a search can run to the
+node's 30s discovery deadline, while `HEAD` otherwise reads as a cheap call.
+
+`X-Blob-Source` says where the answer came from, and which other headers you get:
+
+| `X-Blob-Source` | Meaning | Headers |
+| --- | --- | --- |
+| `local` | This node holds the blob. | `Content-Length`, `Content-Type`, `ETag`, `X-Blob-ID`, `X-Blob-Hash`, `X-Blob-MIME-Type` |
+| `peer` | Only a context peer holds it. | `Content-Length` (the size that peer reported, omitted if it reported none), `X-Blob-ID` |
+
+`ETag`, `Content-Type`, `X-Blob-Hash` and `X-Blob-MIME-Type` are absent from a
+`peer` answer because every one of them is computed from the bytes — the content
+hash from local metadata, the MIME type sniffed from the first chunk — and this
+node does not have them. They are omitted rather than guessed. A blob held
+neither locally nor by any probed peer is still a 404.
+
+Private blobs need the same signed membership proof on this path as on `GET`; a
+peer answers "not held" to an unauthorized probe, so discovery is no weaker and
+no stronger than the download path.
 
 ## Admin API — TEE
 
