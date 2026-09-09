@@ -10,7 +10,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
-use calimero_governance_store::MembershipError;
+use calimero_governance_store::{CapabilitiesError, MembershipError};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
@@ -825,6 +825,22 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
 
 #[must_use]
 pub fn parse_api_error(err: Report) -> ApiError {
+    // A capability refusal: the caller is a member, but lacks the specific
+    // permission this operation needs. Same shape of mistake as the membership
+    // arm below and the same cost — a live node answered `500 Internal server
+    // error` for "requester lacks permission to change group metadata
+    // (CAN_MANAGE_METADATA)", so the client could not tell a refusal from a
+    // fault, and the missing capability — the one thing that says what to fix —
+    // reached nobody.
+    //
+    // The enum has a single variant and every instance is an authorization
+    // refusal, so this needs no per-variant classification.
+    if let Some(refusal) = err.downcast_ref::<CapabilitiesError>() {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
+        };
+    }
     // A membership refusal: the governance gate understood the request and said
     // no. Which "no" it is decides what the caller should do next, so map it
     // rather than flattening the whole family into the generic 500 below.
@@ -1108,13 +1124,49 @@ mod parse_api_error_tests {
 
     use super::{parse_api_error, ApiError};
 
-    use calimero_governance_store::MembershipError;
+    use calimero_governance_store::{CapabilitiesError, MembershipError};
 
-    /// The bug this arm exists for. A member who is admin of a *subgroup* but
-    /// not of the namespace root is refused by `require_admin` — correctly —
-    /// and the caller was told `500 {"error":"Internal server error"}`. A UI
-    /// cannot distinguish that from the node falling over, so it cannot say
-    /// "you are not allowed" and cannot decide whether to retry.
+    /// Reported from a live node. A member without `CAN_MANAGE_METADATA`
+    /// calling `set_member_metadata` got:
+    ///
+    ///   ERROR unhandled admin-api error
+    ///     0: requester lacks permission to change group metadata
+    ///        (CAN_MANAGE_METADATA) in group ContextGroupId(...)
+    ///   -> ApiError { status_code: 500, message: "Internal server error" }
+    ///
+    /// The gate did its job and the caller was told the node broke. This is the
+    /// same defect already fixed for `MembershipError` — capability refusals
+    /// simply live in a different enum and were missed.
+    #[test]
+    fn capability_refusal_maps_to_403_with_the_reason() {
+        let err = CapabilitiesError::Unauthorized {
+            group_id: "channel-subgroup".to_owned(),
+            operation: "change group metadata (CAN_MANAGE_METADATA)".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("CAN_MANAGE_METADATA"),
+            "the missing capability is the one thing that tells a client what to \
+             fix; got: {}",
+            api.message
+        );
+    }
+
+    /// `CapabilitiesError` has exactly one variant, so the whole enum is an
+    /// authorization refusal. Pinned as a test rather than a comment: if a
+    /// non-authorization variant is ever added, blanket-403 becomes wrong and
+    /// this is where that shows up.
+    #[test]
+    fn every_capability_error_is_an_authorization_refusal() {
+        let err = CapabilitiesError::Unauthorized {
+            group_id: "g".to_owned(),
+            operation: "op".to_owned(),
+        };
+        match err {
+            CapabilitiesError::Unauthorized { .. } => {}
+        }
+    }
     #[test]
     fn not_admin_maps_to_403_with_the_reason() {
         let err = MembershipError::NotAdmin {
