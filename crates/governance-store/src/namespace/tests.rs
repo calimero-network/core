@@ -6089,8 +6089,9 @@ fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
         .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
         .unwrap();
 
-    // A direct member of both, holding no key anywhere — including no namespace
-    // key, which is the only state in which this scan does any work.
+    // A direct member of both, holding no key anywhere — the namespace key
+    // included, so the Open subgroup has no covering key either and the
+    // contrast below is purely about visibility.
     for gid in [&open_sub, &restricted_sub] {
         MembershipRepository::new(&store)
             .add_member(gid, &my_id_account, GroupMemberRole::Member)
@@ -6102,6 +6103,73 @@ fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
         vec![restricted_sub.to_bytes()],
         "only the Restricted subgroup is recoverable; the Open one is covered by \
          the namespace key and has nothing to pull"
+    );
+}
+
+/// Holding the namespace key does not mean nothing is keyless.
+///
+/// `groups_member_but_keyless` short-circuits to empty as soon as the node holds
+/// the namespace key, on the reasoning that that key "decrypts the root group
+/// AND every `Open` subgroup, so its presence alone means no group here is
+/// keyless". That misses a **Restricted** subgroup the node has a direct row in:
+/// such a group is covered by its OWN key, which the namespace key does not
+/// open, so the node is a keyless member of it and the scan is the safety net
+/// that should say so.
+///
+/// Two ways to reach the state, both ordinary:
+///
+/// * a subgroup flips `Open -> Restricted` (`SubgroupVisibilitySet` distributes
+///   no key — the handler only writes the visibility row and queues an event),
+///   so a direct member that never needed the group's own key now does;
+/// * a `KeyDelivery` for a Restricted subgroup is simply missed — the node was
+///   offline, or the op arrived before its account binding folded — and the
+///   pull is what recovers it.
+///
+/// In both cases the node never emits a key request, so the membership stays
+/// undecryptable with nothing to re-drive it, and no error anywhere.
+#[test]
+fn groups_member_but_keyless_finds_a_restricted_subgroup_while_holding_the_namespace_key() {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0x51u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let sk_bytes = [0x52u8; 32];
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_account = enrol_member(&store, &ns_gid, &my_id);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
+        .unwrap();
+
+    let restricted_sub = ContextGroupId::from([0x53u8; 32]);
+    nest_for_test(&store, &ns_gid, &restricted_sub);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&restricted_sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    // The node holds the NAMESPACE key — it is an ordinary namespace member —
+    // and has a direct row in the Restricted subgroup while holding no key for
+    // it. This is the post-flip state, and the missed-delivery state.
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x54; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&restricted_sub, &my_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        GroupKeyring::new(&store, restricted_sub)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: no key for the subgroup"
+    );
+
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![restricted_sub.to_bytes()],
+        "a direct member of a Restricted subgroup is keyless for it even while          holding the namespace key, and must be reported so the pull can recover"
     );
 }
 
