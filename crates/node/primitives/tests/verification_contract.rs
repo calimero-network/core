@@ -19,8 +19,10 @@ const BYTES: &[u8] = b"some bytes";
 /// Any syntactically valid peer id; the fake below never dials it.
 const PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh";
 
-/// A peer that advertises every blob and then serves bytes that hash to
-/// something else, the way a hostile provider record would.
+/// A peer that claims every blob and then serves bytes that hash to something
+/// else, the way a hostile holder would. Discovery reaches it by resolving the
+/// context's subscribers and probing them, so the lie has to be told there: a
+/// peer is the authority on its own custody, and this one abuses that.
 struct LyingPeer {
     peer_id: PeerId,
 }
@@ -34,6 +36,12 @@ impl Handler<NetworkMessage> for LyingPeer {
 
     fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Context<Self>) -> Self::Result {
         match msg {
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ignored = outcome.send(vec![self.peer_id]);
+            }
+            NetworkMessage::ProbeBlob { outcome, .. } => {
+                let _ignored = outcome.send(Ok(true));
+            }
             NetworkMessage::QueryBlob { outcome, .. } => {
                 let _ignored = outcome.send(Ok(vec![self.peer_id]));
             }
