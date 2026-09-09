@@ -10043,3 +10043,528 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
          the refusal above is the membership gate and not a broken fixture"
     );
 }
+
+/// A `KeyDelivery` is accepted only from a trusted anchor of the group it
+/// delivers for (#3871).
+///
+/// The op's apply handler is a deliberate no-op and its whole effect runs in
+/// `root_op_side_effects`, which called the envelope apply with
+/// `expected_key_id: None` and no authorization on the signer at all. `None` is
+/// the unverifiable case by construction — a `KeyDelivery` carries no `key_id`
+/// to hash against — and the direct-pull path already decided what to do with
+/// an unverifiable key: `key_servers_allowed` accepts it from a trusted anchor
+/// and from nobody else. This path applied that rule to nobody.
+///
+/// So an ordinary namespace member could mint a wrap around a key of its own
+/// choosing (needing no secret beyond the victim's PUBLIC identity key), name
+/// any group in the namespace, and have it written into a co-member's keyring —
+/// then read that group's traffic, since the victim seals its own writes under
+/// the key it was handed. `store_key` writes at epoch 0 and `key_rank` orders
+/// epoch-0 keys by local `insertion_seq`, so the injected key does not merely
+/// sit in the keyring: it becomes the one the victim encrypts under.
+#[test]
+fn an_unauthorized_key_delivery_does_not_poison_the_keyring() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xA0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xA1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // The subgroup's legitimate admin, and so its anchor. Not the attacker.
+    let admin_sk = PrivateKey::from([0xA2u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    // The attacker: an ordinary namespace `Member`. No admin role anywhere, and
+    // no membership row in the subgroup at all.
+    let attacker_sk = PrivateKey::from([0xA3u8; 32]);
+    let attacker_account = enrol_member(&store, &ns_gid, &attacker_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &attacker_account, GroupMemberRole::Member)
+        .unwrap();
+
+    // The victim: this node, with an identity on file for the envelope apply to
+    // resolve and decrypt with.
+    let our_sk = PrivateKey::from([0xA4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    // The namespace key: held by the victim so it can open the carrier, and the
+    // only thing the attacker needs in order to seal one.
+    let namespace_key = [0xA5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let chosen_key = [0xEEu8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&attacker_sk, &our_pk, &sub_gid.to_bytes(), &chosen_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id.into(),
+        vec![],
+        next_nonce,
+        sealed,
+    )
+    .expect("the attacker signs its own op");
+
+    // The DAG apply itself must still succeed: the delivery effect is
+    // best-effort by design, so a refusal is a skipped effect and not an op
+    // failure that would orphan everything causally after it.
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "an ordinary member is not an anchor of this subgroup, so the key it \
+         chose must never have been stored"
+    );
+}
+
+/// The positive control for the gate above, on the arrival path.
+///
+/// The refusal must be the anchor rule and not a broken fixture: the same store,
+/// the same victim, the same envelope shape, differing only in who signs. This
+/// is also the shape `add_group_members` and `admit_tee_node` publish — both
+/// admin-initiated — so it is what pins that the gate did not break real
+/// delivery.
+#[test]
+fn a_key_delivery_from_the_groups_admin_is_applied() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xB0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xB1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0xB2u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xB4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xB5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let subgroup_key = [0xB6u8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the admin signs the delivery");
+    gov.apply_signed_op(&op)
+        .expect("apply the admin's delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("an anchor's delivery must still be applied");
+    assert_eq!(
+        stored.1, subgroup_key,
+        "and it must be the key the envelope carried"
+    );
+}
+
+/// The gate is not subgroup-only: the namespace root is the worst target.
+///
+/// A node holds the namespace key by definition, so a delivery naming the root
+/// is not filling a gap — it is *replacing* the key the node already encrypts
+/// its governance under. `store_key` writes at epoch 0 and `key_rank` breaks
+/// epoch-0 ties on local `insertion_seq`, so the injected key is the newer
+/// epoch-0 entry and outranks the real one. That makes the namespace root the
+/// highest-value group to name, not the least, and a gate that only covered
+/// subgroups would leave the whole namespace open.
+#[test]
+fn an_unauthorized_key_delivery_cannot_replace_the_namespace_key() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC0u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0xC2u8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let attacker_sk = PrivateKey::from([0xC3u8; 32]);
+    let attacker_account = enrol_member(&store, &ns_gid, &attacker_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &attacker_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xC4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xC5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    // Named for the ROOT, not a subgroup.
+    let chosen_key = [0xEEu8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&attacker_sk, &our_pk, &ns_gid.to_bytes(), &chosen_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: ns_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id.into(),
+        vec![],
+        next_nonce,
+        sealed,
+    )
+    .expect("the attacker signs its own op");
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    let (_, current) = GroupKeyring::new(&store, ns_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("the namespace key must still be there");
+    assert_eq!(
+        current, namespace_key,
+        "the node must still encrypt under the real namespace key, not the one \
+         an ordinary member handed it"
+    );
+}
+
+/// An admitted TEE node is an anchor, so its delivery is not refused.
+///
+/// `trusted_anchors` counts `ReadOnlyTee` alongside `Admin`, and that is
+/// load-bearing rather than incidental: a TEE node legitimately holds group keys
+/// and hands them out, which is exactly what `admit_tee_node` sets up. A gate
+/// that recognised only `Admin` would pass every test above and still break TEE
+/// delivery in production.
+#[test]
+fn a_key_delivery_from_an_admitted_tee_node_is_applied() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xD0u8; 32]);
+    let sub_gid = ContextGroupId::from([0xD1u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::from([0xD2u8; 32]);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    // The subgroup's own meta names a DIFFERENT admin, so the TEE is not
+    // sneaking in as the group's owner — it is an anchor purely by its role.
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+
+    let tee_sk = PrivateKey::from([0xD3u8; 32]);
+    let tee_account = enrol_member(&store, &ns_gid, &tee_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&sub_gid, &tee_account, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xD4u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xD5u8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let subgroup_key = [0xD6u8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&tee_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&tee_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the TEE node signs the delivery");
+    gov.apply_signed_op(&op).expect("apply the TEE's delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("an admitted TEE node is an anchor, so its delivery must apply");
+    assert_eq!(stored.1, subgroup_key);
+}
+
+/// A delivery that races ahead of its group's `GroupCreated` still applies, if
+/// the signer is an anchor of the NAMESPACE.
+///
+/// This is the stranded-delivery case: `add_group_members` publishes the key
+/// alongside the group's creation, and the key can arrive first. Until
+/// `GroupCreated` folds there is no meta and no member row, so the group's own
+/// anchor set is empty — and a gate that refused on an empty set would refuse
+/// exactly the deliveries the op exists for. `local_governance_node_e2e`'s
+/// `restricted_ctx_redriven_after_group_created` is the end-to-end version of
+/// this, but it compiles only under `--features mock-attestation`, so the rule
+/// gets a home here too.
+#[test]
+fn a_stranded_key_delivery_applies_from_a_namespace_anchor() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE8u8; 32]);
+    let sub_gid = ContextGroupId::from([0xE9u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // A namespace admin, and NOTHING for the subgroup: no meta, no member row,
+    // and deliberately no parent edge either — `GroupCreated` writes all three,
+    // and it has not applied.
+    let admin_sk = PrivateKey::from([0xEAu8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xEBu8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .unwrap()
+            .is_none(),
+        "precondition: the subgroup must be unfolded, or this tests the ordinary path"
+    );
+
+    let namespace_key = [0xECu8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let subgroup_key = [0xEDu8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
+        .expect("the namespace admin signs the delivery");
+    gov.apply_signed_op(&op)
+        .expect("apply the stranded delivery");
+
+    let stored = GroupKeyring::new(&store, sub_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("a namespace anchor may seed a key for a group that has not folded yet");
+    assert_eq!(stored.1, subgroup_key);
+}
+
+/// The stranded-delivery fallback is not a hole.
+///
+/// The relaxation above is the one place this gate answers a different question,
+/// so it is the one place worth attacking: if "the group's anchors are unknown"
+/// meant "anyone may deliver", an attacker would simply name a group the victim
+/// has not folded — which it can always do, since it picks the id. The fallback
+/// requires authority over the NAMESPACE instead, and an ordinary member has
+/// none, so the escalation stays closed on exactly the path that opens it.
+#[test]
+fn a_stranded_key_delivery_is_still_refused_from_an_ordinary_member() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xF8u8; 32]);
+    let sub_gid = ContextGroupId::from([0xF9u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0xFAu8; 32]);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The attacker: an ordinary namespace member, naming an unfolded group.
+    let attacker_sk = PrivateKey::from([0xFBu8; 32]);
+    let attacker_account = enrol_member(&store, &ns_gid, &attacker_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &attacker_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0xFCu8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    let namespace_key = [0xFDu8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&attacker_sk, &our_pk, &sub_gid.to_bytes(), &[0xEEu8; 32])
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let next_nonce = gov.read_head_record().expect("head").next_nonce;
+    let op = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id.into(),
+        vec![],
+        next_nonce,
+        sealed,
+    )
+    .expect("the attacker signs its own op");
+    gov.apply_signed_op(&op)
+        .expect("the refusal is a skipped effect, not a DAG failure");
+
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "naming an unfolded group must not buy an ordinary member a delivery: the \
+         fallback asks for namespace authority, which it does not have"
+    );
+}
