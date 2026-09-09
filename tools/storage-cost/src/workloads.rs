@@ -601,6 +601,38 @@ fn fugue_text_insert(n: usize) {
 /// `ReplicatedGrowableArray`, `FugueText` DOES have positional reads
 /// ([`fugue_text_char_at`], [`fugue_text_text_range`]); a whole-document read
 /// is one of its reads, not its only one.
+/// Cost of ONE `get_text` against a FRAGMENTED document of `n` characters.
+///
+/// The counterpart of [`fugue_text_get_text`], and the honest number: that one
+/// reads a single-block document and reports a constant 2 rows. This reads the
+/// document a real editing session produces.
+fn fugue_text_get_text_fragmented(n: usize) {
+    let text = build_fugue_text_fragmented(n);
+    reset_counters();
+    let _ignored = text.get_text().expect("get_text should succeed");
+}
+
+/// Cost of ONE `char_at` against a FRAGMENTED document — the counterpart of
+/// [`fugue_text_char_at`]. Positional reads have no fast path here: answering
+/// one still means loading every block and rebuilding the tree.
+fn fugue_text_char_at_fragmented(n: usize) {
+    let text = build_fugue_text_fragmented(n);
+    reset_counters();
+    let _ignored = text.char_at(n / 2).expect("char_at should succeed");
+}
+
+/// Cost of ONE `text_range` (a screenful) against a FRAGMENTED document — the
+/// counterpart of [`fugue_text_text_range`].
+fn fugue_text_text_range_fragmented(n: usize) {
+    let text = build_fugue_text_fragmented(n);
+    reset_counters();
+    let start = n / 2;
+    let end = (start + RANGE_READ_CHARS).min(n);
+    let _ignored = text
+        .text_range(start, end)
+        .expect("text_range should succeed");
+}
+
 fn fugue_text_get_text(n: usize) {
     let text = build_fugue_text(n);
     reset_counters();
@@ -1135,6 +1167,29 @@ fn build_fugue_simple(n: usize) -> Root<FugueTextSimple<MainStorage>> {
     text
 }
 
+/// Build a `FugueText` of `n` characters that is FRAGMENTED — one block per
+/// character — by typing into the middle, exactly as
+/// [`fugue_text_insert_middle`] does.
+///
+/// This is the document every `FugueText` read workload was missing. The three
+/// existing ones ([`fugue_text_get_text`], [`fugue_text_char_at`],
+/// [`fugue_text_text_range`]) all build with [`build_fugue_text`], a single
+/// `insert_str` that produces exactly ONE block — so their constant 2 rows is
+/// the cost of loading one entity, not a property of the collection.
+///
+/// A mid-document insert cannot coalesce: the new node's parent is not the tail
+/// of the writer's own most recent run, so every keystroke mints a fresh block.
+/// Reads against this document are therefore `O(blocks)`, which is `O(n)` — the
+/// same shape `ReplicatedGrowableArray` has, and the case a collaborative
+/// session actually produces.
+fn build_fugue_text_fragmented(n: usize) -> Root<FugueText<MainStorage>> {
+    let mut text = Root::new(FugueText::<MainStorage>::new);
+    for i in 0..n {
+        text.insert(i / 2, 'a').expect("insert should succeed");
+    }
+    text
+}
+
 fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     let content: String = std::iter::repeat_n('a', n).collect();
@@ -1396,7 +1451,7 @@ pub fn all() -> Vec<Workload> {
     /// rather than a row in `REGISTRY` because `REGISTRY` is crossed with
     /// `SIZES` unconditionally below; a `QuadraticBuild` entry there would
     /// silently get measured at `n=10_000` too.
-    const QUADRATIC_REGISTRY: [Entry; 5] = [
+    const QUADRATIC_REGISTRY: [Entry; 8] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
@@ -1435,6 +1490,24 @@ pub fn all() -> Vec<Workload> {
             QuadraticBuild,
             0,
             fugue_text_insert_middle,
+        ),
+        (
+            "fugue_text_get_text_fragmented",
+            KnownLinearInN,
+            0,
+            fugue_text_get_text_fragmented,
+        ),
+        (
+            "fugue_text_char_at_fragmented",
+            KnownLinearInN,
+            0,
+            fugue_text_char_at_fragmented,
+        ),
+        (
+            "fugue_text_text_range_fragmented",
+            KnownLinearInN,
+            0,
+            fugue_text_text_range_fragmented,
         ),
         (
             "fugue_text_insert_interleaved_sync",
