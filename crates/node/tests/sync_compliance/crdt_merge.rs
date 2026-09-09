@@ -52,14 +52,14 @@ fn test_i5_lww_timestamp_wins() {
     alice.insert_entity_with_metadata(
         entity_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     // Bob: value at timestamp 200 (newer)
     bob.insert_entity_with_metadata(
         entity_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 200),
+        EntityMetadata::new(CrdtType::lww_register(), 200),
     );
 
     // Force HashComparison for testing
@@ -95,13 +95,13 @@ fn test_i5_lww_equal_timestamp_tiebreaker() {
     alice.insert_entity_with_metadata(
         entity_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     bob.insert_entity_with_metadata(
         entity_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100), // Same timestamp
+        EntityMetadata::new(CrdtType::lww_register(), 100), // Same timestamp
     );
 
     // Force HashComparison
@@ -206,14 +206,14 @@ fn test_i5_no_overwrite_for_initialized() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"alice-entity-1".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     // Bob has different state
     bob.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"bob-entity-1".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 200),
+        EntityMetadata::new(CrdtType::lww_register(), 200),
     );
 
     // Alice is initialized (has state)
@@ -240,7 +240,7 @@ fn test_i5_overwrite_allowed_for_fresh() {
     source.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"source-data".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
 
     // Fresh node has NO state
@@ -274,14 +274,14 @@ fn test_i5_unordered_map_per_key_merge() {
     alice.insert_entity_with_metadata(
         map_id,
         b"map-alice".to_vec(),
-        EntityMetadata::new(CrdtType::unordered_map("String", "u64"), 100),
+        EntityMetadata::new(CrdtType::UnorderedMap, 100),
     );
 
     // Bob's map state
     bob.insert_entity_with_metadata(
         map_id,
         b"map-bob".to_vec(),
-        EntityMetadata::new(CrdtType::unordered_map("String", "u64"), 200),
+        EntityMetadata::new(CrdtType::UnorderedMap, 200),
     );
 
     // Force HashComparison
@@ -289,10 +289,7 @@ fn test_i5_unordered_map_per_key_merge() {
 
     // Verify CRDT type preserved
     let alice_entity = alice.get_entity(&map_id).unwrap();
-    assert_eq!(
-        alice_entity.metadata.crdt_type,
-        CrdtType::unordered_map("String", "u64")
-    );
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::UnorderedMap);
 }
 
 /// CIP §6.2.5: UnorderedSet merge is union.
@@ -307,14 +304,14 @@ fn test_i5_unordered_set_union_merge() {
     alice.insert_entity_with_metadata(
         set_id,
         b"set-alice".to_vec(),
-        EntityMetadata::new(CrdtType::unordered_set("String"), 100),
+        EntityMetadata::new(CrdtType::UnorderedSet, 100),
     );
 
     // Bob's set
     bob.insert_entity_with_metadata(
         set_id,
         b"set-bob".to_vec(),
-        EntityMetadata::new(CrdtType::unordered_set("String"), 200),
+        EntityMetadata::new(CrdtType::UnorderedSet, 200),
     );
 
     // Force HashComparison
@@ -322,10 +319,7 @@ fn test_i5_unordered_set_union_merge() {
 
     // Verify CRDT type preserved
     let alice_entity = alice.get_entity(&set_id).unwrap();
-    assert_eq!(
-        alice_entity.metadata.crdt_type,
-        CrdtType::unordered_set("String")
-    );
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::UnorderedSet);
 }
 
 // =============================================================================
@@ -380,14 +374,14 @@ fn test_i5_vector_element_merge() {
     alice.insert_entity_with_metadata(
         vec_id,
         b"vec-alice".to_vec(),
-        EntityMetadata::new(CrdtType::vector("u64"), 100),
+        EntityMetadata::new(CrdtType::Vector, 100),
     );
 
     // Bob's Vector
     bob.insert_entity_with_metadata(
         vec_id,
         b"vec-bob".to_vec(),
-        EntityMetadata::new(CrdtType::vector("u64"), 200),
+        EntityMetadata::new(CrdtType::Vector, 200),
     );
 
     // Force HashComparison
@@ -395,7 +389,7 @@ fn test_i5_vector_element_merge() {
 
     // Verify CRDT type preserved
     let alice_entity = alice.get_entity(&vec_id).unwrap();
-    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::vector("u64"));
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::Vector);
 }
 
 // =============================================================================
@@ -476,7 +470,7 @@ fn test_i5_mixed_crdt_types() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"lww".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 100),
+        EntityMetadata::new(CrdtType::lww_register(), 100),
     );
     alice.insert_entity_with_metadata(
         EntityId::from_u64(2),
@@ -486,14 +480,14 @@ fn test_i5_mixed_crdt_types() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(3),
         b"set".to_vec(),
-        EntityMetadata::new(CrdtType::unordered_set("String"), 100),
+        EntityMetadata::new(CrdtType::UnorderedSet, 100),
     );
 
     // Bob has same entities with different values/timestamps
     bob.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"lww-bob".to_vec(),
-        EntityMetadata::new(CrdtType::lww_register("test"), 200),
+        EntityMetadata::new(CrdtType::lww_register(), 200),
     );
     bob.insert_entity_with_metadata(
         EntityId::from_u64(2),
@@ -503,7 +497,7 @@ fn test_i5_mixed_crdt_types() {
     bob.insert_entity_with_metadata(
         EntityId::from_u64(3),
         b"set-bob".to_vec(),
-        EntityMetadata::new(CrdtType::unordered_set("String"), 200),
+        EntityMetadata::new(CrdtType::UnorderedSet, 200),
     );
 
     // Force HashComparison
@@ -516,7 +510,7 @@ fn test_i5_mixed_crdt_types() {
             .unwrap()
             .metadata
             .crdt_type,
-        CrdtType::lww_register("test")
+        CrdtType::lww_register()
     );
     assert_eq!(
         alice
@@ -532,7 +526,7 @@ fn test_i5_mixed_crdt_types() {
             .unwrap()
             .metadata
             .crdt_type,
-        CrdtType::unordered_set("String")
+        CrdtType::UnorderedSet
     );
 }
 

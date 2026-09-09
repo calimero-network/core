@@ -32,6 +32,7 @@
 //! - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
 //!   entity metadata for correct dispatch.
 
+pub mod custom_registry;
 pub mod registry;
 
 // The registry is WASM-only in production. Host production binaries
@@ -49,6 +50,13 @@ pub mod registry;
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
+// Always available: both have a host fallback, so the registration walk and the
+// merge dispatch compile from any build rather than only the ones that can act
+// on them. See `custom_registry`.
+pub use custom_registry::{
+    custom_type_id_of, has_custom_merges, merge_custom, register_custom_merge,
+};
+
 // Always-native wrapper for the in-process test harness. Unlike
 // `register_crdt_merge` it isn't gated behind the `testing` feature, so an
 // app's macro-generated `TestState` bridge compiles under `cargo test`
@@ -59,9 +67,12 @@ pub use registry::register_crdt_merge_for_test;
 #[cfg(any(test, feature = "testing"))]
 pub use registry::clear_merge_registry;
 
+#[cfg(any(test, feature = "testing"))]
+pub use custom_registry::clear_custom_merge_registry;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::collections::crdt_meta::{CrdtType, MergeError, Mergeable};
+use crate::collections::crdt_meta::{CrdtType, CustomTypeId, MergeError, Mergeable};
 use crate::collections::{Counter, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
@@ -92,6 +103,40 @@ pub struct MergeRootStateRequest {
 /// having to panic in WASM.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub enum MergeRootStateResponse {
+    Ok(Vec<u8>),
+    Err(String),
+}
+
+/// Request the host sends into WASM to merge one custom-typed ENTRY.
+///
+/// Sibling of [`MergeRootStateRequest`], and deliberately smaller. A root
+/// merge needs `existing_created_at` for its bootstrap fast-path, where a
+/// freshly-materialised default state must accept `incoming` wholesale. An
+/// entry has no such state: it exists because something wrote it, so there is
+/// nothing to bootstrap and both sides are real history.
+///
+/// Timestamps are absent for a stronger reason — an app-defined rule that
+/// consults them is not commutative, and the whole point of dispatching is
+/// that the app's rule decides. The host advances `updated_at` on the write
+/// back, exactly as the root path does.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct MergeCustomRequest {
+    /// Which app-defined type this entry holds, as stamped on the entry.
+    pub type_id: CustomTypeId,
+    /// The receiver's stored entry bytes.
+    pub existing: Vec<u8>,
+    /// The entry bytes that arrived over the wire.
+    pub incoming: Vec<u8>,
+}
+
+/// Response from the WASM-side custom-merge dispatcher.
+///
+/// `Err(message)` covers both a genuine merge failure and an id this build's
+/// app no longer registers — an app-upgrade skew. Either way the host logs it
+/// and leaves the entity for the next sync round rather than resolving it by
+/// LWW, which would be the wrong answer for a conflict the app owns.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub enum MergeCustomResponse {
     Ok(Vec<u8>),
     Err(String),
 }
@@ -383,16 +428,16 @@ pub fn merge_by_crdt_type(
         CrdtType::LwwRegister { .. } => Ok(incoming.to_vec()),
 
         // Collections - with type info we can merge them
-        CrdtType::UnorderedMap { .. } => merge_unordered_map(existing, incoming),
+        CrdtType::UnorderedMap => merge_unordered_map(existing, incoming),
         // SortedMap stores and merges exactly like UnorderedMap (entries sync
         // separately; ordering is a read-time concern derived from `K: Ord`), so
         // the container merge is the same add-wins structural pass.
-        CrdtType::SortedMap { .. } => merge_unordered_map(existing, incoming),
-        CrdtType::UnorderedSet { .. } => merge_unordered_set(existing, incoming),
+        CrdtType::SortedMap => merge_unordered_map(existing, incoming),
+        CrdtType::UnorderedSet => merge_unordered_set(existing, incoming),
         // SortedSet stores/merges exactly like UnorderedSet (union; ordering is a
         // read-time concern derived from `T: Ord`).
-        CrdtType::SortedSet { .. } => merge_unordered_set(existing, incoming),
-        CrdtType::Vector { .. } => merge_vector(existing, incoming),
+        CrdtType::SortedSet => merge_unordered_set(existing, incoming),
+        CrdtType::Vector => merge_vector(existing, incoming),
 
         // UserStorage - LWW per user (same as LwwRegister)
         CrdtType::UserStorage => Ok(incoming.to_vec()),
@@ -418,9 +463,7 @@ pub fn merge_by_crdt_type(
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
         // App-defined types
-        CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
-            type_name: type_name.clone(),
-        }),
+        CrdtType::Custom(type_id) => Err(MergeError::WasmRequired { type_id: *type_id }),
     }
 }
 
@@ -448,7 +491,8 @@ pub fn merge_by_crdt_type(
 ///
 /// assert!(is_builtin_crdt(&CrdtType::GCounter));
 /// assert!(is_builtin_crdt(&CrdtType::UserStorage));
-/// assert!(!is_builtin_crdt(&CrdtType::Custom("MyType".into())));
+/// # use calimero_primitives::crdt::CustomTypeId;
+/// assert!(!is_builtin_crdt(&CrdtType::Custom(CustomTypeId::of("MyType"))));
 /// ```
 pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
     !matches!(crdt_type, CrdtType::Custom(_))
@@ -663,6 +707,12 @@ mod typed_dispatch_tests {
                 crate::collections::rekey::field_child_id(parent_id, "counter")
             );
         }
+    }
+
+    // Structural: a test fixture, merged by the storage layer's own rules.
+    #[diagnostic::do_not_recommend]
+    impl crate::collections::MergeStrategy for DispatchTestApp {
+        const DISPATCHED: bool = false;
     }
 
     impl Mergeable for DispatchTestApp {

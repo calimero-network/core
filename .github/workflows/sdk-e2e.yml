@@ -1,11 +1,13 @@
 name: SDK E2E (paired)
 
-# Live behavioural gate ("core breaks first"). Builds merod from this PR, boots a
-# single node with embedded auth, then runs the mero-js e2e suite against it. A
-# renamed/removed param makes the SDK send the old shape → the node 4xx → red here,
-# on the core dev's PR. The SDK ref is paired: declare `sdk-ref: <branch>` in the
-# PR body (or push a same-named branch on mero-js) so a breaking change and its SDK
-# fix go green together; otherwise it runs against mero-js master.
+# Live behavioural gate ("core breaks first"): merod is built from this PR and the
+# mero-js e2e suite runs against it, then every route in the manifest must have
+# answered the SDK under 400 at least once. A renamed or removed field makes the
+# node refuse the old shape, leaving that route only 4xx, and the run goes red.
+#
+# The SDK ref is paired: declare `sdk-ref: <branch>` in the PR body (or push a
+# same-named branch on mero-js) so a breaking change and its SDK fix go green
+# together; otherwise it runs against mero-js master.
 
 permissions:
   contents: read
@@ -17,13 +19,30 @@ concurrency:
 
 on:
   pull_request:
+    # `push` below has no filter, so anything missing here does not skip the
+    # job — it defers it until after merge, when master goes red instead of a
+    # PR. That is how #3804 landed a breaking op layout: it changed
+    # `crates/governance-types`, which was not listed, so this job never ran on
+    # the PR and mero-js's borsh encoder was 96 bytes short on master.
+    #
+    # The rule for this list: any crate whose types the SDK re-encodes or whose
+    # HTTP surface it calls. The SDK hand-encodes namespace ops in borsh, so
+    # the governance crates that define those ops belong here as much as the
+    # server that serves them.
     paths:
       - "crates/server/**"
       - "crates/auth/**"
       - "crates/primitives/**"
       - "crates/merod/**"
+      - "crates/governance-types/**"
+      - "crates/governance-store/**"
+      - "crates/context/**"
+      - "crates/context/config/**"
+      - "crates/node/**"
       - ".github/workflows/sdk-e2e.yml"
       - "scripts/resolve-paired-ref.sh"
+      - "scripts/check-endpoint-coverage.sh"
+      - "scripts/tests/check-endpoint-coverage.test.sh"
   push:
     branches:
       - master
@@ -59,6 +78,18 @@ env:
   MERO_E2E_PASS: dev-password
 
 jobs:
+  coverage-gate:
+    name: Coverage gate self-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core (PR head)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Test check-endpoint-coverage.sh against fixtures
+        run: bash scripts/tests/check-endpoint-coverage.test.sh
+
   sdk-e2e:
     name: SDK E2E (paired)
     runs-on: ubuntu-latest
@@ -164,11 +195,8 @@ jobs:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
-          # The delegated-authorship suite mints a warrant with the merod built
-          # above. It has to be real: this SDK cannot sign one (that would need
-          # ed25519 and a borsh encoding kept byte-identical with the node's), and
-          # a fabricated warrant would register the route as covered while being
-          # refused every time. Without this the suite skips rather than fails.
+          # The warrant must be real merod output: the SDK cannot sign one, and
+          # without it the delegated-authorship suite skips rather than fails.
           MEROD_BINARY: "${{ github.workspace }}/target/debug/merod"
           # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level
           # env (dev / dev-password) so the suite logs in with the exact
@@ -186,8 +214,8 @@ jobs:
           COVERED="_mero-js/covered-endpoints.json"
           chmod +x scripts/check-endpoint-coverage.sh
           if [ -f "$COVERED" ]; then
-            # Enforced with a baseline ratchet: a NEW uncovered route fails; the
-            # accepted-uncovered backlog lives in coverage-baseline.json.
+            # A route with no call under 400 fails: never requested, or requested
+            # and refused every time. coverage-baseline.json lists the accepted gaps.
             scripts/check-endpoint-coverage.sh \
               crates/server/endpoints.json "$COVERED" crates/server/coverage-baseline.json
           else

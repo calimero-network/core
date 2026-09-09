@@ -57,7 +57,7 @@ steps:
     node: ephemeral-node-1
     # The scenario runs from apps/kv-store, so this is the app's own build
     # output (`cargo mero build`, or the e2e-apps CI artifact).
-    path: "res/kv_store.wasm"
+    path: "../../dist/com.calimero.kv-store-0.0.0.mpk"
     dev: true
     outputs:
       app_id: applicationId

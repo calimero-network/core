@@ -16,9 +16,17 @@ pub(crate) fn apply(
     signed_invitation: &SignedGroupOpenInvitation,
     joined_at: Option<u64>,
     account: &JoinAccountCredential,
+    admitter_endorsement: Option<&calimero_governance_types::AdmitterEndorsement>,
 ) -> EyreResult<()> {
     let events = NamespaceMembershipService::new(ctx.store(), ctx.namespace_id())
-        .apply_member_joined(&op.signer, member, signed_invitation, joined_at, account)?;
+        .apply_member_joined(
+            &op.signer,
+            member,
+            signed_invitation,
+            joined_at,
+            account,
+            admitter_endorsement,
+        )?;
     for event in events {
         ctx.queue_event(event);
     }

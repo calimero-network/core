@@ -42,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::permissioned::{Authorizer, PermissionedStorage, SharedStorage};
 use super::{LwwRegister, StoreError, UnorderedMap};
 use crate::entities::{ChildInfo, Data, Element, OpMask};
@@ -423,6 +423,13 @@ impl CrdtMeta for AccessControl {
     fn can_contain_crdts() -> bool {
         true
     }
+}
+
+/// Structural: the storage layer merges this by its `crdt_type` variant, so
+/// there is no app rule to dispatch. See [`MergeStrategy`].
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for AccessControl {
+    const DISPATCHED: bool = false;
 }
 
 #[cfg(test)]

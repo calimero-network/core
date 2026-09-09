@@ -7,7 +7,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::{AsyncReadExt, TryStreamExt};
-use rand::{thread_rng, Rng};
+use rand::RngExt;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -31,7 +31,7 @@ impl SyncManager {
             "Initiating blob share",
         );
 
-        let our_nonce = thread_rng().gen::<Nonce>();
+        let our_nonce = rand::rng().random::<Nonce>();
 
         self.send(
             stream,
@@ -107,6 +107,7 @@ impl SyncManager {
 
         let read_task = async {
             let mut sequencer = Sequencer::default();
+            let mut received = 0_u64;
 
             while let Some(msg) = self
                 .recv(stream, Some((shared_key.clone(), their_nonce)))
@@ -132,6 +133,13 @@ impl SyncManager {
                     break;
                 }
 
+                // The hard ceiling, applied on the wire rather than through
+                // the store, so a rogue sender cannot stream unbounded data.
+                received = received.saturating_add(chunk.len() as u64);
+                if received > MAX_BLOB_STREAM_SIZE_BYTES {
+                    bail!("blob share exceeded {MAX_BLOB_STREAM_SIZE_BYTES} bytes");
+                }
+
                 tx.send(Ok(chunk)).await?;
 
                 their_nonce = their_new_nonce;
@@ -144,23 +152,18 @@ impl SyncManager {
 
         let ((received_blob_id, _), _) = tokio::try_join!(add_task, read_task)?;
 
-        if received_blob_id != blob_id {
-            // Discard the incorrectly-hashed blob before propagating the error
-            // so we don't persist corrupt data.
+        if let Err(err) = self
+            .node_client
+            .verify_stored_blob(received_blob_id, Some(blob_id))
+            .await
+        {
             warn!(
                 %blob_id,
                 %received_blob_id,
                 advertised_size = size,
-                "blob hash mismatch after receive; deleting stored blob",
+                "blob share verification failed",
             );
-            if let Err(err) = self.node_client.delete_blob(received_blob_id).await {
-                warn!(%received_blob_id, %err, "failed to delete mismatched blob");
-            }
-            bail!(
-                "unexpected blob id: expected {}, got {}",
-                blob_id,
-                received_blob_id
-            );
+            return Err(err);
         }
 
         info!(
@@ -190,8 +193,16 @@ impl SyncManager {
             "Received blob share request",
         );
 
-        let Some(mut blob) = self.node_client.get_blob(&blob_id, None).await? else {
-            warn!(%blob_id, "blob not found");
+        // An http node resolves applications from its registry, so it is not a
+        // source of their bytes; to the peer that reads as "not held".
+        let held = if self.node_client.may_share_blob(&blob_id)? {
+            self.node_client.get_blob(&blob_id, None).await?
+        } else {
+            None
+        };
+
+        let Some(mut blob) = held else {
+            warn!(%blob_id, "blob not available to share");
             // Tell the initiator instead of going silent — without a reply it
             // sits in recv() until the stream times out, stalling its whole
             // sync attempt (the upgrade pre-stage path requests blobs this
@@ -210,7 +221,7 @@ impl SyncManager {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity)?;
-        let mut our_nonce = thread_rng().gen::<Nonce>();
+        let mut our_nonce = rand::rng().random::<Nonce>();
 
         self.send(
             stream,
@@ -230,7 +241,7 @@ impl SyncManager {
         let mut sequencer = Sequencer::default();
 
         while let Some(chunk) = blob.try_next().await? {
-            let our_new_nonce = thread_rng().gen::<Nonce>();
+            let our_new_nonce = rand::rng().random::<Nonce>();
             self.send(
                 stream,
                 &StreamMessage::Message {

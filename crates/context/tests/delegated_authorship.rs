@@ -18,6 +18,7 @@
 //! the preimage and the gate, and both are exercised here against real
 //! credentials and real governance rows.
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_account::{
@@ -60,8 +61,12 @@ fn hlc() -> HybridTimestamp {
 
 fn meta(admin: AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -154,8 +159,6 @@ fn world(nonce: u64) -> World {
             .expect("add the member");
     }
 
-    // The grant. Without it every check below refuses, which is what
-    // `a_delta_is_refused_when_the_relay_holds_no_grant` pins.
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &group,

@@ -27,7 +27,7 @@ pub(super) async fn choose_owned_identity(
     context_id: &ContextId,
 ) -> Result<PublicKey> {
     let identities = context_client.get_context_members(context_id, Some(true));
-    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+    let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
         .await
         .transpose()?
     else {

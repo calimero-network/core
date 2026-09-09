@@ -21,11 +21,12 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -39,8 +40,12 @@ use crate::NodeState;
 
 fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -57,7 +62,7 @@ fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 async fn apply_signed_group_op_via_context_client() {
     let node = boot_test_node().await;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = ContextGroupId::from([0x77u8; 32]);
     let gid_bytes = gid.to_bytes();
 
@@ -140,7 +145,7 @@ async fn apply_signed_group_op_via_context_client() {
 async fn set_member_auto_follow_handler_error_paths() {
     let node = boot_test_node().await;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = ContextGroupId::from([0x55u8; 32]);
 
     let admin_sk = PrivateKey::random(&mut rng);
@@ -244,7 +249,7 @@ async fn set_member_auto_follow_handler_error_paths() {
 async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
     let node = boot_test_node().await;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = ContextGroupId::from([0x5Au8; 32]);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_account =
@@ -305,7 +310,7 @@ async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
 async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() {
     let node = boot_test_node().await;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let gid = ContextGroupId::from([0x5Bu8; 32]);
     let context_id = calimero_primitives::context::ContextId::from([0x5Cu8; 32]);
     let admin_sk = PrivateKey::random(&mut rng);
@@ -466,7 +471,11 @@ fn announce_network_event(
 /// resolves and a signing key is available), seed it as group admin, and apply
 /// a mock-accepting `TeeAdmissionPolicySet` op that allowlists the mock MRTD.
 /// Returns the owner's namespace public key (the admission op's signer).
-fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -> PublicKey {
+fn provision_tee_owner(
+    node: &TestNode,
+    gid: &ContextGroupId,
+    rng: &mut UnwrapErr<SysRng>,
+) -> PublicKey {
     provision_tee_owner_with_sk(node, gid, rng).0
 }
 
@@ -477,7 +486,7 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
 fn provision_tee_owner_with_sk(
     node: &TestNode,
     gid: &ContextGroupId,
-    rng: &mut OsRng,
+    rng: &mut UnwrapErr<SysRng>,
 ) -> (PublicKey, PrivateKey) {
     let owner_sk = PrivateKey::random(rng);
     let owner_pk = owner_sk.public_key();
@@ -520,7 +529,7 @@ fn provision_tee_owner_with_sk(
     // publisher refusing to send group structure in the clear, and the refusal
     // was right. Keying the fixture is the fix; relaxing the publisher was not.
     {
-        use rand::RngCore;
+        use rand::Rng;
         let mut namespace_key = [0u8; 32];
         rng.fill_bytes(&mut namespace_key);
         let _ = calimero_governance_store::GroupKeyring::new(&node.store, *gid)
@@ -574,7 +583,7 @@ async fn create_restricted_subgroup(
     node: &TestNode,
     parent_ns: &ContextGroupId,
     _admin_pk: &PublicKey,
-    rng: &mut OsRng,
+    rng: &mut UnwrapErr<SysRng>,
 ) -> ContextGroupId {
     // The create handler resolves the target application from the parent's
     // `target_application_id` and reads back its `ApplicationMeta` row (to
@@ -641,7 +650,7 @@ async fn create_open_subgroup(
     node: &TestNode,
     parent_ns: &ContextGroupId,
     admin_pk: &PublicKey,
-    rng: &mut OsRng,
+    rng: &mut UnwrapErr<SysRng>,
 ) -> ContextGroupId {
     // Reuse the Restricted-create plumbing (seeds app meta, mints the key,
     // applies `RootOp::GroupCreated`); the only difference is visibility.
@@ -676,7 +685,7 @@ async fn create_open_subgroup(
 async fn create_born_open_subgroup(
     node: &TestNode,
     parent_ns: &ContextGroupId,
-    rng: &mut OsRng,
+    rng: &mut UnwrapErr<SysRng>,
 ) -> ContextGroupId {
     let app_id = ApplicationId::from([0xCCu8; 32]);
     let app_meta = ApplicationMetaValue::new(
@@ -743,7 +752,7 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
 #[serial(boot_test_node)]
 async fn ns_announce_admits_announcer_as_read_only_tee_member() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let gid = ContextGroupId::from([0x91u8; 32]);
     let owner_pk = provision_tee_owner(&node, &gid, &mut rng);
@@ -830,7 +839,7 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
 #[serial(boot_test_node)]
 async fn root_admitted_tee_is_member_of_open_subgroup() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x95u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -927,7 +936,7 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
 #[serial(boot_test_node)]
 async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x96u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -1136,7 +1145,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
 #[serial(boot_test_node)]
 async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x97u8; 32]);
     // Retain the owner secret key: the root `MemberRemoved` that drives the
@@ -1500,7 +1509,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
 #[serial(boot_test_node)]
 async fn restricted_subgroup_created_admits_existing_tee_member() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x93u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -1615,7 +1624,7 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
 #[serial(boot_test_node)]
 async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x97u8; 32]);
     // The owner provisions the namespace (admin, identity, TEE policy); the
@@ -1794,7 +1803,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
 #[serial(boot_test_node)]
 async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x94u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -1924,7 +1933,7 @@ async fn restricted_ctx_redriven_after_group_created() {
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // ---- Namespace root provisioning (receiver side) -------------------------
     // The namespace IS its root group. `ns_gid.to_bytes()` is the namespace id.
@@ -1977,7 +1986,7 @@ async fn restricted_ctx_redriven_after_group_created() {
     // arrives before either is locally present.
     let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     let subgroup_key: [u8; 32] = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut k = [0u8; 32];
         rng.fill_bytes(&mut k);
         k
@@ -2007,6 +2016,8 @@ async fn restricted_ctx_redriven_after_group_created() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
 
@@ -2046,6 +2057,16 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
     // Wrap the subgroup key for the receiver's namespace identity (member_pk),
     // exactly as `admit_tee_node` / `add_group_members` would.
+    //
+    // The namespace key production mints at group creation; this fixture builds
+    // its rows directly, so it mints one here -- ahead of the delivery rather
+    // than ahead of the `GroupCreated` in step 3, because both are sealed under
+    // it now and this one comes first. Only the NAMESPACE key: the op under test
+    // stays buffered on the SUBGROUP key, which arrives with this delivery, so
+    // step 1's assertions are untouched.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("mint the namespace key");
     let envelope =
         GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
             .expect("wrap subgroup key for receiver");
@@ -2055,10 +2076,15 @@ async fn restricted_ctx_redriven_after_group_created() {
         namespace_id.into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes().into(),
-            envelope,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .expect("seal the KeyDelivery"),
     )
     .expect("sign KeyDelivery");
 
@@ -2087,11 +2113,6 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 3: GroupCreated for the subgroup applies LAST ------------------
     // On master this does NOT re-drive the stranded op. The #2848 fix makes
     // GroupCreated re-trigger the buffered-op retry.
-    // The namespace key production mints at creation; this fixture builds
-    // its rows directly and would otherwise have nothing to seal under.
-    let _ = GroupKeyring::new(&store, ns_gid)
-        .store_key(&[0x5Au8; 32])
-        .expect("mint the namespace key");
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),
@@ -2191,7 +2212,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // ---- Namespace root provisioning (receiver side) -------------------------
     let ns_gid = ContextGroupId::from([0xE4u8; 32]);
@@ -2231,7 +2252,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     // AFTER buffering, to set up the exact "holds namespace key, no subgroup
     // current key" state the old gate mis-handled.
     let namespace_key: [u8; 32] = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut k = [0u8; 32];
         rng.fill_bytes(&mut k);
         k
@@ -2254,6 +2275,8 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDFu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&namespace_key, &inner_op).expect("encrypt group op");
 
@@ -2380,7 +2403,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
 #[serial(boot_test_node)]
 async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let gid = ContextGroupId::from([0x92u8; 32]);
     let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
@@ -2553,7 +2576,7 @@ async fn tee_matrix_restricted_late_join() {
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     // ---- Namespace root (receiver side) -------------------------------------
     let ns_gid = ContextGroupId::from([0xDAu8; 32]);
@@ -2587,7 +2610,7 @@ async fn tee_matrix_restricted_late_join() {
     // not hold the key yet.
     let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     let subgroup_key: [u8; 32] = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut k = [0u8; 32];
         rng.fill_bytes(&mut k);
         k
@@ -2654,6 +2677,8 @@ async fn tee_matrix_restricted_late_join() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
     let ctx_registered_op = SignedNamespaceOp::sign(
@@ -2691,10 +2716,15 @@ async fn tee_matrix_restricted_late_join() {
         namespace_id.into(),
         vec![],
         3,
-        NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes().into(),
-            envelope,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .expect("seal the KeyDelivery"),
     )
     .expect("sign KeyDelivery");
     apply_signed_namespace_op(&store, &key_delivery_op).expect("apply KeyDelivery");
@@ -2763,7 +2793,7 @@ async fn tee_matrix_restricted_late_join() {
 #[serial(boot_test_node)]
 async fn tee_matrix_restricted_join_with_created() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x98u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -2961,7 +2991,7 @@ async fn drive_open_auto_follow_replication(
 #[serial(boot_test_node)]
 async fn tee_matrix_open_late_join() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x99u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -3067,7 +3097,7 @@ async fn tee_matrix_open_late_join() {
 #[serial(boot_test_node)]
 async fn tee_matrix_open_join_with_created() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0x9Au8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
@@ -3220,10 +3250,10 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
 
     // Real (random) member identities, matching the convention of the
     // other tests in this file.
-    let admin_id = PrivateKey::random(&mut OsRng).public_key();
-    let member_id = PrivateKey::random(&mut OsRng).public_key();
-    let admin_second_id = PrivateKey::random(&mut OsRng).public_key();
-    let other_id = PrivateKey::random(&mut OsRng).public_key();
+    let admin_id = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member_id = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let admin_second_id = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let other_id = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let admin_peer = libp2p::PeerId::random();
     let member_peer = libp2p::PeerId::random();
     let other_peer = libp2p::PeerId::random();
@@ -3314,7 +3344,7 @@ async fn member_peers_for_context_unions_root_group_for_subgroup_context() {
 
     // A member recorded ONLY under the root group — exactly what the governance
     // path produces for a cold context.
-    let admin_id = PrivateKey::random(&mut OsRng).public_key();
+    let admin_id = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let admin_peer = libp2p::PeerId::random();
     node_state.observe_peer_identity(
         admin_peer,
@@ -3363,7 +3393,7 @@ async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
     };
 
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     let (admin_pk, _admin_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
@@ -3544,7 +3574,7 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
 
     let ns_gid = ContextGroupId::from([0xE7u8; 32]);
     let namespace_id = ns_gid.to_bytes();
@@ -3571,7 +3601,7 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
         .expect("store receiver namespace identity");
 
     let namespace_key: [u8; 32] = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut k = [0u8; 32];
         rng.fill_bytes(&mut k);
         k

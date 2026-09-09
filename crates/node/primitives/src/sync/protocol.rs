@@ -194,17 +194,6 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
         };
     }
 
-    // Check version compatibility first
-    if !local.is_version_compatible(remote) {
-        // Version mismatch - fall back to HashComparison as safest option
-        return ProtocolSelection {
-            protocol: SyncProtocol::HashComparison {
-                root_hash: remote.root_hash,
-            },
-            reason: "version mismatch, using safe fallback",
-        };
-    }
-
     // Rule 2a: Fresh local node - Snapshot allowed
     // CRITICAL: This is the ONLY case where Snapshot is permitted
     if !local.has_state {
@@ -337,7 +326,6 @@ pub fn select_protocol_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::handshake::SYNC_PROTOCOL_VERSION;
 
     #[test]
     fn test_sync_protocol_roundtrip() {
@@ -652,20 +640,6 @@ mod tests {
             SyncProtocol::HashComparison { .. }
         ));
         assert!(selection.reason.contains("default"));
-    }
-
-    #[test]
-    fn test_select_protocol_version_mismatch_uses_safe_fallback() {
-        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
-        let mut remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
-        remote.version = SYNC_PROTOCOL_VERSION + 1; // Incompatible version
-
-        let selection = select_protocol(&local, &remote);
-        assert!(matches!(
-            selection.protocol,
-            SyncProtocol::HashComparison { .. }
-        ));
-        assert!(selection.reason.contains("version mismatch"));
     }
 
     #[test]

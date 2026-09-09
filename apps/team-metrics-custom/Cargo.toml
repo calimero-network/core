@@ -20,3 +20,7 @@ calimero-storage = { workspace = true, features = ["testing"] }
 # Convergence tests are serial: `converge_app` clears/repopulates the
 # process-global merge registry per run.
 serial_test.workspace = true
+
+[package.metadata.calimero]
+package = "com.calimero.team-metrics-custom"
+name = "Team Metrics Custom"

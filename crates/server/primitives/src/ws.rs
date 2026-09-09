@@ -21,7 +21,12 @@ pub struct Request<P> {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+#[serde(
+    tag = "method",
+    content = "params",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RequestPayload {
     Subscribe(SubscribeRequest),
     Unsubscribe(UnsubscribeRequest),
@@ -72,7 +77,7 @@ pub enum ServerResponseError {
 
 // **************************** subscribe method *******************************
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscribeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,
@@ -94,7 +99,7 @@ pub struct SubscribeResponse {
 
 // **************************** unsubscribe method *******************************
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UnsubscribeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,

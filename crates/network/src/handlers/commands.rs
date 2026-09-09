@@ -6,13 +6,15 @@ use crate::NetworkManager;
 
 mod announce_blob;
 mod bootstrap;
-mod dial;
+mod connected_peers;
+pub(crate) mod dial;
 mod listen;
 mod mesh_peer_count;
 mod mesh_peers;
 mod mesh_stats;
 mod network_status;
 mod open_stream;
+mod peer_addrs;
 mod peer_count;
 mod publish;
 mod query_blob;
@@ -49,6 +51,12 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::OpenStream { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::PeerAddrs { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::ConnectedPeers { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::PeerCount { request, outcome } => {

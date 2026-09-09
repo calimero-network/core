@@ -1203,8 +1203,9 @@ pub(crate) fn load_rotation_log_direct(
             >::children_with(map_id, read_row)
             {
                 // P3: each child is an `UnorderedMap` entry, so its stored value
-                // is `borsh(Entry<([u8;32], RotationLogEntry)>)` — decode the
-                // single entry it holds (NOT a bare `RotationLog` blob).
+                // is `borsh(Entry<(RotationLogEntry, [u8;32])>)` — value-first,
+                // like every map entry — so decode the single entry it holds
+                // (NOT a bare `RotationLog` blob).
                 if let Some(bytes) = read_entity_value_direct(
                     context_client,
                     context_id,

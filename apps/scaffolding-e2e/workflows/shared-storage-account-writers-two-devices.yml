@@ -103,16 +103,10 @@ steps:
   - name: Install application on shared-account-node-1
     type: install_application
     node: shared-account-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
-
-  - name: Install application on shared-account-node-2
-    type: install_application
-    node: shared-account-node-2
-    path: res/scaffolding_e2e.wasm
-    dev: true
 
   - name: Node-1 creates the namespace
     type: create_namespace
@@ -268,7 +262,7 @@ steps:
   - name: Install application on shared-account-node-3
     type: install_application
     node: shared-account-node-3
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
 
   # Scoped to every application, which is what naming none means and is all this

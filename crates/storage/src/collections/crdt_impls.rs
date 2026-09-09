@@ -8,8 +8,12 @@
 //! - SortedMap
 //! - UnorderedSet
 //! - Vector
+//!
+//! Every built-in here declares `MergeStrategy` with `DISPATCHED = false`: the
+//! storage layer merges it by matching on its `crdt_type` variant, so none of
+//! them needs an app rule dispatched.
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
     Counter, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
     UnorderedSet, ValueRef, Vector,
@@ -136,8 +140,7 @@ impl<T: Mergeable> Mergeable for Box<T> {
 
 impl<T: 'static> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        // Include the inner type name for proper merge support
-        CrdtType::lww_register(std::any::type_name::<T>())
+        CrdtType::lww_register()
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -285,7 +288,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>())
+        CrdtType::UnorderedMap
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -354,7 +357,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>())
+        CrdtType::SortedMap
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -413,7 +416,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::unordered_set(std::any::type_name::<T>())
+        CrdtType::UnorderedSet
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -480,7 +483,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::sorted_set(std::any::type_name::<T>())
+        CrdtType::SortedSet
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -529,7 +532,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::vector(std::any::type_name::<T>())
+        CrdtType::Vector
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -606,16 +609,7 @@ mod tests {
     #[test]
     fn test_lww_register_is_crdt() {
         assert!(LwwRegister::<String>::is_crdt());
-        // The inner type contains the full type path
-        match LwwRegister::<String>::crdt_type() {
-            CrdtType::LwwRegister { inner_type } => {
-                assert!(
-                    inner_type.contains("String"),
-                    "inner_type should contain 'String', got: {inner_type}"
-                );
-            }
-            other => panic!("Expected LwwRegister, got: {other:?}"),
-        }
+        assert_eq!(LwwRegister::<String>::crdt_type(), CrdtType::lww_register());
         assert!(!LwwRegister::<String>::can_contain_crdts());
     }
 
@@ -644,23 +638,7 @@ mod tests {
     fn test_map_can_contain_crdts() {
         type TestMap = UnorderedMap<String, Counter>;
         assert!(TestMap::is_crdt());
-        match TestMap::crdt_type() {
-            CrdtType::UnorderedMap {
-                key_type,
-                value_type,
-            } => {
-                assert!(
-                    key_type.contains("String"),
-                    "key_type should contain 'String', got: {key_type}"
-                );
-                // Value type is Counter (a CRDT), not u64 - type_name returns full path
-                assert!(
-                    value_type.contains("Counter"),
-                    "value_type should contain 'Counter', got: {value_type}"
-                );
-            }
-            other => panic!("Expected UnorderedMap, got: {other:?}"),
-        }
+        assert_eq!(TestMap::crdt_type(), CrdtType::UnorderedMap);
         assert!(TestMap::can_contain_crdts()); // Maps CAN contain CRDTs!
     }
 
@@ -1201,4 +1179,64 @@ mod mapset_tombstone_merge_tests {
             "merge dropped a genuinely new value"
         );
     }
+}
+
+// ============================================================================
+// MergeStrategy — every built-in converges structurally
+// ============================================================================
+//
+// `DISPATCHED = false` for all of them: the storage layer merges each by
+// matching on its `crdt_type` variant, so there is no app rule to reach. These
+// exist so the bound at the collection-value position can distinguish a type
+// that declared how it merges from one that has a `Mergeable` impl nothing will
+// ever call.
+
+#[diagnostic::do_not_recommend]
+impl<T: Mergeable + Clone> MergeStrategy for Option<T> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T: Mergeable> MergeStrategy for Box<T> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T: Clone + borsh::BorshSerialize + 'static> MergeStrategy for LwwRegister<T> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> MergeStrategy for Counter<ALLOW_DECREMENT, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for ReplicatedGrowableArray {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<K, V, S: StorageAdaptor> MergeStrategy for UnorderedMap<K, V, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<K, V, S: StorageAdaptor> MergeStrategy for SortedMap<K, V, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T, S: StorageAdaptor> MergeStrategy for UnorderedSet<T, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T, S: StorageAdaptor> MergeStrategy for SortedSet<T, S> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T, S: StorageAdaptor> MergeStrategy for Vector<T, S> {
+    const DISPATCHED: bool = false;
 }

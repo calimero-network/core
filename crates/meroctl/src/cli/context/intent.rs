@@ -117,13 +117,41 @@ impl IntentCommand {
         // Which operator is being authorized is read from the node, not asserted
         // here: the warrant has to name the account that will actually run it,
         // and a client guessing that would mint warrants nothing can spend.
+        //
+        // Read from the relay descriptor rather than from `identity`, because the
+        // descriptor answers the other half too — whether this node may author at
+        // all — and needs no credential on the node to answer either. See below
+        // for why asking first matters.
         let client = environment.client()?;
-        let executor: calimero_account::AccountId = client
-            .get_node_identity()
+        let relay = client
+            .get_intent_relay(&self.context_id)
             .await
-            .wrap_err("could not ask the node which account it acts as")?
+            .wrap_err("could not ask the node whether it can relay intents for this context")?;
+
+        // Refuse here rather than after signing. `CAN_AUTHOR_ON_BEHALF` is implied
+        // by nothing — not membership, not admin, not the subgroup cascade — so
+        // "no" is the default answer and the ordinary one. Minting anyway spends
+        // `--nonce` on a write every peer will reject, and the author cannot reuse
+        // that number: the next attempt has to pick a higher one, and the gap is
+        // permanent.
+        if !relay.data.can_author_on_behalf {
+            eyre::bail!(
+                "this node's account ({}) may not author on behalf of members of this context, \
+                 so the warrant would be refused and --nonce {} spent for nothing. Ask an admin \
+                 of group {} to grant it:\n\n    meroctl group members set-capabilities {} {} \
+                 --can-author-on-behalf\n\nThe mask is replaced, not merged, so re-pass any \
+                 capability that account already holds.",
+                relay.data.executor_account,
+                self.nonce,
+                relay.data.group_id,
+                relay.data.group_id,
+                relay.data.executor_account,
+            );
+        }
+
+        let executor: calimero_account::AccountId = relay
             .data
-            .account_id
+            .executor_account
             .parse()
             .wrap_err("the node reported an account this client cannot parse")?;
 

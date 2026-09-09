@@ -17,8 +17,9 @@ use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, Context, Result};
 use libp2p::identity::Keypair;
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -617,7 +618,7 @@ async fn verify_kms_attestation_from_release_policy(
     let client = build_kms_http_client(phala_config)?;
 
     let mut nonce = [0u8; 32];
-    OsRng.fill_bytes(&mut nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
     let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
 
     let request = PhalaKmsAttestRequest {
@@ -1172,7 +1173,7 @@ async fn verify_kms_attestation(
         .context("Failed to build KMS attest endpoint URL")?;
 
     let mut nonce = [0u8; 32];
-    OsRng.fill_bytes(&mut nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
 
     let expected_report_data = build_kms_attestation_report_data(&nonce, &policy.binding);
 

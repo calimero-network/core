@@ -812,6 +812,7 @@ mod tests {
                 },
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 
@@ -891,6 +892,7 @@ mod tests {
                 policy_bytes: Vec::new(),
             }),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 

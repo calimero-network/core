@@ -1,7 +1,8 @@
 use super::*;
 
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 // ---------------------------------------------------------------------------
 // Borsh discriminant golden tests
@@ -20,8 +21,13 @@ use rand::rngs::OsRng;
 // Construction: all-zero fixed data was used for every field
 // (PublicKey = [0u8;32], IDs = [0u8;32], integers = 0, Options = None,
 // collections = empty). Borsh reads these without ed25519 or range
-// validation — the frozen bytes are stable across builds.
+// validation — the frozen bytes are stable across builds. Registry
+// coordinates are the one exception: they are mandatory and rejected when
+// empty, so the application ops carry a real `"app"@"1.0.0"` pair.
 // ---------------------------------------------------------------------------
+
+/// Borsh bytes the mandatory `"app"` / `"1.0.0"` coordinate pair adds to an op.
+const GOLDEN_COORD_TAIL_BYTES: usize = 16;
 
 // ---- GroupOp golden bytes ----
 //
@@ -81,16 +87,18 @@ const GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET: &[u8] = &[
     0, 0, 0, 0, // capabilities u32 = 0
 ];
 
-/// GroupOp ordinal 7 - TargetApplicationSet { bytecode_id: [0;32].into(), target: [0;32] }
+/// GroupOp ordinal 7 - TargetApplicationSet { bytecode_id: [0;32].into(), target: [0;32], "app"@"1.0.0" }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     7, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // bytecode_id [0u8;32]
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target_application_id [0u8;32]
+    3, 0, 0, 0, b'a', b'p', b'p', // package = "app"
+    5, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version = "1.0.0"
 ];
 
-/// GroupOp ordinal 8 - ContextRegistered (all empty/zero fields)
+/// GroupOp ordinal 8 - ContextRegistered (empty/zero fields; coordinates "app"@"1.0.0")
 const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
     8, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -101,6 +109,8 @@ const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
     0, // blob_id
     0, 0, 0, 0, // source String (len = 0)
     0, // service_name = None
+    3, 0, 0, 0, b'a', b'p', b'p', // package = "app"
+    5, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version = "1.0.0"
 ];
 
 /// GroupOp ordinal 9 - ContextDetached { context_id: [0;32] }
@@ -238,8 +248,11 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
     // Verify that the HLC bytes embedded inline in GOLDEN_GROUP_OP_CASCADE_UPGRADE
     // match GOLDEN_HLC_ZERO.  The two must stay in sync: if HybridTimestamp gains a
     // field, updating GOLDEN_HLC_ZERO alone would leave CASCADE_UPGRADE stale.
+    // The two trailing coordinate strings sit after the HLC, so the window
+    // stops short of the end.
+    let hlc_end = GOLDEN_GROUP_OP_CASCADE_UPGRADE.len() - GOLDEN_COORD_TAIL_BYTES;
     assert_eq!(
-        &GOLDEN_GROUP_OP_CASCADE_UPGRADE[GOLDEN_GROUP_OP_CASCADE_UPGRADE.len() - 24..],
+        &GOLDEN_GROUP_OP_CASCADE_UPGRADE[hlc_end - 24..hlc_end],
         GOLDEN_HLC_ZERO,
         "HLC bytes embedded in GOLDEN_GROUP_OP_CASCADE_UPGRADE diverged from \
          GOLDEN_HLC_ZERO — update both constants together"
@@ -306,7 +319,7 @@ const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
     0, // departed
 ];
 
-/// GroupOp ordinal 22 - CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
+/// GroupOp ordinal 22 - CascadeUpgrade (zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO; "app"@"1.0.0")
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     22, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -318,7 +331,9 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     0, 0, 0, 0, // to_state_version u32 = 0
     0, // migration = None
     // HybridTimestamp::zero() — same bytes as GOLDEN_HLC_ZERO (verified by hlc_zero_golden_bytes_are_self_consistent)
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, b'a', b'p',
+    b'p', // package = "app"
+    5, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version = "1.0.0"
 ];
 
 #[test]
@@ -327,8 +342,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 10,
-        "the ordinals frozen below are the v10 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 11,
+        "the ordinals frozen below are the v11 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -337,26 +352,24 @@ fn group_op_discriminants_are_golden() {
     // in one run rather than stopping at the first panic.
     let mut failures: Vec<String> = Vec::new();
     macro_rules! check_group_op {
-        ($golden:expr, $pat:pat, $discriminant:expr) => {{
+        ($golden:expr, $pat:pat $(if $guard:expr)?, $discriminant:expr) => {{
             match borsh::from_slice::<GroupOp>($golden) {
                 Err(e) => failures.push(format!(
                     "GroupOp ordinal {}: decode failed: {e}",
                     $discriminant
                 )),
-                Ok(decoded) if !matches!(decoded, $pat) => failures.push(format!(
-                    "GroupOp ordinal {}: decoded as {:?} — \
-                     a variant was inserted before this one, shifting its ordinal",
+                Ok(decoded) if !matches!(decoded, $pat $(if $guard)?) => failures.push(format!(
+                    "GroupOp ordinal {}: decoded as {:?} — a variant was inserted \
+                     before this one, or a frozen field byte was edited",
                     $discriminant, decoded
                 )),
                 Ok(decoded) => {
                     let reencoded = borsh::to_vec(&decoded).expect("re-encode");
-                    if reencoded.len() != $golden.len() {
+                    if reencoded != $golden {
                         failures.push(format!(
-                            "GroupOp ordinal {}: golden has {} bytes but re-encoding \
-                             produced {} — golden vector has unexpected trailing bytes",
-                            $discriminant,
-                            $golden.len(),
-                            reencoded.len()
+                            "GroupOp ordinal {}: golden is {:?} but re-encoding the \
+                             decoded value produced {reencoded:?}",
+                            $discriminant, $golden
                         ));
                     }
                 }
@@ -364,123 +377,243 @@ fn group_op_discriminants_are_golden() {
         }};
     }
 
+    // Every vector is built with all fields zero/empty (the coordinate pair and
+    // the non-zero capability bits excepted), so each guard pins those values:
+    // without one, decode-then-re-encode reproduces an edited byte unnoticed.
+    let zero_account = AccountId::from([0u8; 32]);
+    let zero_context = ContextId::from([0u8; 32]);
+
     check_group_op!(GOLDEN_GROUP_OP_NOOP, GroupOp::Noop, 0);
-    check_group_op!(GOLDEN_GROUP_OP_MEMBER_ADDED, GroupOp::MemberAdded { .. }, 1);
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_ADDED,
+        GroupOp::MemberAdded { member, ref role } if member == zero_account && *role == GroupMemberRole::Member,
+        1
+    );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_REMOVED,
-        GroupOp::MemberRemoved { .. },
+        GroupOp::MemberRemoved {
+            member,
+            expected_group_state_hash,
+            ref expected_context_state_hashes,
+        } if member == zero_account
+            && expected_group_state_hash == [0u8; 32]
+            && expected_context_state_hashes.is_empty(),
         2
     );
-    check_group_op!(GOLDEN_GROUP_OP_MEMBER_LEFT, GroupOp::MemberLeft { .. }, 3);
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_LEFT,
+        GroupOp::MemberLeft {
+            member,
+            expected_group_state_hash,
+            ref expected_context_state_hashes,
+        } if member == zero_account
+            && expected_group_state_hash == [0u8; 32]
+            && expected_context_state_hashes.is_empty(),
+        3
+    );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_ROLE_SET,
-        GroupOp::MemberRoleSet { .. },
+        GroupOp::MemberRoleSet { member, ref role } if member == zero_account && *role == GroupMemberRole::Admin,
         4
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_CAPABILITY_SET,
-        GroupOp::MemberCapabilitySet { .. },
+        GroupOp::MemberCapabilitySet {
+            member,
+            capabilities,
+        } if member == zero_account && capabilities == MemberCapabilities::empty(),
         5
     );
     check_group_op!(
         GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET,
-        GroupOp::DefaultCapabilitiesSet { .. },
+        GroupOp::DefaultCapabilitiesSet { capabilities } if capabilities == MemberCapabilities::empty(),
         6
     );
     check_group_op!(
         GOLDEN_GROUP_OP_TARGET_APPLICATION_SET,
-        GroupOp::TargetApplicationSet { .. },
+        GroupOp::TargetApplicationSet {
+            bytecode_id,
+            target_application_id,
+            ref package,
+            ref version,
+        } if bytecode_id == [0u8; 32].into()
+            && target_application_id == [0u8; 32].into()
+            && package == "app"
+            && version == "1.0.0",
         7
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_REGISTERED,
-        GroupOp::ContextRegistered { .. },
+        GroupOp::ContextRegistered {
+            context_id,
+            ref source,
+            ref service_name,
+            ref package,
+            ref version,
+            ..
+        } if context_id == zero_context
+            && source.is_empty()
+            && service_name.is_none()
+            && package == "app"
+            && version == "1.0.0",
         8
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_DETACHED,
-        GroupOp::ContextDetached { .. },
+        GroupOp::ContextDetached { context_id } if context_id == zero_context,
         9
     );
     check_group_op!(
         GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET,
-        GroupOp::SubgroupVisibilitySet { .. },
+        GroupOp::SubgroupVisibilitySet { mode } if mode == VisibilityMode::Open,
         10
     );
     check_group_op!(
         GOLDEN_GROUP_OP_GROUP_METADATA_SET,
-        GroupOp::GroupMetadataSet { .. },
+        GroupOp::GroupMetadataSet { ref name, ref data } if name.is_none() && data.is_empty(),
         11
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_METADATA_SET,
-        GroupOp::MemberMetadataSet { .. },
+        GroupOp::MemberMetadataSet {
+            member,
+            ref name,
+            ref data,
+        } if member == zero_account && name.is_none() && data.is_empty(),
         12
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_METADATA_SET,
-        GroupOp::ContextMetadataSet { .. },
+        GroupOp::ContextMetadataSet {
+            context_id,
+            ref name,
+            ref data,
+        } if context_id == zero_context && name.is_none() && data.is_empty(),
         13
     );
     check_group_op!(GOLDEN_GROUP_OP_GROUP_DELETE, GroupOp::GroupDelete, 14);
     check_group_op!(
         GOLDEN_GROUP_OP_GROUP_MIGRATION_SET,
-        GroupOp::GroupMigrationSet { .. },
+        GroupOp::GroupMigrationSet { ref migration } if migration.is_none(),
         15
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED,
-        GroupOp::ContextCapabilityGranted { .. },
+        GroupOp::ContextCapabilityGranted {
+            context_id,
+            member,
+            capability,
+        } if context_id == zero_context && member == zero_account && capability.get() == 1,
         16
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED,
-        GroupOp::ContextCapabilityRevoked { .. },
+        GroupOp::ContextCapabilityRevoked {
+            context_id,
+            member,
+            capability,
+        } if context_id == zero_context && member == zero_account && capability.get() == 1,
         17
     );
     check_group_op!(
         GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET,
-        GroupOp::TeeAdmissionPolicySet { .. },
+        GroupOp::TeeAdmissionPolicySet {
+            ref allowed_mrtd,
+            ref allowed_rtmr0,
+            ref allowed_rtmr1,
+            ref allowed_rtmr2,
+            ref allowed_rtmr3,
+            ref allowed_tcb_statuses,
+            accept_mock,
+        } if allowed_mrtd.is_empty()
+            && allowed_rtmr0.is_empty()
+            && allowed_rtmr1.is_empty()
+            && allowed_rtmr2.is_empty()
+            && allowed_rtmr3.is_empty()
+            && allowed_tcb_statuses.is_empty()
+            && !accept_mock,
         18
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE,
-        GroupOp::MemberJoinedViaTeeAttestation { .. },
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member,
+            quote_hash,
+            ref mrtd,
+            ref rtmr0,
+            ref rtmr1,
+            ref rtmr2,
+            ref rtmr3,
+            ref tcb_status,
+            ref role,
+        } if member == zero_account
+            && quote_hash == [0u8; 32]
+            && mrtd.is_empty()
+            && rtmr0.is_empty()
+            && rtmr1.is_empty()
+            && rtmr2.is_empty()
+            && rtmr3.is_empty()
+            && tcb_status.is_empty()
+            && *role == GroupMemberRole::Member,
         19
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW,
-        GroupOp::MemberSetAutoFollow { .. },
+        GroupOp::MemberSetAutoFollow {
+            target,
+            auto_follow_contexts,
+            auto_follow_subgroups,
+        } if target == zero_account && !auto_follow_contexts && !auto_follow_subgroups,
         20
     );
     check_group_op!(
         GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP,
-        GroupOp::TransferOwnership { .. },
+        GroupOp::TransferOwnership { new_owner } if new_owner == zero_account,
         21
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CASCADE_UPGRADE,
-        GroupOp::CascadeUpgrade { .. },
+        GroupOp::CascadeUpgrade {
+            from_bytecode_id,
+            bytecode_id,
+            target_application_id,
+            to_state_version,
+            ref migration,
+            cascade_hlc,
+            ref package,
+            ref version,
+        } if from_bytecode_id == [0u8; 32].into()
+            && bytecode_id == [0u8; 32].into()
+            && target_application_id == [0u8; 32].into()
+            && to_state_version == 0
+            && migration.is_none()
+            && cascade_hlc == HybridTimestamp::zero()
+            && package == "app"
+            && version == "1.0.0",
         22
     );
     check_group_op!(
         GOLDEN_GROUP_OP_GROUP_KEY_ROTATED,
-        GroupOp::GroupKeyRotated { .. },
+        GroupOp::GroupKeyRotated { departed } if departed == zero_account,
         23
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED,
-        GroupOp::AccountDeviceLinked { .. },
+        GroupOp::AccountDeviceLinked { ref chain, .. } if chain.is_empty(),
         24
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED,
-        GroupOp::AccountDeviceUnlinked { .. },
+        GroupOp::AccountDeviceUnlinked {
+            account,
+            device,
+            ref proof,
+        } if account == zero_account && device == DeviceId::from([0u8; 32]) && proof.is_none(),
         25
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED,
-        GroupOp::AccountKeysRotated { .. },
+        GroupOp::AccountKeysRotated { ref handoff } if handoff.account == zero_account,
         26
     );
 
@@ -557,7 +690,7 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 /// Encoding: member (32 bytes) + SignedGroupOpenInvitation — a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
 /// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8)
-/// + admitters len 0 (u32)) + inviter_signature "" + admitter_hints len 0 (u32)
+/// + admitters len 0 (u32)) + inviter_signature "" + admitter_addrs len 0 (u32)
 /// + application_id None + bytecode_id None — then the joiner credential.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -727,28 +860,26 @@ fn root_op_discriminants_are_golden() {
     // Failures are accumulated so ALL mismatches are reported in one run.
     let mut failures: Vec<String> = Vec::new();
     macro_rules! check_root_op {
-        ($golden:expr, $pat:pat, $root_discriminant:expr) => {{
+        ($golden:expr, $pat:pat $(if $guard:expr)?, $root_discriminant:expr) => {{
             match borsh::from_slice::<NamespaceOp>($golden) {
                 Err(e) => failures.push(format!(
                     "RootOp ordinal {}: decode failed: {e}",
                     $root_discriminant
                 )),
-                Ok(decoded) if !matches!(decoded, NamespaceOp::Root($pat)) => {
+                Ok(decoded) if !matches!(decoded, NamespaceOp::Root($pat) $(if $guard)?) => {
                     failures.push(format!(
-                        "RootOp ordinal {}: decoded as {:?} — \
-                         a variant was inserted before this one, shifting its ordinal",
+                        "RootOp ordinal {}: decoded as {:?} — a variant was inserted \
+                         before this one, or a frozen field byte was edited",
                         $root_discriminant, decoded
                     ))
                 }
                 Ok(decoded) => {
                     let reencoded = borsh::to_vec(&decoded).expect("re-encode");
-                    if reencoded.len() != $golden.len() {
+                    if reencoded != $golden {
                         failures.push(format!(
-                            "RootOp ordinal {}: golden has {} bytes but re-encoding \
-                             produced {} — golden vector has unexpected trailing bytes",
-                            $root_discriminant,
-                            $golden.len(),
-                            reencoded.len()
+                            "RootOp ordinal {}: golden is {:?} but re-encoding the \
+                             decoded value produced {reencoded:?}",
+                            $root_discriminant, $golden
                         ));
                     }
                 }
@@ -756,39 +887,116 @@ fn root_op_discriminants_are_golden() {
         }};
     }
 
-    check_root_op!(GOLDEN_ROOT_OP_GROUP_CREATED, RootOp::GroupCreated { .. }, 0);
+    // As with the GroupOp vectors: every field is zero/empty, and each guard
+    // pins that, so an edited byte cannot survive a decode/re-encode round trip.
+    let zero_account = AccountId::from([0u8; 32]);
+    let zero_group = ContextGroupId::from([0u8; 32]);
+    // Two vectors carry a marker byte instead of a zero id.
+    let marked = {
+        let mut bytes = [0u8; 32];
+        bytes[16] = 1;
+        bytes
+    };
+
+    check_root_op!(
+        GOLDEN_ROOT_OP_GROUP_CREATED,
+        RootOp::GroupCreated {
+            group_id,
+            parent_id,
+            restricted,
+            admin,
+        } if group_id == zero_group
+            && parent_id == zero_group
+            && !restricted
+            && admin == zero_account,
+        0
+    );
     check_root_op!(
         GOLDEN_ROOT_OP_GROUP_REPARENTED,
-        RootOp::GroupReparented { .. },
+        RootOp::GroupReparented {
+            child_group_id,
+            new_parent_id,
+        } if child_group_id == zero_group && new_parent_id == zero_group,
         1
     );
-    check_root_op!(GOLDEN_ROOT_OP_GROUP_DELETED, RootOp::GroupDeleted { .. }, 2);
-    check_root_op!(GOLDEN_ROOT_OP_ADMIN_CHANGED, RootOp::AdminChanged { .. }, 3);
+    check_root_op!(
+        GOLDEN_ROOT_OP_GROUP_DELETED,
+        RootOp::GroupDeleted {
+            root_group_id,
+            ref cascade_group_ids,
+            ref cascade_context_ids,
+        } if root_group_id == zero_group
+            && cascade_group_ids.is_empty()
+            && cascade_context_ids.is_empty(),
+        2
+    );
+    check_root_op!(
+        GOLDEN_ROOT_OP_ADMIN_CHANGED,
+        RootOp::AdminChanged { new_admin } if new_admin == zero_account,
+        3
+    );
     check_root_op!(
         GOLDEN_ROOT_OP_POLICY_UPDATED,
-        RootOp::PolicyUpdated { .. },
+        RootOp::PolicyUpdated { ref policy_bytes } if policy_bytes.is_empty(),
         4
     );
-    check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED, RootOp::MemberJoined { .. }, 5);
-    check_root_op!(GOLDEN_ROOT_OP_KEY_DELIVERY, RootOp::KeyDelivery { .. }, 6);
+    check_root_op!(
+        GOLDEN_ROOT_OP_MEMBER_JOINED,
+        RootOp::MemberJoined { member, .. } if member == zero_account,
+        5
+    );
+    check_root_op!(
+        GOLDEN_ROOT_OP_KEY_DELIVERY,
+        RootOp::KeyDelivery {
+            group_id,
+            ref envelope,
+        } if group_id == zero_group
+            && matches!(envelope.recipient, EnvelopeRecipient::Member { .. }),
+        6
+    );
     check_root_op!(
         GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN,
-        RootOp::MemberJoinedOpen { .. },
+        RootOp::MemberJoinedOpen {
+            member, group_id, ..
+        } if member == zero_account && group_id == ContextGroupId::from(marked),
         7
     );
     check_root_op!(
         GOLDEN_ROOT_OP_MEMBER_JOINED_AT,
-        RootOp::MemberJoinedAt { .. },
+        RootOp::MemberJoinedAt {
+            member, joined_at, ..
+        } if member == zero_account && joined_at == 0,
         8
     );
     check_root_op!(
         GOLDEN_ROOT_OP_NAMESPACE_CREATED,
-        RootOp::NamespaceCreated { .. },
+        RootOp::NamespaceCreated { founder, .. } if founder == AccountId::from(marked),
         9
     );
     check_root_op!(
         GOLDEN_ROOT_OP_MEMBER_JOINED_VIA_TEE,
-        RootOp::MemberJoinedViaTeeAttestation { .. },
+        RootOp::MemberJoinedViaTeeAttestation {
+            group_id,
+            member,
+            quote_hash,
+            ref mrtd,
+            ref rtmr0,
+            ref rtmr1,
+            ref rtmr2,
+            ref rtmr3,
+            ref tcb_status,
+            ref role,
+            ..
+        } if group_id == zero_group
+            && member == PublicKey::from([0u8; 32])
+            && quote_hash == [0u8; 32]
+            && mrtd.is_empty()
+            && rtmr0.is_empty()
+            && rtmr1.is_empty()
+            && rtmr2.is_empty()
+            && rtmr3.is_empty()
+            && tcb_status.is_empty()
+            && *role == GroupMemberRole::ReadOnlyTee,
         10
     );
 
@@ -872,7 +1080,7 @@ fn sample_group_id() -> ContextGroupId {
 
 #[test]
 fn sign_and_verify_round_trip() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
@@ -893,7 +1101,7 @@ fn sign_and_verify_round_trip() {
 
 #[test]
 fn wrong_key_fails() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let other = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
@@ -918,7 +1126,7 @@ fn wrong_key_fails() {
 
 #[test]
 fn tampered_op_fails() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
@@ -940,7 +1148,7 @@ fn tampered_op_fails() {
 
 #[test]
 fn replay_distinct_content_hash() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
@@ -978,7 +1186,7 @@ fn replay_distinct_content_hash() {
 
 #[test]
 fn signable_bytes_deterministic() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let pk = sk.public_key();
     let s = SignableGroupOp {
@@ -1006,7 +1214,7 @@ fn sample_namespace_id() -> NamespaceId {
 
 #[test]
 fn namespace_op_sign_verify_root() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let op = SignedNamespaceOp::sign(
@@ -1029,7 +1237,7 @@ fn namespace_op_sign_verify_root() {
 
 #[test]
 fn namespace_op_sign_verify_group() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let encrypted = EncryptedGroupOp {
@@ -1057,7 +1265,7 @@ fn namespace_op_sign_verify_group() {
 
 #[test]
 fn namespace_op_tampered_fails() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let mut op = SignedNamespaceOp::sign(
@@ -1077,7 +1285,7 @@ fn namespace_op_tampered_fails() {
 
 #[test]
 fn namespace_op_content_hash_distinct() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let op1 = SignedNamespaceOp::sign(
@@ -1117,7 +1325,7 @@ fn namespace_op_content_hash_distinct() {
 
 #[test]
 fn namespace_signable_bytes_deterministic() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let pk = sk.public_key();
     let s = SignableNamespaceOp {
@@ -1150,7 +1358,7 @@ fn sample_application_id(seed: u8) -> ApplicationId {
 
 #[test]
 fn cascade_upgrade_sign_verify() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
 
     let op = SignedGroupOp::sign(
@@ -1165,6 +1373,8 @@ fn cascade_upgrade_sign_verify() {
             to_state_version: 3,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.acme.app".to_owned(),
+            version: "1.2.3".to_owned(),
         },
     )
     .expect("sign");
@@ -1182,7 +1392,7 @@ fn cascade_upgrade_distinct_from_single_group_target() {
     // A cascade op and a non-cascade op with the same new bytecode_id/target
     // must produce DIFFERENT content hashes -- otherwise replay/dedup
     // would conflate the two distinct governance intents.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let new_bytecode_id = [11u8; 32];
     let target = sample_application_id(0x77);
@@ -1195,6 +1405,8 @@ fn cascade_upgrade_distinct_from_single_group_target() {
         GroupOp::TargetApplicationSet {
             bytecode_id: new_bytecode_id.into(),
             target_application_id: target,
+            package: "com.acme.app".to_owned(),
+            version: "1.2.3".to_owned(),
         },
     )
     .expect("sign");
@@ -1211,6 +1423,8 @@ fn cascade_upgrade_distinct_from_single_group_target() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.acme.app".to_owned(),
+            version: "1.2.3".to_owned(),
         },
     )
     .expect("sign");
@@ -1233,7 +1447,7 @@ fn cascade_upgrade_from_bytecode_id_changes_hash() {
     // refactor that accidentally collapses `from_bytecode_id` (e.g. by
     // defaulting it or excluding it from signable bytes) would silently
     // break dedup of intent-different cascades.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = PrivateKey::random(&mut rng);
     let new_bytecode_id = [11u8; 32];
     let target = sample_application_id(0x77);
@@ -1250,6 +1464,8 @@ fn cascade_upgrade_from_bytecode_id_changes_hash() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.acme.app".to_owned(),
+            version: "1.2.3".to_owned(),
         },
     )
     .expect("sign");
@@ -1266,6 +1482,8 @@ fn cascade_upgrade_from_bytecode_id_changes_hash() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.acme.app".to_owned(),
+            version: "1.2.3".to_owned(),
         },
     )
     .expect("sign");
@@ -1277,12 +1495,12 @@ fn cascade_upgrade_from_bytecode_id_changes_hash() {
     );
 }
 
-// --- CascadeUpgrade wire-format back-compat (schema v10) ---
+// --- CascadeUpgrade wire-format back-compat (schema v11) ---
 
 #[test]
 fn cascade_upgrade_back_compat_discriminant_fixed() {
     // GOLDEN byte-vector guard on CascadeUpgrade's Borsh discriminant (ordinal
-    // 22 at v10). We decode these EXTERNALLY-FIXED bytes with the CURRENT enum
+    // 22 at v11). We decode these EXTERNALLY-FIXED bytes with the CURRENT enum
     // and never re-encode them here: a same-binary serialize -> deserialize
     // round-trip would NOT catch a mid-enum insertion, because both sides would
     // use the shifted layout and still agree. Decoding frozen bytes is what
@@ -1297,9 +1515,11 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     //       to_state_version: 2,
     //       migration: Some(b"migrate".to_vec()),
     //       cascade_hlc: HybridTimestamp::zero(),
+    //       package: "com.acme.app".to_owned(),
+    //       version: "1.2.3".to_owned(),
     //   }
     const GOLDEN_CASCADE_UPGRADE: &[u8] = &[
-        22, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 22 at v10)
+        22, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 22 at v11)
         3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
         3, 3, // from_bytecode_id
         4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
@@ -1310,6 +1530,9 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
         1, 7, 0, 0, 0, 109, 105, 103, 114, 97, 116, 101, // migration = Some("migrate")
         0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, // cascade_hlc = HybridTimestamp::zero()
+        12, 0, 0, 0, 99, 111, 109, 46, 97, 99, 109, 101, 46, 97, 112,
+        112, // package = "com.acme.app"
+        5, 0, 0, 0, 49, 46, 50, 46, 51, // version = "1.2.3"
     ];
 
     // Up-front: the leading discriminant byte must equal CascadeUpgrade's
@@ -1330,6 +1553,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             to_state_version,
             migration,
             cascade_hlc,
+            package,
+            version,
         } => {
             assert_eq!(from_bytecode_id.to_bytes(), [3u8; 32]);
             assert_eq!(bytecode_id.to_bytes(), [4u8; 32]);
@@ -1337,6 +1562,10 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             assert_eq!(to_state_version, 2);
             assert_eq!(migration, Some(b"migrate".to_vec()));
             assert_eq!(cascade_hlc, HybridTimestamp::zero());
+            assert_eq!(
+                (package.as_str(), version.as_str()),
+                ("com.acme.app", "1.2.3")
+            );
         }
         other => panic!(
             "frozen CascadeUpgrade bytes (discriminant 22) decoded as {other:?}; a \
@@ -1352,7 +1581,7 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
 // can't re-open the window.
 #[test]
 fn pre_flag_day_group_op_version_is_rejected() {
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     // A struct-shaped op carrying the immediately-previous schema version.
     // `verify_signature` must reject on the version check alone - before
     // touching the (here bogus) signature.
@@ -1377,7 +1606,7 @@ fn pre_flag_day_group_op_version_is_rejected() {
 
 #[test]
 fn pre_flag_day_namespace_op_version_is_rejected() {
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let stale = SignedNamespaceOp {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
         namespace_id: sample_group_id().to_bytes().into(),
@@ -1388,6 +1617,7 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
             policy_bytes: vec![],
         }),
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     assert!(
         matches!(
@@ -1421,7 +1651,7 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
         op: GroupOp,
         signature: [u8; 64],
     }
-    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let v7 = V7SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
         group_id: sample_group_id().to_bytes(),
@@ -1484,7 +1714,7 @@ mod governance_op_storage_roundtrip {
     /// but not cryptographically meaningful — these tests exercise the codec, and
     /// signature verification has its own coverage.
     fn sample_join_account() -> Box<JoinAccountCredential> {
-        let root = PrivateKey::random(&mut OsRng).public_key();
+        let root = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
         let genesis = calimero_account::AccountGenesis::new(root);
 
@@ -1494,7 +1724,7 @@ mod governance_op_storage_roundtrip {
 
                 device: calimero_account::DeviceId::from([0x3E; 32]),
 
-                sign_pk: PrivateKey::random(&mut OsRng).public_key(),
+                sign_pk: PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
 
                 kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
 
@@ -1525,12 +1755,12 @@ mod governance_op_storage_roundtrip {
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 
     fn signed(op: NamespaceOp) -> SignedNamespaceOp {
-        let sk = PrivateKey::random(&mut OsRng);
+        let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         SignedNamespaceOp::sign(&sk, [0x77; 32].into(), vec![[0x01; 32], [0x02; 32]], 7, op)
             .expect("sign namespace op")
     }
@@ -1562,12 +1792,79 @@ mod governance_op_storage_roundtrip {
     }
 
     #[test]
+    fn an_endorsed_envelope_roundtrips_and_keeps_the_op_it_was() {
+        // The property the endorsement design rests on: `content_hash` is taken
+        // over the SIGNABLE form, which does not carry the endorsement, so an
+        // admitter can attach consent to an op it did not author and every
+        // replica still agrees which op it is — and the joiner's signature
+        // still verifies over what the joiner actually signed.
+        //
+        // If the field ever reaches `to_signable`, attaching consent becomes a
+        // fork: the relaying node's copy and the author's copy would have
+        // different ids for the same op. That failure would surface far from
+        // here, as peers disagreeing about history.
+        let unendorsed = signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: calimero_account::AccountId::from(
+                *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
+            ),
+            signed_invitation: sample_invitation(),
+            joined_at: 1_800_000_000,
+            account: sample_join_account(),
+        }));
+
+        let id_before = unendorsed.content_hash().expect("hash the unendorsed op");
+        unendorsed
+            .verify_signature()
+            .expect("the author's signature verifies");
+
+        let mut endorsed = unendorsed.clone();
+        endorsed.admitter_endorsement = Some(Box::new(deterministic_endorsement()));
+
+        assert_eq!(
+            endorsed.content_hash().expect("hash the endorsed op"),
+            id_before,
+            "attaching an endorsement must not change the op's id"
+        );
+        assert_eq!(
+            endorsed.signature, unendorsed.signature,
+            "attaching an endorsement must not disturb the author's signature"
+        );
+        endorsed
+            .verify_signature()
+            .expect("the author's signature still verifies once consent is attached");
+
+        // Non-vacuity: the endorsement really is in the encoded envelope. Without
+        // this, the id assertion above would also hold if the field were being
+        // silently dropped, and the test would pass while proving nothing.
+        let bytes_unendorsed = ::borsh::to_vec(&unendorsed).expect("encode unendorsed");
+        let bytes_endorsed = ::borsh::to_vec(&endorsed).expect("encode endorsed");
+        assert_ne!(
+            bytes_unendorsed, bytes_endorsed,
+            "the endorsement must actually be encoded, or the id assertion above \
+             is trivially true"
+        );
+        assert_eq!(
+            bytes_endorsed.len(),
+            // borsh writes `Some` as a 1-byte tag, then the 32-byte signer and
+            // the 64-byte signature.
+            bytes_unendorsed.len() + 96,
+            "an endorsed envelope is exactly the signer and signature longer"
+        );
+
+        // And it survives the store round trip, which is what carries it to
+        // every peer that has to re-check it.
+        assert_roundtrips(&endorsed);
+    }
+
+    #[test]
     fn member_joined_at_roundtrips_through_stored_signed_entry() {
         // The invitation join carries a nested `SignedGroupOpenInvitation`, the
         // largest and most field-rich op payload — the one most exposed to a
         // codec asymmetry.
         assert_roundtrips(&signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member: calimero_account::AccountId::from(*PrivateKey::random(&mut OsRng).public_key()),
+            member: calimero_account::AccountId::from(
+                *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
+            ),
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
             account: sample_join_account(),
@@ -1594,7 +1891,7 @@ mod governance_op_storage_roundtrip {
             },
             RootOp::AdminChanged {
                 new_admin: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
             },
             RootOp::PolicyUpdated {
@@ -1602,21 +1899,21 @@ mod governance_op_storage_roundtrip {
             },
             RootOp::MemberJoined {
                 member: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
                 signed_invitation: sample_invitation(),
                 account: sample_join_account(),
             },
             RootOp::MemberJoinedOpen {
                 member: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
                 group_id: [7; 32].into(),
                 account: sample_join_account(),
             },
             RootOp::MemberJoinedAt {
                 member: calimero_account::AccountId::from(
-                    *PrivateKey::random(&mut OsRng).public_key(),
+                    *PrivateKey::random(&mut UnwrapErr(SysRng)).public_key(),
                 ),
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
@@ -1675,6 +1972,71 @@ mod governance_op_storage_roundtrip {
         assert!(ok.validate().is_ok(), "a normal ciphertext must pass");
     }
 
+    /// Build a `MemberJoinedAt` around `invitation`, the shape a joiner sends.
+    fn join_op_with(invitation: SignedGroupOpenInvitation) -> SignedNamespaceOp {
+        let account = sample_join_account();
+        SignedNamespaceOp {
+            version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
+            namespace_id: NamespaceId::from([0u8; 32]),
+            parent_op_hashes: vec![[0u8; 32]],
+            signer: PublicKey::from([0u8; 32]),
+            nonce: 1,
+            op: NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member: account.statement.account,
+                signed_invitation: invitation,
+                joined_at: 1_900_000_000,
+                account,
+            }),
+            signature: [0u8; 64],
+            admitter_endorsement: None,
+        }
+    }
+
+    #[test]
+    fn validate_bounds_admitter_addrs() {
+        // `admitter_addrs` is outside the inviter's signature, so anyone
+        // relaying an invitation may rewrite it — and a joiner acts on it by
+        // dialing. Unbounded, that is a way to point somebody else's node at a
+        // list of the sender's choosing.
+        let mut invitation = sample_invitation();
+        invitation.admitter_addrs =
+            vec!["/ip4/10.0.0.1/tcp/1".to_owned(); bounds::MAX_ADMITTER_ADDRS + 1];
+        assert!(
+            join_op_with(invitation).validate().is_err(),
+            "an invitation offering more addresses than the bound must be rejected"
+        );
+
+        let mut invitation = sample_invitation();
+        invitation.admitter_addrs = vec!["x".repeat(bounds::MAX_ADMITTER_ADDR_LEN + 1)];
+        assert!(
+            join_op_with(invitation).validate().is_err(),
+            "a single oversized address must be rejected too — a short list of \
+             enormous strings is the same attack"
+        );
+
+        let mut invitation = sample_invitation();
+        invitation.admitter_addrs = vec![
+            "/ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample".to_owned(),
+            "/ip4/198.51.100.4/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWTarget"
+                .to_owned(),
+        ];
+        assert!(
+            join_op_with(invitation).validate().is_ok(),
+            "a realistic pair of addresses, including a relay circuit, must pass"
+        );
+    }
+
+    #[test]
+    fn validate_bounds_admitters() {
+        let mut invitation = sample_invitation();
+        invitation.invitation.admitters =
+            vec![calimero_account::AccountId::from([1u8; 32]); bounds::MAX_ADMITTERS + 1];
+        assert!(
+            join_op_with(invitation).validate().is_err(),
+            "an invitation naming more admitters than the bound must be rejected"
+        );
+    }
+
     #[test]
     fn validate_bounds_parent_op_hashes() {
         let mut op = SignedNamespaceOp {
@@ -1687,6 +2049,7 @@ mod governance_op_storage_roundtrip {
                 new_admin: calimero_account::AccountId::from([1u8; 32]),
             }),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         };
         assert!(
             op.validate().is_err(),
@@ -1698,7 +2061,253 @@ mod governance_op_storage_roundtrip {
     }
 }
 
+// --- Registry coordinates on the upgrade ops (schema v11) ---
+
+#[test]
+fn target_application_set_round_trips_registry_coordinates() {
+    // Coordinates are what let a receiver resolve the version from its OWN
+    // registry, so they must survive the borsh round trip the DAG stores.
+    let op = GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from([0x33; 32]),
+        target_application_id: sample_application_id(0x44),
+        package: "com.calimero.migration-suite".to_owned(),
+        version: "2.0.0".to_owned(),
+    };
+    let bytes = borsh::to_vec(&op).expect("serialize");
+    let back: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
+    match back {
+        GroupOp::TargetApplicationSet {
+            package, version, ..
+        } => {
+            assert_eq!(package, "com.calimero.migration-suite");
+            assert_eq!(version, "2.0.0");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn cascade_upgrade_round_trips_registry_coordinates() {
+    let op = GroupOp::CascadeUpgrade {
+        from_bytecode_id: BytecodeId::from([0x11; 32]),
+        bytecode_id: BytecodeId::from([0x22; 32]),
+        target_application_id: sample_application_id(0x44),
+        to_state_version: 2,
+        migration: Some(b"migrate_v1_to_v2".to_vec()),
+        cascade_hlc: HybridTimestamp::zero(),
+        package: "com.calimero.migration-suite".to_owned(),
+        version: "2.0.0".to_owned(),
+    };
+    let bytes = borsh::to_vec(&op).expect("serialize");
+    let back: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
+    match back {
+        GroupOp::CascadeUpgrade {
+            package, version, ..
+        } => {
+            assert_eq!(package, "com.calimero.migration-suite");
+            assert_eq!(version, "2.0.0");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+/// One `TargetApplicationSet` naming `package`@`version`, for the assertions below.
+fn sample_target_application_set(package: &str, version: &str) -> GroupOp {
+    GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from([0x33; 32]),
+        target_application_id: sample_application_id(0x44),
+        package: package.to_owned(),
+        version: version.to_owned(),
+    }
+}
+
+/// One `ContextRegistered` naming `coords`, for the wire assertions below.
+fn sample_context_registered((package, version): (&str, &str)) -> GroupOp {
+    GroupOp::ContextRegistered {
+        context_id: ContextId::from([0x55; 32]),
+        application_id: sample_application_id(0x44),
+        blob_id: calimero_primitives::blobs::BlobId::from([0x66; 32]),
+        source: "https://reg.example/app-1.0.0.mpk".to_owned(),
+        service_name: None,
+        package: package.to_owned(),
+        version: version.to_owned(),
+    }
+}
+
+#[test]
+fn context_registered_round_trips_registry_coordinates() {
+    // A joiner resolves the application from its OWN registry, so the pair the
+    // registering node announced has to survive the DAG's borsh round trip.
+    let bytes =
+        borsh::to_vec(&sample_context_registered(("com.acme.app", "1.2.3"))).expect("serialize");
+    let back: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
+    match back {
+        GroupOp::ContextRegistered {
+            package, version, ..
+        } => {
+            assert_eq!(package, "com.acme.app");
+            assert_eq!(version, "1.2.3");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn schema_version_is_bumped_for_the_coordinate_fields() {
+    assert_eq!(
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 11,
+        "adding fields to existing GroupOp variants must bump the strictly-checked schema version"
+    );
+}
+
+#[test]
+fn v10_target_application_set_bytes_are_rejected_not_misparsed() {
+    // Half one: a v10 `TargetApplicationSet` is two coordinate strings short of
+    // the v11 layout, so the reader runs off the end rather than misreading a
+    // signature.
+    #[derive(::borsh::BorshSerialize)]
+    struct V10TargetApplicationSet {
+        discriminant: u8, // `GroupOp` ordinal 7; v10 carried no coordinates
+        bytecode_id: [u8; 32],
+        target_application_id: [u8; 32],
+    }
+    #[derive(::borsh::BorshSerialize)]
+    struct V10SignedGroupOp {
+        version: u8,
+        group_id: [u8; 32],
+        parent_op_hashes: Vec<[u8; 32]>,
+        signer: PublicKey,
+        nonce: u64,
+        op: V10TargetApplicationSet,
+        signature: [u8; 64],
+    }
+
+    let signer = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let bytes = ::borsh::to_vec(&V10SignedGroupOp {
+        version: 10,
+        group_id: sample_group_id().to_bytes(),
+        parent_op_hashes: vec![],
+        signer,
+        nonce: 1,
+        op: V10TargetApplicationSet {
+            discriminant: 7,
+            bytecode_id: [0x33; 32],
+            target_application_id: [0x44; 32],
+        },
+        signature: [0u8; 64],
+    })
+    .expect("encode v10");
+    assert!(
+        ::borsh::from_slice::<SignedGroupOp>(&bytes).is_err(),
+        "v10 TargetApplicationSet bytes must not decode as a v11 op"
+    );
+
+    // Half two: a v10 op whose variant IS layout-compatible decodes fine, so the
+    // strictly-equal version check is the only thing standing between it and a
+    // signature verification. Pinned to the literal 10 the wire actually carries.
+    let compatible = SignedGroupOp {
+        version: 10,
+        group_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        signer,
+        nonce: 1,
+        op: GroupOp::Noop,
+        signature: [0u8; 64],
+    };
+    let decoded: SignedGroupOp =
+        ::borsh::from_slice(&::borsh::to_vec(&compatible).expect("encode v10 noop"))
+            .expect("a layout-compatible v10 op must decode");
+    assert_eq!(
+        decoded.version, 10,
+        "the version must survive the round trip"
+    );
+    assert!(
+        matches!(
+            decoded.verify_signature(),
+            Err(GovernanceError::SchemaVersion { .. })
+        ),
+        "a v10 op must be rejected on the version check, got {:?}",
+        decoded.verify_signature()
+    );
+}
+
+#[test]
+fn oversized_registry_coordinates_are_rejected_before_apply() {
+    // `validate()` is the anti-amplification gate the apply path runs before any
+    // crypto; the coordinates must be capped there, not at URL-build time.
+    let long = "a".repeat(bounds::MAX_COORD_BYTES + 1);
+    assert!(sample_target_application_set(&long, "1.0.0")
+        .validate()
+        .is_err());
+    assert!(sample_target_application_set("pkg", &long)
+        .validate()
+        .is_err());
+    assert!(sample_target_application_set("pkg", "1.0.0")
+        .validate()
+        .is_ok());
+
+    let cascade = |package: &str, version: &str, migration| GroupOp::CascadeUpgrade {
+        from_bytecode_id: BytecodeId::from([0x11; 32]),
+        bytecode_id: BytecodeId::from([0x22; 32]),
+        target_application_id: sample_application_id(0x44),
+        to_state_version: 2,
+        migration,
+        cascade_hlc: HybridTimestamp::zero(),
+        package: package.to_owned(),
+        version: version.to_owned(),
+    };
+    assert!(cascade(&long, "1.0.0", None).validate().is_err());
+    assert!(cascade("pkg", &long, None).validate().is_err());
+    // The migration bound this arm was restructured around must still fire.
+    assert!(
+        cascade("pkg", "1.0.0", Some(vec![0u8; bounds::MAX_BLOB_BYTES + 1]))
+            .validate()
+            .is_err()
+    );
+    assert!(cascade("pkg", "1.0.0", None).validate().is_ok());
+
+    assert!(sample_context_registered((&long, "1.0.0"))
+        .validate()
+        .is_err());
+    assert!(sample_context_registered(("pkg", &long))
+        .validate()
+        .is_err());
+    assert!(sample_context_registered(("pkg", "1.0.0"))
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn an_empty_coordinate_fails_validation() {
+    // An empty half addresses no registry, so it is a decode-gate rejection
+    // rather than a fetch that quietly resolves nothing.
+    assert!(
+        sample_target_application_set("", "1.0.0")
+            .validate()
+            .is_err(),
+        "empty package"
+    );
+    assert!(
+        sample_target_application_set("pkg", "").validate().is_err(),
+        "empty version"
+    );
+    assert!(sample_target_application_set("pkg", "1.0.0")
+        .validate()
+        .is_ok());
+}
+
 /// All-zero credential, so the printed vector is reproducible.
+/// A fixed endorsement, so the golden vector below is reproducible.
+fn deterministic_endorsement() -> AdmitterEndorsement {
+    AdmitterEndorsement::sign(
+        &PrivateKey::from([9u8; 32]),
+        &[0u8; 32],
+        &AccountId::from([0u8; 32]),
+        &[0u8; 32],
+    )
+    .expect("sign endorsement")
+}
+
 fn deterministic_credential() -> Box<JoinAccountCredential> {
     let genesis = calimero_account::AccountGenesis::new(PublicKey::from([0u8; 32]));
     Box::new(JoinAccountCredential {
@@ -1737,7 +2346,7 @@ fn emit_golden_root_op_vectors() {
             admitters: Vec::new(),
         },
         inviter_signature: String::new(),
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
         application_id: None,
         bytecode_id: None,
     };
@@ -1845,10 +2454,30 @@ fn a_sealed_root_op_is_distinguishable_from_a_group_op() {
 ///
 /// `root_op_is_sealable` is an exhaustive match, so a twelfth variant fails to
 /// compile until it is classified. This test states what the classification has
-/// to be for the five that carry no bootstrap constraint, so a future edit that
-/// reclassifies one has to argue with a test rather than only with a reviewer.
+/// to be, so a future edit that reclassifies one has to argue with a test rather
+/// than only with a reviewer.
 #[test]
-fn only_the_admin_published_variants_are_sealable() {
+fn only_the_two_bootstrap_variants_travel_in_the_clear() {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    let invitation = SignedGroupOpenInvitation {
+        inviter_account: None,
+        invitation: GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from([0u8; 32]),
+            group_id: ContextGroupId::from([0u8; 32]),
+            expiration_timestamp: 0,
+            invitation_nonce: [0u8; 32],
+            invited_role: 1,
+            admitters: Vec::new(),
+        },
+        inviter_signature: String::new(),
+        admitter_addrs: Vec::new(),
+        application_id: None,
+        bytecode_id: None,
+    };
+
     assert!(root_op_is_sealable(&RootOp::AdminChanged {
         new_admin: calimero_account::AccountId::from([1u8; 32]),
     }));
@@ -1871,10 +2500,84 @@ fn only_the_admin_published_variants_are_sealable() {
         admin: calimero_account::AccountId::from([4u8; 32]),
     }));
 
+    // Published by a key-holder like the five above, so it seals. The variant
+    // that looks least sealable, because its RECIPIENT holds no key — but the
+    // recipient no longer reads it from the DAG: a participant with no key
+    // pulls one over the direct-stream path, which authenticates the key by
+    // content rather than trusting a publisher's signature. Sealing it keeps
+    // the delivery metadata (which account, at which causal position) off the
+    // namespace topic.
+    assert!(root_op_is_sealable(&RootOp::KeyDelivery {
+        group_id: ContextGroupId::from([6u8; 32]),
+        envelope: KeyEnvelope {
+            // Member-addressed: the bootstrap form, which `EnvelopeRecipient`
+            // documents as un-retirable because a device link is itself an
+            // encrypted op. Sealing the carrier does not change the addressing.
+            recipient: EnvelopeRecipient::Member {
+                identity: PublicKey::from([7u8; 32]),
+                ephemeral_pk: PublicKey::from([8u8; 32]),
+            },
+            sender: PublicKey::from([9u8; 32]),
+            nonce: [0u8; 12],
+            ciphertext: vec![1, 2, 3],
+            signature: [0u8; 64],
+        },
+    }));
+
+    // The joins whose PUBLISHER holds the namespace key, which is what sealing
+    // needs -- not the joiner's own key state, which is what makes them read
+    // like exceptions.
+    //
+    // `MemberJoinedOpen` is published by an inherited member reaching into an
+    // Open subgroup: it lacks the SUBGROUP key, which is the whole point of the
+    // op, and holds the namespace key the seal uses.
+    // `MemberJoinedViaTeeAttestation` is published by the ADMITTER, never by the
+    // attested node.
+    assert!(root_op_is_sealable(&RootOp::MemberJoinedOpen {
+        member: calimero_account::AccountId::from([5u8; 32]),
+        group_id: ContextGroupId::from([6u8; 32]),
+        account: deterministic_credential(),
+    }));
+    assert!(root_op_is_sealable(
+        &RootOp::MemberJoinedViaTeeAttestation {
+            group_id: ContextGroupId::from([6u8; 32]),
+            member: PublicKey::from([7u8; 32]),
+            quote_hash: [0u8; 32],
+            mrtd: String::new(),
+            rtmr0: String::new(),
+            rtmr1: String::new(),
+            rtmr2: String::new(),
+            rtmr3: String::new(),
+            tcb_status: String::new(),
+            role: calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
+            account: deterministic_credential(),
+        }
+    ));
+
+    // The three that cannot be sealed, for two different reasons.
+    //
+    // The invitation joins are published by the JOINER, before any key has
+    // reached it -- and publishing one is what causes an admin to send a key.
+    // Sealing them under a key the publisher obtains BY publishing them is
+    // circular, and the failure is total: the publish is refused, no admin ever
+    // learns of the join, and nobody joins a namespace at all. `MemberJoined` is
+    // the non-expiring form and is emitted by mero-js's `signMemberJoinOp`, so
+    // sealing it locks out browser clients holding a non-expiring invitation.
+    // Sealing either needs a different publisher, not a reclassification here.
+    assert!(!root_op_is_sealable(&RootOp::MemberJoined {
+        member: calimero_account::AccountId::from([5u8; 32]),
+        signed_invitation: invitation.clone(),
+        account: deterministic_credential(),
+    }));
+    assert!(!root_op_is_sealable(&RootOp::MemberJoinedAt {
+        member: calimero_account::AccountId::from([5u8; 32]),
+        signed_invitation: invitation,
+        joined_at: 0,
+        account: deterministic_credential(),
+    }));
+
     // `NamespaceCreated` is genesis: there is no namespace key yet to seal it
-    // under, and this op's own apply is what establishes the founder. Asserted
-    // because it is the variant most likely to look sealable to a future reader
-    // — it is admin-published, like the five, and differs only in when it runs.
+    // under, and this op's own apply is what establishes the founder.
     assert!(!root_op_is_sealable(&RootOp::NamespaceCreated {
         founder: calimero_account::AccountId::from([5u8; 32]),
         account: deterministic_credential(),

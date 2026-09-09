@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
-use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_context_config::types::{BytecodeId, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
-use rand::Rng;
+use rand::RngExt;
 use tracing::{info, warn};
 
 use crate::ContextManager;
@@ -35,7 +35,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let group_id = group_id.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::thread_rng().gen();
+            let bytes: [u8; 32] = rand::rng().random();
             bytes.into()
         });
 
@@ -132,7 +132,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     return ActorResponse::reply(Err(err));
                 }
             }
-            parent_meta.target_application_id
+            parent_meta.target.application_id
         } else {
             application_id
         };
@@ -156,6 +156,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // + manifest package matches the row's package).
         let row_blob = *app_meta.bytecode.blob_id().as_ref();
         let app_package = app_meta.package.clone();
+        let app_version = app_meta.version.clone();
         let requested_bytecode_id = bytecode_id;
 
         let datastore = self.datastore.clone();
@@ -188,12 +189,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
         };
         let reservation_meta = GroupMetaValue {
             // The reservation only holds the id slot; use the verified
-            // application-row blob (never the caller's still-unverified
-            // `requested_bytecode_id`) so a concurrent reader can't observe an
-            // unverified `bytecode_id`. The async body overwrites this with the
-            // final, verified `bytecode_id` on success.
-            bytecode_id: row_blob,
-            target_application_id: effective_application_id,
+            // application-row blob, never the caller's still-unverified
+            // `requested_bytecode_id`. The async body overwrites this with the
+            // final, verified target on success.
+            target: GroupTarget {
+                application_id: effective_application_id,
+                bytecode_id: row_blob,
+                package: app_package.clone(),
+                version: app_version.clone(),
+            },
             created_at: reservation_now,
             admin_identity: admin_account,
             owner_identity: admin_account,
@@ -220,8 +224,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // second silent `unwrap_or(0)`. The final meta and the
                 // reservation it replaces then carry the same `created_at`.
                 let meta = GroupMetaValue {
-                    bytecode_id: bytecode_id.to_bytes(),
-                    target_application_id: effective_application_id,
+                    target: GroupTarget {
+                        application_id: effective_application_id,
+                        bytecode_id: bytecode_id.to_bytes(),
+                        package: app_package.clone(),
+                        version: app_version.clone(),
+                    },
                     created_at: reservation_now,
                     admin_identity: admin_account,
                     // Creator is the initial Owner. Transferable via
@@ -263,7 +271,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     )?;
 
                     // Generate and store the group encryption key.
-                    let group_key: [u8; 32] = rand::thread_rng().gen();
+                    //
+                    // Minted for every group whatever its visibility: it is the
+                    // key this group uses if it is ever `Restricted`. An
+                    // Open-chain subgroup is encrypted under the NAMESPACE key
+                    // instead (`calimero_governance_store::key_covering_group`),
+                    // leaving this row unused until a
+                    // `SubgroupVisibilitySet -> Restricted` makes it the group's
+                    // real key — that flip establishes no key of its own, and an
+                    // apply handler could not mint one consistently across peers.
+                    // Unused is not the same as free to hand out: no reader may
+                    // serve or adopt this row while the chain is Open.
+                    let group_key: [u8; 32] = rand::rng().random();
                     let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     group_key_id = Some(key_id);
                     tracing::debug!(
@@ -557,6 +576,32 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             }
                         }
                     }
+
+                    // Put the target on the DAG so a node that only backfills
+                    // (a paired device) learns it too. Best effort: it is applied
+                    // locally before the publish.
+                    match calimero_governance_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &signer_sk,
+                        GroupOp::TargetApplicationSet {
+                            bytecode_id,
+                            target_application_id: effective_application_id,
+                            package: app_package.to_string(),
+                            version: app_version.to_string(),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => report.observe("create_group", "TargetApplicationSet"),
+                        Err(e) => warn!(
+                            ?e,
+                            ?group_id,
+                            "failed to publish the namespace's target application"
+                        ),
+                    }
                 }
 
                 // Every device this account already certified belongs in the
@@ -706,6 +751,7 @@ async fn verify_requested_bytecode_id(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_client::group::CreateGroupRequest;
@@ -747,8 +793,12 @@ mod tests {
             .save(
                 group,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xCC; 32]),
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: admin_account,
                     owner_identity: admin_account,
@@ -895,8 +945,12 @@ mod tests {
             .save(
                 &group,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xCC; 32]),
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1,
                     admin_identity: crate::test_support::account_for(&admin),
                     owner_identity: crate::test_support::account_for(&admin),
@@ -970,6 +1024,47 @@ mod tests {
                 .expect("read the bindings"),
             "the device this account already certified has to be bound in the \
              namespace the creation just gained"
+        );
+    }
+
+    /// The ladder rung is written only by the target op, so it proves the op applied.
+    #[actix::test]
+    async fn creating_a_namespace_records_its_target_in_governance_state() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: ApplicationId::from(APP),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let rungs = calimero_governance_store::UpgradeLadderRepository::new(&store)
+            .load(&created.group_id)
+            .expect("read the ladder");
+        let [rung] = rungs.as_slice() else {
+            panic!("the creation must record exactly one target rung, got {rungs:?}");
+        };
+        assert_eq!(
+            rung.application_id,
+            ApplicationId::from(APP),
+            "the rung names the application the namespace was created for"
+        );
+        assert_eq!(
+            rung.bytecode_id, [0x01; 32],
+            "the rung names the bytecode blob the application row resolves to"
         );
     }
 }

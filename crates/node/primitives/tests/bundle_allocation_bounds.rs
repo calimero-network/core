@@ -17,7 +17,8 @@ use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -133,7 +134,7 @@ const SERVICES: usize = 8;
 
 /// A signed `.mpk` whose `SERVICES` services all name one `app.wasm`.
 fn many_services_one_artifact(dir: &TempDir, wasm: &[u8]) -> Vec<u8> {
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let services: Vec<_> = (0..SERVICES)
         .map(|i| {
             serde_json::json!({
@@ -208,7 +209,7 @@ const PADDING_BYTES: usize = 64 * 1024 * 1024;
 /// A signed `.mpk` with `services` distinct tiny wasm artifacts, each named by
 /// one service, optionally behind a `padding` byte entry the walk must cross.
 fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> Vec<u8> {
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasms: Vec<Vec<u8>> = (0..services)
         .map(|i| format!("wasm for service {i}").into_bytes())
         .collect();

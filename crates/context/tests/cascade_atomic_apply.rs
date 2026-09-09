@@ -8,6 +8,7 @@
 //! Harness helpers (`empty_store`/`meta`/`create_group`/consts) are copied
 //! verbatim from `cascade_apply_walk.rs`.
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
@@ -23,7 +24,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
 const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
@@ -45,8 +47,12 @@ fn meta(
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: target,
+        target: GroupTarget {
+            application_id: target,
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -79,7 +85,7 @@ fn create_group(
 
 #[test]
 fn cascade_upgrade_atomic_op_sets_target_bytecode_id_and_migration_and_records_cascade_hlc() {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let store = empty_store();
@@ -108,6 +114,8 @@ fn cascade_upgrade_atomic_op_sets_target_bytecode_id_and_migration_and_records_c
             to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");
@@ -119,8 +127,8 @@ fn cascade_upgrade_atomic_op_sets_target_bytecode_id_and_migration_and_records_c
             .load(gid)
             .unwrap()
             .expect("meta");
-        assert_eq!(m.bytecode_id, BYTECODE_ID_2);
-        assert_eq!(m.target_application_id, app_id_2());
+        assert_eq!(m.target.bytecode_id, BYTECODE_ID_2);
+        assert_eq!(m.target.application_id, app_id_2());
         assert_eq!(m.migration, Some(b"migrate_v2".to_vec()));
         let up = UpgradesRepository::new(&store)
             .load(gid)
@@ -154,7 +162,7 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
     use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
     use calimero_dag::DagStore;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
@@ -203,6 +211,8 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
             to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign op_c");
@@ -239,7 +249,7 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         // Still on K1 while op_c is pending.
         let pre = MetaRepository::new(&store_b).load(&root).unwrap().unwrap();
         assert_eq!(
-            pre.bytecode_id, BYTECODE_ID_1,
+            pre.target.bytecode_id, BYTECODE_ID_1,
             "replica B must still be on K1 while op_c is pending"
         );
         let p = dag
@@ -255,11 +265,11 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         for gid in [&root, &child] {
             let m = MetaRepository::new(store).load(gid).unwrap().expect("meta");
             assert_eq!(
-                m.bytecode_id, BYTECODE_ID_2,
+                m.target.bytecode_id, BYTECODE_ID_2,
                 "replica {label}: bytecode_id == K2"
             );
             assert_eq!(
-                m.target_application_id,
+                m.target.application_id,
                 app_id_2(),
                 "replica {label}: target == APP_ID_2"
             );

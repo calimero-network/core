@@ -13,7 +13,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 // Re-export the unified CrdtType from primitives
-pub use calimero_primitives::crdt::CrdtType;
+pub use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 
 /// Storage strategy for a CRDT type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +67,25 @@ pub trait CrdtMeta {
     }
 }
 
+/// # Declaring a strategy is required
+///
+/// A `Mergeable` impl alone does not say whether anything will CALL it. Stored
+/// as a collection value, a type that declares nothing resolves last-write-wins
+/// and its `merge` never runs — it compiles, type-checks, and decides nothing.
+/// That is not hypothetical: this crate's own reference app shipped in exactly
+/// that state, and so did the `Entry`-API insert path inside this crate.
+///
+/// So [`MergeStrategy`] is a supertrait, and only the two macros supply it:
+///
+/// - `#[derive(Mergeable)]` — structural. Field-by-field delegation, which the
+///   storage layer reaches on its own, so nothing is dispatched.
+/// - `#[app::mergeable]` — dispatched. The type gets a `CustomTypeId`, entries
+///   holding it are stamped, and the merge point calls this rule.
+///
+/// Hand-writing `impl Mergeable` without either is a compile error. Root state
+/// is unaffected in behaviour — it has its own merge path — but still declares,
+/// so the distinction is recorded on every type rather than assumed.
+///
 /// Marker trait for types that can be merged (all CRDTs).
 ///
 /// `RekeyTarget` is a **supertrait**: a `Mergeable` type that nests a collection
@@ -83,13 +102,91 @@ pub trait CrdtMeta {
             use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` \
             on your own struct (every field must itself be `Mergeable`)."
 )]
-pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+pub trait Mergeable: crate::collections::rekey::RekeyTarget + MergeStrategy {
     /// Merge with another instance of the same type
     ///
     /// # Errors
     ///
     /// Returns error if merge fails (e.g., incompatible states)
     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
+}
+
+/// How a type's [`Mergeable::merge`] is reached when it is stored as a
+/// collection VALUE.
+///
+/// `Mergeable` alone does not answer that, and the difference is not cosmetic.
+/// A collection entry is merged by matching on its `crdt_type`; a value type
+/// that declares nothing resolves last-write-wins with its `merge` never
+/// consulted. So a hand-written rule can compile, type-check, pass a
+/// convergence test, and still not be the thing deciding the outcome — which is
+/// exactly what shipped here for months.
+///
+/// Implemented ONLY by the two macros, which is the point: a hand-written
+/// `impl Mergeable` gets neither, and the compiler asks which you meant rather
+/// than letting the question go unasked.
+///
+/// - `#[derive(Mergeable)]` → structural. Field-by-field delegation, the same
+///   answer the storage layer reaches on its own, so nothing is dispatched and
+///   nothing is lost.
+/// - `#[app::mergeable]` → dispatched. The type carries a [`CustomTypeId`], the
+///   entry is stamped with it, and the merge point calls this rule.
+///
+/// A type used ONLY as root state needs neither — the root has its own merge
+/// path — which is why this is required at the collection-value position rather
+/// than as a supertrait of `Mergeable`.
+#[diagnostic::on_unimplemented(
+    message = "(calimero)> `{Self}` implements `Mergeable` but never declared how it merges",
+    label = "needs `#[app::mergeable]` or `#[derive(Mergeable)]`",
+    note = "Stored as a COLLECTION VALUE, a type that declares nothing resolves \
+            last-write-wins and its `merge` is never called — it compiles and silently \
+            decides nothing. Root state has its own merge path and is unaffected, but the \
+            declaration is still required so the distinction is recorded rather than assumed.",
+    note = "Add `#[app::mergeable]` to have the merge dispatched, or `#[derive(Mergeable)]` \
+            if plain field-by-field delegation is what you want (the storage layer reaches \
+            that answer anyway, with no wasm call)."
+)]
+pub trait MergeStrategy {
+    /// Whether the merge point calls this type's own rule.
+    ///
+    /// `false` means the type converges structurally and its `merge` runs only
+    /// on a root-blob conflict.
+    const DISPATCHED: bool;
+}
+
+/// An app-defined type whose [`Mergeable::merge`] is dispatched at merge time.
+///
+/// [`Mergeable`] alone is not enough. A collection entry is merged by matching
+/// on its `crdt_type`, so a type the storage layer cannot recognise resolves
+/// last-write-wins and the app's `merge` is never consulted. Implementing this
+/// gives the type a [`CustomTypeId`] to be stamped and dispatched on.
+///
+/// Emitted by `#[app::mergeable]`. Implementing it by hand means owning the id,
+/// which is wire format — see [`CustomTypeId`].
+///
+/// # Contract
+///
+/// Dispatch hands merge authority to app code, so `merge` must be
+/// **deterministic**, **commutative**, **associative**, **idempotent** and
+/// **total**. The last one is the trap: `Err` is not validation, it is a
+/// refusal to converge — the entity stays divergent and repair retries it
+/// indefinitely. Reject bad input on the write path, not here.
+pub trait CustomMergeable: 'static {
+    /// Stable identity for this type on the wire.
+    const TYPE_ID: CustomTypeId;
+
+    /// Register this type's merge under [`Self::TYPE_ID`].
+    ///
+    /// Returns whether this was a NEW registration, so the cascade walk
+    /// terminates on a self-referential value graph.
+    ///
+    /// The body is macro-generated, which is the point: it needs `Mergeable`
+    /// and both borsh bounds, and carrying those as SUPERTRAITS would make
+    /// merely asking "does `T` implement this?" evaluate them. The registration
+    /// walk asks that of every field type reachable from the app state,
+    /// including types whose borsh impl is itself broken — and each such
+    /// question would then re-report that break. It cost a duplicated
+    /// `Authorizer` diagnostic before the bounds moved here.
+    fn register_merge() -> bool;
 }
 
 // Feature-insensitive compile guard for the `Mergeable: RekeyTarget` supertrait.
@@ -141,8 +238,11 @@ pub enum MergeError {
     /// The storage layer cannot merge this type without knowing the concrete type.
     /// Examples: `Custom` types, collections with nested generics, `UserStorage<T>`.
     WasmRequired {
-        /// The type name that requires WASM callback
-        type_name: String,
+        /// The app-defined type that requires a WASM callback.
+        ///
+        /// A digest rather than a name: the id is what the entry carries, and
+        /// resolving it back to a spelling is the guest's job.
+        type_id: CustomTypeId,
     },
     /// Serialization/deserialization error during merge.
     SerializationError(String),
@@ -161,8 +261,12 @@ impl std::fmt::Display for MergeError {
             MergeError::IncompatibleStates => write!(f, "Incompatible CRDT states"),
             MergeError::StorageError(msg) => write!(f, "Storage error: {msg}"),
             MergeError::TypeMismatch => write!(f, "Cannot merge different CRDT types"),
-            MergeError::WasmRequired { type_name } => {
-                write!(f, "WASM callback required for type: {type_name}")
+            MergeError::WasmRequired { type_id } => {
+                write!(
+                    f,
+                    "WASM callback required for type id {:#018x}",
+                    type_id.get()
+                )
             }
             MergeError::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             MergeError::NoMergeFunctionRegistered => {
@@ -292,6 +396,13 @@ macro_rules! is_crdt {
 #[macro_export]
 macro_rules! impl_atomic_lww_leaf {
     ($t:ty, $tie:ident) => {
+        // Structural: this is a leaf that resolves by its own tie-breaker, not
+        // an app rule the merge point dispatches to. Declared here so the macro
+        // satisfies `Mergeable`'s requirement on its users' behalf.
+        impl $crate::collections::MergeStrategy for $t {
+            const DISPATCHED: bool = false;
+        }
+
         impl $crate::collections::Mergeable for $t {
             fn merge(
                 &mut self,

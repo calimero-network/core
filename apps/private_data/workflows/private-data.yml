@@ -12,7 +12,7 @@ steps:
   - name: Install Private Data Application
     type: install_application
     node: rust-private-data-1
-    path: res/private_data.wasm
+    path: ../../dist/com.calimero.private-data-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

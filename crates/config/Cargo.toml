@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["fs", "rt"] }
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 
+calimero-app-downloader.workspace = true
 calimero-context.workspace = true
 calimero-node-primitives.workspace = true
 calimero-runtime.workspace = true

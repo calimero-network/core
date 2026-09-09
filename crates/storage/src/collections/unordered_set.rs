@@ -73,14 +73,19 @@ where
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
-            CrdtType::unordered_set(std::any::type_name::<V>()),
+            CrdtType::UnorderedSet,
         );
         let parent = self.inner.id();
         for (v, storage_type) in elements {
             let id = super::compute_id(parent, v.as_ref());
             let _ = self
                 .inner
-                .insert_with_storage_type(Some(id), v, storage_type)
+                .insert_with_storage_type(
+                    Some(id),
+                    v,
+                    storage_type,
+                    crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+                )
                 .expect("re-insert set element during re-key");
         }
     }
@@ -144,7 +149,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::unordered_set(std::any::type_name::<V>()),
+                CrdtType::UnorderedSet,
             ),
         }
     }
@@ -192,10 +197,8 @@ where
             .expect("failed to clear for migration");
 
         // Now reassign the collection's ID
-        self.inner.reassign_deterministic_id_with_crdt_type(
-            field_name,
-            CrdtType::unordered_set(std::any::type_name::<V>()),
-        );
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedSet);
 
         // Re-insert all elements under the new parent ID, preserving each
         // entry's original storage type.
@@ -204,7 +207,12 @@ where
             let id = super::compute_id(parent, value.as_ref());
             let _ = self
                 .inner
-                .insert_with_storage_type(Some(id), value, storage_type)
+                .insert_with_storage_type(
+                    Some(id),
+                    value,
+                    storage_type,
+                    crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+                )
                 .expect("failed to re-insert element during migration");
         }
     }
@@ -231,7 +239,11 @@ where
             return Ok(false);
         };
 
-        let _ignored = self.inner.insert(Some(id), value)?;
+        let _ignored = self.inner.insert(
+            Some(id),
+            value,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         Ok(true)
     }
@@ -645,7 +657,7 @@ mod tests {
         let pre_id = compute_id(set.inner.id(), "x".as_bytes());
         let _ignored = set
             .inner
-            .insert_with_storage_type(Some(pre_id), "x".to_owned(), shared)
+            .insert_with_storage_type(Some(pre_id), "x".to_owned(), shared, None)
             .expect("seed shared entry");
 
         set.reassign_deterministic_id("tags");

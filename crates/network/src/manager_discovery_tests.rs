@@ -611,3 +611,87 @@ async fn startup_without_a_store_is_a_no_op() {
 
     assert!(manager.peer_cache_addrs_for(&PeerId::random()).is_empty());
 }
+
+/// Whether kad holds any address for `peer` — the routing table this fix keeps
+/// unverified hints out of.
+fn kad_knows(manager: &mut NetworkManager, peer: PeerId) -> bool {
+    manager
+        .swarm
+        .behaviour_mut()
+        .kad
+        .kbucket(peer)
+        .is_some_and(|bucket| {
+            bucket
+                .iter()
+                .any(|entry| entry.node.key.preimage() == &peer)
+        })
+}
+
+/// A dial offers its address to the dial, and does NOT write it to the routing
+/// table.
+///
+/// This is a security property rather than tidiness. One caller's addresses are
+/// attacker-influenced: the namespace join dials the `admitter_addrs` an
+/// invitation carries, and that field sits OUTSIDE the inviter's signature, so
+/// anyone relaying an invitation can rewrite it. Seeding kad before dialing
+/// turned "an address I could not reach" into "an address my routing table now
+/// offers for that peer" — writable by whoever relayed the invitation.
+///
+/// The address here is unroutable, so the dial cannot succeed and nothing may
+/// be recorded. `identify` adds the address on an established connection, which
+/// is the point at which it has been shown to reach that peer.
+#[tokio::test]
+async fn a_dial_does_not_seed_the_routing_table_with_an_unverified_address() {
+    let mut manager = build_manager().await;
+    let peer = PeerId::random();
+    // TEST-NET-2 (RFC 5737), so nothing can answer even on a networked runner.
+    let addr: Multiaddr = "/ip4/198.51.100.7/udp/4001/quic-v1".parse().unwrap();
+
+    assert!(
+        !kad_knows(&mut manager, peer),
+        "precondition: the table must not already know this random peer"
+    );
+
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    let _outcome = manager.start_dial(peer, addr, tx);
+
+    assert!(
+        !kad_knows(&mut manager, peer),
+        "the dial's address must not enter the routing table before a \
+         connection proves it reaches that peer"
+    );
+}
+
+/// The dial names the peer it expects, so a `pending_dial` cannot be resolved
+/// by whoever happens to occupy the address.
+///
+/// Asserted through the swarm rather than by inspecting the opts: dialing with
+/// a peer id brings a peer condition with it, and `DisconnectedAndNotDialing`
+/// means a second dial to the same peer is refused while the first is in
+/// flight. That refusal is only observable if the peer id was actually attached.
+#[tokio::test]
+async fn a_dial_names_the_peer_so_a_second_one_is_recognised_as_a_duplicate() {
+    let mut manager = build_manager().await;
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/198.51.100.8/udp/4001/quic-v1".parse().unwrap();
+
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    assert!(
+        matches!(
+            manager.start_dial(peer, addr.clone(), tx),
+            crate::handlers::commands::dial::DialStart::Started
+        ),
+        "the first dial to an unknown peer must start"
+    );
+
+    // Same peer, different address: the in-flight dial owns `pending_dial`, so
+    // this is answered without starting a second one.
+    let (tx2, _rx2) = tokio::sync::oneshot::channel();
+    assert!(
+        matches!(
+            manager.start_dial(peer, addr, tx2),
+            crate::handlers::commands::dial::DialStart::AlreadyUnderway
+        ),
+        "a second dial while one is in flight must not start another"
+    );
+}

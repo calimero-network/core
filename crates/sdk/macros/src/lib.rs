@@ -44,6 +44,7 @@ mod items;
 mod logic;
 mod macros;
 mod mergeable;
+mod mergeable_attr;
 mod migrate_derive;
 mod migration;
 mod private;
@@ -172,6 +173,58 @@ pub fn private(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # Usage
 ///
 /// Apply the `#[app::init]` attribute to a function to mark it as the application initialization function.
+/// Opt a custom struct into app-defined merge dispatch.
+///
+/// `#[derive(Mergeable)]` writes a merge function. This makes the storage layer
+/// call it: the struct gains a `CustomTypeId` that is stamped on every entry
+/// holding it, and merge dispatches on that stamp instead of resolving
+/// last-write-wins.
+///
+/// Use it when the merge rule is genuinely yours. A struct that only delegates
+/// field-by-field wants the derive — dispatch costs a wasm call per entry
+/// conflict, and the derive's structural convergence reaches the same answer
+/// without one.
+///
+/// The re-key impl a hand-written `Mergeable` must otherwise supply is
+/// generated too.
+///
+/// ```ignore
+/// #[app::mergeable]
+/// #[derive(Default, BorshSerialize, BorshDeserialize, AbiType)]
+/// pub struct TeamStats {
+///     pub wins: Counter,
+///     pub nickname: String,
+/// }
+///
+/// impl Mergeable for TeamStats {
+///     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+///         self.wins.merge(&other.wins)?;
+///         self.nickname = self.nickname.clone().max(other.nickname.clone());
+///         Ok(())
+///     }
+/// }
+/// ```
+///
+/// The id defaults to a digest of `module_path!()::TypeName`. Pin it with
+/// `#[app::mergeable(id = "stable::name")]` if the type may move or the crate
+/// may be renamed — the id is wire format, and entries stamped with the old one
+/// are not re-stamped.
+///
+/// # Contract
+///
+/// `merge` must be deterministic, commutative, associative, idempotent and
+/// total. `Err` is not validation: it refuses to converge, leaving the entity
+/// divergent while repair retries it. Reject bad input on the write path.
+#[proc_macro_attribute]
+pub fn mergeable(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+
+    let args = parse_macro_input!(args as mergeable_attr::Args);
+    let input = parse_macro_input!(input as syn::DeriveInput);
+
+    mergeable_attr::expand(&args, input).into()
+}
+
 #[proc_macro_attribute]
 pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker

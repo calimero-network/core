@@ -307,7 +307,6 @@ impl BundleManifest {
 #[cfg(test)]
 mod tests {
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::hash::Hash;
 
     use super::*;
 
@@ -380,43 +379,19 @@ mod tests {
     }
 
     /// The deep-link `handlers` field is a sibling of `metadata`, so it must NOT
-    /// leak into the display metadata JSON (which is what raw-wasm installs hash
-    /// into the application-id). This proves both that `metadata` is unchanged
-    /// and that the derived raw-wasm app-id is identical with vs without a
-    /// `handlers` block.
+    /// leak into the display metadata JSON a bundle install stores.
     #[test]
-    fn handlers_does_not_affect_metadata_or_app_id() {
+    fn handlers_does_not_affect_metadata() {
         let with_handlers: BundleManifest =
             serde_json::from_str(&manifest_json(r#""handlers": { "slug": "mero-chat" },"#))
                 .unwrap();
         let without_handlers: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
 
-        // 1. The serialized display metadata must be byte-for-byte identical.
         let meta_with = with_handlers.to_metadata_json().unwrap();
         let meta_without = without_handlers.to_metadata_json().unwrap();
         assert_eq!(
             meta_with, meta_without,
             "handlers must not change the display metadata bytes"
-        );
-
-        // 2. Re-derive the raw-wasm application-id the same way
-        //    `NodeClient::install_raw_wasm` does - hash(bytecode, size, source,
-        //    metadata) - and assert it is identical for both manifests.
-        let bytecode = Hash::new(b"fake wasm bytecode");
-        let size: u64 = 18;
-        // `install_raw_wasm` stores the source as a string in `ApplicationMeta`,
-        // so hash the string form here.
-        let source = "file:///app.wasm".to_owned();
-
-        let derive = |metadata: &[u8]| -> ApplicationId {
-            let components = (&bytecode, size, &source, &metadata.to_vec());
-            ApplicationId::from(*Hash::hash_borsh(&components).unwrap())
-        };
-
-        assert_eq!(
-            derive(&meta_with),
-            derive(&meta_without),
-            "handlers must not change the derived raw-wasm application-id"
         );
     }
 

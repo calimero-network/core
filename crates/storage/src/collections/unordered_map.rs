@@ -48,7 +48,19 @@ use std::collections::BTreeMap;
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
-    inner: Collection<(K, V), S>,
+    /// Entries are stored **value first**: `(V, K)`, not `(K, V)`.
+    ///
+    /// The key is not used to find anything — `get` hashes it into the child id
+    /// (`compute_id`) and never reads the stored copy. It is kept only so
+    /// `entries()` can hand keys back, since a hash cannot be inverted.
+    ///
+    /// Putting it after the value means the value sits at offset 0 of every
+    /// entry, whatever the key type. That is what lets app-defined merge decode
+    /// an entry without knowing `K`: a `String` key is length-prefixed and a
+    /// `[u8; 32]` key is 32 bare bytes, and nothing in the blob says which — so
+    /// with the key in front there is no way to skip it. The public API is
+    /// unchanged and still speaks `(K, V)`.
+    inner: Collection<(V, K), S>,
 }
 
 /// Re-key a nested map (a map stored as another collection's value) relative to
@@ -62,11 +74,7 @@ where
     S: StorageAdaptor,
 {
     fn rekey_relative_to(&mut self, parent_id: Id) {
-        self.reassign_deterministic_id_under(
-            parent_id,
-            "__nested_map",
-            CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
-        );
+        self.reassign_deterministic_id_under(parent_id, "__nested_map", CrdtType::UnorderedMap);
     }
 }
 
@@ -159,10 +167,7 @@ where
     /// children behave identically to a map created via `new_with_field_name`.
     pub(crate) fn open_existing(id: crate::address::Id) -> Self {
         Self {
-            inner: Collection::open_existing(
-                id,
-                CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
-            ),
+            inner: Collection::open_existing(id, CrdtType::UnorderedMap),
         }
     }
 
@@ -175,7 +180,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
+                CrdtType::UnorderedMap,
             ),
         }
     }
@@ -227,7 +232,7 @@ where
         // (AuthoredMap / guarded Shared writers) survive the re-key; a plain
         // `(K, V)` snapshot would re-insert as `Public` and silently strip
         // ownership.
-        let entries: Vec<((K, V), StorageType)> = self
+        let entries: Vec<((V, K), StorageType)> = self
             .inner
             .entries_with_storage_type()
             .expect("failed to read entries for re-key");
@@ -246,7 +251,7 @@ where
 
         // Re-insert all entries (they will get new IDs based on new parent ID),
         // preserving each entry's original `StorageType`.
-        for ((key, value), storage_type) in entries {
+        for ((value, key), storage_type) in entries {
             self.insert_with_storage_type(key, value, storage_type, None)
                 .expect("failed to re-insert entry during re-key");
         }
@@ -301,10 +306,7 @@ where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        self.reassign_deterministic_id_with_crdt_type(
-            field_name,
-            CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
-        );
+        self.reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedMap);
     }
 
     /// Insert a key-value pair into the map.
@@ -363,16 +365,19 @@ where
         super::rekey::rekey_nested_value(&mut value, id);
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
-            let (_, v) = &mut *entry;
+            let (v, _) = &mut *entry;
 
             return Ok(Some(mem::replace(v, value)));
         }
 
         // Insert into the inner collection.
         // Pass the `StorageType` directly to the `Collection`.
-        let _ignored = self
-            .inner
-            .insert_with_storage_type(Some(id), (key, value), storage_type)?;
+        let _ignored = self.inner.insert_with_storage_type(
+            Some(id),
+            (value, key),
+            storage_type,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         Ok(None)
     }
@@ -395,8 +400,10 @@ where
         // future races a precise anchor instead of a downstream
         // content mismatch.
         let collection_id = self.inner.id();
+        // The inner collection yields `(V, K)`; the public contract is
+        // `(K, V)`, so flip it back here.
         Ok(self.inner.entries()?.filter_map(move |result| match result {
-            Ok(entry) => Some(entry),
+            Ok((value, key)) => Some((key, value)),
             Err(error) => {
                 tracing::error!(
                     target: "calimero_storage::iter_drop",
@@ -473,7 +480,7 @@ where
     {
         let id = compute_id(self.inner.id(), key.as_ref());
 
-        Ok(self.inner.get(id)?.map(|(_, v)| ValueRef::new(v)))
+        Ok(self.inner.get(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
     /// Returns a mutable reference to the value corresponding to the key.
@@ -584,7 +591,7 @@ where
             return Ok(None);
         };
 
-        entry.remove().map(|(_, v)| Some(v))
+        entry.remove().map(|(v, _)| Some(v))
     }
 
     /// Clear the map, removing all entries.
@@ -759,7 +766,7 @@ where
             // two nodes that independently build the same entry never converge.
             super::rekey::rekey_nested_value(&mut v, id);
 
-            (Some(id), (k, v))
+            (Some(id), (v, k))
         });
 
         self.inner.extend(iter);
@@ -792,7 +799,7 @@ where
     S: StorageAdaptor,
 {
     /// This holds the mutable entry for the *entire* tuple.
-    entry_mut: EntryMut<'a, (K, V), S>,
+    entry_mut: EntryMut<'a, (V, K), S>,
 }
 
 impl<K, V, S> Deref for ValueMut<'_, K, V, S>
@@ -804,8 +811,8 @@ where
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
-        // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
-        &self.entry_mut.deref().1
+        // self.entry_mut.deref() returns &(V, K), so `.0` is the V
+        &self.entry_mut.deref().0
     }
 }
 
@@ -816,8 +823,8 @@ where
     S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
-        &mut self.entry_mut.deref_mut().1
+        // self.entry_mut.deref() returns &(V, K), so `.0` is the V
+        &mut self.entry_mut.deref_mut().0
     }
 }
 
@@ -849,7 +856,7 @@ where
     V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    entry_mut: EntryMut<'a, (K, V), S>,
+    entry_mut: EntryMut<'a, (V, K), S>,
 }
 
 /// A view into a vacant entry in an `UnorderedMap`.
@@ -940,7 +947,7 @@ where
 {
     /// Gets a reference to the value in the entry.
     pub fn get(&self) -> &V {
-        &self.entry_mut.1
+        &self.entry_mut.0
     }
 
     /// Gets a mutable reference to the value in the entry.
@@ -948,7 +955,7 @@ where
     /// Changes are written back to storage when the returned `DerefMut`
     /// guard is dropped.
     pub fn get_mut(&mut self) -> &mut V {
-        &mut self.entry_mut.1
+        &mut self.entry_mut.0
     }
 
     /// Replaces the value in the entry and returns the old value.
@@ -962,7 +969,7 @@ where
         // otherwise leave it carrying a random internal id that diverges across
         // nodes.
         super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
-        mem::replace(&mut self.entry_mut.1, value)
+        mem::replace(&mut self.entry_mut.0, value)
     }
 
     /// Removes the entry from the map and returns the removed value.
@@ -972,7 +979,7 @@ where
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     pub fn remove(self) -> Result<V, StoreError> {
-        self.entry_mut.remove().map(|(_, v)| v)
+        self.entry_mut.remove().map(|(v, _)| v)
     }
 }
 
@@ -1004,7 +1011,11 @@ where
         super::rekey::rekey_nested_value(&mut value, id);
 
         // Insert the new (key, value) pair
-        drop(self.map.inner.insert(Some(id), (self.key, value))?);
+        drop(self.map.inner.insert(
+            Some(id),
+            (value, self.key),
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?);
 
         // Now, get a mutable guard to the new entry.
         // We `expect` here because this is a logic error: we just inserted

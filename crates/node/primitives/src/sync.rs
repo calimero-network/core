@@ -51,9 +51,7 @@ pub mod wire;
 // =============================================================================
 
 // Handshake types
-pub use handshake::{
-    SyncCapabilities, SyncHandshake, SyncHandshakeResponse, SYNC_PROTOCOL_VERSION,
-};
+pub use handshake::{SyncCapabilities, SyncHandshake, SyncHandshakeResponse};
 
 // Protocol types and selection
 pub use protocol::{

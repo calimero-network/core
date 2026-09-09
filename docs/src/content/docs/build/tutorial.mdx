@@ -212,7 +212,7 @@ next. If your app does not emit events, you can write just `#[app::state]`.
   ```
 </Aside>
 
-## 5. Build to WASM
+## 5. Build and package
 
 Build the app with one command:
 
@@ -232,6 +232,18 @@ The filename is the crate name with hyphens turned into underscores — crate
 `kv-store` produces `kv_store.wasm`.
 :::
 
+A node installs only a signed bundle, so package the wasm into one:
+
+```sh
+cargo mero bundle --dev --no-icon
+```
+
+```
+dist/com.example.kv-store-0.1.0.mpk
+```
+
+The name is the manifest's `package` and `version`, not the crate name.
+
 ## 6. Install and run
 
 `meroctl` talks to your running node. Select it with `--node node1`. Each
@@ -240,13 +252,10 @@ machine-readable form shown here.
 
 <Steps>
 
-1. **Install** the WASM module. The node returns an application id:
+1. **Install** the signed bundle. The node returns an application id:
 
    ```sh
-   meroctl --node node1 app install \
-     --path ./res/kv_store.wasm \
-     --package com.example.kvstore \
-     --version 0.1.0
+   meroctl --node node1 app install --path ./dist/com.example.kv-store-0.1.0.mpk
    ```
 
    ```json

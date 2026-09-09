@@ -48,6 +48,48 @@ jobs:
       - name: Test the owner-only file helper
         run: cargo test -p calimero-utils-fs
 
+  # The only place merod is RUN on Windows rather than merely built. Everything
+  # else Windows-related in this repository is a build-time property, and "the
+  # binary links" says nothing about whether RocksDB opens, the server binds, or
+  # the node can be stopped -- the three things that have no unix equivalent to
+  # borrow confidence from.
+  #
+  # Costs one Windows runner (~15 min with a warm cache) per pull request. That
+  # is deliberate: a merod.exe that cannot start is shipped to users by the
+  # release workflow, which only builds it.
+  windows-node-smoke:
+    name: Windows node smoke
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: windows-node-smoke
+
+      # Same two the release build needs: librocksdb-sys is pulled with
+      # `bindgen-runtime`, and aws-lc-sys assembles its x86_64 primitives with NASM.
+      - name: Point bindgen at the image's LLVM
+        shell: bash
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      # `--include-ignored` because these drive a real node and are ignored by
+      # default. The unix-only watches are `cfg(unix)` and simply do not exist
+      # here; what remains is start, serve, stop.
+      - name: Drive a real node on Windows
+        run: cargo test -p merod --test watchdog_live -- --include-ignored --test-threads 1
+
   rust:
     name: Rust
     runs-on: big-machine

@@ -116,7 +116,7 @@ help: the following other types implement trait `Authorizer`
 note: required by a bound in `merge`
  --> $WORKSPACE/crates/storage/src/collections/crdt_meta.rs
   |
-  | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+  | pub trait Mergeable: crate::collections::rekey::RekeyTarget + MergeStrategy {
   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Mergeable::merge`
 ...
   |     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;

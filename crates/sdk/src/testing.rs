@@ -485,6 +485,42 @@ where
     }
 }
 
+/// Runs `f` with the SDK host reporting `device` and `account` as the executing
+/// identity, restoring both on the way out — including on unwind.
+///
+/// The SDK host and `calimero-storage`'s `RuntimeEnv` keep **separate** copies of
+/// "who is executing", and setting one does not set the other. A harness that
+/// sets only the storage half leaves `calimero_sdk::env::device_id()` reading its
+/// process-wide default inside app code, so every simulated replica reports the
+/// same writer and any rule that varies by writer silently degenerates into one
+/// that does not — the failure looks like a rule that does not work rather than a
+/// harness that never varied its input.
+///
+/// [`TestHost::call_as`] does the equivalent internally for its own scope; this is
+/// the same alignment for a harness that drives the storage layer directly.
+pub fn with_identity<R>(device: [u8; 32], account: [u8; 32], f: impl FnOnce() -> R) -> R {
+    /// Restores on scope exit so a panicking body cannot leak one replica's
+    /// identity into the next.
+    struct Restore {
+        device: [u8; 32],
+        account: [u8; 32],
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            host::set_device_id(self.device);
+            host::set_account_id(self.account);
+        }
+    }
+
+    let _restore = Restore {
+        device: host::device_id(),
+        account: host::account_id(),
+    };
+    host::set_device_id(device);
+    host::set_account_id(account);
+    f()
+}
+
 /// Asserts a migration **converges**: runs `migrate_fn` from an identical,
 /// deterministically-installed `install_v1()` state under two different executor
 /// identities and checks the two migrated **merkle root hashes** are equal.

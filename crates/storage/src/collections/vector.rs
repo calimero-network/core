@@ -53,7 +53,7 @@ where
             .reassign_deterministic_id_with_indexed_children_under(
                 Some(parent_id),
                 "__vector",
-                CrdtType::vector(std::any::type_name::<V>()),
+                CrdtType::Vector,
             );
     }
 }
@@ -117,7 +117,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::vector(std::any::type_name::<V>()),
+                CrdtType::Vector,
             ),
         }
     }
@@ -137,10 +137,8 @@ where
         // would leave per-node-random element ids behind and diverge when a
         // migration re-runs the population independently on each node. The
         // indexed variant re-keys each element by its append position.
-        self.inner.reassign_deterministic_id_with_indexed_children(
-            field_name,
-            CrdtType::vector(std::any::type_name::<V>()),
-        );
+        self.inner
+            .reassign_deterministic_id_with_indexed_children(field_name, CrdtType::Vector);
     }
 
     /// Add a value to the end of the vector.
@@ -158,7 +156,11 @@ where
         // Register this vector type's nested-id re-key thunk so a vector stored
         // as a collection value is re-keyed when the outer collection is stored.
         super::rekey::register_rekey::<Self>();
-        let _ignored = self.inner.insert(None, value)?;
+        let _ignored = self.inner.insert(
+            None,
+            value,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         Ok(())
     }
@@ -171,10 +173,16 @@ where
         &mut self,
         value: V,
         storage_type: crate::entities::StorageType,
-    ) -> Result<Id, StoreError> {
-        let (id, _item) = self
-            .inner
-            .insert_with_storage_type(None, value, storage_type)?;
+    ) -> Result<Id, StoreError>
+    where
+        V: 'static,
+    {
+        let (id, _item) = self.inner.insert_with_storage_type(
+            None,
+            value,
+            storage_type,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
         // The id, not `len - 1`.
         //
         // `len - 1` meant "the new entry is last", which held only while

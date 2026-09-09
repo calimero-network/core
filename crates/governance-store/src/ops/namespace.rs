@@ -102,11 +102,25 @@ pub(crate) fn dispatch_root_op(
             role,
             account,
         ),
+        // Both join arms read the endorsement off the ENVELOPE, not the op
+        // body. It is not covered by the joiner's signature, which is what
+        // lets an admitter attach consent to an op it did not author — see
+        // `SignedNamespaceOp::admitter_endorsement`. Neither arm gets to
+        // decide whether one is required; that is the gate's call, and it
+        // requires one from both.
         RootOp::MemberJoined {
             member,
             signed_invitation,
             account,
-        } => member_joined::apply(ctx, op, member, signed_invitation, None, account),
+        } => member_joined::apply(
+            ctx,
+            op,
+            member,
+            signed_invitation,
+            None,
+            account,
+            op.admitter_endorsement.as_deref(),
+        ),
         RootOp::MemberJoinedAt {
             member,
             signed_invitation,
@@ -119,6 +133,7 @@ pub(crate) fn dispatch_root_op(
             signed_invitation,
             Some(*joined_at),
             account,
+            op.admitter_endorsement.as_deref(),
         ),
         RootOp::MemberJoinedOpen {
             member,

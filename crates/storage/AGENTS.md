@@ -55,12 +55,28 @@ Entity Conflict -> Has CrdtType? -> is_builtin_crdt()? -> merge_by_crdt_type()
                        |                  |
                        No                 No (Custom only)
                        v                  v
-                    LWW fallback      WASM callback (PR #1940)
+                    LWW fallback      app-defined merge
 ```
+
+**Custom types dispatch two different ways depending on WHERE the apply runs:**
+
+| Apply path | How the app's rule is reached |
+| ---------- | ----------------------------- |
+| in-WASM (`__calimero_sync_next`, normal delta apply) | `try_merge_non_root` looks the entry's `CustomTypeId` up in the in-module registry and calls the app's `Mergeable::merge` directly |
+| host-side (HashComparison / level-wise repair) | the DFS cannot call into WASM — it is synchronous, inside `with_runtime_env` — so it DEFERS the entry, and the sync driver dispatches `__calimero_merge_custom` after the session |
+
+Neither path falls back to LWW for a `Custom`. An entry the app can no longer
+merge stays divergent until the next round, which is recoverable; resolving it by
+a rule the app did not choose is not.
 
 **Key insight**: Collections (UnorderedMap, Vector, UnorderedSet) return incoming at
 container-level because entries are stored as **separate entities** - each entry merges
 with its own CrdtType.
+
+An entry holding an `#[app::mergeable]` type is stamped with that type's
+`CustomTypeId` at insert, which is what makes the entry reach the app's rule at
+all. Without the stamp it carries `crdt_type: None`, takes the legacy branch, and
+resolves last-write-wins with the app's `merge` never consulted.
 
 #### Context B: Root Entity Sync (merge_root_state)
 
@@ -122,7 +138,7 @@ function is registered, it returns an error rather than silently falling back to
 | `Vector`       | Returns incoming      | Entries are separate entities*        |
 | `UserStorage`  | Returns incoming      | LWW per user                          |
 | `FrozenStorage`| Returns existing      | First-write-wins (immutable)          |
-| `Custom`       | WasmRequired error    | Needs app-defined merge via WASM      |
+| `Custom`       | `WasmRequired` error  | Variant-only dispatch cannot resolve it — the caller must, using the entry's `CustomTypeId`. See above. |
 
 *These types use "Structured" storage - container metadata only; entries sync separately.
 
@@ -134,7 +150,8 @@ pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
 }
 ```
 
-**ALL variants except Custom are built-in!**
+**ALL variants except Custom are built-in!** `Custom` is not a gap — it is the
+opt-in from `#[app::mergeable]`, and the app's own rule decides those entries.
 
 ## Key Files for Merge Understanding
 

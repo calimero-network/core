@@ -6,7 +6,7 @@ description: >
 
   With `AutoFollowFlags::default() = { contexts: true, subgroups: false }`
   and the `emit_auto_follow_set_if_enabled` helper firing from every
-  `MemberAdded` apply path (added in this PR), when `add_group_members`
+  `MemberAdded` apply path, when `add_group_members`
   applies on node-2 it ALREADY produces a synthesised
   `AutoFollowSet { contexts: true }` event. That event runs through
   `handle_auto_follow_enabled`, which enumerates existing contexts in
@@ -66,16 +66,10 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: af-backfill-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
-
-  - name: Install application on node-2
-    type: install_application
-    node: af-backfill-node-2
-    path: res/scaffolding_e2e.wasm
-    dev: true
 
   - name: Node-1 creates namespace
     type: create_namespace

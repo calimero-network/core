@@ -1483,10 +1483,7 @@ mod minimal_struct_layout_compat {
         // ChildTrie), so this case now only exercises the row's own layout.
         let index = make_index(
             StorageType::Public,
-            Some(CrdtType::UnorderedMap {
-                key_type: "String".to_owned(),
-                value_type: "u64".to_owned(),
-            }),
+            Some(CrdtType::UnorderedMap),
             Some("my_map".to_owned()),
         );
         assert_round_trip(&index);

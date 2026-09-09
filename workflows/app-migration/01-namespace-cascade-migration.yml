@@ -10,7 +10,7 @@ description: >
     - the descendant context's state migrates (v1 fields preserved,
       v2-only field readable)
 
-  Regression guard for the full bytecode_id fix triangle in this PR:
+  Regression guard for the full bytecode_id derivation triangle:
     - `create_group::handle` (originator-side derivation)
     - `group_created::apply` (remote-peer parent inheritance)
     - `create_group_invitation` + `join_group` (invitation-side
@@ -95,10 +95,8 @@ steps:
   # Phase 3: Invite node 2 to the namespace, then have it materialise
   # the inherited Open-subgroup + context. The namespace-invitation
   # path issues a SignedGroupOpenInvitation containing the namespace
-  # root's application_id AND bytecode_id (added in this PR). Without the
-  # bytecode_id field, node 2 would seed its local namespace-root meta
-  # with [0u8; 32] and the cascade predicate would silently skip the
-  # subtree on node 2.
+  # root's application_id AND bytecode_id: without the latter, node 2 seeds
+  # its root meta with [0u8; 32] and the cascade silently skips its subtree.
   - name: Create namespace invitation for node 2
     type: create_namespace_invitation
     node: app-migration-cascade-1
@@ -291,9 +289,7 @@ steps:
   # namespace root + 1 descendant subgroup = 2 log lines per node.
   # Per-node assertions (rather than a single aggregated check) catch
   # the asymmetric regression where node 1 applies but node 2 silently
-  # drops the op - that case would still satisfy any aggregated
-  # threshold but is exactly the bug this PR's `bytecode_id` fix triangle
-  # prevents.
+  # drops the op - a case an aggregated threshold would still satisfy.
   - name: Assert cascade apply log on node 1 (emitter)
     type: assert_log_present
     nodes:

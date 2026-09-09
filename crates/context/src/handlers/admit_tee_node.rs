@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::AdmitTeeNodeRequest;
-use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -20,10 +20,16 @@ use calimero_governance_store::{GroupKeyring, MembershipRepository, NamespaceRep
 /// The TEE-attestation join op is an encrypted `NamespaceOp::Group` that
 /// only the verifier can apply, so the admitted node can't decrypt its own
 /// membership until it holds the key. The verifier (which holds the key)
-/// proactively delivers it here — one-shot, admin-initiated. The joiner-side
-/// pull (`recover_missing_group_keys`) is the durable fallback. Idempotent
-/// on the recipient: a duplicate `KeyDelivery` for a key already held is a
-/// no-op (`store_key` keys by content).
+/// records the delivery here — one-shot, admin-initiated. Idempotent on any
+/// member that applies it: a duplicate `KeyDelivery` for a key already held is
+/// a no-op (`store_key` keys by content).
+///
+/// The op is SEALED under the namespace key, so an admitted node that holds no
+/// namespace key yet — which is every node this path admits — cannot open it.
+/// For that node the transfer is the joiner-side pull
+/// (`recover_missing_group_keys`), not this op; publishing it keeps the
+/// members-only causal record of when the key was handed over, and keeps who
+/// was admitted when off the namespace topic.
 async fn deliver_group_key_to_member(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -45,15 +51,21 @@ async fn deliver_group_key_to_member(
     let envelope =
         GroupKeyring::wrap_for_member(signer_sk, member, &group_id.to_bytes(), &group_key)?;
 
-    let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
-        group_id: group_id.to_bytes().into(),
-        envelope,
-    });
+    let delivery_op = calimero_governance_store::seal_root_op_for_publish(
+        store,
+        namespace_id.to_bytes().into(),
+        RootOp::KeyDelivery {
+            group_id: group_id.to_bytes().into(),
+            envelope,
+        },
+    )?;
 
-    // Target only the admitted member's ack for delivery confirmation.
-    // Best-effort: an unformed mesh downgrades readiness rather than failing,
-    // and the announcer re-announces (re-admit) to retry; the pull also
-    // recovers it.
+    // `required_signers` is None. It used to name the admitted member, so the
+    // report's `acked_by` read as "the delivery landed" — but a sealed op cannot
+    // be applied by a node that holds no namespace key, which is precisely the
+    // node being admitted. Requiring its ack would fail the publish report on
+    // every successful admission. Confirmation moves to the pull, which is where
+    // the key now actually arrives.
     let report = calimero_governance_store::sign_and_publish_namespace_op(
         store,
         node_client,
@@ -61,7 +73,7 @@ async fn deliver_group_key_to_member(
         namespace_id.to_bytes().into(),
         signer_sk,
         delivery_op,
-        Some(vec![*member]),
+        None,
     )
     .await?;
 
@@ -221,19 +233,31 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     let namespace_id =
                         calimero_governance_store::NamespaceRepository::new(&datastore)
                             .resolve(&group_id)?;
-                    let op = NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
-                        group_id,
-                        member,
-                        quote_hash,
-                        mrtd,
-                        rtmr0,
-                        rtmr1,
-                        rtmr2,
-                        rtmr3,
-                        tcb_status,
-                        role: GroupMemberRole::ReadOnlyTee,
-                        account,
-                    });
+                    // Sealed. The ADMITTER publishes this, and an admitter holds
+                    // the namespace key by definition, so the seal costs nothing
+                    // here. The TEE node it admits does not hold that key -- it
+                    // reads its own admission only after the pull hands it one,
+                    // the same order `KeyDelivery` was put on in #3847. What
+                    // sealing removes is every non-member on the namespace topic
+                    // being able to read which fleet replica was admitted, with
+                    // its attestation measurements, and when.
+                    let op = calimero_governance_store::seal_root_op_for_publish(
+                        &datastore,
+                        namespace_id.to_bytes().into(),
+                        RootOp::MemberJoinedViaTeeAttestation {
+                            group_id,
+                            member,
+                            quote_hash,
+                            mrtd,
+                            rtmr0,
+                            rtmr1,
+                            rtmr2,
+                            rtmr3,
+                            tcb_status,
+                            role: GroupMemberRole::ReadOnlyTee,
+                            account,
+                        },
+                    )?;
                     // The namespace publisher always returns a report; the group
                     // one returns `Option` because a group op can be applied
                     // without a publish. Normalise to the wider shape.
@@ -282,9 +306,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 // so the node can't decrypt its own membership until it holds
                 // the key. The verifier holds it and signs with its namespace
                 // identity, so it publishes the `KeyDelivery` directly (the
-                // node picks it up off the DAG/gossip when it pulls the
-                // namespace governance DAG after fleet-join). Best-effort —
-                // the joiner-side pull recovers it if this delivery is missed.
+                // namespace governance DAG after fleet-join, though it cannot
+                // read this op itself — see `deliver_group_key_to_member`).
+                // Best-effort: the joiner-side pull is what actually hands the
+                // admitted node the key.
                 if let Err(err) = deliver_group_key_to_member(
                     &datastore,
                     &node_client,

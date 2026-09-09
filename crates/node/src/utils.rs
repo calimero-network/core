@@ -5,7 +5,7 @@
 use std::pin::pin;
 
 use futures_util::{Stream, StreamExt};
-use rand::Rng;
+use rand::RngExt;
 
 /// Reservoir sampling: choose one random item from a stream.
 ///
@@ -19,11 +19,11 @@ use rand::Rng;
 /// # Example
 /// ```ignore
 /// let identities = context_client.get_context_members(&context_id, Some(true));
-/// let chosen = choose_stream(identities, &mut rand::thread_rng()).await;
+/// let chosen = choose_stream(identities, &mut rand::rng()).await;
 /// ```
 pub(crate) async fn choose_stream<T>(
     stream: impl Stream<Item = T>,
-    rng: &mut impl Rng,
+    rng: &mut impl RngExt,
 ) -> Option<T> {
     let mut stream = pin!(stream);
 
@@ -35,7 +35,7 @@ pub(crate) async fn choose_stream<T>(
         // The first element was consumed before `enumerate()`, so this is
         // overall item `idx + 2` (1-based) and must win with probability
         // 1/(idx + 2).
-        if rng.gen_range(0..idx + 2) == 0 {
+        if rng.random_range(0..idx + 2) == 0 {
             item = Some(this);
         }
     }

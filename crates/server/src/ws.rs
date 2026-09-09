@@ -1441,8 +1441,10 @@ mod tests {
         use calimero_governance_store::MembershipRepository;
         use calimero_primitives::context::GroupMemberRole;
 
-        let member_pk =
-            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let member_pk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        )
+        .public_key();
         let server = spawn_test_ws_authed(member_pk).await;
         let store = server.state.ctx_client.datastore();
         let (group, subgroup, member) =
@@ -1523,8 +1525,10 @@ mod tests {
         use calimero_governance_store::MembershipRepository;
         use calimero_primitives::context::GroupMemberRole;
 
-        let admin_pk =
-            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let admin_pk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        )
+        .public_key();
         let server = spawn_test_ws_authed(admin_pk).await;
         let store = server.state.ctx_client.datastore();
         let (group, subgroup, admin) =
@@ -1623,7 +1627,9 @@ mod tests {
         };
         use calimero_primitives::context::GroupMemberRole;
 
-        let bob_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+        let bob_sk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        );
         let bob_pk = bob_sk.public_key();
         let server = spawn_test_ws_authed(bob_pk).await;
 

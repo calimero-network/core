@@ -9,7 +9,7 @@ runs:
       run: |
         set -euo pipefail
 
-        MEROBOX_VERSION="0.6.72"
+        MEROBOX_VERSION="0.6.75"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in

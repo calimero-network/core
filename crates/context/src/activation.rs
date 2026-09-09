@@ -74,34 +74,27 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
         .load(&group_id)
         .ok()
         .flatten()?;
-    (meta.bytecode_id != [0u8; 32])
-        .then(|| activated_bytecode(store, context_id) == Some(meta.bytecode_id))
+    (meta.target.bytecode_id != [0u8; 32])
+        .then(|| activated_bytecode(store, context_id) == Some(meta.target.bytecode_id))
 }
 
 /// The next upgrade rung a context bound to `bound` must replay from the
 /// group's ladder, or `None` when it is already at the group's current
 /// bytecode. The LAST occurrence of `bound` positions the context (an
 /// A→B→A re-pin means the group currently sits at the later A). A bound
-/// blob the ladder never recorded (creation version, or a pre-ladder
-/// upgrade target) starts from the first rung; an empty or stale ladder
-/// degrades to a single synthesized jump to the group's current target —
-/// exactly the pre-ladder behavior.
+/// blob the ladder never recorded (the creation version) starts from the first
+/// rung; a ladder with nothing past `bound` means the group has not moved.
 pub fn next_rung(
     ladder: &[LadderRung],
     bound: [u8; 32],
     group_bytecode_id: [u8; 32],
-    group_target: ApplicationId,
 ) -> Option<LadderRung> {
     if bound == group_bytecode_id {
         return None;
     }
-    let single_jump = LadderRung {
-        bytecode_id: group_bytecode_id,
-        application_id: group_target,
-    };
     match ladder.iter().rposition(|r| r.bytecode_id == bound) {
-        Some(i) => Some(ladder.get(i + 1).cloned().unwrap_or(single_jump)),
-        None => Some(ladder.first().cloned().unwrap_or(single_jump)),
+        Some(i) => ladder.get(i + 1).cloned(),
+        None => ladder.first().cloned(),
     }
 }
 
@@ -153,6 +146,7 @@ pub fn reconcile_context_application(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_store::db::InMemoryDB;
@@ -167,6 +161,8 @@ mod tests {
         LadderRung {
             bytecode_id: [byte; 32],
             application_id: ApplicationId::from([byte; 32]),
+            package: "com.acme.app".to_owned(),
+            version: format!("{byte}.0.0"),
         }
     }
 
@@ -180,20 +176,14 @@ mod tests {
     fn up_to_date_returns_none() {
         // Even with a populated ladder, bound == group bytecode_id is terminal.
         let ladder = vec![rung(0x01), rung(0x09)];
-        assert_eq!(next_rung(&ladder, TARGET, TARGET, target_id()), None);
+        assert_eq!(next_rung(&ladder, TARGET, TARGET), None);
     }
 
     #[test]
     fn mid_ladder_returns_next() {
         let ladder = vec![rung(0x01), rung(0x02), rung(0x09)];
-        assert_eq!(
-            next_rung(&ladder, [0x01; 32], TARGET, target_id()),
-            Some(rung(0x02))
-        );
-        assert_eq!(
-            next_rung(&ladder, [0x02; 32], TARGET, target_id()),
-            Some(rung(0x09))
-        );
+        assert_eq!(next_rung(&ladder, [0x01; 32], TARGET), Some(rung(0x02)));
+        assert_eq!(next_rung(&ladder, [0x02; 32], TARGET), Some(rung(0x09)));
     }
 
     #[test]
@@ -201,22 +191,14 @@ mod tests {
         // A context still at its creation version: the ladder only records
         // upgrade targets, so the creation blob is never in it.
         let ladder = vec![rung(0x02), rung(0x09)];
-        assert_eq!(
-            next_rung(&ladder, [0x77; 32], TARGET, target_id()),
-            Some(rung(0x02))
-        );
+        assert_eq!(next_rung(&ladder, [0x77; 32], TARGET), Some(rung(0x02)));
     }
 
     #[test]
-    fn empty_ladder_synthesizes_single_jump() {
-        // Pre-ladder group: degrade to today's one-jump-to-target behavior.
-        assert_eq!(
-            next_rung(&[], [0x77; 32], TARGET, target_id()),
-            Some(LadderRung {
-                bytecode_id: TARGET,
-                application_id: target_id(),
-            })
-        );
+    fn empty_ladder_has_no_hop() {
+        // Nothing appended means nothing advanced `GroupMeta.bytecode_id`, so
+        // there is no rung to replay and no coordinates to invent for one.
+        assert_eq!(next_rung(&[], [0x77; 32], TARGET), None);
     }
 
     #[test]
@@ -224,25 +206,15 @@ mod tests {
         // A→B→A→C: a context bound at A sits at the LATER A (the group
         // re-pinned A as its third upgrade), so its next hop is C.
         let ladder = vec![rung(0x01), rung(0x02), rung(0x01), rung(0x09)];
-        assert_eq!(
-            next_rung(&ladder, [0x01; 32], TARGET, target_id()),
-            Some(rung(0x09))
-        );
+        assert_eq!(next_rung(&ladder, [0x01; 32], TARGET), Some(rung(0x09)));
     }
 
     #[test]
-    fn stale_ladder_top_synthesizes_single_jump() {
-        // Bound is the ladder's last rung but the group meta already points
-        // past it (fold raced ahead of the ladder, or pre-ladder upgrade):
-        // degrade to the single jump rather than walking nowhere.
+    fn bound_at_the_ladder_top_has_no_hop() {
+        // Bound at the ladder top while meta names a bytecode no rung does:
+        // nothing to walk to, so meta-ahead-of-ladder is a no-hop, not a jump.
         let ladder = vec![rung(0x01), rung(0x02)];
-        assert_eq!(
-            next_rung(&ladder, [0x02; 32], TARGET, target_id()),
-            Some(LadderRung {
-                bytecode_id: TARGET,
-                application_id: target_id(),
-            })
-        );
+        assert_eq!(next_rung(&ladder, [0x02; 32], TARGET), None);
     }
 
     #[test]
@@ -321,8 +293,12 @@ mod tests {
             &calimero_primitives::identity::PublicKey::from([0x07; 32]),
         );
         let mut meta = GroupMetaValue {
-            bytecode_id: [0u8; 32],
-            target_application_id: ApplicationId::from([0xAA; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0xAA; 32]),
+                bytecode_id: [0u8; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 0,
             admin_identity: account,
             owner_identity: account,
@@ -338,7 +314,7 @@ mod tests {
         save(&meta);
         assert_eq!(activated_at_group_target(&store, &ctx), None);
 
-        meta.bytecode_id = [0x02; 32];
+        meta.target.bytecode_id = [0x02; 32];
         save(&meta);
         // Group has a target blob, context has no marker: not there yet.
         assert_eq!(activated_at_group_target(&store, &ctx), Some(false));

@@ -63,7 +63,7 @@ mod tests {
         rt.node_mut(&a).unwrap().insert_entity(
             EntityId::from_u64(1),
             vec![1, 2, 3],
-            CrdtType::lww_register("test"),
+            CrdtType::lww_register(),
         );
 
         assert!(rt.check_convergence().is_converged());
@@ -230,7 +230,7 @@ mod tests {
         rt.node_mut(&a).unwrap().insert_entity(
             EntityId::from_u64(1),
             vec![1],
-            CrdtType::lww_register("test"),
+            CrdtType::lww_register(),
         );
 
         // Crash
@@ -319,16 +319,8 @@ mod tests {
         assert_converged!(a, b);
 
         // Add different entities
-        a.insert_entity(
-            EntityId::from_u64(1),
-            vec![1],
-            CrdtType::lww_register("test"),
-        );
-        b.insert_entity(
-            EntityId::from_u64(2),
-            vec![2],
-            CrdtType::lww_register("test"),
-        );
+        a.insert_entity(EntityId::from_u64(1), vec![1], CrdtType::lww_register());
+        b.insert_entity(EntityId::from_u64(2), vec![2], CrdtType::lww_register());
 
         assert_not_converged!(a, b);
         assert_entity_count!(a, 1);

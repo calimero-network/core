@@ -20,6 +20,7 @@ use calimero_governance_store::{
     MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     UpgradeLadderRepository, UpgradesRepository,
 };
+use calimero_store::key::GroupTarget;
 use std::time::Duration;
 
 use calimero_context_client::group::{
@@ -47,7 +48,8 @@ use calimero_store::Store;
 use core::pin::pin;
 use futures_util::StreamExt;
 use libp2p::PeerId;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use serial_test::serial;
 use tokio::time::sleep;
 
@@ -135,8 +137,12 @@ fn meta_for(
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: target,
+        target: GroupTarget {
+            application_id: target,
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -399,7 +405,7 @@ const NO_SECOND_EVENT_WINDOW: Duration = Duration::from_millis(750);
 ///
 ///   * `GroupMeta.bytecode_id` for NS, G1, G2 has flipped from
 ///     `BYTECODE_ID_V1` to `BYTECODE_ID_V2` (target's `bytecode.blob_id()`).
-///   * `GroupMeta.target_application_id` is `app_v2`.
+///   * `GroupMeta.target.application_id` is `app_v2`.
 ///   * A per-descendant `GroupUpgradeValue { status: InProgress }`
 ///     row exists for NS, G1, G2 with `total = context_count(group)`.
 ///
@@ -413,7 +419,7 @@ const NO_SECOND_EVENT_WINDOW: Duration = Duration::from_millis(750);
 #[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_single_node_emitter() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
@@ -442,13 +448,13 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
-            meta.bytecode_id,
+            meta.target.bytecode_id,
             blobs.v2,
             "group {} must have rotated bytecode_id",
             hex::encode(gid.to_bytes())
         );
         assert_eq!(
-            meta.target_application_id,
+            meta.target.application_id,
             app_id_v2(),
             "group {} must point at app_v2",
             hex::encode(gid.to_bytes())
@@ -516,7 +522,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
 #[serial(boot_test_node)]
 async fn cascade_emits_migration_started_on_the_namespace_root() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
@@ -579,7 +585,7 @@ async fn cascade_emits_migration_started_on_the_namespace_root() {
 #[serial(boot_test_node)]
 async fn receiver_announces_a_cascade_it_did_not_initiate() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
@@ -608,6 +614,8 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
             to_state_version: 2,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");
@@ -655,7 +663,7 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
 #[serial(boot_test_node)]
 async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
@@ -681,6 +689,8 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
             GroupOp::TargetApplicationSet {
                 bytecode_id: bytecode_id.into(),
                 target_application_id: app_id_v2(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign TargetApplicationSet")
@@ -737,7 +747,7 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
 #[serial(boot_test_node)]
 async fn cascade_progress_mirrors_the_persisted_counters() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
@@ -855,7 +865,7 @@ async fn cascade_progress_mirrors_the_persisted_counters() {
 #[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     // Code-only path: the write gate reads the upgrade row, not the app pair.
     let blobs = seed_app_blobs(&node).await;
@@ -927,7 +937,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
 #[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, true, blobs.v2);
@@ -949,12 +959,12 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
-            meta.bytecode_id,
+            meta.target.bytecode_id,
             blobs.v2,
             "{} must migrate",
             hex::encode(gid.to_bytes())
         );
-        assert_eq!(meta.target_application_id, app_id_v2());
+        assert_eq!(meta.target.application_id, app_id_v2());
     }
 
     // G2 untouched: predicate skip on heterogeneous bytecode_id.
@@ -963,10 +973,10 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
         .expect("load_group_meta g2")
         .expect("g2 meta exists");
     assert_eq!(
-        meta_g2.bytecode_id, blobs.other,
+        meta_g2.target.bytecode_id, blobs.other,
         "G2 must NOT be touched — predicate skip on heterogeneous bytecode_id"
     );
-    assert_eq!(meta_g2.target_application_id, app_id_other());
+    assert_eq!(meta_g2.target.application_id, app_id_other());
 
     // No InProgress row for G2 (the matched-descendant loop never ran
     // for it). Reads must be `Ok(None)`.
@@ -1114,7 +1124,7 @@ async fn seed_ladder_bundles(node: &TestNode) -> LadderBlobs {
 #[serial(boot_test_node)]
 async fn lazy_upgrade_emits_multi_hop_ladder() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let blobs = seed_ladder_bundles(&node).await;
@@ -1187,7 +1197,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .expect("load meta")
         .expect("meta exists");
     assert_eq!(
-        meta.bytecode_id, blobs.v3,
+        meta.target.bytecode_id, blobs.v3,
         "group must land on the target blob"
     );
     assert_eq!(
@@ -1217,7 +1227,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
 #[serial(boot_test_node)]
 async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let blobs = seed_ladder_bundles(&node).await;
@@ -1253,7 +1263,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
         .expect("load meta")
         .expect("meta exists");
     assert_eq!(
-        meta.bytecode_id, blobs.v1,
+        meta.target.bytecode_id, blobs.v1,
         "rejected upgrade must not move the group"
     );
     assert!(
@@ -1277,7 +1287,7 @@ async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
     use actix::Actor;
 
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let blobs = seed_app_blobs(&node).await;
@@ -1385,7 +1395,7 @@ async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     use actix::Actor;
 
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let blobs = seed_app_blobs(&node).await;
@@ -1489,7 +1499,7 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     use actix::Actor;
 
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let blobs = seed_app_blobs(&node).await;
@@ -1640,7 +1650,7 @@ pub(crate) async fn deliver_heartbeat(
 #[serial(boot_test_node)]
 async fn fleet_completion_stamps_the_record_once() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);
@@ -1833,7 +1843,7 @@ async fn fleet_completion_stamps_the_record_once() {
 #[serial(boot_test_node)]
 async fn an_in_progress_record_defers_the_completion_edge_rather_than_spending_it() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);
@@ -2051,7 +2061,7 @@ fn put_shipped_completed_record(store: &Store, ns: &ContextGroupId, initiated_by
 #[serial(boot_test_node)]
 async fn a_record_a_shipped_binary_wrote_still_drives_the_fleet_latch() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);
@@ -2198,7 +2208,7 @@ async fn a_record_a_shipped_binary_wrote_still_drives_the_fleet_latch() {
 #[serial(boot_test_node)]
 async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);
@@ -2310,7 +2320,7 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
 #[serial(boot_test_node)]
 async fn stale_root_record_does_not_announce_a_newer_migration() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);
@@ -2443,7 +2453,7 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
 #[serial(boot_test_node)]
 async fn never_migrated_namespace_announces_nothing() {
     let node = boot_test_node().await;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);

@@ -2451,7 +2451,9 @@ mod tests {
     fn test_join_account_for(
         sign_pk: PublicKey,
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-        let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+        let root_sk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        );
         let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
         let cert = calimero_account::DeviceCert::sign(
             &root_sk,
@@ -2522,6 +2524,7 @@ mod tests {
             nonce: 0,
             op: NamespaceOp::Root(op),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 
@@ -2544,7 +2547,7 @@ mod tests {
                 inviter_signature: "deadbeef".to_string(),
                 application_id: None,
                 bytecode_id: None,
-                admitter_hints: Vec::new(),
+                admitter_addrs: Vec::new(),
             },
             account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
@@ -2625,7 +2628,7 @@ mod tests {
             inviter_signature: "deadbeef".to_string(),
             application_id: None,
             bytecode_id: None,
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         };
 
         let account = test_join_account_for(member);
@@ -2784,6 +2787,7 @@ mod tests {
                 },
             }),
             signature: [0u8; 64],
+            admitter_endorsement: None,
         };
         let delivery_op = op_from_namespace_op(&key_delivery, None, [0xA1; 32], hlc(1), &[]);
         assert_eq!(
@@ -3498,6 +3502,7 @@ mod tests {
                 },
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 
@@ -3522,6 +3527,7 @@ mod tests {
                 key_rotation: None,
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         }
     }
 }

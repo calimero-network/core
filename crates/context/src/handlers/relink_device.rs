@@ -343,8 +343,11 @@ mod tests {
             .save(
                 &ns,
                 &calimero_store::key::GroupMetaValue {
-                    bytecode_id: [0xAA; 32],
-                    target_application_id: app(APP_ONE),
+                    target: calimero_store::key::GroupTarget {
+                        application_id: app(APP_ONE),
+                        bytecode_id: [0xAA; 32],
+                        ..Default::default()
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: account,
                     owner_identity: account,

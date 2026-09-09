@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::Router;
 use calimero_client::{auth, AuthMode, ClientStorage, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -326,7 +326,7 @@ async fn start_callback_server(
 /// Generate a single-use, unguessable state nonce (256 bits, hex-encoded).
 fn generate_state() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 

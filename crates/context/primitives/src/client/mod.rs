@@ -18,7 +18,7 @@ use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{ContextCompat, WrapErr};
 use futures_util::Stream;
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
@@ -286,9 +286,7 @@ mod borsh_layout_round_trip {
     fn metadata_with(storage_type: StorageType) -> Metadata {
         let mut md = Metadata::new(1000, 2000);
         md.storage_type = storage_type;
-        md.crdt_type = Some(CrdtType::LwwRegister {
-            inner_type: "u64".to_owned(),
-        });
+        md.crdt_type = Some(CrdtType::lww_register());
         md.field_name = Some("field".to_owned());
         md.schema_version = Some(7);
         md
@@ -319,14 +317,9 @@ mod borsh_layout_round_trip {
         assert_eq!(decoded.metadata.updated_at, 2000);
         assert_eq!(decoded.metadata.field_name.as_deref(), Some("field"));
         assert_eq!(decoded.metadata.schema_version, Some(7));
-        // The mirror decodes `crdt_type` as the canonical `CrdtType`, so this
-        // also guards the `CrdtType` borsh layout against drift.
-        assert_eq!(
-            decoded.metadata.crdt_type,
-            Some(CrdtType::LwwRegister {
-                inner_type: "u64".to_owned()
-            })
-        );
+        // The mirror imports the canonical `CrdtType`, so this asserts the two
+        // structs agree on the field - not that `CrdtType`'s own layout is stable.
+        assert_eq!(decoded.metadata.crdt_type, Some(CrdtType::lww_register()));
         decoded
     }
 
@@ -730,44 +723,6 @@ impl ContextRegistry {
         tracing::debug!(
             delta_count = delta_keys.len(),
             "Atomically pruned delta records"
-        );
-
-        Ok(())
-    }
-
-    /// Updates the ApplicationId for a context.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The ID of the context to update.
-    /// * `application_id` - The new ApplicationId.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success or failure.
-    pub fn update_context_application_id(
-        &self,
-        context_id: &ContextId,
-        application_id: ApplicationId,
-    ) -> eyre::Result<()> {
-        let handle = self.datastore.handle();
-
-        let key = key::ContextMeta::new(*context_id);
-
-        let Some(mut meta) = handle.get(&key)? else {
-            eyre::bail!("Context not found: {}", context_id);
-        };
-
-        // Update application_id
-        meta.application = key::ApplicationMeta::new(application_id);
-
-        // Write back to database
-        self.datastore.clone().handle().put(&key, &meta)?;
-
-        tracing::debug!(
-            %context_id,
-            %application_id,
-            "Updated application_id in database"
         );
 
         Ok(())
@@ -1389,8 +1344,8 @@ impl ContextClient {
         _invitation_nonce: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
         let invitation_nonce = {
-            let mut rng = rand::thread_rng();
-            rng.gen::<[u8; DIGEST_SIZE]>()
+            let mut rng = rand::rng();
+            rng.random::<[u8; DIGEST_SIZE]>()
         };
 
         let ctx_exists = self.has_context(context_id)?;
@@ -1548,16 +1503,6 @@ impl ContextClient {
     /// Delegates to [`ContextRegistry::prune_delta_records`].
     pub fn prune_delta_records(&self, delta_keys: &[key::ContextDagDelta]) -> eyre::Result<()> {
         self.registry.prune_delta_records(delta_keys)
-    }
-
-    /// Updates the ApplicationId for a context.
-    pub fn update_context_application_id(
-        &self,
-        context_id: &ContextId,
-        application_id: ApplicationId,
-    ) -> eyre::Result<()> {
-        self.registry
-            .update_context_application_id(context_id, application_id)
     }
 
     /// Computes the actual root hash from storage by reading the root Index entry.
@@ -1830,6 +1775,102 @@ impl ContextClient {
                     %context_id,
                     error = %msg,
                     "merge_root_state: WASM Mergeable::merge returned an error"
+                );
+                Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                })
+            }
+        }
+    }
+
+    /// Invoke the app's merge for one custom-typed collection ENTRY and return
+    /// the merged bytes.
+    ///
+    /// The receive-side counterpart to [`Self::merge_root_state`], for entries
+    /// rather than the root. Sync apply cannot do this itself: it is a
+    /// synchronous call inside the storage env, and reaching the rule means
+    /// reaching into this module. So the apply defers the entry and the sync
+    /// driver calls here once the session is over — nothing is nested, which is
+    /// why no second WASM instance is needed.
+    ///
+    /// Dispatch is by `CustomTypeId`, which the entry itself carries, so one
+    /// export serves every `#[app::mergeable]` type rather than one per type.
+    ///
+    /// Returns `InternalErrorKind::Merge` if the app's rule failed, if this
+    /// build's app no longer registers that id (an upgrade skew), or if the
+    /// module exports nothing — which means the app never used `#[app::state]`.
+    /// The caller leaves the entity for the next sync round rather than
+    /// resolving it by LWW, which is the wrong answer for a conflict the app
+    /// declared itself responsible for.
+    pub async fn merge_custom(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        request: calimero_storage::merge::MergeCustomRequest,
+    ) -> Result<Vec<u8>, ExecuteError> {
+        let payload = borsh::to_vec(&request).map_err(|err| {
+            tracing::error!(
+                %context_id,
+                %err,
+                "merge_custom: failed to serialize MergeCustomRequest"
+            );
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Merge,
+            }
+        })?;
+
+        let response = self
+            .execute(
+                context_id,
+                executor,
+                "__calimero_merge_custom".to_owned(),
+                payload,
+                None,
+            )
+            .await?;
+
+        let return_bytes = match response.returns {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                tracing::error!(
+                    %context_id,
+                    "merge_custom: WASM export returned no bytes"
+                );
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
+            }
+            Err(err) => {
+                tracing::error!(
+                    %context_id,
+                    ?err,
+                    "merge_custom: WASM export reported a function-call error"
+                );
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
+            }
+        };
+
+        let response: calimero_storage::merge::MergeCustomResponse =
+            borsh::from_slice(&return_bytes).map_err(|err| {
+                tracing::error!(
+                    %context_id,
+                    %err,
+                    "merge_custom: failed to deserialize MergeCustomResponse"
+                );
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                }
+            })?;
+
+        match response {
+            calimero_storage::merge::MergeCustomResponse::Ok(bytes) => Ok(bytes),
+            calimero_storage::merge::MergeCustomResponse::Err(msg) => {
+                tracing::error!(
+                    %context_id,
+                    error = %msg,
+                    "merge_custom: WASM Mergeable::merge returned an error"
                 );
                 Err(ExecuteError::InternalError {
                     kind: InternalErrorKind::Merge,
@@ -2301,6 +2342,33 @@ impl ContextClient {
         self.context_manager
             .send(ContextMessage::ApplySignedNamespaceOp {
                 request: ApplySignedNamespaceOpRequest { op },
+                outcome: sender,
+            })
+            .await
+            .wrap_err("context manager mailbox closed")?;
+
+        receiver
+            .await
+            .wrap_err("context manager dropped the response channel")?
+    }
+
+    /// Seal a joiner's signed join under the namespace key and publish it under
+    /// this node's signature.
+    ///
+    /// For an admitter relaying a join on behalf of a keyholder that has no node
+    /// of its own. The joiner's signature travels inside the seal and is what
+    /// peers check to decide who joined; this node's signature only says who
+    /// carried it. Applies locally as part of publishing, so the caller does not
+    /// also apply.
+    pub async fn relay_signed_join(
+        &self,
+        op: crate::local_governance::SignedNamespaceOp,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::RelaySignedJoin {
+                request: crate::messages::RelaySignedJoinRequest { op },
                 outcome: sender,
             })
             .await

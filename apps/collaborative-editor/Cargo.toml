@@ -22,3 +22,7 @@ independent = true
 # Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
 # CRDT state under `cargo test`.
 calimero-storage = { workspace = true, features = ["testing"] }
+
+[package.metadata.calimero]
+package = "com.calimero.collaborative-editor"
+name = "Collaborative Editor"

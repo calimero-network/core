@@ -70,7 +70,7 @@ jobs:
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Save and upload Docker image
-        run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
+        run: docker save merod:local merod:local-dht | zstd -T0 -3 -o /tmp/merod-local.tar.zst
 
       - name: Upload Docker image
         uses: actions/upload-artifact@v7

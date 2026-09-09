@@ -7,7 +7,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
     JoinSubgroupInheritanceError, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
 };
-use calimero_context_client::local_governance::{KeyEnvelope, NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{KeyEnvelope, RootOp};
 use calimero_primitives::identity::PrivateKey;
 use tracing::{info, warn};
 
@@ -92,9 +92,35 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // (1) but failed (2) — e.g. transient publish error — must
                 // be safe to retry without re-fetching the key, and must
                 // still re-attempt the publish.
-                let key_already_local = GroupKeyring::new(&datastore, group_id)
-                    .load_current_key()?
-                    .is_some();
+                //
+                // WHICH key covers this subgroup decides whether there is
+                // anything to fetch at all.
+                //
+                // On an Open chain there is not: the subgroup is covered by the
+                // namespace key, which this caller holds by virtue of being the
+                // namespace member that inherits inward. The subgroup's own row
+                // — minted at birth for every subgroup, whatever its visibility
+                // — is a key nothing is encrypted under, so adopting it would
+                // record "key present" while opening nothing. Skipping keeps the
+                // post-condition honest: the key that decrypts this subgroup is
+                // local. A caller that genuinely lacks the namespace key still
+                // fails loudly just below, where `seal_root_op_for_publish`
+                // refuses to publish `MemberJoinedOpen` without it.
+                let key_group_id =
+                    calimero_governance_store::key_covering_group(&datastore, &group_id)?;
+                let covered_by_namespace = key_group_id != group_id;
+                let key_already_local = covered_by_namespace
+                    || GroupKeyring::new(&datastore, group_id)
+                        .load_current_key()?
+                        .is_some();
+                if covered_by_namespace {
+                    info!(
+                        ?group_id,
+                        %joiner_identity,
+                        "join_subgroup_inheritance: subgroup is on an Open chain and covered by \
+                         the namespace key; no subgroup key to fetch"
+                    );
+                }
                 if !key_already_local {
                     // Direct-stream key fetch: ask any peer holding the
                     // subgroup key for it via the dedicated
@@ -154,11 +180,19 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &ns_id.to_bytes().into(),
                     &joiner_identity,
                 )?;
-                let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
-                    member: join_account.statement.account,
-                    group_id: group_id.to_bytes().into(),
-                    account: join_account,
-                });
+                // Sealed under the NAMESPACE key. This publisher holds it: it is
+                // already a member inheriting inward, and the key it was missing
+                // -- the subgroup's -- is local by this point, as the comment
+                // above about the post-condition says.
+                let op = calimero_governance_store::seal_root_op_for_publish(
+                    &datastore,
+                    ns_id.to_bytes().into(),
+                    RootOp::MemberJoinedOpen {
+                        member: join_account.statement.account,
+                        group_id: group_id.to_bytes().into(),
+                        account: join_account,
+                    },
+                )?;
                 calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,

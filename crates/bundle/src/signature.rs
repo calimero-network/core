@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn test_decode_public_key_valid() {
         // Generate a test key
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let public_key = signing_key.verifying_key();
 
         // Encode and decode
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_verify_ed25519_valid_signature() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let message = b"test message";
 
         let signature = signing_key.sign(message);
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_verify_ed25519_invalid_signature() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let message = b"test message";
         let wrong_message = b"wrong message";
 
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_verify_manifest_signature_valid() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
         let mut manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_verify_manifest_signature_wrong_algorithm() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
         let mut manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));
         manifest["signature"] = serde_json::json!({
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_verify_manifest_signature_missing_signer_id() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         // Create manifest without signerId (but with signature)
         let mut manifest = create_test_manifest("com.example.app", "1.0.0", None);
         sign_manifest(&mut manifest, &signing_key).unwrap();
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn test_verify_manifest_signature_signer_id_mismatch() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
 
         // Use a wrong signerId
         let mut manifest = create_test_manifest(
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_verify_manifest_signature_invalid_signature() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
         let mut manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));
@@ -679,7 +679,7 @@ mod tests {
     #[test]
     fn test_signer_id_derivation_is_stable() {
         // Generate a key and derive signerId multiple times
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let verifying_key = signing_key.verifying_key();
         let pubkey = verifying_key.as_bytes();
 
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_bundle_hash_is_deterministic() {
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
         let manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));

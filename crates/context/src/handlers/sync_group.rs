@@ -49,8 +49,8 @@ impl Handler<SyncGroupRequest> for ContextManager {
 
                 Ok(SyncGroupResponse {
                     group_id,
-                    bytecode_id: meta.bytecode_id,
-                    target_application_id: meta.target_application_id,
+                    bytecode_id: meta.target.bytecode_id,
+                    target_application_id: meta.target.application_id,
                     member_count,
                     context_count,
                 })

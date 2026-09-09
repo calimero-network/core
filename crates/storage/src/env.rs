@@ -837,7 +837,7 @@ mod mocked {
     use std::cell::RefCell;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use rand::RngCore;
+    use rand::Rng;
 
     use super::RuntimeEnv;
     use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
@@ -845,7 +845,7 @@ mod mocked {
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
-        static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
+        static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::rng().fill_bytes(buf)));
         static RUNTIME_ENV: RefCell<Option<RuntimeEnv>> = const { RefCell::new(None) };
         static LAST_ARTIFACT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
     }
@@ -1097,7 +1097,7 @@ mod mocked {
 
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
-        rand::thread_rng().fill_bytes(buf);
+        rand::rng().fill_bytes(buf);
     }
 
     /// Return the context id.
@@ -1260,7 +1260,7 @@ mod mocked {
             *rh.borrow_mut() = None;
         });
         NATIVE_HLC.with(|hlc| {
-            *hlc.borrow_mut() = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+            *hlc.borrow_mut() = LogicalClock::new(|buf| rand::rng().fill_bytes(buf));
         });
         // Reset executor ID to default
         EXECUTOR_ID.with(|id| id.set([237; 32]));

@@ -17,3 +17,7 @@ calimero-storage.workspace = true
 
 [package.metadata.workspaces]
 independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.state-schema-conformance"
+name = "State Schema Conformance"

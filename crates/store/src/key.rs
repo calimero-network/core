@@ -45,7 +45,7 @@ pub use group::{
     GroupMemberMetadata, GroupMemberValue, GroupMeta, GroupMetaValue, GroupMetadata, GroupOpHead,
     GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupPendingDeviceRotation,
     GroupPendingKeyRotation, GroupReentryBlock, GroupReentryBlockValue, GroupRevokedDevice,
-    GroupSubgroupVis, GroupSubgroupVisValue, GroupUpgradeKey, GroupUpgradeLadder,
+    GroupSubgroupVis, GroupSubgroupVisValue, GroupTarget, GroupUpgradeKey, GroupUpgradeLadder,
     GroupUpgradeStatus, GroupUpgradeValue, LadderRung, NamespaceBootstrapInviter, NamespaceGovHead,
     NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue, NamespaceParticipation,
     NamespaceParticipationValue, NodeAccountDeviceCert, NodeAccountDeviceCertValue,

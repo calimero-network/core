@@ -97,7 +97,8 @@ mod tests {
 
     use calimero_primitives::identity::{MemberIdentity, PrivateKey};
     use calimero_store::db::InMemoryDB;
-    use rand::rngs::OsRng;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
 
     use super::*;
     use crate::test_support::{account_for, enrol};
@@ -107,7 +108,7 @@ mod tests {
     fn a_bound_key_resolves_to_its_account() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
-        let key = PrivateKey::random(&mut OsRng).public_key();
+        let key = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
         let account = enrol(&store, &ns, &key);
 
         let identity = MemberIdentity::from(key);
@@ -126,7 +127,7 @@ mod tests {
     fn an_unbound_identity_is_taken_as_an_account() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
-        let account = account_for(&PrivateKey::random(&mut OsRng).public_key());
+        let account = account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
 
         let identity = MemberIdentity::from(account);
         let (resolved, as_key) = resolve(&store, &ns, &identity).expect("resolve");
@@ -149,7 +150,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x01; 32]);
         // Never enrolled anywhere, so no binding names it.
-        let key = PrivateKey::random(&mut OsRng).public_key();
+        let key = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
         let identity = MemberIdentity::from(key);
         let (resolved, as_key) = resolve(&store, &ns, &identity).expect("resolve");

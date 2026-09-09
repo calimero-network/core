@@ -40,9 +40,11 @@ use calimero_primitives::identity::PrivateKey;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::key::GroupTarget;
 use calimero_store::Store;
 use core::num::NonZeroU128;
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -57,8 +59,12 @@ fn hlc(ns: u64) -> HybridTimestamp {
 
 fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -70,8 +76,8 @@ fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 #[test]
 fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let ns = ContextGroupId::from([0x11; 32]);
     let ns_bytes = ns.to_bytes();
@@ -110,6 +116,7 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
 
@@ -178,7 +185,7 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
 #[test]
 fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let ns = ContextGroupId::from([0x22; 32]);
     let ns_bytes = ns.to_bytes();
 
@@ -201,6 +208,7 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
                 key_rotation: None,
             },
             signature: [0u8; 64],
+            admitter_endorsement: None,
         };
         op_from_namespace_op(&signed, None, [id; 32], hlc(u64::from(id)), &[])
     };
@@ -236,8 +244,8 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
 #[test]
 fn locally_authored_op_lands_in_the_op_store_atomically() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let ns = ContextGroupId::from([0x33; 32]);
     let ns_bytes = ns.to_bytes();
     // Enrolled, so the admin row names the account this key resolves to.
@@ -273,6 +281,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
     NamespaceOpLogService::new(&store, ns_bytes.into())
@@ -330,8 +339,8 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
 #[test]
 fn a_legacy_noop_row_for_an_unreadable_op_is_re_derived_as_a_hole() {
     let store = store();
-    let admin = PrivateKey::random(&mut OsRng).public_key();
-    let member = PrivateKey::random(&mut OsRng).public_key();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let ns = ContextGroupId::from([0x71; 32]);
     let ns_bytes = ns.to_bytes();
@@ -365,6 +374,7 @@ fn a_legacy_noop_row_for_an_unreadable_op_is_re_derived_as_a_hole() {
             key_rotation: None,
         },
         signature: [0u8; 64],
+        admitter_endorsement: None,
     };
     let delta_id = signed.content_hash().unwrap();
 

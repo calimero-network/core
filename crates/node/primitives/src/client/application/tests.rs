@@ -151,31 +151,6 @@ fn test_validate_artifact_path_very_long() {
 }
 
 // -----------------------------------------------------------------------
-// is_bundle_archive
-// -----------------------------------------------------------------------
-
-#[test]
-fn test_is_bundle_archive_mpk() {
-    assert!(bundle::is_bundle_archive(camino::Utf8Path::new("app.mpk")));
-    assert!(bundle::is_bundle_archive(camino::Utf8Path::new(
-        "/path/to/bundle.mpk"
-    )));
-}
-
-#[test]
-fn test_is_bundle_archive_non_mpk() {
-    assert!(!bundle::is_bundle_archive(camino::Utf8Path::new(
-        "app.wasm"
-    )));
-    assert!(!bundle::is_bundle_archive(camino::Utf8Path::new(
-        "app.tar.gz"
-    )));
-    assert!(!bundle::is_bundle_archive(camino::Utf8Path::new(
-        "no_extension"
-    )));
-}
-
-// -----------------------------------------------------------------------
 // is_bundle_blob - non-bundle data
 // -----------------------------------------------------------------------
 

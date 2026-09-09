@@ -20,8 +20,9 @@ use crate::{
     PermissionChecker,
 };
 use calimero_account::AccountId;
+use calimero_app_downloader::registry::{RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::application::ApplicationId;
+use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -269,4 +270,46 @@ pub(crate) fn application_version(store: &Store, id: &ApplicationId) -> String {
         .ok()
         .flatten()
         .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
+}
+
+/// Give the lazy migrate a row to bind fetched bytes to, or it bails and the
+/// sync gate stays armed. An existing row may be ahead, so it is never overwritten.
+pub(crate) fn seed_target_application_row(
+    store: &Store,
+    target_application_id: &ApplicationId,
+    bytecode_id: &[u8; 32],
+    coords: RegistryCoords<'_>,
+) -> EyreResult<()> {
+    if *target_application_id == ZERO_APPLICATION_ID || *bytecode_id == [0_u8; 32] {
+        return Ok(());
+    }
+    let key = calimero_store::key::ApplicationMeta::new(*target_application_id);
+    if store.handle().has(&key)? {
+        return Ok(());
+    }
+    let mut handle = store.handle();
+    handle.put(
+        &key,
+        &calimero_store::types::ApplicationMeta::new(
+            calimero_store::key::BlobMeta::new((*bytecode_id).into()),
+            0,
+            // The marker, never the empty string: the source is parsed on every
+            // read of the row, and an empty one fails that parse.
+            PENDING_BLOB_SHARE_SOURCE.into(),
+            Box::default(),
+            calimero_store::key::BlobMeta::new([0_u8; 32].into()),
+            calimero_store::types::PackageInfo {
+                package: coords.package.into(),
+                version: coords.version.into(),
+                signer_id: String::new().into_boxed_str(),
+                state_version: 0,
+            },
+        ),
+    )?;
+    tracing::info!(
+        %target_application_id,
+        bytecode_id = %hex::encode(bytecode_id),
+        "seeded target application row from an upgrade op"
+    );
+    Ok(())
 }

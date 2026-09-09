@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 
-use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeStrategy, Mergeable, StorageStrategy};
 use super::{compute_id, StoreError, UnorderedMap, ValueRef};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
@@ -341,6 +341,18 @@ where
     fn can_contain_crdts() -> bool {
         true
     }
+}
+
+/// Structural: the storage layer merges this by its `crdt_type` variant, so
+/// there is no app rule to dispatch. See [`MergeStrategy`].
+#[diagnostic::do_not_recommend]
+impl<K, V, S> MergeStrategy for AuthoredMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    const DISPATCHED: bool = false;
 }
 
 #[cfg(test)]

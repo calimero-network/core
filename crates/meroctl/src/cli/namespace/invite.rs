@@ -24,17 +24,28 @@ pub struct InviteCommand {
 
     /// Accounts permitted to admit a claim of this invitation.
     ///
-    /// Without any, the joiner announces itself on the namespace topic and any
-    /// ready peer may admit it — which means the invitation is published to
-    /// every subscriber of that topic. Naming admitters keeps it off the topic:
-    /// the joiner presents it to one of them directly.
+    /// Without any, the node fills the list in from the group's admins and TEE
+    /// nodes. Naming them narrows that set.
     #[clap(
         long = "admitter",
         value_name = "ACCOUNT_HEX",
         help = "Account permitted to admit this invitation (repeatable). \
-                Without it, admission is by broadcast."
+                Without it, the node uses the group's admins and TEE nodes."
     )]
     pub admitters: Vec<String>,
+
+    /// Where a joiner can dial an admitter.
+    ///
+    /// Only worth passing when this node cannot work the address out itself —
+    /// it has no entry for that account, or the one it has is stale.
+    #[clap(
+        long = "admitter-addr",
+        value_name = "MULTIADDR",
+        help = "libp2p multiaddr of an admitter, including its /p2p/<peer-id> \
+                suffix (repeatable). Usually unnecessary: the node fills these \
+                in from addresses it already has."
+    )]
+    pub admitter_addrs: Vec<String>,
 }
 
 impl InviteCommand {
@@ -43,6 +54,7 @@ impl InviteCommand {
             expiration_timestamp: self.expiration_timestamp,
             recursive: Some(self.recursive),
             admitters: self.admitters,
+            admitter_addrs: self.admitter_addrs,
         };
 
         let client = environment.client()?;

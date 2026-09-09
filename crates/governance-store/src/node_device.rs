@@ -34,7 +34,7 @@ use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use rand::Rng as _;
+use rand::RngExt as _;
 use zeroize::Zeroizing;
 
 use crate::{collect_keys_with_prefix, NamespaceRepository};
@@ -462,7 +462,7 @@ impl<'a> NodeDeviceRepository<'a> {
             return Ok(existing);
         }
 
-        let secret = PrivateKey::random(&mut rand::thread_rng());
+        let secret = PrivateKey::random(&mut rand::rng());
         self.store.handle().put(
             &NodeAccountRoot::new(),
             &NodeAccountRootValue {
@@ -947,8 +947,8 @@ impl<'a> NodeDeviceRepository<'a> {
     /// nowhere.
     fn mint_device_locked(&self, genesis: AccountGenesis) -> EyreResult<NodeDevice> {
         let account = genesis.account_id();
-        let mut rng = rand::thread_rng();
-        let device = DeviceId::mint(account, rng.gen::<[u8; 16]>());
+        let mut rng = rand::rng();
+        let device = DeviceId::mint(account, rng.random::<[u8; 16]>());
         let kem_secret = X25519SecretKey::random(&mut rng);
 
         let key = NodeDeviceIdentity::new();
@@ -2435,7 +2435,7 @@ mod tests {
         let published = minted.kem_public_key();
 
         // A sender wraps to the published key...
-        let sender = X25519SecretKey::random(&mut rand::thread_rng());
+        let sender = X25519SecretKey::random(&mut rand::rng());
         let sender_side = SharedKey::from_x25519(
             &sender,
             &calimero_crypto::X25519PublicKey::from(*published.as_bytes()),
@@ -2524,7 +2524,7 @@ mod tests {
         let ns = test_group_id();
 
         let enrolled = repo.ensure_enrolled(&ns).expect("enroll");
-        let namespace_identity = PrivateKey::random(&mut rand::thread_rng());
+        let namespace_identity = PrivateKey::random(&mut rand::rng());
 
         let wrong = calimero_account::DeviceCert::sign(
             &namespace_identity,

@@ -21,8 +21,11 @@ pub const EXAMPLES: &str = r"
   # Get details of an application
   $ meroctl --node node1 app get <app_id>
 
-  # Install an application with package/version
-  $ meroctl --node node1 app install --package com.example.myapp --version 1.0.0 --path ./my-app.wasm
+  # Install a published application from the node's registry
+  $ meroctl --node node1 app install com.example.myapp@1.0.0
+
+  # Install a local signed bundle
+  $ meroctl --node node1 app install --path ./dist/com.example.myapp-1.0.0.mpk
 
   # List all packages
   $ meroctl --node node1 app list-packages
@@ -36,11 +39,11 @@ pub const EXAMPLES: &str = r"
   # Get latest version of a package
   $ meroctl --node node1 app get-latest-version com.example.myapp
 
-  # Watch WASM file and update all contexts with the application
-  $ meroctl --node node1 app watch --path ./my-app.wasm
+  # Watch a signed bundle and update all contexts with the application
+  $ meroctl --node node1 app watch --path ./my-app.mpk
 
   # Watch and update only contexts using a specific app (by app id)
-  $ meroctl --node node1 app watch --path ./my-app.wasm --current-app-id <app_id>
+  $ meroctl --node node1 app watch --path ./my-app.mpk --current-app-id <app_id>
 
   # Uninstall an application
   $ meroctl --node node1 app uninstall <app_id>

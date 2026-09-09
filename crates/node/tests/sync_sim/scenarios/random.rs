@@ -33,7 +33,7 @@ impl Default for RandomScenarioConfig {
             entity_count_range: (10, 100),
             shared_entity_probability: 0.5,
             fresh_node_probability: 0.0,
-            crdt_types: vec![CrdtType::lww_register("test")],
+            crdt_types: vec![CrdtType::lww_register()],
         }
     }
 }
@@ -189,7 +189,7 @@ impl RandomScenario {
     /// Pick random CRDT type.
     fn random_crdt_type(&mut self) -> CrdtType {
         if self.config.crdt_types.is_empty() {
-            return CrdtType::lww_register("test");
+            return CrdtType::lww_register();
         }
         let idx = self.rng.gen_range_usize(self.config.crdt_types.len());
         self.config.crdt_types[idx].clone()
@@ -384,7 +384,7 @@ mod tests {
             .with_entity_count(50, 50)
             .with_shared_probability(0.0); // No shared to ensure unique entities
 
-        let mut scenario = RandomScenario::new(42, config);
+        let mut scenario = RandomScenario::new(12, config);
         let nodes = scenario.generate();
 
         // All nodes should have state (not fresh)

@@ -115,18 +115,6 @@ pub fn group_id(s: &str) -> Result<String, String> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
-/// Clap value parser for valid URLs.
-///
-/// Can be used with `#[arg(value_parser = valid_url)]`
-pub fn valid_url(s: &str) -> Result<String, String> {
-    match url::Url::parse(s) {
-        Ok(_) => Ok(s.to_string()),
-        Err(e) => Err(format!(
-            "Invalid URL '{s}': {e}. Expected format: http(s)://hostname[:port][/path]"
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -194,12 +182,6 @@ mod tests {
         assert!(valid_node_name("node1").is_ok());
         assert!(valid_node_name("").is_err());
         assert!(valid_node_name("node@1").is_err());
-    }
-
-    #[test]
-    fn test_valid_url_parser() {
-        assert!(valid_url("http://localhost:8080").is_ok());
-        assert!(valid_url("not-a-url").is_err());
     }
 
     #[test]

@@ -1,0 +1,83 @@
+mode = "standard"
+
+[swarm]
+listen = [
+    "/ip4/0.0.0.0/tcp/12528",
+    "/ip4/0.0.0.0/udp/12528/quic-v1",
+    "/ip6/::/tcp/12528",
+    "/ip6/::/udp/12528/quic-v1",
+]
+
+[server]
+listen = [
+    "/ip4/127.0.0.1/tcp/12428",
+    "/ip6/::1/tcp/12428",
+]
+auth_mode = "proxy"
+
+[server.admin]
+enabled = true
+
+[server.jsonrpc]
+enabled = true
+
+[server.websocket]
+enabled = true
+ping_interval_secs = 30
+pong_timeout_secs = 10
+
+[server.sse]
+enabled = true
+
+[bootstrap]
+nodes = [
+    "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh",
+    "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh",
+]
+
+[discovery]
+mdns = false
+advertise_address = false
+external_address = []
+
+[discovery.rendezvous]
+namespace = "/calimero/devnet/global"
+discovery_rpm = 0.5
+registrations_limit = 3
+
+[discovery.rendezvous.discovery_interval]
+secs = 15
+nanos = 0
+
+[discovery.relay]
+registrations_limit = 3
+
+[discovery.autonat]
+max_candidates = 5
+
+[discovery.autonat.probe_interval]
+secs = 10
+nanos = 0
+
+[sync]
+timeout_ms = 30000
+session_deadline_ms = 30000
+interval_ms = 5000
+frequency_ms = 10000
+
+[datastore]
+path = "data"
+
+[blobstore]
+path = "blobs"
+
+[context]
+migration_v2 = true
+
+[runtime.limits]
+
+[dag_compaction]
+enabled = true
+min_deltas_before_compact = 10000
+retain_recent_count = 1000
+check_interval = 3600

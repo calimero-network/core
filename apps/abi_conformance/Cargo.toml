@@ -18,3 +18,7 @@ thiserror.workspace = true
 
 [package.metadata.workspaces]
 independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.abi_conformance"
+name = "ABI Conformance"

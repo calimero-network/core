@@ -339,26 +339,6 @@ fn test_single_entity_still_prevents_snapshot() {
     );
 }
 
-/// Version mismatch falls back to HashComparison, not Snapshot.
-#[test]
-fn test_version_mismatch_uses_safe_fallback() {
-    let mut local_hs = SyncHandshake::new([1; 32], 50, 3, vec![]);
-    let mut remote_hs = SyncHandshake::new([2; 32], 50, 3, vec![]);
-
-    // Force version mismatch
-    local_hs.version = 1;
-    remote_hs.version = 2;
-
-    let selection = select_protocol(&local_hs, &remote_hs);
-
-    // Should fall back to HashComparison
-    assert!(
-        matches!(selection.protocol, SyncProtocol::HashComparison { .. }),
-        "Version mismatch should fall back to HashComparison, got {:?}",
-        selection.protocol
-    );
-}
-
 /// Same root hash means no sync needed - nodes already in sync.
 #[test]
 fn test_same_hash_means_no_sync_needed() {

@@ -27,6 +27,7 @@ impl Display for Pretty<'_> {
 
         let parsed = unparse(&File {
             shebang: None,
+            frontmatter: None,
             attrs: vec![],
             items: vec![item],
         });

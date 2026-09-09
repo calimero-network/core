@@ -11,8 +11,9 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
-use rand::rngs::OsRng;
-use rand::Rng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::RngExt;
 use sha2::Digest;
 
 use super::super::{
@@ -324,6 +325,39 @@ impl<'a> NamespaceRepository<'a> {
         let mut groups = vec![*root_group_id];
         groups.extend(self.collect_visible_descendants(root_group_id, &inviter_account)?);
 
+        // A caller that names nobody gets the namespace's admins and TEE
+        // nodes. The default lives here rather than in the handler above it
+        // because an invitation naming no admitter is one no endorsement can
+        // satisfy — it mints a credential that cannot admit anyone — and a
+        // default applied only at the edge is one the next caller of this
+        // public function silently skips.
+        //
+        // Resolved once at the namespace root, not per descendant: the
+        // endorsement is signed against the namespace, and the gate resolves
+        // the endorser against the namespace's membership, so the accounts
+        // that may admit are the same whichever subgroup the invitation is
+        // for. Resolving per group would name accounts the gate then refuses.
+        let admitters = if admitters.is_empty() {
+            let defaulted =
+                crate::NamespaceMembershipService::default_admitters(self.store, root_group_id)?;
+            // Every group keeps at least one admin — the last cannot be
+            // removed or demoted away — so an empty result is an inconsistent
+            // store, not a namespace without admins. Refused rather than
+            // minted: carrying on would answer an inconsistency by issuing an
+            // invitation that admits nobody, at the moment there is least
+            // reason to trust the store.
+            if defaulted.is_empty() {
+                eyre::bail!(
+                    "refusing to mint invitations for a namespace with no admin and no TEE \
+                     node: every namespace is supposed to have an admin, so this is an \
+                     inconsistent store rather than a namespace to issue invitations for"
+                );
+            }
+            defaulted
+        } else {
+            admitters.to_vec()
+        };
+
         let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -341,7 +375,7 @@ impl<'a> NamespaceRepository<'a> {
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {
-            let invitation_nonce: [u8; 32] = OsRng.gen();
+            let invitation_nonce: [u8; 32] = UnwrapErr(SysRng).random();
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
@@ -349,7 +383,7 @@ impl<'a> NamespaceRepository<'a> {
                 expiration_timestamp: expiration,
                 invitation_nonce,
                 invited_role,
-                admitters: admitters.to_vec(),
+                admitters: admitters.clone(),
             };
 
             let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -360,8 +394,8 @@ impl<'a> NamespaceRepository<'a> {
 
             let (application_id, bytecode_id) = match MetaRepository::new(self.store).load(&gid)? {
                 Some(meta) => (
-                    Some(*meta.target_application_id.as_ref()),
-                    Some(meta.bytecode_id),
+                    Some(*meta.target.application_id.as_ref()),
+                    Some(meta.target.bytecode_id),
                 ),
                 None => {
                     tracing::warn!(
@@ -380,7 +414,7 @@ impl<'a> NamespaceRepository<'a> {
                 inviter_account: Some(inviter_account),
                 application_id,
                 bytecode_id,
-                admitter_hints: Vec::new(),
+                admitter_addrs: Vec::new(),
             };
 
             result.push((gid, signed));
@@ -684,7 +718,7 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(existing.public_key);
         }
 
-        let private_key = PrivateKey::random(&mut OsRng);
+        let private_key = PrivateKey::random(&mut UnwrapErr(SysRng));
         let public_key = private_key.public_key();
 
         let mut handle = self.store.handle();
@@ -841,7 +875,7 @@ impl<'a> NamespaceRepository<'a> {
             });
         }
 
-        let private_key = PrivateKey::random(&mut OsRng);
+        let private_key = PrivateKey::random(&mut UnwrapErr(SysRng));
         let public_key = private_key.public_key();
 
         self.store_identity(&ns_id, &public_key, private_key.as_bytes())?;

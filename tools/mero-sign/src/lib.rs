@@ -232,7 +232,7 @@ pub fn verify_manifest(manifest: &serde_json::Value) -> Result<bool> {
 /// `force`: a signing key is unrecoverable, and losing one means no further
 /// updates can be published for any app already installed under its signerId.
 pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let signing_key = SigningKey::generate(&mut rng);
     let verifying_key: VerifyingKey = signing_key.verifying_key();
 
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn verify_manifest_rejects_signer_id_mismatched_with_embedded_key() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let key_a = SigningKey::generate(&mut rng);
         let key_b = SigningKey::generate(&mut rng);
 
@@ -512,7 +512,7 @@ mod tests {
 
         assert!(is_dev_key(&load_signing_key(&key_path).unwrap()));
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         assert!(!is_dev_key(&SigningKey::generate(&mut rng)));
     }
 

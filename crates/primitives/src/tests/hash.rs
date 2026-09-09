@@ -65,6 +65,40 @@ fn a_short_hex_hash_is_refused() {
     ));
 }
 
+/// Look up a committed known-answer vector by name.
+fn vector(name: &str) -> &'static str {
+    include_str!("../../fixtures/known_answers.txt")
+        .lines()
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .find_map(|(key, value)| (key == name).then_some(value.trim()))
+        .expect("fixture holds the named vector")
+}
+
+/// The value both digest-over-a-serializer paths are pinned against.
+const FIXED: (&str, u32) = ("com.calimero.known-answer", 7);
+
+#[test]
+fn sha256_of_fixed_bytes_is_byte_stable() {
+    let hash = Hash::new(b"calimero known-answer vector");
+
+    assert_eq!(hex::encode(hash.as_bytes()), vector("sha256_bytes"));
+}
+
+#[test]
+fn hash_json_of_a_fixed_value_is_byte_stable() {
+    let hash = Hash::hash_json(&FIXED).expect("hash json");
+
+    assert_eq!(hex::encode(hash.as_bytes()), vector("sha256_json"));
+}
+
+#[cfg(feature = "borsh")]
+#[test]
+fn hash_borsh_of_a_fixed_value_is_byte_stable() {
+    let hash = Hash::hash_borsh(&FIXED).expect("hash borsh");
+
+    assert_eq!(hex::encode(hash.as_bytes()), vector("sha256_borsh"));
+}
+
 #[test]
 fn test_serde() {
     let hash = Hash::new(b"Hello World");

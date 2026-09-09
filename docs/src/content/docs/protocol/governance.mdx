@@ -52,6 +52,15 @@ Joining is a two-part dance, because a new member needs two things: a row in the
 
 The membership operation is public on the governance scope; the key delivery is a private, wrapped envelope. Once the joiner unwraps the key, every prior and future operation in the scope becomes readable, and they fold the scope just like anyone else.
 
+### Which group an invitation may target
+
+An invitation names a `group_id`, and that may be the namespace root or a `Restricted` subgroup — but **not a subgroup on an `Open` chain to its namespace**. The reason is the key, not the membership row.
+
+An Open-chain subgroup is encrypted under the **namespace** key ([Which group's key covers a group](/protocol/encryption/#which-groups-key-covers-a-group)), so the only key that would let such a joiner read the group it was invited to is the namespace key — and that key reads all namespace-level governance and every Open-chain subgroup's application state, retained after leaving unless rotated. A member admitted to one subgroup is not entitled to it. There is therefore no key the join can be answered with, and the responder refuses the invitation rather than admitting a member who could read nothing.
+
+The route in is an invitation to the **namespace root**. From there, inheritance carries the member into the Open subgroup for free: parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited as members, and the self-join publishes `MemberJoinedOpen` — which needs no key delivery of its own, because the namespace key the member already holds covers the subgroup.
+
+
 ## Membership: leaving and removal
 
 There are two ways a member stops being a member, and the difference is entirely about the **scope key**.
@@ -275,7 +284,7 @@ Governance operations travel as a signed envelope. The group-scoped form:
 
 ```rust
 struct SignedGroupOp {
-  version: u8,  // current schema version = 8
+  version: u8,  // current schema version = 11; checked strictly-equal on decode
   group_id: [u8; 32],
   parent_op_hashes: Vec<[u8; 32]>,  // DAG parents
   signer: PublicKey,
@@ -292,7 +301,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 2)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 7)
 ```
 
 ### Replay protection

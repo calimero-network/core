@@ -21,4 +21,5 @@ calimero-primitives = { workspace = true, features = ["rand"] }
 
 [dev-dependencies]
 eyre.workspace = true
+hex.workspace = true
 rand.workspace = true

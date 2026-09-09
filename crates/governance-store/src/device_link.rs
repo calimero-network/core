@@ -7,7 +7,7 @@
 
 use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId};
 use calimero_context_client::group::BindOutcome;
-use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
 use calimero_node_primitives::client::NodeClient;
@@ -41,7 +41,7 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     // only by a scope that names none either.
     let application = MetaRepository::new(store)
         .load(namespace)?
-        .map(|meta| meta.target_application_id);
+        .map(|meta| meta.target.application_id);
     if !cert.covers(application) {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
@@ -122,13 +122,34 @@ async fn publish_link_and_key(
         "linked a device of this account"
     );
 
-    // `required_signers` is None because the device is not a member and so is not
-    // among the acking set - its receipt shows up as the device being able to
-    // read, not as an ack.
-    let delivery = NamespaceOp::Root(RootOp::KeyDelivery {
-        group_id: namespace.to_bytes().into(),
-        envelope,
-    });
+    // Sealed under the namespace key, so this op is NOT how the paired device
+    // gets the key: it holds no namespace key and cannot open the seal. It pulls
+    // the key from a peer instead, which the readiness beacon drives for a
+    // participant holding no governance state
+    // (`SyncManager::recover_missing_group_keys`).
+    //
+    // For the members who CAN read it the op is still the causal record of when
+    // this device was handed the scope key, which is what orders key epochs
+    // against membership. Sealing keeps that record -- which account, at which
+    // position -- off the namespace topic.
+    //
+    // The device's own authority comes from the `AccountDeviceLinked` published
+    // just above, and that is the ordering this sealing gives up: cleartext, the
+    // key landed at a causal position and the re-drive folded the link behind it.
+    // Now the key arrives out of band, so `join_context` waits for the binding
+    // (`await_joiner_account`) instead of asking once.
+    //
+    // `required_signers` is None, and now for two reasons: the device is not a
+    // member and so is not in the acking set, and it could not ack a sealed op
+    // regardless.
+    let delivery = crate::seal_root_op_for_publish(
+        store,
+        namespace.to_bytes().into(),
+        RootOp::KeyDelivery {
+            group_id: namespace.to_bytes().into(),
+            envelope,
+        },
+    )?;
     if let Err(err) = crate::sign_and_publish_namespace_op(
         store,
         node_client,
@@ -316,8 +337,11 @@ mod tests {
             .save(
                 namespace,
                 &GroupMetaValue {
-                    bytecode_id: [0xAA; 32],
-                    target_application_id: app(application),
+                    target: calimero_store::key::GroupTarget {
+                        application_id: app(application),
+                        bytecode_id: [0xAA; 32],
+                        ..Default::default()
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: calimero_account::AccountId::from([0x01; 32]),
                     owner_identity: calimero_account::AccountId::from([0x01; 32]),
@@ -446,8 +470,13 @@ mod tests {
             .save(
                 &ns,
                 &GroupMetaValue {
-                    bytecode_id: [0xAA; 32],
-                    target_application_id: app(APP_ONE),
+                    target: calimero_store::key::GroupTarget {
+                        application_id: app(APP_ONE),
+
+                        bytecode_id: [0xAA; 32],
+
+                        ..Default::default()
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: calimero_account::AccountId::from([0x01; 32]),
                     owner_identity: calimero_account::AccountId::from([0x01; 32]),

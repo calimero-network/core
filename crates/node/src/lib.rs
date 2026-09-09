@@ -19,7 +19,6 @@ pub mod dag_compactor;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
-pub mod join_namespace;
 mod manager;
 pub mod migration_status;
 pub mod network_event_channel;

@@ -38,16 +38,9 @@ pub struct UpdateCommand {
     #[clap(
         long,
         conflicts_with = "application_id",
-        help = "Path to the application file to watch and install locally"
+        help = "Path to the application's signed .mpk bundle to watch and install locally"
     )]
     path: Option<Utf8PathBuf>,
-
-    #[clap(
-        long,
-        conflicts_with = "application_id",
-        help = "Metadata needed for the application installation"
-    )]
-    metadata: Option<String>,
 
     #[clap(
         long,
@@ -84,7 +77,6 @@ impl UpdateCommand {
             Self {
                 application_id: Some(application_id),
                 path: None,
-                metadata: None,
                 watch: false,
                 ..
             } => {
@@ -97,21 +89,13 @@ impl UpdateCommand {
             Self {
                 application_id: None,
                 path: Some(path),
-                metadata,
                 ..
             } => {
                 // Validate file exists before processing
                 validate_file_exists(path.as_std_path())?;
 
-                let metadata = metadata.map(String::into_bytes);
-
                 let application_id = client
-                    .install_dev_application(InstallDevApplicationRequest::new(
-                        path.clone(),
-                        metadata.clone().unwrap_or_default(),
-                        Some("unknown".to_owned()),
-                        Some("0.0.0".to_owned()),
-                    ))
+                    .install_dev_application(InstallDevApplicationRequest::new(path.clone()))
                     .await?
                     .data
                     .application_id;
@@ -123,14 +107,8 @@ impl UpdateCommand {
                 environment.output.write(&_response);
 
                 if self.watch {
-                    watch_app_and_update_context(
-                        environment,
-                        context_id,
-                        path,
-                        metadata,
-                        executor_id,
-                    )
-                    .await?;
+                    watch_app_and_update_context(environment, context_id, path, executor_id)
+                        .await?;
                 }
             }
 
@@ -145,7 +123,6 @@ async fn watch_app_and_update_context(
     environment: &mut Environment,
     context_id: ContextId,
     path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
     member_public_key: PublicKey,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
@@ -189,12 +166,7 @@ async fn watch_app_and_update_context(
 
         let client = environment.client()?;
         let application_id = client
-            .install_dev_application(InstallDevApplicationRequest::new(
-                path.clone(),
-                metadata.clone().unwrap_or_default(),
-                Some("unknown".to_owned()),
-                Some("0.0.0".to_owned()),
-            ))
+            .install_dev_application(InstallDevApplicationRequest::new(path.clone()))
             .await?
             .data
             .application_id;

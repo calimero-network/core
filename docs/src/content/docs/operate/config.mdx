@@ -252,6 +252,88 @@ deliberately longer than the GC interval, and shorter than the offline window
 that forces a full resync, so a node that reconnects within the window can still
 reconcile deletions incrementally.
 
+## `[registry]`
+
+Where this node gets application bundles from - and there is exactly **one** such place.
+The node has no second route behind it, so this section decides both what it can install and
+whether it serves application bytecode to peers at all.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `"http"` \| `"dht"` | `"http"` | The node's one application source. `http` fetches from `base_url`; `dht` fetches from context members over blob share. |
+| `base_url` | URL | written by `merod init` as `"https://apps.calimero.network/"` | Base of the registry `http` mode resolves versions against. Override at init with `merod init --registry-url <URL>`. Unused in `dht` mode. |
+
+An absent `[registry]` section means `mode = "http"` with no `base_url`, which is a node
+that cannot resolve applications at all - see the failure modes below.
+`merod init` writes the public registry into a fresh `config.toml`, so a node initialized
+normally starts out resolvable; a mirror or an air-gapped deployment changes that one line.
+
+```toml
+[registry]
+mode = "http"
+base_url = "https://apps.calimero.network/"
+```
+
+### What each mode does
+
+| | `http` | `dht` |
+| --- | --- | --- |
+| Fetches applications from | `base_url`, by `package`/`version` | context members, authorized by membership |
+| Serves application bytecode to peers | **no** - neither announced nor served | yes |
+| Installs `package@version` by name | yes | no - governance or a local `.mpk` path only |
+| Serves user-data blobs | yes | yes |
+
+The serving gate is `NodeClient::may_share_blob`.
+An `http` node is not a source of application bytecode, so it withholds exactly that: an
+application's bytecode and compiled artifacts, including every named service's.
+User-data blob sharing is untouched in both modes.
+
+`dht` mode is for deployments with no registry reachable from the nodes - a closed fleet, a
+test harness, a lab network - where members hand each other the bytes governance named.
+It cannot bare-install by name, because a peer fetch needs a context to authorize against.
+
+### Environment overrides
+
+Two variables override the file, applied when `merod run` loads the config:
+
+| Variable | Overrides |
+| --- | --- |
+| `CALIMERO_REGISTRY_MODE` | `mode` (`http` or `dht`) |
+| `CALIMERO_REGISTRY_URL` | `base_url` |
+
+A malformed value is a startup error, not a silent fall back to the file's setting: a
+misconfigured node must not start.
+
+### How a version is resolved
+
+The node appends the coordinates carried by the governance op to `base_url` -
+`{base_url}/artifacts/{package}/{version}/{package}-{version}.mpk` - and accepts the
+download only if its blob id equals the `bytecode_id` the group named, so a wrong registry
+can only cause a fetch failure, never a code substitution.
+Because the value is operator-chosen, no host guard applies to it, which is what makes a
+private or air-gapped registry reachable. It is also the only URL the node ever fetches an
+application from - nothing remote-chosen names a location.
+See [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node) for
+the full picture.
+
+### When it is misconfigured
+
+There is no fallback, so a misconfiguration surfaces rather than degrading:
+
+| Situation | What you see |
+| --- | --- |
+| `mode = "http"`, no `base_url`, installing by coordinates | the install fails with `[registry] mode = "http" needs a base_url to fetch from` |
+| `mode = "http"`, no `base_url`, a group names bytecode | `no application source is configured` in the log; the context keeps its current version and retries on next access |
+| `base_url` points somewhere with nothing published there | the install reports the coordinates as unpublished (retryable - the version simply is not there yet) |
+| `base_url` points at a registry that repacks bundles | every fetch fails a `blob id mismatch` and no node moves version |
+
+<Aside type="caution">
+The registry must serve the `.mpk` byte for byte.
+`bytecode_id` covers the whole envelope, so a mirror that re-gzips the tar, reorders its
+entries, or restamps mtimes produces a different blob id: every fetch then fails the check,
+and every node stays on the version it already runs.
+</Aside>
+
 ## `[tee]`
 
 Trusted Execution Environment configuration. The entire section is optional and
@@ -374,6 +456,9 @@ max_log_size = 32768
 enabled = true
 min_deltas_before_compact = 10000
 retain_recent_count = 1000
+
+[registry]
+base_url = "https://apps.calimero.network/"
 ```
 
 ## Next steps

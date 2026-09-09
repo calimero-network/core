@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`grantedOnGroupId` on the relay descriptor** (`GET admin-api/contexts/:id/intents`),
+  optional. `canAuthorOnBehalf` answers whether this node may execute a delegated
+  write in the group owning this context; this says **where** the grant lives,
+  which is what makes both a refusal and a later revoke actionable. Absent means
+  no group reachable from here carries it, so someone must grant it — on
+  `groupId`, or once on an ancestor. Equal to `groupId` means granted here.
+  *Different* from `groupId` means granted on an ancestor this node inherits
+  membership through — honoured there, and the case the field exists for:
+  contexts routinely live in subgroups while a TEE fleet node is admitted once at
+  the namespace root, so one root grant covers the fleet and this is the only way
+  to see that a *root* grant is what is covering it. A revoke or a narrowing has
+  to edit the group named here, not `groupId`.
+
+  Reports where a grant *lives*, never what is *permitted*: `canAuthorOnBehalf`
+  remains the only authorization answer and a client must not read this field as
+  permission. Backed by `warrant_gate::authorship_grant_source`, which defers to
+  `MembershipRepository::effective_capabilities` and `check_path` rather than
+  re-deriving the traversal — so it cannot report a grant across a boundary the
+  membership walk itself refuses to cross (a private subgroup required its own
+  admission, so it requires its own grant), and cannot report one for a node
+  deny-listed off an Open subgroup. Both properties are pinned by tests verified
+  through mutation.
+
+- **`GET admin-api/contexts/:context_id/intents`** — the relay descriptor a
+  keyholder needs *before* minting a warrant: `executorAccount` (whom the
+  warrant's `executor` must name), `canAuthorOnBehalf` (whether this node holds
+  the grant on the owning group) and `groupId` (whose admin grants it).
+  Both facts belong to the node, so a client could not compose them, and asking
+  after the fact is too late: minting a warrant spends a nonce from a monotonic
+  per-device sequence, and one naming the wrong executor is unspendable.
+  `canAuthorOnBehalf: false` is an answer rather than an error — it is the
+  default state of every context, since the capability is implied by neither
+  membership nor admin.
+
+- **`--can-author-on-behalf`** on `meroctl group members set-capabilities`, and
+  the same row in `check-access`. The capability existed and was enforced
+  everywhere, but no CLI could grant it, so delegated execution could not be
+  turned on at all. Note the mask is replaced, not merged.
+
+- **`Client::get_intent_relay`** in `calimero-client`, and `meroctl context
+  intent` now uses it. The command previously took `executor` from
+  `GET admin-api/identity`, which needs a credential on the relay — so on the
+  relay the feature exists for, the credential-free one, it could not read it at
+  all — and which does not report the grant, so it signed and spent `--nonce`
+  before learning the write would be refused. It now reads both from the
+  descriptor and refuses beforehand when the grant is missing, naming the group
+  and the account in the `set-capabilities` command to ask an admin for.
+
+- **`server.admin.public_intents`** (and `merod init --public-intents`): serve
+  the two delegated-execution routes above without a node credential. **Off by
+  default.** It opens exactly those two and nothing else, because they carry
+  their own credential — the warrant commits to this context, method and
+  arguments, is single-use, and is refused before execution unless the node
+  holds `CAN_AUTHOR_ON_BEHALF`. A node token proves none of that, and requiring
+  one makes the feature unreachable for the callers it exists for: a browser
+  tab or an agent holding one signing key and no relationship with the relay.
+  This is the write half of the known gap recorded in
+  [direct admission](docs/src/content/docs/protocol/direct-admission.mdx);
+  `/admit` is still behind the guard.
+
+  **Breaking** for `calimero-server`: `AdminConfig::new` now takes
+  `(enabled, public_intents)`. One constructor rather than a defaulting one,
+  because this flag decides whether a node exposes a write path to callers
+  holding no credential on it, and a convenience default is how a relay ships
+  with the posture nobody intended — in either direction.
+
 ### Removed
 
 - **`upgradePolicy`** from the namespace and group-info responses (`GET
@@ -70,6 +138,81 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **An authorship grant now reaches wherever membership reaches, and nodes must
+  be upgraded together.** `CAN_AUTHOR_ON_BEHALF` is resolved by the delegated-write
+  gate on the group owning the context and, failing that, on that group's
+  membership *anchor* — the ancestor the relay inherits its membership through.
+  It previously read the row on the owning group and nothing else.
+
+  This is the shape a relay fleet actually has. A TEE node is admitted once at
+  the namespace root while contexts live in subgroups (channels, DMs, per-team
+  groups), and a capability is not copied down the tree — so a namespace-wide
+  grant authorized nothing, and there was no row to write for an inherited member
+  short of admitting the relay directly to every subgroup. `grantedOnGroupId`
+  reported the root grant while the gate refused it, which was the descriptor
+  telling a caller where the grant was and the node then turning it away.
+
+  Two directions, and both are authorization evaluated at the cut:
+
+  - **Widening.** An ancestor grant now counts, for an *inherited* member. Bounded
+    by membership: a `Restricted` subgroup is still a wall (it required its own
+    admission, so it requires its own grant), a node deny-listed off an `Open`
+    subgroup is still refused there, and a **direct** member of the target does
+    not reach the ancestor at all — a group that admitted the node in its own
+    right decides for itself. The fleet path is the inherited one: a TEE
+    admission into an `Open` subgroup runs through `admit_member_if_absent`,
+    which writes no row for a node that already inherits. The cost, stated
+    rather than hidden: a root grant also reaches `Open` subgroups created
+    *after* it. The scoping did not disappear, it moved to where the admin
+    writes the grant.
+  - **Narrowing.** A bare capability row with no membership behind it no longer
+    authorizes. No writer produces that state deliberately — `MemberCapabilitySet`
+    bails unless the account is already a direct member, and `remove_member`
+    deletes the capability row with the member row — but those deletes are not
+    atomic, so it is reachable, and the gate's answer is now one deny-list-aware
+    predicate instead of two that can drift.
+
+  **Upgrade together.** A node running this and a node running the old read
+  disagree about whether the same delegated delta is authorized, and would then
+  hold different state. There is no wire-format change and no migration; the
+  divergence is in the verdict.
+
+  Determinism is unchanged, and for a stronger reason than the owning-group read
+  gave: resolving the membership already reads the anchor's own state —
+  `check_path` consults `CAN_JOIN_OPEN_SUBGROUPS` in exactly the capability row
+  this bit lives in. A peer that cannot read the anchor cannot resolve the
+  membership either, and refuses the delta a step earlier.
+
+  Pinned by tests verified through mutation: restoring the old one-row read fails
+  the widening case, the deny-list revocation and the narrowing case, and leaves
+  every other test in the file green. The `Restricted`-boundary test passes either
+  way, which is the point — it is the invariant the widening must not break.
+
+- **Storage wire formats changed in six ways, and nodes should be upgraded
+  together.** App-defined merge now actually runs for a custom type stored in a
+  collection — it previously resolved last-write-wins with the app's rule never
+  called — and getting there moved several stored and transmitted formats:
+  `CrdtType`'s borsh tags to `0x80+` ([#3743]), `Custom(String)` to a
+  `Custom(CustomTypeId)` digest at a new tag ([#3789]), map entries to
+  value-first ([#3796]), and entries gained a `crdt_type` stamp ([#3799]).
+  `Message::sequence_id` and `Init::pop` were already lockstep before this.
+
+  Five of the six announce themselves: they move a discriminant, so a
+  pre-upgrade node hits an unknown tag and fails the decode. **The map-entry
+  reorder does not.** `Entry<(K, V)>` became `Entry<(V, K)>` — the same fields,
+  the same total length, no tag — so a stale reader takes the value bytes for
+  the key and carries on. Depending on the key type that surfaces as a decode
+  error or as plausible nonsense, and neither is reliable.
+
+  There is no in-band detection: the handshake versioning that would have
+  refused an incompatible peer was never wired to the live path and has been
+  removed rather than left looking functional ([#3811]); [#3810] tracks building
+  the negotiation CIP §2.3 specifies. Until then the upgrade order is a
+  convention, not something the code enforces.
+
+  Low stakes while the network is alpha and upgrades are coordinated — noted so
+  the constraint is written down somewhere before that stops being true
 
 - **`POST admin-api/namespaces/:namespace_id/join`** names the id it returns
   `namespaceId`, not `groupId`. The endpoint shared its response DTO with
@@ -861,3 +1004,9 @@ Integrations:
 [#3530]: https://github.com/calimero-network/core/pull/3530
 [#3595]: https://github.com/calimero-network/core/pull/3595
 [#3607]: https://github.com/calimero-network/core/pull/3607
+[#3743]: https://github.com/calimero-network/core/pull/3743
+[#3789]: https://github.com/calimero-network/core/pull/3789
+[#3796]: https://github.com/calimero-network/core/pull/3796
+[#3799]: https://github.com/calimero-network/core/pull/3799
+[#3810]: https://github.com/calimero-network/core/issues/3810
+[#3811]: https://github.com/calimero-network/core/pull/3811

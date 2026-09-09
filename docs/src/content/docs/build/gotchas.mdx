@@ -20,7 +20,7 @@ in [Advanced SDK](/build/advanced-sdk/), [Storage Complexity](/build/storage-com
 
 :::danger[time_now and random_bytes diverge replicas]
 `time_now` returns real wall-clock time (`SystemTime::now()`) and `random_bytes`
-draws from `rand::thread_rng()` — both are genuinely non-deterministic in
+draws from `rand::rng()` — both are genuinely non-deterministic in
 production. Use either in state-mutating logic and your replicas will compute
 different states and diverge. Treat them as untrusted, display-only inputs.
 :::

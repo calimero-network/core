@@ -136,7 +136,7 @@ pub fn loaded_reader_bytecode_id(
     };
     Ok(MetaRepository::new(store)
         .load(&gid)?
-        .map(|meta| meta.bytecode_id))
+        .map(|meta| meta.target.bytecode_id))
 }
 
 /// Resolve the **migration target** bytecode_id for a context: the replicated
@@ -160,7 +160,7 @@ pub fn target_reader_bytecode_id(
     };
     Ok(MetaRepository::new(store)
         .load(&gid)?
-        .map(|meta| meta.bytecode_id))
+        .map(|meta| meta.target.bytecode_id))
 }
 
 /// Store-aware decision: resolves the receiver's loaded reader key + the
@@ -186,12 +186,12 @@ pub fn delta_fence_decision(
     // Loaded reader = schema this node can read now; fall back to the target
     // when the loaded application can't be resolved (parity with PR-3).
     let loaded_bytecode_id =
-        loaded_reader_bytecode_id(store, context_id)?.unwrap_or(meta.bytecode_id);
+        loaded_reader_bytecode_id(store, context_id)?.unwrap_or(meta.target.bytecode_id);
 
     Ok(fence_decision(
         producing_bytecode_id,
         loaded_bytecode_id,
-        meta.bytecode_id,
+        meta.target.bytecode_id,
         delta_hlc,
         cascade_hlc,
     ))

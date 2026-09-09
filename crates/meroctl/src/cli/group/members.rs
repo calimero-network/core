@@ -271,6 +271,20 @@ pub struct SetCapabilitiesCommand {
         help = "Allow member to set name/data on the group, its members, or its contexts"
     )]
     pub can_manage_metadata: bool,
+
+    /// The grant delegated execution runs on.
+    ///
+    /// Not implied by membership, not implied by admin, and not propagated by
+    /// the subgroup-admit cascade — so every group is authorship-closed until
+    /// this is set, and this command is the only way to open one. A relay
+    /// without it is refused at the API before it executes, and a delta it
+    /// somehow published would be dropped by every peer at the cut.
+    #[clap(
+        long,
+        help = "Allow member to publish writes attributed to ANOTHER member, under a warrant \
+                that member signed (delegated execution; held by relays)"
+    )]
+    pub can_author_on_behalf: bool,
 }
 
 impl SetCapabilitiesCommand {
@@ -383,6 +397,10 @@ impl CheckAccessCommand {
             "CAN_MANAGE_METADATA:     {}",
             caps & MemberCapabilities::CAN_MANAGE_METADATA.bits() != 0
         );
+        println!(
+            "CAN_AUTHOR_ON_BEHALF:    {}",
+            caps & MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits() != 0
+        );
 
         Ok(())
     }
@@ -420,6 +438,9 @@ fn encode_capabilities(cmd: &SetCapabilitiesCommand) -> u32 {
     if cmd.can_manage_metadata {
         capabilities |= MemberCapabilities::CAN_MANAGE_METADATA.bits();
     }
+    if cmd.can_author_on_behalf {
+        capabilities |= MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits();
+    }
     capabilities
 }
 
@@ -445,6 +466,7 @@ mod tests {
             can_delete_subgroup: false,
             can_manage_visibility: false,
             can_manage_metadata: false,
+            can_author_on_behalf: false,
         }
     }
 
@@ -505,6 +527,11 @@ mod tests {
                 expected: MemberCapabilities::CAN_MANAGE_METADATA,
                 name: "can_manage_metadata",
             },
+            FlagCase {
+                set: |c| c.can_author_on_behalf = true,
+                expected: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+                name: "can_author_on_behalf",
+            },
         ];
 
         for case in cases {
@@ -529,6 +556,7 @@ mod tests {
         c.can_delete_subgroup = true;
         c.can_manage_visibility = true;
         c.can_manage_metadata = true;
+        c.can_author_on_behalf = true;
 
         let all = encode_capabilities(&c);
         let expected = (MemberCapabilities::CAN_CREATE_CONTEXT
@@ -537,10 +565,11 @@ mod tests {
             | MemberCapabilities::CAN_CREATE_SUBGROUP
             | MemberCapabilities::CAN_DELETE_SUBGROUP
             | MemberCapabilities::CAN_MANAGE_VISIBILITY
-            | MemberCapabilities::CAN_MANAGE_METADATA)
+            | MemberCapabilities::CAN_MANAGE_METADATA
+            | MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
             .bits();
         assert_eq!(all, expected);
         // Every set bit is distinct (no two flags collide on a bit).
-        assert_eq!(all.count_ones(), 7);
+        assert_eq!(all.count_ones(), 8);
     }
 }

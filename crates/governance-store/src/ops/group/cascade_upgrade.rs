@@ -15,11 +15,13 @@ use crate::{
     GroupSettingsService, MetaRepository, MetadataRepository, NamespaceRepository,
     UpgradesRepository,
 };
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::ApplicationId;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead};
 use eyre::Result as EyreResult;
 
+#[allow(clippy::too_many_arguments, reason = "one parameter per op field")]
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     from_bytecode_id: &[u8; 32],
@@ -28,6 +30,7 @@ pub(crate) fn apply(
     to_state_version: u32,
     migration: &Option<Vec<u8>>,
     cascade_hlc: HybridTimestamp,
+    coords: RegistryCoords<'_>,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
@@ -59,6 +62,17 @@ pub(crate) fn apply(
     // ops racing the same subtree.
     let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_bytecode_id)?;
 
+    // Once for the whole cascade - the row is keyed by application id, so every
+    // matched descendant shares it - and never when this node moves nothing.
+    if entries.iter().any(|entry| entry.matched) {
+        super::context::seed_target_application_row(
+            store,
+            target_application_id,
+            bytecode_id,
+            coords,
+        )?;
+    }
+
     // The migration's expand-entry governance position: the namespace gov-head
     // sequence as it stands when this CascadeUpgrade applies (BEFORE the op's own
     // head advance, which `apply_signed_op` runs after mutations). This is the
@@ -85,7 +99,7 @@ pub(crate) fn apply(
         .load(group_id)
         .ok()
         .flatten()
-        .map(|meta| meta.target_application_id);
+        .map(|meta| meta.target.application_id);
 
     // Semver strings for the per-descendant record: the empty strings this used
     // to write are what a receiver's completion banner renders. Shares the
@@ -120,7 +134,11 @@ pub(crate) fn apply(
         // here (doing so from live caps is the cross-replica divergence this
         // fix removes).
         let entry_settings = GroupSettingsService::new(store, gid);
-        entry_settings.set_target_application_unchecked(bytecode_id, target_application_id)?;
+        entry_settings.set_target_application_unchecked(
+            bytecode_id,
+            target_application_id,
+            coords,
+        )?;
         entry_settings.set_group_migration_unchecked(migration)?;
 
         // Stamp the sticky cascade fence onto the per-group upgrade

@@ -14,7 +14,7 @@ use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateGroupInNamespaceBody {
     pub group_name: Option<String>,
     /// Optional subgroup visibility at birth (#2771): `"open"` or
@@ -51,8 +51,8 @@ pub async fn handler(
     );
 
     let group_id: [u8; 32] = {
-        use rand::Rng;
-        rand::thread_rng().gen()
+        use rand::RngExt;
+        rand::rng().random()
     };
 
     match NamespaceRepository::new(&state.store).parent(&namespace_id) {
@@ -104,10 +104,22 @@ pub async fn handler(
     // first mirrors the actor handler (crates/context/src/handlers/create_group.rs)
     // and makes it visible the instant the event fires. It also means a failed
     // publish no longer silently skips key creation.
+    //
+    // Minted for EVERY subgroup, Open or Restricted, and deliberately so: it is
+    // the key this subgroup uses if it is ever `Restricted`. While the chain to
+    // the namespace is Open the row sits unused — every writer encrypts an
+    // Open-chain subgroup under the NAMESPACE key
+    // (`calimero_governance_store::key_covering_group`) — but a later
+    // `SubgroupVisibilitySet -> Restricted` establishes no key of its own, so
+    // this row is what that flip turns into the group's real key. Minting it
+    // only for `restricted: true` would leave a flipped subgroup with no key any
+    // node holds, and an apply handler cannot mint one (each peer would invent a
+    // different one). Nothing may SERVE this row while the chain is Open: that is
+    // the readers' contract, held by `key_covering_group`.
     {
         let group_key: [u8; 32] = {
-            use rand::Rng;
-            rand::thread_rng().gen()
+            use rand::RngExt;
+            rand::rng().random()
         };
         if let Err(err) = GroupKeyring::new(&state.store, group_id_cgid).store_key(&group_key) {
             error!(
@@ -215,5 +227,20 @@ pub async fn handler(
             error!(?err, "Failed to create group in namespace");
             parse_api_error(err).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateGroupInNamespaceBody;
+
+    #[test]
+    fn a_body_with_an_unknown_field_is_refused() {
+        let err = serde_json::from_str::<CreateGroupInNamespaceBody>(r#"{"bogus":1}"#)
+            .expect_err("an unknown field must not deserialize");
+        assert!(
+            err.to_string().contains("unknown field `bogus`"),
+            "got: {err}"
+        );
     }
 }

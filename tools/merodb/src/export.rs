@@ -4,7 +4,7 @@ use borsh::BorshDeserialize;
 use calimero_storage::collections::CrdtType;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{
-    CollectionType, CrdtCollectionType, Field, Manifest, ScalarType, TypeDef, TypeRef,
+    CollectionType, CrdtCollectionType, Field, Manifest, TypeDef, TypeRef,
 };
 use core::ops::Deref;
 use eyre::{Result, WrapErr};
@@ -510,8 +510,8 @@ fn type_ref_label(type_ref: &TypeRef) -> String {
 }
 
 fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Result<Value> {
-    // Entry<T> where T = (K, V) serializes as:
-    // - item: (K, V) - the tuple itself
+    // Entry<T> where T = (V, K) serializes as:
+    // - item: (V, K) - the tuple itself, VALUE FIRST
     // - storage: Element - metadata (ID, timestamps, etc.)
     // So we need to deserialize: (K, V, Element)
 
@@ -525,49 +525,46 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
         hex::encode(&bytes[..bytes.len().min(128)])
     );
 
-    // Quick format check: For String keys, verify it looks like a Borsh-serialized string
-    // Borsh strings start with u32 length. If the first 4 bytes don't look like a reasonable length,
-    // or if the first 32 bytes look like a raw ID, this is probably not an Entry<(K, V)>.
-    if let TypeRef::Scalar(ScalarType::String) = field.key_type {
-        if bytes.len() < 4 {
-            return Err(eyre::eyre!(
-                "Entry too short to contain a Borsh-serialized string key"
-            ));
-        }
-        let length_bytes = [bytes[0], bytes[1], bytes[2], bytes[3]];
-        let key_length = u32::from_le_bytes(length_bytes) as usize;
-
-        // Sanity check: String length should be reasonable (< 1MB) and the entry should be long enough
-        if key_length > 1_000_000 || bytes.len() < 4 + key_length {
-            eprintln!("[decode_map_entry] First 4 bytes don't look like a valid string length: {} (u32: {})", 
-                hex::encode(length_bytes), key_length);
-            return Err(eyre::eyre!(
-                "Entry doesn't appear to be Entry<(String, V)> format (invalid string length: {})",
-                key_length
-            ));
-        }
-
-        // Additional check: If the first 32 bytes look like a raw ID (all non-zero, no obvious string pattern),
-        // this is probably not an Entry<(K, V)>
-        if bytes.len() >= 32 {
-            let first_32 = &bytes[..32];
-            // Check if it looks like a raw ID (32 bytes, mostly non-zero, not starting with a small u32)
-            if first_32.iter().all(|&b| b != 0)
-                && u32::from_le_bytes([first_32[0], first_32[1], first_32[2], first_32[3]]) > 1000
-            {
-                eprintln!("[decode_map_entry] First 32 bytes look like a raw ID, not a Borsh-serialized string");
-                return Err(eyre::eyre!(
-                    "Entry doesn't appear to be Entry<(String, V)> format (looks like raw ID)"
-                ));
-            }
-        }
-    }
-
+    // No front heuristic here any more. It used to sanity-check that the entry
+    // began with a Borsh-serialized string key — but a map entry is stored
+    // VALUE-FIRST (`Entry<(V, K)>`), so offset 0 is the value and there is
+    // nothing key-shaped to check without decoding that value first. The
+    // deserialization below is the check.
     let mut cursor = Cursor::new(bytes);
 
     // Deserialize the tuple (K, V)
     // For Borsh, a tuple (K, V) serializes as: K (serialized) + V (serialized)
     // For a String key, Borsh serializes as: u32 length + bytes
+    // `Entry<(V, K)>` is laid out as V + K + Element ID (32 bytes) — value
+    // first, which is what lets a reader find the value without knowing the
+    // key's type.
+    eprintln!(
+        "[decode_map_entry] Attempting to deserialize value (type: {:?})",
+        field.value_type
+    );
+    let value_value = match deserializer::deserialize_type_ref_from_cursor(
+        &mut cursor,
+        &field.value_type,
+        manifest,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let shown = bytes.len().min(64);
+            eprintln!(
+                "[decode_map_entry] Value deserialization failed for field {}: {}. First {} bytes: {}",
+                field.name, e, shown, hex::encode(&bytes[..shown])
+            );
+            return Err(eyre::eyre!(
+                "Failed to deserialize value (type: {:?}, total bytes: {}, error: {})",
+                field.value_type,
+                bytes.len(),
+                e
+            ));
+        }
+    };
+    let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
+    let value_raw = bytes[..value_end].to_vec();
+
     eprintln!(
         "[decode_map_entry] Attempting to deserialize key (type: {:?})",
         field.key_type
@@ -576,48 +573,20 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
         deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.key_type, manifest)
             .wrap_err_with(|| {
                 format!(
-                    "Failed to deserialize key (type: {:?}, first 32 bytes: {})",
+                    "Failed to deserialize key (type: {:?}, bytes after value: {})",
                     field.key_type,
-                    hex::encode(&bytes[..bytes.len().min(32)])
+                    hex::encode(&bytes[value_end..bytes.len().min(value_end + 32)])
                 )
             })?;
     eprintln!("[decode_map_entry] Successfully deserialized key: {key_value:?}");
     let key_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
-    let key_raw = bytes[..key_end].to_vec();
-
-    // For Counter values in map entries, the Counter is stored directly (not wrapped in Entry)
-    // The Entry<(K, V)> structure is: K + V + Element ID (32 bytes)
-    // So we deserialize V (Counter) directly, then handle the Element ID separately
-    let value_value = match deserializer::deserialize_type_ref_from_cursor(
-        &mut cursor,
-        &field.value_type,
-        manifest,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            // If Counter deserialization fails, log the bytes for debugging
-            let remaining = bytes.len() - key_end;
-            let bytes_to_show = remaining.min(64);
-            eprintln!(
-                "[decode_map_entry] Counter deserialization failed for field {}: {}. First {} bytes of value: {}",
-                field.name, e, bytes_to_show, hex::encode(&bytes[key_end..key_end + bytes_to_show])
-            );
-            return Err(eyre::eyre!(
-                "Failed to deserialize value (type: {:?}, remaining bytes: {}, error: {})",
-                field.value_type,
-                remaining,
-                e
-            ));
-        }
-    };
-    let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
-    let value_raw = bytes[key_end..value_end].to_vec();
+    let key_raw = bytes[value_end..key_end].to_vec();
 
     // Now deserialize Element (which contains id, timestamps, etc.)
     // Element serializes as: (id: Option<Id>, parent_id: Option<Id>, children: Option<Vec<ChildInfo>>, full_hash: [u8; 32], own_hash: [u8; 32], metadata: Metadata, deleted_at: Option<u64>)
     // For simplicity, we'll just try to read the ID (first 32 bytes if Some, or 1 byte if None)
-    let element_id = if value_end + 32 <= bytes.len() {
-        if let Ok(id) = borsh::from_slice::<Id>(&bytes[value_end..value_end + 32]) {
+    let element_id = if key_end + 32 <= bytes.len() {
+        if let Ok(id) = borsh::from_slice::<Id>(&bytes[key_end..key_end + 32]) {
             Some(hex::encode(id.as_bytes()))
         } else {
             None

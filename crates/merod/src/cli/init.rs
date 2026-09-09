@@ -29,6 +29,7 @@ use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{info, warn};
+use url::Url;
 
 use super::admin_creds::AdminCredArgs;
 use super::auth_mode::AuthModeArg;
@@ -120,6 +121,9 @@ const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_SESSION_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
+
+/// Registry written into a fresh `config.toml`. Operators override it there.
+const DEFAULT_REGISTRY_URL: &str = "https://apps.calimero.network";
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum AuthStorageArg {
@@ -214,6 +218,20 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
+    /// Run this node as a delegated-execution relay: serve
+    /// `GET`/`POST /admin-api/contexts/:context_id/intents` without a node
+    /// credential.
+    ///
+    /// Off by default. Pass it only for a node whose job is to write on behalf
+    /// of keyholders that have no relationship with it — a hosted TEE relay.
+    /// The two routes are self-authenticating: the warrant is the credential,
+    /// and a request is refused before anything executes unless the warrant is
+    /// this member's, covers this exact intent, has not expired, has an unspent
+    /// nonce, and this node holds `CAN_AUTHOR_ON_BEHALF` on the owning group.
+    /// Nothing else on the admin API is opened.
+    #[clap(long, default_value_t = false)]
+    pub public_intents: bool,
+
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
     /// terminals on one laptop and a tenancy question anywhere else — on a
@@ -281,6 +299,11 @@ pub struct InitCommand {
     /// Node operation mode (standard or read-only)
     #[clap(long, value_enum, default_value_t = NodeMode::Standard)]
     pub mode: NodeMode,
+
+    /// Registry base URL to pull application bundles from. Overrides the
+    /// default written into a fresh `config.toml`.
+    #[clap(long)]
+    pub registry_url: Option<Url>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -525,7 +548,7 @@ impl InitCommand {
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                 .collect(),
-            Some(AdminConfig::new(true)),
+            Some(AdminConfig::new(true, self.public_intents)),
             Some(JsonRpcConfig::new(true)),
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),
@@ -533,7 +556,7 @@ impl InitCommand {
             embedded_auth,
         );
 
-        let config = ConfigFile::new(
+        let mut config = ConfigFile::new(
             IdentityConfig { keypair: identity },
             self.mode,
             NetworkConfig::new(
@@ -562,6 +585,13 @@ impl InitCommand {
             BlobStoreConfig::new("blobs".into()),
             ContextConfig { migration_v2: true },
         );
+
+        // Written into config.toml rather than defaulted in code, so an operator
+        // points elsewhere by editing one visible line instead of rebuilding.
+        config.registry.base_url = Some(self.registry_url.unwrap_or_else(|| {
+            // SAFETY: DEFAULT_REGISTRY_URL is a hardcoded valid URL.
+            DEFAULT_REGISTRY_URL.parse().expect("valid URL")
+        }));
 
         // `save` writes config.toml atomically and owner-only (0600); the file
         // holds the private key, so this keeps it unreadable to other users.
@@ -674,6 +704,31 @@ mod tests {
     use clap::Parser;
 
     use super::InitCommand;
+
+    // `merod init` is the only place the registry default is written, so both
+    // arms decide whether a fresh node resolves apps at all.
+    #[test]
+    fn registry_url_defaults_unless_overridden() {
+        let default = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert_eq!(
+            default.registry_url, None,
+            "a bare init must defer to the public-registry default, not parse one at arg time"
+        );
+
+        let overridden =
+            InitCommand::try_parse_from(["merod", "--registry-url", "https://mirror.example/"])
+                .unwrap();
+        assert_eq!(
+            overridden.registry_url.unwrap().as_str(),
+            "https://mirror.example/",
+            "--registry-url must win"
+        );
+
+        assert!(
+            InitCommand::try_parse_from(["merod", "--registry-url", "not a url"]).is_err(),
+            "an unparseable override must fail arg parsing, not fall back"
+        );
+    }
 
     /// `init` must leave the node holding an account root.
     ///
