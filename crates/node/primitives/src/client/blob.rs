@@ -479,6 +479,19 @@ impl NodeClient {
                             peer_id = %peer_id,
                             "Downloaded blob ID mismatch, trying the next holder"
                         );
+                        // The bytes are already on disk under the id they
+                        // actually hash to, and nothing reclaims them: there is
+                        // no content-addressed GC, and the search continues to
+                        // the next holder, so a lying peer would otherwise cost
+                        // a fresh copy per attempt. Same cleanup rule as
+                        // `add_blob`'s own rejection path.
+                        if let Err(err) = self.delete_blob(blob_id_stored).await {
+                            tracing::warn!(
+                                blob_id = %blob_id_stored,
+                                %err,
+                                "failed to delete the bytes a peer served under the wrong id"
+                            );
+                        }
                         return None;
                     }
 
