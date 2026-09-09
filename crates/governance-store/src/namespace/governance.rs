@@ -2653,32 +2653,111 @@ impl<'a> NamespaceGovernance<'a> {
                 // a failure here must not block the DAG (every later
                 // op would orphan), so errors are logged, not
                 // propagated.
-                match self.apply_received_group_key_envelope_at_depth(
-                    group_id.to_bytes(),
-                    envelope,
-                    op.signer,
-                    // `None`: a `KeyDelivery` carries no `key_id` to
-                    // check against, and needs none — the op is signed
-                    // and the envelope's sender is pinned to that
-                    // signer, so provenance is already established by
-                    // the DAG rather than by a hash comparison.
-                    None,
-                    depth,
-                ) {
-                    Ok(retry_divergence) => {
-                        if retry_divergence.is_some() {
-                            effects.divergence = retry_divergence;
+                //
+                // Trusted-anchor gate (#3871). `dispatch_root_op` folds this op
+                // with a deliberate no-op handler, so this side effect IS the
+                // op — and it used to run for any signer at all.
+                //
+                // The `expected_key_id: None` below is not a shortcut, it is the
+                // truth: a `KeyDelivery` names no `key_id`, so no hash can check
+                // the key it carries. That makes every delivery the
+                // *unverifiable* case, and the direct-pull path already ruled on
+                // those — `key_servers_allowed` accepts an unverifiable key from
+                // a trusted anchor and from nobody else, refusing outright when
+                // no anchor is known. This path applied that rule to nobody.
+                // `check_sender` only pins the envelope to `op.signer`, which a
+                // self-signed op satisfies by construction, so provenance stood
+                // in for authority: an ordinary member could wrap a key of its
+                // own choosing for a co-member's PUBLIC identity key, name any
+                // group in the namespace, and — since `store_key` writes at
+                // epoch 0 and `key_rank` orders epoch-0 keys by local
+                // `insertion_seq` — have it adopted as that group's CURRENT key.
+                // Compare `apply_key_rotation`, which gates on `is_admin` at the
+                // op's cut AND binds content to `new_key_id`: same file, same
+                // job, both halves present.
+                //
+                // Refusing is a skipped effect and never a DAG failure, for the
+                // same reason the unwrap failure above is not:
+                // `recover_missing_group_keys` is this delivery's durable retry
+                // and enforces this same rule through the peer-selection
+                // machinery, so a legitimate delivery arriving before the
+                // governance state that names its group's anchors costs a
+                // round-trip, not the key.
+                //
+                // Three outcomes, deliberately kept apart. A store error is NOT
+                // folded into the refusal: "not an anchor" is a verdict about
+                // the signer, an I/O failure is no verdict at all, and logging
+                // one as the other would send an operator hunting a permissions
+                // problem that does not exist. It does not propagate either —
+                // this arm's errors never do, because a failed apply orphans
+                // every op causally after it, and unlike `apply_key_rotation`
+                // (which must propagate: a rotation dropped is a node that
+                // cannot read later ops) this delivery has the pull behind it.
+                match MembershipRepository::new(self.store).anchor_device_keys(group_id) {
+                    Ok(anchors) if anchors.contains(&op.signer) => {
+                        match self.apply_received_group_key_envelope_at_depth(
+                            group_id.to_bytes(),
+                            envelope,
+                            op.signer,
+                            // `None`: a `KeyDelivery` carries no `key_id` to
+                            // check against. What bounds who may deliver one is
+                            // the anchor gate above, not a hash comparison.
+                            None,
+                            depth,
+                        ) {
+                            Ok(retry_divergence) => {
+                                if retry_divergence.is_some() {
+                                    effects.divergence = retry_divergence;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    group_id = %hex::encode(group_id.to_bytes()),
+                                    error = %e,
+                                    "KeyDelivery side-effect failed; DAG apply continues"
+                                );
+                                effects.key_unwrap_failures.push(KeyUnwrapFailure {
+                                    group_id: group_id.to_bytes(),
+                                    reason: format!("KeyDelivery side-effect failed: {e}"),
+                                });
+                            }
                         }
+                    }
+                    Ok(anchors) => {
+                        // `info`, not `debug`: on the default filter a `debug`
+                        // line emits nothing, so an operator asking why a node
+                        // never got a key would have no evidence either way. Not
+                        // `warn`, because a peer that cannot yet name this
+                        // group's anchors reaches here legitimately and the pull
+                        // recovers it — `anchors_known` tells those two apart.
+                        tracing::info!(
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            signer = %op.signer,
+                            anchors_known = !anchors.is_empty(),
+                            "refusing a KeyDelivery from a non-anchor: an unverifiable \
+                             key is accepted only from a trusted anchor of the group it \
+                             is delivered for; leaving it to the key pull"
+                        );
+                        effects.key_unwrap_failures.push(KeyUnwrapFailure {
+                            group_id: group_id.to_bytes(),
+                            reason: format!(
+                                "KeyDelivery refused: signer {} is not a trusted anchor \
+                                 of this group",
+                                op.signer
+                            ),
+                        });
                     }
                     Err(e) => {
                         tracing::warn!(
                             group_id = %hex::encode(group_id.to_bytes()),
                             error = %e,
-                            "KeyDelivery side-effect failed; DAG apply continues"
+                            "could not resolve the group's trusted anchors, so this \
+                             KeyDelivery is neither authorized nor refused on its \
+                             merits; leaving it to the key pull"
                         );
                         effects.key_unwrap_failures.push(KeyUnwrapFailure {
                             group_id: group_id.to_bytes(),
-                            reason: format!("KeyDelivery side-effect failed: {e}"),
+                            reason: format!("KeyDelivery anchor lookup failed: {e}"),
                         });
                     }
                 }
