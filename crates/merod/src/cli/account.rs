@@ -1262,7 +1262,21 @@ impl RootCommand {
 /// the agreement key is what wrapped scope keys are addressed to. The secrets that
 /// match the latter two are reachable from no command and no route.
 #[derive(Debug, Parser)]
-pub struct DeviceCommand {}
+pub struct DeviceCommand {
+    /// Drop this node's device identity so the next pairing mints a fresh one.
+    ///
+    /// A revoked row is spent everywhere and a row nobody certified holds no
+    /// replica state, so both drop. A certified row that no revocation has reached
+    /// is refused: it is live as far as this node can tell, and its id is the
+    /// replica the node's CRDT state is held under.
+    #[arg(long, default_value_t = false)]
+    reset: bool,
+
+    /// With `--reset`: drop the row even though it is certified and no revocation
+    /// has reached this node. For a device revoked while this node was offline.
+    #[arg(long, requires = "reset", default_value_t = false)]
+    force: bool,
+}
 
 impl DeviceCommand {
     #[expect(
@@ -1272,6 +1286,13 @@ impl DeviceCommand {
     )]
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         let store = open_store(root_args).await?;
+
+        if self.reset {
+            let dropped = NodeDeviceRepository::new(&store).reset_device(self.force)?;
+            println!("Reset device {}", hex::encode(dropped.as_bytes()));
+            println!("The next pairing or namespace join mints a fresh identity.");
+            return Ok(());
+        }
 
         let device = NodeDeviceRepository::new(&store)
             .get()
