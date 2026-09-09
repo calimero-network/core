@@ -282,10 +282,19 @@ Because it holds no governance state for the namespace, it cannot verify the mem
 The readiness-beacon handler uses the beacon's arrival as the cue instead, and pulls the namespace DAG from the beacon's sender through the same authenticated sync path every governance op still has to validate against.
 The device converges within a few beacon intervals - beacons fire roughly every 5 seconds - with no restart.
 
-Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
+Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader - a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
 
 A paired device keeps the certificate its own link carried, so it can found or join a namespace as the account without an import step.
 A device paired before this change holds no such certificate, so the holder relinks it, or a certificate signed offline is imported with `merod account import-cert`.
+
+### The account namespace
+
+Every account has one namespace of its own, which every device of the account follows.
+Its id is derived from the account root under a fixed tag, so the holder names it on `GET /admin-api/identity` as `accountNamespaceId` before anything has created it, and a restored root recomputes it.
+The holder creates it the first time it completes a pairing, as a root group that targets no application, and binds every device it certifies into it.
+`pair-init` takes the id as `accountNamespace`, records it and follows it like any namespace, so the `namespaces` list may be left empty.
+It is not a project: `GET /admin-api/namespaces` and `GET /admin-api/account/applications` never show it, while `GET /admin-api/account/devices` lists it among a device's bindings, because the device is bound there.
+What the account writes into it, and what a device does with that, are described below as they land.
 
 ### Pairing is repeated, not a snapshot
 
