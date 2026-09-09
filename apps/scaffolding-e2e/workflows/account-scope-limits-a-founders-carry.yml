@@ -1,0 +1,179 @@
+name: E2E Account - Scope Limits What A Founder Carries
+description: >
+  A device of the account that founds a namespace carries its siblings into it,
+  reading their certificates out of the account namespace's registry. This pins
+  the half of that rule that says no: a sibling scoped to another application is
+  left where the holder put it.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root, installs both
+      applications, creates namespace A1 and certifies the other two devices.
+    * node-2 - Alice's phone. Paired with no application scope, so it may speak
+      for every application. It founds namespace C, targeting app A.
+    * node-3 - Alice's tablet. Paired scoped to app B, and no namespace targets
+      app B - so the account namespace is the only place it is bound, which is
+      what pairing into a scope the account serves nowhere yet leaves behind.
+
+  What each step is load-bearing for:
+
+    1. Both devices are paired with the account namespace id, so both follow it
+       and both are recorded in its registry with the scope the root signed.
+    2. The phone waits until it can read the tablet's scope back. That value
+       exists nowhere but the replicated registry, so it is the proof the phone
+       folded what the laptop published there - and the barrier that keeps the
+       founding below from racing the fold.
+    3. The phone founds C, targeting app A. It binds the laptop, whose scope is
+       empty and so covers everything.
+    4. It does NOT bind the tablet, whose scope names app B alone. The tablet
+       stays bound in the account namespace, which is where it started.
+
+  Not asserted here: what the laptop or the tablet make of C. Following a
+  namespace the account gained is the next PR.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: founder-carry-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: founder-carry-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: founder-carry-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: founder-carry-node-3
+    username: dev
+    password: dev-password
+
+  # App A is the bundle and app B the raw wasm, as in the pairing-scope
+  # scenario: two applications that differ in kind as well as in id.
+  - name: Install app A on node-1
+    type: install_application
+    node: founder-carry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_a: applicationId
+
+  - name: Install app B on node-1
+    type: install_application
+    node: founder-carry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_b: applicationId
+
+  # The phone founds C for app A, and a creation resolves its application
+  # locally to derive the namespace's bytecode id.
+  - name: Install app A on node-2
+    type: install_application
+    node: founder-carry-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+
+  - name: Two applications, not one installed twice
+    type: assert
+    statements:
+      - 'is_set({{app_a}})'
+      - 'is_set({{app_b}})'
+      - '{{app_a}} != {{app_b}}'
+
+  - name: Node-1 creates namespace A1, targeting app A
+    type: create_namespace
+    node: founder-carry-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a1: namespaceId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: founder-carry-node-1
+    outputs:
+      alice_device: deviceId
+
+  - name: Pair node-2, unscoped, following A1 and the account namespace
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - founder-carry-node-1
+      - founder-carry-node-2
+      - '{{ns_a1}}'
+      - '-'
+
+  # Scoped to app B, which no namespace targets. The account namespace is
+  # always a fan-out target and always holds a key, so this pairs there alone.
+  - name: Pair node-3, scoped to app B, following the account namespace
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - founder-carry-node-1
+      - founder-carry-node-3
+      - '-'
+      - '{{app_b}}'
+
+  - name: What node-3 speaks as
+    type: node_identity
+    node: founder-carry-node-3
+    outputs:
+      tablet_device: deviceId
+
+  # The barrier. The tablet's scope is registry-only, and its statement is the
+  # last one the laptop published, so the phone seeing it has folded every
+  # earlier one - the laptop's own certificate among them.
+  - name: The phone reads the tablet's scope out of the registry
+    type: assert_api_response
+    node: founder-carry-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{tablet_device}}'
+    match:
+      applications.0: '{{app_b}}'
+    retries: 45
+    interval: 2
+
+  - name: Node-2 founds namespace C, targeting app A
+    type: create_namespace
+    node: founder-carry-node-2
+    application_id: '{{app_a}}'
+    outputs:
+      ns_c: namespaceId
+
+  - name: The phone carried the laptop into C
+    type: assert_api_response
+    node: founder-carry-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{alice_device}}'
+    contains:
+      namespaces:
+        - '{{ns_c}}'
+    retries: 30
+    interval: 2
+
+  - name: The phone left the tablet in the account namespace
+    type: script
+    script: scripts/account-founder-carry-check.sh
+    target: local
+    args:
+      - founder-carry-node-2
+      - founder-carry-node-1
+      - '{{ns_c}}'
+      - '{{tablet_device}}'
+
+stop_all_nodes: true
