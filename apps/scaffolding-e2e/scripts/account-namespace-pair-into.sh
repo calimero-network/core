@@ -5,7 +5,9 @@
 # applications named. merobox's account_pair step has no field for the account
 # namespace, and a device that does not follow it never folds the registry.
 #
-# Returns only once the new node has folded what the holder wrote there.
+# Proves both sides agree on the id, that the holder keeps it out of its project
+# listing, and that it bound the device there - then returns only once the new
+# node has folded what the holder wrote.
 #
 # args: [ <holder>, <new-node>, <namespace-csv|->, <application-csv|-> ]
 set -eu
@@ -15,6 +17,7 @@ if [ "$#" -ne 4 ]; then
     exit 1
 fi
 
+# shellcheck source=apps/scaffolding-e2e/scripts/account-api.sh
 . "$(dirname "$0")/account-api.sh"
 
 holder="$1"
@@ -32,32 +35,48 @@ json_array() {
     if [ "$1" = "-" ]; then
         echo '[]'
     else
-        echo "$1" | jq -R 'split(",")'
+        echo "$1" | jq -Rc 'split(",")'
     fi
 }
 
+scope=$(json_array "${applications}")
+
+# Deterministic from the root, so the holder names it before anything created it.
 identity=$(api "${holder}" GET "identity")
 root_key=$(echo "${identity}" | jq -r '.data.accountRootPublicKey')
 account_namespace=$(echo "${identity}" | jq -r '.data.accountNamespaceId // empty')
-[ -n "${account_namespace}" ] || fail "the holder names no account namespace"
+holder_device=$(echo "${identity}" | jq -r '.data.deviceId')
+[ -n "${account_namespace}" ] || fail "the holder names no account namespace before pairing"
 
-init=$(api "${newnode}" POST "account/pair-init" \
+pair_init "${newnode}" \
     "$(jq -nc --arg root "${root_key}" --arg ns "${account_namespace}" \
         --argjson namespaces "$(json_array "${namespaces}")" \
-        '{accountRootPublicKey:$root,accountNamespace:$ns,namespaces:$namespaces}')")
-device=$(echo "${init}" | jq -r '.data.deviceId')
-kem=$(echo "${init}" | jq -r '.data.kemPublicKey')
-sign=$(echo "${init}" | jq -r '.data.signPublicKey')
-statement=$(echo "${init}" | jq -r '.data.statement')
-code=$(echo "${init}" | jq -r '.data.confirmationCode')
+        '{accountRootPublicKey:$root,accountNamespace:$ns,namespaces:$namespaces}')"
 
 complete=$(api "${holder}" POST "account/pair-complete" \
     "$(jq -nc --arg d "${device}" --arg kem "${kem}" --arg sign "${sign}" \
-        --arg statement "${statement}" --arg code "${code}" \
-        --argjson applications "$(json_array "${applications}")" \
-        '{deviceId:$d,kemPublicKey:$kem,signPublicKey:$sign,statement:$statement,confirmationCode:$code,applications:$applications}')")
+        --arg statement "${statement}" --arg code "${code}" --argjson a "${scope}" \
+        '{deviceId:$d,kemPublicKey:$kem,signPublicKey:$sign,statement:$statement,confirmationCode:$code,applications:$a}')")
 [ "$(echo "${complete}" | jq -r '.data.keyDelivered')" = "true" ] \
     || fail "pair-complete delivered no key: ${complete}"
+
+# Both sides name the same namespace.
+recorded=$(api "${newnode}" GET "identity" | jq -r '.data.accountNamespaceId // empty')
+[ "${recorded}" = "${account_namespace}" ] \
+    || fail "the device recorded '${recorded}', the holder names '${account_namespace}'"
+
+# A project listing never shows it.
+api "${holder}" GET "namespaces" \
+    | jq -e --arg ns "${account_namespace}" 'all(.data[]; .namespaceId != $ns)' >/dev/null \
+    || fail "the holder lists the account namespace as a project"
+
+# The holder bound the device there, and - from the certificate it signed, so a
+# registry that replaced the cache cannot quietly lose it - with the scope named.
+api "${holder}" GET "account/devices" \
+    | jq -e --arg d "${device}" --arg ns "${account_namespace}" --argjson a "${scope}" \
+        'any(.devices[]; .deviceId == $d and (.namespaces | index($ns)) != null
+             and ($a - .applications) == [])' >/dev/null \
+    || fail "the holder does not show the device bound in the account namespace, scoped to ${applications}"
 
 # The barrier. A scope can only have come from the replicated registry, so
 # reading its own scope back proves this node folded the LAST op the holder
@@ -70,17 +89,26 @@ while [ "${tries}" -gt 0 ]; do
         if echo "${listing}" | jq -e --arg d "${device}" --arg ns "${account_namespace}" \
             'any(.devices[]; .deviceId == $d and .isSelf and (.namespaces | index($ns)) != null)' \
             >/dev/null 2>&1; then
-            echo "device ${device} follows account namespace ${account_namespace}"
-            exit 0
+            break
         fi
-    elif echo "${listing}" | jq -e --arg d "${device}" \
-        --argjson want "$(json_array "${applications}")" \
+    elif echo "${listing}" | jq -e --arg d "${device}" --argjson want "${scope}" \
         'any(.devices[]; .deviceId == $d and .isSelf and .applications == $want)' \
         >/dev/null 2>&1; then
-        echo "device ${device} reads scope ${applications} back out of the registry"
-        exit 0
+        break
     fi
     tries=$((tries - 1))
     sleep 2
 done
-fail "the device never folded the account namespace"
+[ "${tries}" -gt 0 ] || fail "the device never folded the account namespace"
+
+# Corroborating, and already true before the registry: the holder's own device is
+# bound in the account namespace by its genesis, so the binding scan finds it.
+# Only behind a scope: that barrier proves the fold reached the holder's own
+# statement, while the unscoped one proves no more than this device's own link.
+if [ "${applications}" != "-" ]; then
+    api "${newnode}" GET "account/devices" \
+        | jq -e --arg d "${holder_device}" 'any(.devices[]; .deviceId == $d)' >/dev/null \
+        || fail "the phone does not see the holder's device"
+fi
+
+echo "device ${device} follows account namespace ${account_namespace}, scope ${applications}"
