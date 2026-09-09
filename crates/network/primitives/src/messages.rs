@@ -167,6 +167,16 @@ pub enum NetworkMessage {
         request: RequestBlob,
         outcome: oneshot::Sender<<RequestBlob as actix::Message>::Result>,
     },
+    /// Tell one peer that this node now holds a blob for a context.
+    SendBlobAnnouncement {
+        request: SendBlobAnnouncement,
+        outcome: oneshot::Sender<<SendBlobAnnouncement as actix::Message>::Result>,
+    },
+    /// Ask one peer whether it holds a blob, without transferring it.
+    ProbeBlob {
+        request: ProbeBlob,
+        outcome: oneshot::Sender<<ProbeBlob as actix::Message>::Result>,
+    },
     /// Set a peer's gossipsub application-specific score (membership bias).
     SetPeerScore {
         request: SetPeerScore,
@@ -477,6 +487,69 @@ pub struct RequestBlob {
 
 impl actix::Message for RequestBlob {
     type Result = eyre::Result<Option<Vec<u8>>>;
+}
+
+/// Ask a single peer whether it holds a blob, without transferring it.
+///
+/// Reuses the [`crate::blob_types::BlobRequest`]/[`crate::blob_types::BlobResponse`]
+/// exchange: the server answers `found` before streaming any chunk, so a probe
+/// is a request whose chunks are never read. No new wire format.
+///
+/// # Fields
+///
+/// * `blob_id` - The blob to ask about
+/// * `context_id` - The context for authorization
+/// * `peer_id` - The peer to ask
+/// * `auth` - Optional authentication data; without it the peer only admits to
+///   holding public blobs
+#[derive(Clone, Copy, Debug)]
+pub struct ProbeBlob {
+    /// The blob identifier to ask about.
+    pub blob_id: BlobId,
+    /// The context for authorization.
+    pub context_id: ContextId,
+    /// The peer to ask.
+    pub peer_id: PeerId,
+    /// Optional authentication data.
+    pub auth: Option<BlobAuth>,
+}
+
+impl actix::Message for ProbeBlob {
+    /// Whether that peer holds (and will serve) the blob. A peer that is
+    /// unreachable, slow, or unwilling answers `false` — never an error.
+    type Result = eyre::Result<bool>;
+}
+
+/// Tell one peer that this node now holds `blob_id` for `context_id`.
+///
+/// One message, no reply, no transfer: the receiver decides for itself whether
+/// to fetch. Addressed to a single peer because the announce fans out to a
+/// context's availability nodes and nobody else — gossipsub would reach every
+/// subscriber, since `flood_publish` is on.
+///
+/// # Fields
+///
+/// * `peer_id` - The peer to tell
+/// * `blob_id` - The blob now held locally
+/// * `context_id` - The context the blob belongs to
+/// * `size` - Size in bytes, so the receiver can decline an oversized blob
+#[derive(Clone, Copy, Debug)]
+pub struct SendBlobAnnouncement {
+    /// The peer to tell.
+    pub peer_id: PeerId,
+    /// The blob identifier.
+    pub blob_id: BlobId,
+    /// The context the blob is associated with.
+    pub context_id: ContextId,
+    /// The size of the blob in bytes.
+    pub size: u64,
+}
+
+impl actix::Message for SendBlobAnnouncement {
+    /// `Ok(())` once the notice is on the wire. Announcing is best-effort, so
+    /// callers log and continue on `Err` rather than failing the write that
+    /// produced the blob.
+    type Result = eyre::Result<()>;
 }
 
 // ============================================================================

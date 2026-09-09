@@ -83,6 +83,12 @@ jobs:
   build-image:
     name: Build Image
     uses: ./.github/workflows/build-merod-image.yml
+    with:
+      # `blob-presence-tee-serves` boots a `merod run --mock-tee` node, which
+      # refuses to start on a binary built without `mock-attestation`. It gets
+      # its own image so the rest of the matrix keeps running the same feature
+      # set a release binary has.
+      with-mock-tee-image: true
 
   # ── Scenario convergence lint ──
   # Static, no nodes, seconds not minutes — so it runs ahead of everything that
@@ -805,6 +811,40 @@ jobs:
           - workflow: blob-cross-node-sizes
             file: workflows/blob-cross-node-sizes.yml
             app: blobs
+          # Blob custody is discovered by asking the context's peers, not by
+          # reading a Kademlia provider record. This pins the property a
+          # single-valued record cannot have: any surviving holder can serve,
+          # including one that only ever downloaded the blob, after the node
+          # that uploaded and announced it is gone. Docker-only by
+          # construction — `stop_node` is a no-op under merobox's --no-docker
+          # mode, so a native run would go green without a holder ever having
+          # been removed.
+          #
+          # A companion `blob-presence-restart` scenario was written and then
+          # deleted: the kad record is stored on the OTHER node, survives a
+          # restart, and the announcer's PeerId is persistent, so the pre-change
+          # DHT path passed it too. It could not go red, and a test that cannot
+          # go red gets cited as evidence.
+          - workflow: blob-presence-multi-holder
+            file: workflows/blob-presence-multi-holder.yml
+            app: blobs
+          # An availability node must hold the BYTES its context's state
+          # references, not just the state. A mock-TEE replica is admitted as a
+          # ReadOnlyTee, the owner uploads a blob and is then STOPPED, and a
+          # third node fetches it — with the owner gone the TEE is the only
+          # holder, so a byte-identical fetch is proof it prefetched the
+          # announcement. Goes red without the announce/prefetch path: the TEE
+          # replicates the state carrying the blob id but never the bytes, so
+          # the fetch finds no holder (and the "prefetching announced blob"
+          # marker it asserts on does not exist in such a binary).
+          #
+          # Runs on `merod:local-mock-tee`, not the shared image: `merod run
+          # --mock-tee` refuses to start without the `mock-attestation` feature,
+          # and that feature must not be on for the rest of the matrix.
+          - workflow: blob-presence-tee-serves
+            file: workflows/blob-presence-tee-serves.yml
+            app: blobs
+            image: merod:local-mock-tee
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
@@ -1015,6 +1055,19 @@ jobs:
       - name: Load Docker image
         run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
 
+      # Only the mock-TEE scenario needs it, and it is a second full image —
+      # not worth pulling into every shard.
+      - name: Download mock-attestation Docker image
+        if: matrix.image == 'merod:local-mock-tee'
+        uses: actions/download-artifact@v8
+        with:
+          name: merod-image-mock-tee
+          path: /tmp
+
+      - name: Load mock-attestation Docker image
+        if: matrix.image == 'merod:local-mock-tee'
+        run: zstd -d /tmp/merod-local-mock-tee.tar.zst --stdout | docker load
+
       - name: Download app artifacts
         uses: actions/download-artifact@v8
         with:
@@ -1033,7 +1086,10 @@ jobs:
         if: matrix.image != 'merod:local-dht'
         run: |
           url=$(./scripts/e2e-fixture-registry.sh)
-          ./scripts/set-registry-mode.sh merod:local http "$url"
+          # Stamp the image this lane actually boots, not always the shared one.
+          # A lane on its own image (merod:local-mock-tee) would otherwise run
+          # unstamped, never reach the registry, and trip the fetch gate below.
+          ./scripts/set-registry-mode.sh "${{ matrix.image || 'merod:local' }}" http "$url"
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -1103,7 +1159,7 @@ jobs:
 
           if merobox bootstrap run \
               "${{ matrix.file }}" \
-              --image ${{ matrix.image || 'merod:local' }} \
+              --image "${{ matrix.image || 'merod:local' }}" \
               --e2e-mode; then
               success=true
           else

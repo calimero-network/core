@@ -328,14 +328,36 @@ steps:
       # (capital) when templated into a string, so compare against "True".
       - 'equal("{{resync_started}}", "True")'
 
-  - name: Wait for the snapshot to settle on node 2
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-strand-1
-      - app-migration-strand-2
-    timeout: 120
-    trigger_sync: true
+  # `resync_context` returns as soon as the snapshot sync is STARTED, so the
+  # read below has to be gated on the snapshot actually landing.
+  #
+  # Not with `wait_for_sync`: that step converges on `contextStateHash`, and
+  # here both nodes hold the SAME hash before and after the resync - the
+  # v1 -> v2 -> v3 ladder only reinterprets the stored entities, it never
+  # rewrites them - so it reports "synced after 0.00s" on its first poll
+  # whether or not the resync has landed, and gates nothing. (It was the gate
+  # until this comment replaced it; the scenario passed only because the read
+  # that followed used to stall for seconds inside a blob lookup, which is not
+  # a guarantee of anything.)
+  #
+  # The rollup is the signal that does move: the snapshot installs the v3
+  # bundle, clears the stranded marker, and node 2 heartbeats schema_version 3
+  # to the admin without needing an access. Poll THAT, then read. The short
+  # wait first is load-bearing: `assert_migration_complete` fails FAST on a
+  # member still marked failed (a failed cohort normally cannot converge), and
+  # right after the resync node 2's pre-recovery `no_migration_path` marker is
+  # still the last thing the admin heard. The marker clears within ~4s of the
+  # snapshot; 20s is the margin, and the 90s poll below is the real gate.
+  - name: Let the snapshot land and node 2's strand marker clear
+    type: wait
+    seconds: 20
+
+  - name: Wait for the snapshot to settle on node 2 (cohort reports all-migrated)
+    type: assert_migration_complete
+    node: app-migration-strand-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   # Behavioural recovery proof: node 2 now serves the v3 schema (it fetched the
   # intact v3 blob and adopted the v3 snapshot), with the v1 data carried.
@@ -367,17 +389,10 @@ steps:
     statements:
       - 'json_subset({{item_node2}}, {"output": "v1-value"})'
 
-  # Structured recovery proof: the rollup converges to all-migrated (node 2's
-  # stranded marker was cleared and it now reports the v3 schema with zero
-  # residue). Read on node 1 (admin) like the strand check above; polls past the
-  # heartbeat interval so node 2's recovered heartbeat reaches the admin.
-  - name: Assert the cohort converges to all-migrated after recovery
-    type: assert_migration_complete
-    node: app-migration-strand-1
-    namespace_id: "{{namespace_id}}"
-    timeout_seconds: 90
-    poll_interval: 5
-
+  # Structured recovery proof: the rollup's raw per-member numbers, read on
+  # node 1 (admin) like the strand check above. The all-migrated poll that
+  # gates this ran before the reads above (it is what makes them
+  # deterministic); these asserts falsify it from each member's own report.
   - name: Read the recovered rollup on node 1 (admin)
     type: get_migration_status
     node: app-migration-strand-1

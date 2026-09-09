@@ -1213,6 +1213,35 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
     host::blob_open(blob_id)
 }
 
+/// Open a blob for reading, fetching it from the context's peers if this node
+/// does not already hold it.
+///
+/// Returns 0 if the blob is available neither locally nor from any peer.
+///
+/// Produces no state delta, which is what makes it legal to call from a
+/// `#[app::view]` method — but it is not a cheap read. It can block for
+/// roughly a 30s discovery deadline plus one un-aborted in-flight fetch
+/// under the 60s transfer budget (worst case around 90s), pinning a runtime
+/// worker for the duration. And when the fetch succeeds it writes locally:
+/// the blob's bytes and a `BlobMeta` row are persisted to this node's blob
+/// store just like `blob_create`/`blob_write` would, with no chunk GC path
+/// to reclaim them later. A view method that loops over many distinct blob
+/// ids in a large context will grow the node's blob store accordingly.
+pub fn blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::blob_open_in_context(
+                Ref::new(&Buffer::from(&blob_id[..])),
+                Ref::new(&Buffer::from(&context_id[..])),
+            )
+        }
+        .as_usize() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_open_in_context(blob_id, context_id)
+}
+
 /// Read data from a blob handle opened with blob_open().
 /// Reads into the provided buffer and returns the number of bytes read.
 /// Returns 0 when end of blob is reached.

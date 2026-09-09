@@ -19,6 +19,18 @@ pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;
 pub const CALIMERO_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/stream/0.0.2");
 pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/blob/0.0.2");
 
+/// "I now hold this blob for this context" — a one-shot, one-message notice
+/// sent to a context's availability nodes so they can prefetch it.
+///
+/// A protocol of its own rather than a new message kind on
+/// [`CALIMERO_BLOB_PROTOCOL`]: that protocol's server parses the first frame
+/// strictly as a `BlobRequest`, so widening it would mean a version bump to
+/// `/calimero/blob/0.0.3` and a lock-step upgrade of the whole transfer path.
+/// A separate protocol leaves transfer untouched and simply is not negotiated
+/// by peers that do not speak it.
+pub const CALIMERO_BLOB_ANNOUNCE_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/calimero/blob-announce/1.0.0");
+
 type Libp2pFramed = Framed<BufStream<Compat<P2pStream>>, MessageCodec>;
 
 #[cfg(feature = "test-utils")]

@@ -173,6 +173,19 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::RequestBlob { outcome, .. } => {
                 let _ = outcome.send(Ok(None));
             }
+            // No transport, so no peer holds anything. `false` (not an error)
+            // is the honest answer here: the probe protocol reports a peer that
+            // cannot be reached as a non-holder, and a caller searching for a
+            // holder should see this stub's neighbours as simply not having it.
+            NetworkMessage::ProbeBlob { outcome, .. } => {
+                let _ = outcome.send(Ok(false));
+            }
+            // No transport, so nothing to announce to. Announcing is
+            // best-effort at the call site, so the error is the honest answer
+            // and is swallowed there.
+            NetworkMessage::SendBlobAnnouncement { outcome, .. } => {
+                let _ = outcome.send(Err(eyre::eyre!("no transport in the test harness")));
+            }
             // Best-effort and already drop-tolerant on the client side, but
             // answered anyway so the exhaustive match stays honest.
             NetworkMessage::SetPeerScore { outcome, .. } => {

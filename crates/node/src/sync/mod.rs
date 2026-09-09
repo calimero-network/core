@@ -51,6 +51,99 @@ pub(crate) fn anchor_device_keys(
     else {
         return std::collections::BTreeSet::new();
     };
+    device_keys_for_accounts(store, group_id, &anchors)
+}
+
+/// The signing keys of a group's availability nodes — its `ReadOnlyTee`
+/// members, INCLUDING those it inherits from its ancestors.
+///
+/// Neither a subset nor a superset of [`anchor_device_keys`] — the two answer
+/// deliberately different questions and walk the group tree differently. The
+/// anchor set answers "who is authoritative in THIS group" (Owner ∪ Admins ∪
+/// ReadOnlyTee of `group_id` alone, no ancestor walk), which is what sync peer
+/// selection wants. This set answers "who is always on and holds the bytes for
+/// this context", which includes `ReadOnlyTee` members inherited from
+/// ancestors: a root-admitted `ReadOnlyTee` over an `Open` subgroup is an
+/// availability node for that subgroup's contexts without ever holding a
+/// direct membership row there, so it appears here but not in
+/// [`anchor_device_keys`] for the subgroup. Conversely an ordinary admin of
+/// `group_id` appears in the anchor set but never here, since only
+/// `ReadOnlyTee` answers "holds the bytes".
+///
+/// Same account→device expansion as the anchor set, for the same reason.
+/// Returns an empty set on any store failure — callers then fall back to
+/// unordered candidates, which costs a round trip and never correctness.
+pub(crate) fn availability_device_keys(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+    let accounts = availability_accounts_for_group(store, group_id);
+    device_keys_for_accounts(store, group_id, &accounts)
+}
+
+/// The ACCOUNTS that are availability nodes for `group_id`: every `ReadOnlyTee`
+/// member of the group itself, unioned with every `ReadOnlyTee` member of each
+/// ancestor up to the namespace root.
+///
+/// The parent walk is the whole point, and it is why this is ONE function
+/// rather than one per caller. A TEE admitted at the namespace root holds NO
+/// direct membership row in an `Open` subgroup it follows by inheritance, yet
+/// it is an availability node for that subgroup's contexts — which is the real
+/// fleet-HA shape, not a corner case. A send side that looked only at the
+/// context's own group would find nobody to announce to and nobody to probe
+/// first, while the receive side happily accepted announcements, and every unit
+/// test on either side would stay green. Both sides call this, so they agree by
+/// construction rather than by coincidence.
+///
+/// Empty on any store failure, and bounded by `MAX_NAMESPACE_DEPTH` hops.
+pub(crate) fn availability_accounts_for_group(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> std::collections::BTreeSet<calimero_account::AccountId> {
+    let members = calimero_governance_store::MembershipRepository::new(store);
+    let namespaces = calimero_governance_store::NamespaceRepository::new(store);
+
+    let mut accounts = std::collections::BTreeSet::new();
+    let mut current = *group_id;
+    // `<=` because reaching the root at depth D takes D+1 parent hops to
+    // observe the root's `None` parent (mirrors `NamespaceRepository::resolve`).
+    for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+        // A failed read at one level is not fatal: keep walking, and the
+        // conservative outcome is a smaller set (a missed announce, never a
+        // wrong one).
+        if let Ok(list) = members.list(&current, 0, usize::MAX) {
+            accounts.extend(list.into_iter().filter_map(|(account, role)| {
+                matches!(
+                    role,
+                    calimero_primitives::context::GroupMemberRole::ReadOnlyTee
+                )
+                .then_some(account)
+            }));
+        }
+        match namespaces.parent(&current) {
+            Ok(Some(parent)) => current = parent,
+            // Root reached (`None`), or a store error: either way there is no
+            // further ancestor to consult.
+            _ => break,
+        }
+    }
+    accounts
+}
+
+/// Expand governance ACCOUNTS to the live DEVICE signing keys that speak for
+/// them, within the namespace owning `group_id`.
+///
+/// Shared by [`anchor_device_keys`] and [`availability_device_keys`]: the two
+/// differ only in which accounts they select, never in how an account is
+/// resolved to the keys a peer actually presents.
+fn device_keys_for_accounts(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    accounts: &std::collections::BTreeSet<calimero_account::AccountId>,
+) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+    if accounts.is_empty() {
+        return std::collections::BTreeSet::new();
+    }
     let Ok(namespace) =
         calimero_governance_store::NamespaceRepository::new(store).resolve(group_id)
     else {
@@ -63,7 +156,7 @@ pub(crate) fn anchor_device_keys(
     };
     bindings
         .iter()
-        .filter(|binding| anchors.contains(&binding.account))
+        .filter(|binding| accounts.contains(&binding.account))
         .map(|binding| binding.sign_pk)
         .collect()
 }

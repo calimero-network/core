@@ -105,6 +105,7 @@ blob_create() -> fd
 blob_write(fd, src: Buffer)                 -> bytes_written
 blob_close(fd, dst: BufferMut[32]) -> 1     // writes the final BlobId into dst[0..32]
 blob_open(blob_id: Buffer[32])              -> fd
+blob_open_in_context(blob_id: Buffer[32], context_id: Buffer[32]) -> fd  // 0 if unavailable
 blob_read(fd, dst: BufferMut)               -> bytes_read   // 0 at end of blob
 blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
 ```
@@ -125,8 +126,15 @@ blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
 
 4. **`blob_open(blob_id)`** opens a read handle for an existing blob and returns
    an `fd`. The bytes are streamed lazily — opening does not yet fetch anything.
+   Local-only: returns `0` if this node does not already hold the blob.
 
-5. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
+5. **`blob_open_in_context(blob_id, context_id)`** is `blob_open`'s
+   network-aware sibling: if the blob is not already local, it consults the
+   context's peers before giving up, and returns an `fd` for the same
+   streaming read once bytes are available. It returns `0` only when the blob
+   is available neither locally nor from any peer.
+
+6. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
    count, which may be less than the buffer (a partial chunk is buffered
    internally and carried to the next call). A return of `0` means end of blob.
    The read position only advances after the copy into guest memory succeeds, so
@@ -161,36 +169,109 @@ blob store re-chunks the resulting byte stream into 1 MiB storage chunks itself.
 
 ## Announce and discover
 
-A blob is **announced** so peers in a context can locate the bytes.
-`blob_announce_to_context(blob_id, context_id)` looks up the blob's size from
-local metadata and publishes a record to the Kademlia DHT
-([Networking](/protocol/networking/)).
+A blob is **announced** so the context's availability nodes can prefetch the
+bytes. `blob_announce_to_context(blob_id, context_id)` looks up the blob's size
+from local metadata and sends a one-message notice — `{ blob_id, context_id,
+size }` — over a dedicated stream protocol,
+`/calimero/blob-announce/1.0.0` ([Networking](/protocol/networking/)), to each
+of the context's `ReadOnlyTee` members and to nobody else.
 
-```text
-DHT key   = context_id ‖ blob_id
-DHT value = local_peer_id ‖ size   (size as little-endian u64)
-```
+Direct streams to a chosen set, never a topic publish: gossipsub `flood_publish`
+fans every publish to every subscriber, so broadcasting would tell the whole
+context about every blob. And the announce is the ONLY place the blob→context
+association exists — `BlobMeta` is keyed by blob id alone, and state deltas
+carry opaque values — which is why prefetch hangs off it rather than off an
+enumeration of the context's state.
 
-The record is stored with `Quorum::One`. The key is scoped by `context_id`, so
-the same blob announced into different contexts is discovered independently, and
-a discovery query is always made in the context of a specific context.
+A receiver prefetches only if it is itself a `ReadOnlyTee` member of that
+context — directly, or by inheritance from any ancestor group up to the
+namespace root, which is how a root-admitted fleet node covers the contexts of
+the subgroups it follows; read from its own governance state, never taken from
+the announcement — does not already hold the blob, and the advertised size is within the 500 MiB
+transfer cap. At most 2 prefetches run at once, and announcements arriving while
+both slots are busy are dropped rather than queued — a dropped prefetch costs
+availability for one blob, never correctness.
 
-Discovery is the mirror: a node that holds a `BlobId` in state but not the bytes
-queries the DHT for the same `context_id ‖ blob_id` key to learn which peers
-advertised it. The lookup is retried with exponential backoff — up to **6
-attempts**, starting at **100 ms** and doubling to a **2 s** cap — because a
-freshly announced record may take a few hundred milliseconds to become visible.
-Each returned peer is then asked for the bytes over the transfer protocol below;
-the first peer that delivers a blob whose recomputed id matches wins, and the
-bytes are stored locally for reuse.
+Announcing is best-effort in the same spirit, and **the producer does not wait
+for it**: the notices are sent detached, so `blob_announce_to_context` returns
+once the work is scheduled, not once it is delivered. A refused, failed or
+undelivered announce never fails — nor delays — the write that produced the
+blob. Anything that needs to know an availability node actually holds the bytes
+must observe that on the availability node.
 
-An announcement is opportunistic: only some paths publish one, and a restart
-drops the records a node held.
-So a lookup that comes back empty, or fails outright, falls back within the same
-attempt to the peers subscribed to the context's gossipsub topic - the
-authoritative set of members entitled to these bytes, and the route by which a
-late joiner reaches a context's application bytecode, which nothing announces at
-install time.
+**Known gap:** an availability node that is offline when a blob is announced
+never learns about it and has no catch-up path. The blob stays findable by
+probing its original holder, so correctness is unaffected, but availability for
+that blob degrades until something announces it again.
+
+Discovery is a separate mechanism, and does not read any announcement. A node
+that holds a `BlobId` in state but not the bytes **asks the context's peers
+directly**: it takes the subscribers of
+the context's gossipsub topic as candidates and sends each one a *probe* — a
+`BlobRequest` whose response header is read and whose chunks never are, so the
+peer answers `found` without transferring anything.
+
+Probes go out in **batches of 8**, concurrently within a batch and sequentially
+between batches, stopping at the first peer that answers `found: true`. The
+winner is then asked for the bytes over the transfer protocol below.
+
+Candidates are ordered **before** they are batched, availability nodes first.
+Because a sweep asks at most 32 candidates (below), that ordering decides which
+peers are asked at all on a large context, not merely in what order: an
+availability node listed 33rd by the subscriber set would never be probed,
+while first it answers in one round trip.
+
+The search is bounded three ways, and all three are load-bearing:
+
+| Bound | Value | What it stops |
+| --- | --- | --- |
+| Width | 8 probes outstanding | Fanning a miss out to the whole subscriber set at once |
+| Volume | 4 batches = 32 peers per sweep | Walking all 1024 possible subscribers one batch at a time |
+| Duration | 30 s over the whole path | A search outliving the HTTP request that asked for it |
+
+The volume cap is a **deliberate incompleteness**: on a context large enough
+that the only holder sits beyond the first 32 candidates, the blob reads as
+absent. That is the escalation trigger for this design — a context that big
+needs real provider state (an anchor, a rendezvous, a sharded index), not a
+longer linear scan.
+
+A winner that then fails to deliver — a dropped connection, a timeout, or bytes
+whose recomputed id does not match — is not evidence that the blob is gone, so
+the search resumes at the next candidate instead of reporting absence. And an
+empty candidate list is not evidence either: a node that has just joined may
+simply not have been grafted onto the context topic yet. An **empty** sweep is
+therefore retried up to **6 times**, re-resolving the subscriber set each time,
+with the gap starting at **100 ms** and doubling to a **2 s** cap. A sweep that
+had candidates and still found nothing is not repeated — re-asking peers that
+already said no is repeating work, not making progress.
+
+Asking is authoritative in a way a record is not: custody is a property of a
+peer's own blob store, so the answer cannot be stale, cannot expire, and is not
+limited to whichever single peer happened to announce. Any node that has the
+bytes — including one that only ever downloaded them — is discoverable, and a
+holder that restarts stays discoverable. A probe deliberately does not
+distinguish "not authorised" from "not held": both answer `found: false`, which
+costs a wasted candidate and never a wrong fetch.
+
+### The Kademlia record, and why it is still written
+
+The Kademlia provider-record API (`announce_blob_to_kad` / `find_blob_providers`)
+is **deprecated**, and nothing in the tree reads it — discovery is probing, and
+only probing.
+
+The **write** survives anyway, and `announce_blob_to_network` performs it
+alongside the availability-node notice. A peer still running the pre-probe code
+discovers blobs by DHT lookup and by nothing else, so an upgraded node that
+stopped writing the record would become invisible to it. The reverse direction
+needs no such help: an un-upgraded peer answers an ordinary blob request, so a
+probing node still finds it. Only the write is load-bearing for mixed versions,
+which is why only the write was kept. Both routes sit behind the same
+withholding gate, so an http-mode node advertises application bytecode by
+neither.
+
+The record is opportunistic in a way probing is not — only some paths publish
+one, and a restart drops what a node held — which is exactly why nothing reads
+it any more. It goes once no un-upgraded peer remains.
 
 :::note
 Global (context-less) blob queries are not supported — discovery always names a
@@ -313,14 +394,17 @@ to a peer that fetches it.
    state).
 
 2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
-   blob's size locally and `put_record`s a Kademlia record keyed
-   `context_id ‖ blob_id` with value `local_peer_id ‖ size` at `Quorum::One`. The
-   image is now discoverable by any member of that context.
+   blob's size locally and sends `{ blob_id, context_id, size }` over
+   `/calimero/blob-announce/1.0.0` to each of the context's availability nodes.
+   Each one that is online, does not already hold the image, and has a free
+   prefetch slot fetches it, so the image ends up on an always-on node as well
+   as the producer.
 
 3. **Discover it.** A second node holds the `BlobId` in state (it synced the
-   reference) but not the bytes. It `get_record`s the same `context_id ‖ blob_id`
-   key — retried with backoff, since a fresh record takes a moment to propagate —
-   and learns the announcing peer and the size.
+   reference) but not the bytes. It takes the context topic's subscribers as
+   candidates and probes them 8 at a time — a `BlobRequest` whose `found` answer
+   it reads and whose chunks it does not — until one says yes. Any node holding
+   the bytes qualifies, not just the announcer.
 
 4. **Fetch it.** The fetcher opens `/calimero/blob/0.0.2` to that peer and sends a
    `BlobRequest { blob_id, context_id, auth? }`. The provider authorizes the
@@ -389,7 +473,9 @@ wrong or tampered payload cannot masquerade as the requested blob.
   `scope_root`, so blob movement neither creates nor repairs state divergence.
 - Guests use `create → write → close` (yields a `BlobId`), `open → read`, and
   `announce_to_context`, bounded by `max_blob_handles` and `max_blob_chunk_size`.
-- Discovery is a context-scoped Kademlia lookup; transfer runs either over the
+- Discovery is a bounded probe of the context's peers, availability nodes first;
+  producers announce new blobs to those availability nodes over
+  `/calimero/blob-announce/1.0.0` so they prefetch. Transfer runs either over the
   dedicated `/calimero/blob/0.0.2` stream (`BlobRequest` → `BlobResponse` →
   `BlobChunk*`) or, during sync, as encrypted `BlobShare` frames — both gated by
   context-membership authorization and both self-verifying by content address.

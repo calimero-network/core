@@ -142,6 +142,26 @@ Requester                              Provider
 
 If the provider does not hold the blob it replies `BlobResponse { found: false }` and sends no chunks. The requester bounds the transfer with a 60s overall and 30s per-chunk timeout, and recomputes the `BlobId` from the assembled bytes before accepting them. Non-public blobs require a signed `BlobAuth` (member of `context_id`) on the request.
 
+### CALIMERO_BLOB_ANNOUNCE_PROTOCOL
+
+```
+Protocol ID: /calimero/blob-announce/1.0.0
+```
+
+**Purpose**: Tell a context's availability nodes (`ReadOnlyTee` members) that this node now holds a blob for that context, so they can prefetch it.
+
+**Message Format**: One JSON frame, `BlobAnnouncement { blob_id, context_id, size }`. No response, no transfer; the stream closes immediately after.
+
+**Why a separate protocol**: `CALIMERO_BLOB_PROTOCOL`'s server parses its first frame strictly as a `BlobRequest`, so adding a message kind there would force a bump to `/calimero/blob/0.0.3` and a lock-step upgrade of the transfer path. A protocol of its own is simply not negotiated by peers that don't speak it.
+
+**Why not gossipsub**: `flood_publish` fans every publish to every subscriber of a topic, so a topic broadcast would tell an entire context about every blob. The announce is addressed to a bounded, chosen set instead.
+
+**Receiver policy**: the announcement frame must arrive within 10s or the stream is dropped (a peer that opens one and never speaks must not park a task). Then prefetch only if this node is a `ReadOnlyTee` member of that context — directly, or by inheritance from any ancestor group up to the namespace root, decided from local governance state and never from the announcement — does not already hold the blob, and `size` is within the 500 MiB transfer cap. At most 2 prefetches run at once; announcements arriving while both slots are busy are dropped, not queued.
+
+**Producer side**: the notices are sent detached — the producing write returns once they are scheduled, not once they are delivered, so an unreachable availability node cannot delay an upload.
+
+**Known gap**: an availability node offline at announce time misses that blob and has no catch-up path. The blob stays findable by probing its original holder, so this costs availability, not correctness.
+
 ### CALIMERO_KAD_PROTO_NAME
 
 ```
@@ -158,6 +178,12 @@ Protocol ID: /calimero/kad/1.0.0
 - Distributed peer routing
 
 **Blob discovery uses ordinary Kad records, not `StartProviding` / `GetProviders`.** To announce a blob, a node `put_record`s a record keyed by `context_id ‖ blob_id` whose value is `local_peer_id ‖ size` (size as little-endian `u64`), with `Quorum::One`. To discover, a node `get_record`s the same `context_id ‖ blob_id` key and dials the advertised peer. Keys are always context-scoped — global (context-less) blob queries are not supported.
+
+**Nothing in-tree READS this for blobs, but the record is still WRITTEN.** Discovery is by probing the context's peers, because custody is a property of a peer's own blob store and so cannot go stale the way a record can — so `NodeClient::find_blob_providers` (and `NetworkClient::query_blob` behind it) is deprecated and unused.
+
+`NodeClient::announce_blob_to_network` nonetheless writes the record, alongside the availability-node notice it sends over `CALIMERO_BLOB_ANNOUNCE_PROTOCOL`. A peer that has not upgraded discovers blobs by DHT lookup and by nothing else, so an upgraded node that stopped writing the record would become invisible to it; the other direction needs nothing, since an un-upgraded peer answers an ordinary blob request and is therefore still probeable. `NodeClient::announce_blob_to_kad` is deprecated too and exists for that compatibility write, which goes once no un-upgraded peer remains.
+
+Kad remains in use for peer routing.
 
 ## Gossipsub Topics
 
@@ -317,28 +343,33 @@ Initiator                                              Responder
 ### Blob Discovery and Transfer
 
 ```text
-Requester                      DHT                       Provider
-    │                           │                            │
-    │  1. Need blob_id for context                           │
-    │                                                        │
-    │── Kad.get_record(ctx‖blob_id) ►│                       │
-    │                           │                            │
-    │◄─ Record(peer_id‖size) ───│                            │
-    │                           │                            │
-    │  2. Dial the advertised peer                           │
-    │                                                        │
-    │── OpenStream(CALIMERO_BLOB_PROTOCOL) ─────────────────►│
-    │── BlobRequest { blob_id, context_id, auth? } ─────────►│
-    │                                                        │
-    │◄─ BlobResponse { found, size? } ───────────────────────│
-    │◄─ BlobChunk { data } ... BlobChunk { data: [] } ───────│
-    │                                                        │
-    │  3. Verify recomputed id matches blob_id               │
-    │  4. Store locally                                      │
-    │  5. Announce own record                                │
-    │                                                        │
-    │── Kad.put_record(ctx‖blob_id, peer_id‖size) ►│         │
-    │                            │                           │
+Requester                                    Candidates              Availability Node(s)
+    │                                             │                          │
+    │  1. Need blob_id for context                │                          │
+    │                                             │                          │
+    │  2. Probe candidates PROBE_BATCH at a time  │                          │
+    │     (availability nodes first, then the     │                          │
+    │     rest of the topic's subscribers)        │                          │
+    │                                             │                          │
+    │── OpenStream(CALIMERO_BLOB_PROTOCOL) ──────►│                          │
+    │── BlobRequest { blob_id, context_id } ─────►│                          │
+    │◄─ BlobResponse { found: true, size? } ──────│                          │
+    │                                             │                          │
+    │  3. Fetch from the first candidate that answered "yes"                │
+    │                                             │                          │
+    │── OpenStream(CALIMERO_BLOB_PROTOCOL) ──────►│                          │
+    │── BlobRequest { blob_id, context_id } ─────►│                          │
+    │◄─ BlobResponse { found, size? } ────────────│                          │
+    │◄─ BlobChunk{data} .. BlobChunk{data:[]} ────│                          │
+    │                                             │                          │
+    │  4. Verify recomputed id matches blob_id                              │
+    │  5. Store locally                                                     │
+    │  6. Announce to the context's availability nodes                     │
+    │                                             │                          │
+    │── OpenStream(CALIMERO_BLOB_ANNOUNCE_PROTOCOL) ────────────────────────►│
+    │── BlobAnnouncement { blob_id, context_id, size } ─────────────────────►│
+    │                                             │        (no response; prefetch
+    │                                             │         if not already held)
 ```
 
 ## Protocol Constants
@@ -348,6 +379,7 @@ Requester                      DHT                       Provider
 | `MAX_MESSAGE_SIZE` | 8 MB | `primitives/src/stream.rs` |
 | `CALIMERO_STREAM_PROTOCOL` | `/calimero/stream/0.0.2` | `primitives/src/stream.rs` |
 | `CALIMERO_BLOB_PROTOCOL` | `/calimero/blob/0.0.2` | `primitives/src/stream.rs` |
+| `CALIMERO_BLOB_ANNOUNCE_PROTOCOL` | `/calimero/blob-announce/1.0.0` | `primitives/src/stream.rs` |
 | `CALIMERO_KAD_PROTO_NAME` | `/calimero/kad/1.0.0` | `src/behaviour.rs` |
 | `DEFAULT_PORT` | 2428 | `primitives/src/config.rs` |
 
