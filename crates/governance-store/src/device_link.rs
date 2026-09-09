@@ -40,11 +40,10 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     // it. A namespace whose metadata has not synced names none, and is reachable
     // only by a scope that names none either. The account namespace targets
     // nothing by design and every device of the account belongs in it.
-    let is_account_namespace = devices.account_namespace()? == Some(*namespace);
     let application = MetaRepository::new(store)
         .load(namespace)?
         .map(|meta| meta.target.application_id);
-    if !is_account_namespace && !cert.covers(application) {
+    if !cert.covers(application) && devices.account_namespace()? != Some(*namespace) {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
 
@@ -360,7 +359,12 @@ mod tests {
     /// The account namespace as the holder creates it: an unset target, a key,
     /// and the node-local row that names it.
     fn account_namespace_serving(store: &Store) -> ContextGroupId {
-        let namespace = ContextGroupId::from([0x4E; 32]);
+        let devices = NodeDeviceRepository::new(store);
+        let namespace = devices
+            .account_root()
+            .expect("read the root")
+            .expect("test_store provisions a root")
+            .account_namespace();
         MetaRepository::new(store)
             .save(
                 &namespace,
@@ -377,7 +381,7 @@ mod tests {
         let _key_id = GroupKeyring::new(store, namespace)
             .store_key(&[0x43; 32])
             .expect("store the account key");
-        NodeDeviceRepository::new(store)
+        devices
             .store_account_namespace(&namespace)
             .expect("record the account namespace");
         namespace

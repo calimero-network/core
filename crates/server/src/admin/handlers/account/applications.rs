@@ -178,25 +178,31 @@ mod tests {
     #[test]
     fn the_account_namespace_contributes_no_application() {
         let store = seeded_account();
+        let devices = NodeDeviceRepository::new(&store);
         let namespaces = NamespaceRepository::new(&store);
         let meta = MetaRepository::new(&store);
         let app = ApplicationId::from([0x77; 32]);
+        let account_namespace = devices
+            .account_root()
+            .expect("read the root")
+            .expect("seeded_account mints one")
+            .account_namespace();
 
         namespaces.note_participation(&ns(NS_A)).expect("join A");
         meta.save(&ns(NS_A), &meta_for(app)).expect("save meta A");
         namespaces
-            .note_participation(&ns(NS_B))
+            .note_participation(&account_namespace)
             .expect("follow the account namespace");
         meta.save(
-            &ns(NS_B),
+            &account_namespace,
             &GroupMetaValue {
                 target: GroupTarget::default(),
                 ..meta_for(app)
             },
         )
         .expect("save the account namespace meta");
-        NodeDeviceRepository::new(&store)
-            .store_account_namespace(&ns(NS_B))
+        devices
+            .store_account_namespace(&account_namespace)
             .expect("record it");
 
         let applications = collect(&store).expect("collect").expect("has account");
