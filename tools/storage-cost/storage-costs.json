@@ -1,4 +1,154 @@
 {
+  "lww_register_set": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 404,
+        "rows_written": 116,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 3644,
+        "rows_written": 1016,
+        "rows_removed": 0
+      },
+      "00001000": {
+        "rows_read": 36044,
+        "rows_written": 10016,
+        "rows_removed": 0
+      },
+      "00010000": {
+        "rows_read": 360044,
+        "rows_written": 100016,
+        "rows_removed": 0
+      }
+    }
+  },
+  "nested_map_get": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 4,
+        "rows_written": 0,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 4,
+        "rows_written": 0,
+        "rows_removed": 0
+      },
+      "00001000": {
+        "rows_read": 4,
+        "rows_written": 0,
+        "rows_removed": 0
+      },
+      "00010000": {
+        "rows_read": 4,
+        "rows_written": 0,
+        "rows_removed": 0
+      }
+    }
+  },
+  "nested_map_insert": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 934,
+        "rows_written": 287,
+        "rows_removed": 6
+      },
+      "00000100": {
+        "rows_read": 7774,
+        "rows_written": 2267,
+        "rows_removed": 6
+      },
+      "00001000": {
+        "rows_read": 76174,
+        "rows_written": 22067,
+        "rows_removed": 6
+      },
+      "00010000": {
+        "rows_read": 760174,
+        "rows_written": 220067,
+        "rows_removed": 6
+      }
+    }
+  },
+  "rga_get_nth": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 20,
+        "rows_written": 0,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 200,
+        "rows_written": 0,
+        "rows_removed": 0
+      },
+      "00001000": {
+        "rows_read": 2000,
+        "rows_written": 0,
+        "rows_removed": 0
+      },
+      "00010000": {
+        "rows_read": 20000,
+        "rows_written": 0,
+        "rows_removed": 0
+      }
+    }
+  },
+  "rga_insert": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 545,
+        "rows_written": 205,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 4865,
+        "rows_written": 1825,
+        "rows_removed": 0
+      },
+      "00001000": {
+        "rows_read": 48065,
+        "rows_written": 18025,
+        "rows_removed": 0
+      },
+      "00010000": {
+        "rows_read": 480065,
+        "rows_written": 180025,
+        "rows_removed": 0
+      }
+    }
+  },
+  "rga_insert_per_char": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 635,
+        "rows_written": 205,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 14765,
+        "rows_written": 1825,
+        "rows_removed": 0
+      },
+      "00000500": {
+        "rows_read": 273565,
+        "rows_written": 9025,
+        "rows_removed": 0
+      },
+      "00002000": {
+        "rows_read": 4094065,
+        "rows_written": 36025,
+        "rows_removed": 0
+      }
+    }
+  },
   "unordered_map_get": {
     "tolerance_pct": 0,
     "sizes": {
@@ -100,25 +250,25 @@
     }
   },
   "vector_get_nth": {
-    "tolerance_pct": 25,
+    "tolerance_pct": 18,
     "sizes": {
       "00000010": {
-        "rows_read": 40,
+        "rows_read": 41,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 306,
+        "rows_read": 300,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00001000": {
-        "rows_read": 2152,
+        "rows_read": 2158,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00010000": {
-        "rows_read": 13266,
+        "rows_read": 13286,
         "rows_written": 0,
         "rows_removed": 0
       }
