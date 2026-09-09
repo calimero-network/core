@@ -108,7 +108,7 @@ impl AccountRoot {
     /// find or squat the topic from an account id they merely know.
     #[must_use]
     pub fn account_namespace(&self) -> ContextGroupId {
-        let mut input = Vec::with_capacity(ACCOUNT_NAMESPACE_TAG.len() + 32);
+        let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_TAG.len() + 32));
         input.extend_from_slice(ACCOUNT_NAMESPACE_TAG);
         input.extend_from_slice(self.secret.as_bytes());
         ContextGroupId::from(*Hash::new(&input))
@@ -653,16 +653,17 @@ impl<'a> NodeDeviceRepository<'a> {
         }
     }
 
-    /// The account namespace this node follows: the recorded one, else the
-    /// holder's derivation, so the holder can name it before creating it.
+    /// The account namespace this node follows: the holder's derivation, else
+    /// the row pair-init recorded. The row is caller-settable, so it never
+    /// overrides what the root says.
     ///
     /// # Errors
     /// Propagates the store read failure.
     pub fn account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
-        if let Some(recorded) = self.stored_account_namespace()? {
-            return Ok(Some(recorded));
+        if let Some(root) = self.holder_root()? {
+            return Ok(Some(root.account_namespace()));
         }
-        Ok(self.holder_root()?.map(|root| root.account_namespace()))
+        self.stored_account_namespace()
     }
 
     /// This node's device identity for `namespace`, if it has enrolled one.
@@ -3181,12 +3182,17 @@ mod tests {
 
         assert!(repo.holder_root().expect("read").is_none());
         assert_eq!(repo.account_namespace().expect("read"), None);
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(recorded));
     }
 
     /// The holder names its namespace before anything created it, so an invite
-    /// can carry the id first. A recorded row wins once one exists.
+    /// can carry the id first. The row is caller-settable, so it never displaces
+    /// what the root says.
     #[test]
-    fn a_holder_names_its_account_namespace_before_the_row_exists() {
+    fn a_holder_derives_its_account_namespace_whatever_the_row_says() {
         let store = test_store();
         let repo = NodeDeviceRepository::new(&store);
         let derived = repo
@@ -3199,7 +3205,7 @@ mod tests {
 
         let recorded = ContextGroupId::from([0x4E; 32]);
         repo.store_account_namespace(&recorded).expect("write");
-        assert_eq!(repo.account_namespace().expect("read"), Some(recorded));
+        assert_eq!(repo.account_namespace().expect("read"), Some(derived));
     }
 
     /// A root-free device knows only what pair-init told it.
