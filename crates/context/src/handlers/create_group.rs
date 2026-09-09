@@ -132,14 +132,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     return ActorResponse::reply(Err(err));
                 }
             }
-            parent_meta.target.application_id
+            Some(parent_meta.target.application_id)
         } else {
             application_id
-        };
-
-        let app_meta = match load_app_meta(&self.datastore, &effective_application_id) {
-            Ok(m) => m,
-            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
         // Derive bytecode_id from the resolved application's bytecode blob_id
@@ -154,9 +149,26 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // A caller-provided bytecode_id pins the group to a specific version;
         // it is verified inside the async block below (blob present locally
         // + manifest package matches the row's package).
-        let row_blob = *app_meta.bytecode.blob_id().as_ref();
-        let app_package = app_meta.package.clone();
-        let app_version = app_meta.version.clone();
+        //
+        // A root that targets nothing keeps the unset target a cold-start seed
+        // writes, and has no row to pin a bytecode against.
+        let target = match effective_application_id {
+            Some(application_id) => match load_app_meta(&self.datastore, &application_id) {
+                Ok(app_meta) => GroupTarget {
+                    application_id,
+                    bytecode_id: *app_meta.bytecode.blob_id().as_ref(),
+                    package: app_meta.package,
+                    version: app_meta.version,
+                },
+                Err(err) => return ActorResponse::reply(Err(err)),
+            },
+            None if bytecode_id.is_some() => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "a bytecode pin needs an application to pin; this group targets none"
+                )))
+            }
+            None => GroupTarget::default(),
+        };
         let requested_bytecode_id = bytecode_id;
 
         let datastore = self.datastore.clone();
@@ -192,12 +204,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // application-row blob, never the caller's still-unverified
             // `requested_bytecode_id`. The async body overwrites this with the
             // final, verified target on success.
-            target: GroupTarget {
-                application_id: effective_application_id,
-                bytecode_id: row_blob,
-                package: app_package.clone(),
-                version: app_version.clone(),
-            },
+            target: target.clone(),
             created_at: reservation_now,
             admin_identity: admin_account,
             owner_identity: admin_account,
@@ -212,11 +219,16 @@ impl Handler<CreateGroupRequest> for ContextManager {
             async move {
                 let bytecode_id = match requested_bytecode_id {
                     Some(requested) => {
-                        verify_requested_bytecode_id(&node_client, &requested, row_blob, &app_package)
-                            .await?;
+                        verify_requested_bytecode_id(
+                            &node_client,
+                            &requested,
+                            target.bytecode_id,
+                            &target.package,
+                        )
+                        .await?;
                         requested
                     }
-                    None => BytecodeId::from(row_blob),
+                    None => BytecodeId::from(target.bytecode_id),
                 };
 
                 // Reuse the timestamp resolved (and warned-on-error) for the
@@ -225,10 +237,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // reservation it replaces then carry the same `created_at`.
                 let meta = GroupMetaValue {
                     target: GroupTarget {
-                        application_id: effective_application_id,
                         bytecode_id: bytecode_id.to_bytes(),
-                        package: app_package.clone(),
-                        version: app_version.clone(),
+                        ..target.clone()
                     },
                     created_at: reservation_now,
                     admin_identity: admin_account,
@@ -580,27 +590,32 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // Put the target on the DAG so a node that only backfills
                     // (a paired device) learns it too. Best effort: it is applied
                     // locally before the publish.
-                    match calimero_governance_store::sign_apply_and_publish(
-                        &datastore,
-                        &node_client,
-                        &ack_router,
-                        &group_id,
-                        &signer_sk,
-                        GroupOp::TargetApplicationSet {
-                            bytecode_id,
-                            target_application_id: effective_application_id,
-                            package: app_package.to_string(),
-                            version: app_version.to_string(),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(report) => report.observe("create_group", "TargetApplicationSet"),
-                        Err(e) => warn!(
-                            ?e,
-                            ?group_id,
-                            "failed to publish the namespace's target application"
-                        ),
+                    //
+                    // A group that targets nothing has no target to put on the DAG,
+                    // and the op's validator refuses empty coordinates anyway.
+                    if let Some(target_application_id) = effective_application_id {
+                        match calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            &group_id,
+                            &signer_sk,
+                            GroupOp::TargetApplicationSet {
+                                bytecode_id,
+                                target_application_id,
+                                package: target.package.to_string(),
+                                version: target.version.to_string(),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(report) => report.observe("create_group", "TargetApplicationSet"),
+                            Err(e) => warn!(
+                                ?e,
+                                ?group_id,
+                                "failed to publish the namespace's target application"
+                            ),
+                        }
                     }
                 }
 
@@ -1009,7 +1024,7 @@ mod tests {
             .send(CreateGroupRequest {
                 group_id: Some(GROUP.into()),
                 bytecode_id: None,
-                application_id: ApplicationId::from(APP),
+                application_id: Some(ApplicationId::from(APP)),
                 name: None,
                 parent_group_id: None,
                 restricted: false,
@@ -1042,7 +1057,7 @@ mod tests {
             .send(CreateGroupRequest {
                 group_id: Some(GROUP.into()),
                 bytecode_id: None,
-                application_id: ApplicationId::from(APP),
+                application_id: Some(ApplicationId::from(APP)),
                 name: None,
                 parent_group_id: None,
                 restricted: false,
@@ -1065,6 +1080,82 @@ mod tests {
         assert_eq!(
             rung.bytecode_id, [0x01; 32],
             "the rung names the bytecode blob the application row resolves to"
+        );
+    }
+
+    /// The account namespace runs no application. Its target stays the unset one
+    /// a cold-start seed writes, and no target op is put on its DAG: the ladder
+    /// rung is written only by that op, so an empty ladder proves it never went.
+    #[actix::test]
+    async fn an_app_less_root_group_writes_an_unset_target_and_publishes_no_target_op() {
+        let store = store();
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("an app-less root is created");
+
+        let meta = MetaRepository::new(&store)
+            .load(&created.group_id)
+            .expect("read the meta")
+            .expect("the group has a meta row");
+        assert_eq!(meta.target, GroupTarget::default());
+        assert!(
+            calimero_governance_store::UpgradeLadderRepository::new(&store)
+                .load(&created.group_id)
+                .expect("read the ladder")
+                .is_empty(),
+            "no target op may be published for a group that targets nothing"
+        );
+    }
+
+    /// A pin names a build of an application; with no application there is
+    /// nothing for it to name, and it is refused rather than silently dropped.
+    #[actix::test]
+    async fn a_bytecode_pin_without_an_application_is_refused() {
+        let store = store();
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("root");
+
+        let harness = actor::over(store.clone()).await;
+        let refused = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: Some([0x01; 32].into()),
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("a pin with nothing to pin");
+
+        assert!(
+            refused.to_string().contains("needs an application"),
+            "got: {refused}"
+        );
+        assert!(
+            MetaRepository::new(&store)
+                .load(&GROUP.into())
+                .expect("read")
+                .is_none(),
+            "a refused creation leaves no meta row behind"
         );
     }
 }

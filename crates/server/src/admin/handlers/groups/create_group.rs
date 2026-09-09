@@ -59,7 +59,7 @@ pub async fn handler(
         .create_group(CreateGroupRequest {
             group_id,
             bytecode_id,
-            application_id: req.application_id,
+            application_id: Some(req.application_id),
             name: req.name,
             parent_group_id,
             // Born-Restricted (default, #2771); this legacy path doesn't yet
