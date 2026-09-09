@@ -451,7 +451,10 @@ mod tests {
                 .expect("read")
                 .expect("the relink recorded the device");
         assert_eq!(recorded.applications, vec![app(APP_ONE), app(APP_TWO)]);
-        assert_eq!(epoch, 0, "the first statement for this device");
+        assert_eq!(
+            epoch, 1,
+            "the certification itself is epoch 0; the relink is the statement after it"
+        );
 
         let _second = harness
             .manager
@@ -467,6 +470,6 @@ mod tests {
                 .device(device)
                 .expect("read")
                 .expect("row");
-        assert_eq!(epoch, 1, "a second statement must supersede the first");
+        assert_eq!(epoch, 2, "a second relink must supersede the first");
     }
 }

@@ -912,6 +912,9 @@ mod tests {
     /// The sibling of the creation's auto-bind: a namespace joined after a
     /// pairing is one the paired device was never bound in, so without this the
     /// join succeeds and that device silently never sees the group.
+    ///
+    /// The devices come from the account namespace's registry, so this holds on
+    /// any device of the account, not only the one that did the certifying.
     #[actix::test]
     async fn joining_a_namespace_carries_this_accounts_devices_into_it() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));

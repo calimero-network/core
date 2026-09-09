@@ -1012,6 +1012,9 @@ mod tests {
     /// A namespace this node creates is a namespace it has just gained, and the
     /// devices it already certified belong there. Without the auto-bind the
     /// creation succeeds and the paired device silently never sees the group.
+    ///
+    /// The devices come from the account namespace's registry, so this holds on
+    /// any device of the account, not only the one that did the certifying.
     #[actix::test]
     async fn creating_a_namespace_carries_this_accounts_devices_into_it() {
         let store = store();
