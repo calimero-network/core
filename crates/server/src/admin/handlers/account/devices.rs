@@ -29,9 +29,9 @@ struct Draft {
     namespaces: Vec<ContextGroupId>,
 }
 
-/// Every device of this node's own account, joined from the node-local
-/// certificate cache with the live bindings of every namespace this node takes
-/// part in.
+/// Every device of this node's own account, joined from three sources: the
+/// account namespace's registry, the node-local certificate cache, and the live
+/// bindings of every namespace this node takes part in.
 ///
 /// `None` when this node holds no account, mirroring `GET /admin-api/identity`,
 /// since there is nothing to report on. Reuses that route's account resolution
@@ -60,7 +60,8 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
     }
 
     // Replicated, so a device that is not the holder reads every sibling's scope
-    // here; the cache below it answers only on a node with no account namespace.
+    // here; the cache still answers for devices the registry drops, revoked ones
+    // included.
     if let Some(namespace) = devices.account_namespace()? {
         for cert in AccountDeviceRegistry::new(store, namespace).devices()? {
             let entry = by_device.entry(cert.device()).or_insert_with(|| Draft {

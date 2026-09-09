@@ -624,10 +624,10 @@ pub enum GroupOp {
     },
     /// Record a device of this namespace's account in its registry.
     ///
-    /// The account namespace is the only place this op belongs, and its apply
-    /// enforces exactly that: the signer must speak for the account whose
-    /// namespace this is. A project namespace's other members therefore never
-    /// learn which applications a device of the account is scoped to.
+    /// The apply enforces two things: only an admin of the namespace may carry
+    /// the statements in, and only about its own account's devices. The account
+    /// namespace is therefore the only place a row lands, and a project
+    /// namespace's members never learn what an account's devices are scoped to.
     ///
     /// Both statements are root-signed and self-contained, so a receiver checks
     /// them without having folded a prior op about the account - the same

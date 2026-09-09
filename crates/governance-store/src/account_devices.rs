@@ -34,7 +34,8 @@ impl<'a> AccountDeviceRegistry<'a> {
     ///
     /// `false` means the stored row was already at that epoch or above and was
     /// left alone, which is what makes a re-gossiped op a no-op rather than a
-    /// rollback to an older scope.
+    /// rollback to an older scope. That rests on one publisher minting epochs
+    /// from its own folded row, so two different statements never share one.
     ///
     /// # Errors
     /// Propagates the store read or write failure.

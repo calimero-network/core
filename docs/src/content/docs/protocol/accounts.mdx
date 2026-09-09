@@ -296,7 +296,7 @@ The holder creates it the first time it completes a pairing, as a root group tha
 It is not a project: `GET /admin-api/namespaces` and `GET /admin-api/account/applications` never show it, while `GET /admin-api/account/devices` lists it among a device's bindings, because the device is bound there.
 It is also where the account records its devices.
 Each one gets a row holding the certificate its account root signed, in full, and the applications that device may speak for - an empty list meaning all of them.
-The holder publishes that row for itself when it creates the namespace, for a device when it certifies one at `pair-complete`, and again at a higher scope epoch whenever a re-pairing or a `relink` changes that scope; only a higher epoch supersedes, so a re-delivered older statement narrows nothing.
+The holder publishes that row for itself when it creates the namespace, for a device when it certifies one at `pair-complete`, and again at a higher scope epoch whenever a re-pairing or a `relink` restates it; only a higher epoch supersedes, so a re-delivered older statement narrows nothing.
 The scope stays here rather than on the certificate, so a project's other members never learn which other projects a device of the account reaches.
 `GET /admin-api/account/devices` reads each device's `applications` from these rows, which is how a device that is not the holder can say what its siblings, and itself, are scoped to.
 What a device does with those rows arrives with the changes that follow this one.
