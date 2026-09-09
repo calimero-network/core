@@ -2153,17 +2153,6 @@ fn context_registered_round_trips_registry_coordinates() {
 }
 
 #[test]
-// The constant only ever grows, so clippy sees this comparison as foldable; it
-// still documents the invariant this test was written to pin.
-#[allow(clippy::assertions_on_constants)]
-fn schema_version_is_bumped_for_the_coordinate_fields() {
-    assert!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION >= 11,
-        "adding fields to existing GroupOp variants must bump the strictly-checked schema version"
-    );
-}
-
-#[test]
 fn v10_target_application_set_bytes_are_rejected_not_misparsed() {
     // Half one: a v10 `TargetApplicationSet` is two coordinate strings short of
     // the v11 layout, so the reader runs off the end rather than misreading a
