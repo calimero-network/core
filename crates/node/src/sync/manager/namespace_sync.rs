@@ -2041,32 +2041,33 @@ impl SyncManager {
                 &*self.state_access,
                 &anchors,
             );
-            // How many of those may actually serve this request. Anchor-only
-            // when the key cannot be checked; any candidate when it can.
-            let Some(allowed) = crate::sync::peers::key_servers_allowed(
-                ordered.len(),
-                anchor_count,
-                !anchors.is_empty(),
-                key_id.is_some(),
-            ) else {
+            // How many of those may actually serve this request: anchors only,
+            // always. An awaited `key_id` used to widen this to every candidate,
+            // until #3888 showed the id is minted from a cleartext field no gate
+            // checks, so the widening was self-granted. The hash check on that
+            // id survives as a content check; it is no longer authority over who
+            // may serve.
+            let Some(allowed) =
+                crate::sync::peers::key_servers_allowed(anchor_count, !anchors.is_empty())
+            else {
                 if anchors.is_empty() {
                     warn!(
                         group_id = %hex::encode(group_id),
                         candidate_count = ordered.len(),
-                        "group-key recovery refused: this key cannot be verified \
-                         against a signed op and no trusted anchor can be \
-                         identified for the group, so there is nobody it is safe \
-                         to accept it from; retrying once governance state names \
-                         an Admin or ReadOnlyTee"
+                        "group-key recovery refused: no trusted anchor can be \
+                         identified for the group, and only an anchor may serve a \
+                         group key, so there is nobody it is safe to accept it \
+                         from; retrying once governance state names an Admin or \
+                         ReadOnlyTee"
                     );
                 } else {
                     warn!(
                         group_id = %hex::encode(group_id),
                         candidate_count = ordered.len(),
-                        "group-key recovery refused: this key cannot be verified \
-                         against a signed op and no trusted anchor is reachable; \
-                         retrying rather than accepting an unverifiable key from \
-                         a non-anchor peer"
+                        "group-key recovery refused: no trusted anchor for the \
+                         group is reachable, and only an anchor may serve a group \
+                         key; retrying rather than accepting one from a non-anchor \
+                         peer"
                     );
                 }
                 continue;

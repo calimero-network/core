@@ -251,36 +251,34 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
 /// insider chose seals its own later writes under it, and cannot decode the
 /// group's real ops.
 ///
-/// So the answer depends on whether this particular request can be verified:
+/// **Only an anchor may serve one.** `None` means refuse and retry later,
+/// deliberately in preference to accepting a key from a non-anchor. That trades
+/// a liveness risk for a confidentiality one — a namespace whose anchors are all
+/// unreachable cannot complete a cold join — which is the intended policy, not
+/// an oversight. A group's anchors are resolvable even by a node that holds none
+/// of its keys, because `trusted_anchors` reads the group meta that the
+/// cleartext `GroupCreated` op writes.
 ///
-/// * **`verifiable`** — a governance op awaits a specific `key_id`, and that op
-///   is signed, so `SHA256(served) == expected` settles it and the responder is
-///   not trusted at all. Every candidate may serve; the anchor ordering ahead of
-///   this is then only about not wasting round-trips. Restricting to anchors
-///   here would buy nothing and cost availability.
-/// * **not verifiable** — a keyless member of a group no op names a key for yet,
-///   which is cold start. There is nothing to compare against, so trust in the
-///   responder is all there is, and **only an anchor may serve**: `None` rather
-///   than fall through to an arbitrary member.
+/// This used to take a `verifiable` flag and let **every** candidate serve when
+/// some op awaited a specific `key_id`, on the reasoning that a signed op named
+/// the id so `SHA256(served) == expected` settled it and the responder was not
+/// trusted at all. The op is signed, but by *anyone*: the awaited id is read
+/// from the cleartext `key_id` of a buffered `NamespaceOp::Group` envelope
+/// (`collect_buffered_group_op_keys`), the receive path checks only the topic
+/// and the signature — not membership, not an account binding, not revocation —
+/// and an unresolvable `key_id` decrypts nothing, gates nothing and raises
+/// nothing while the op is logged regardless. So a party that can reach the
+/// namespace topic could mint the id, thereby widen this set to include itself,
+/// and then satisfy its own hash check with a key of its choosing. See #3888.
 ///
-/// `None` means refuse and retry later, deliberately in preference to accepting
-/// an unverifiable key from a non-anchor. That trades a liveness risk for a
-/// confidentiality one — a namespace whose anchors are all unreachable cannot
-/// complete a cold join — which is the intended policy, not an oversight.
+/// The hash check on the awaited id is still applied where one exists, as a
+/// content check. It is simply no longer authority over *who may serve*.
 ///
 /// The two `None` cases are distinguished by `anchors_known` so callers can log
 /// them apart: "no anchor is reachable" is the accepted cost, while "no anchor
 /// can even be identified" points at unfolded governance state and is worth
 /// noticing.
-pub(crate) fn key_servers_allowed(
-    total_candidates: usize,
-    anchor_count: usize,
-    anchors_known: bool,
-    verifiable: bool,
-) -> Option<usize> {
-    if verifiable {
-        return (total_candidates > 0).then_some(total_candidates);
-    }
+pub(crate) fn key_servers_allowed(anchor_count: usize, anchors_known: bool) -> Option<usize> {
     if !anchors_known || anchor_count == 0 {
         return None;
     }
@@ -696,44 +694,49 @@ mod tests {
             ]
         );
     }
-    /// A verifiable request may use any candidate: the hash decides, so the
-    /// responder is not trusted and restricting to anchors would only cost
-    /// availability.
+    /// **The gate, and it now applies to every request.** A key request is
+    /// restricted to anchors and refuses rather than falling through.
     #[test]
-    fn a_verifiable_key_request_may_use_any_candidate() {
-        assert_eq!(key_servers_allowed(5, 2, true, true), Some(5));
+    fn a_key_request_is_always_restricted_to_anchors() {
         assert_eq!(
-            key_servers_allowed(5, 0, false, true),
-            Some(5),
-            "not even an identifiable anchor is needed when the key can be checked"
-        );
-        assert_eq!(
-            key_servers_allowed(0, 0, true, true),
-            None,
-            "but there still has to be somebody to ask"
-        );
-    }
-
-    /// **The gate.** An unverifiable request — cold start, no op naming a key —
-    /// is restricted to anchors, and refuses rather than falling through.
-    #[test]
-    fn an_unverifiable_key_request_is_restricted_to_anchors() {
-        assert_eq!(
-            key_servers_allowed(5, 2, true, false),
+            key_servers_allowed(2, true),
             Some(2),
             "only the anchors, which the anchor-first ordering has put in front"
         );
         assert_eq!(
-            key_servers_allowed(5, 0, true, false),
+            key_servers_allowed(0, true),
             None,
             "anchors are known but none is reachable: refuse and retry, never \
              fall through to an arbitrary member"
         );
         assert_eq!(
-            key_servers_allowed(5, 0, false, false),
+            key_servers_allowed(0, false),
             None,
             "and no identifiable anchor refuses too — the distinction is for the \
              log line, not for the verdict"
+        );
+    }
+
+    /// An awaited `key_id` no longer widens the set (#3888).
+    ///
+    /// This asserted the opposite: a request naming a `key_id` could use every
+    /// candidate, because "the hash decides, so the responder is not trusted".
+    /// The op naming the id is signed, but by anyone — the id is read from the
+    /// cleartext `key_id` of a buffered `NamespaceOp::Group` envelope, the
+    /// receive path checks only the topic and the signature, and an unresolvable
+    /// `key_id` decrypts nothing and raises nothing while the op is logged
+    /// anyway. So a party that could reach the namespace topic could mint the
+    /// id, widen this set to include itself, and then satisfy its own hash
+    /// check. The verdict must not depend on the id at all, which is why the
+    /// parameter is gone rather than merely ignored.
+    #[test]
+    fn an_awaited_key_id_does_not_widen_the_server_set() {
+        // The pre-#3888 call was `key_servers_allowed(5, 0, false, true) => Some(5)`:
+        // no identifiable anchor, yet every one of five candidates allowed.
+        assert_eq!(
+            key_servers_allowed(0, false),
+            None,
+            "an unattested id must not buy a peer the right to serve a key"
         );
     }
 }
