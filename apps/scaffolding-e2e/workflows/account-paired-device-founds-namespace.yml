@@ -26,8 +26,12 @@ description: >
        creation succeeds, but as a fresh device of node-2's own account.
     4. node-2's device listing shows the laptop's device bound in C. The phone
        could only have published that link from a certificate it cached when it
-       folded A's genesis, endorsed with its own key as the account, and only
-       because it recognised the laptop as the device that certified it.
+       folded A's genesis, endorsed with its own key as the account. The listing
+       derives its namespaces from folded binding rows, so this step proves a
+       binding exists, not who published it or why: the unit test
+       `a_paired_device_binds_the_device_that_certified_it_and_no_other_sibling`
+       is what pins the mechanism, and its red run on the previous branch is what
+       establishes the causality.
 
   node-2 is initialised the default way, root and all, because that is the
   posture the desktop ships and the one where the failure is silent.

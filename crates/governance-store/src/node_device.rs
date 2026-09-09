@@ -796,7 +796,9 @@ impl<'a> NodeDeviceRepository<'a> {
     /// fallback to a stored import, and for a link whose `device_epoch` does not
     /// advance on what is already stored: a link op re-runs on every re-gossip and
     /// every DAG replay, so an equal-or-older epoch overwriting a deliberate
-    /// re-certification would undo it again after each replay.
+    /// re-certification would undo it again after each replay. The epoch rule
+    /// governs the certificate alone: the certifier is recorded on every replay,
+    /// because any link for this device was endorsed by a device that certified it.
     ///
     /// # Errors
     /// Propagates the encoding or store failure.

@@ -2581,6 +2581,7 @@ impl FromKeyParts for NodeDeviceCertifier {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeDeviceCertifierValue {
+    /// The member key whose endorsement carried this node's own device link.
     pub member_pk: [u8; 32],
 }
 

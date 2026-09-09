@@ -30,9 +30,10 @@ enum BindPlan {
 /// Does this node know `cert`'s device belongs in `namespace`?
 ///
 /// Only the holder stores scopes. A paired device knows one thing for certain:
-/// the device that certified it is unscoped, so that is the one sibling it binds.
-/// A holder answers for its own account alone: a certificate of any other
-/// account is out of scope in every namespace.
+/// the device that certified it is unscoped, so it binds the sibling certificates
+/// whose signing key is the one that endorsed its own link, and only under the
+/// account it speaks for. A holder answers for its own account alone: a
+/// certificate of any other account is out of scope in every namespace.
 fn in_scope_here(
     store: &Store,
     devices: &NodeDeviceRepository<'_>,
