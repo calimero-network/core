@@ -7,9 +7,13 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, DeviceId};
+use calimero_account::{AccountProof, DeviceId, DeviceScope};
 use calimero_context_client::group::{RelinkDeviceRequest, RelinkDeviceResponse};
-use calimero_governance_store::{KnownDeviceCert, NamespaceRepository, NodeDeviceRepository};
+use calimero_context_client::local_governance::GroupOp;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::{
+    AccountDeviceRegistry, AccountRoot, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -33,15 +37,15 @@ fn resolve_target(
     store: &Store,
     device: DeviceId,
     applications: Vec<ApplicationId>,
-) -> EyreResult<(AccountId, KnownDeviceCert)> {
+) -> EyreResult<(AccountRoot, KnownDeviceCert)> {
     let devices = NodeDeviceRepository::new(store);
 
     // The account root decides which account this node may extend a device into:
     // the genesis is the content address of that root, so a node that paired INTO
     // somebody else's account holds no root that could have signed the
     // certificate it would be re-publishing.
-    let account = devices.require_account_root()?.account();
-    require_this_node_holds(store, account)?;
+    let root = devices.require_account_root()?;
+    require_this_node_holds(store, root.account())?;
 
     let Some(mut cached) = devices.device_cert(device)? else {
         return Err(ContextError::PairingUnknownDevice {
@@ -63,7 +67,7 @@ fn resolve_target(
         devices.remember_device_cert(&cached.proof, &cached.applications)?;
     }
 
-    Ok((account, cached))
+    Ok((root, cached))
 }
 
 impl Handler<RelinkDeviceRequest> for ContextManager {
@@ -79,9 +83,25 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
     ) -> Self::Result {
         let store = self.datastore.clone();
 
-        let (account, cached) = match resolve_target(&store, device, applications) {
+        let (root, cached) = match resolve_target(&store, device, applications) {
             Ok(target) => target,
             Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        let account = root.account();
+
+        let account_namespace = match NodeDeviceRepository::new(&store).account_namespace() {
+            Ok(namespace) => namespace,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        // The next statement for this device. No row yet means no statement yet,
+        // which is what a device certified before the registry existed looks like.
+        let next_scope_epoch = match account_namespace {
+            Some(namespace) => match AccountDeviceRegistry::new(&store, namespace).device(device) {
+                Ok(Some((_cert, epoch))) => epoch.saturating_add(1),
+                Ok(None) => 0,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            },
+            None => 0,
         };
 
         // Every namespace this node takes part in, narrowed by the device's own
@@ -117,6 +137,41 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
 
                 info!(%account, %device, ?outcomes, "relinked a device of this account");
 
+                if let Some(account_namespace) = account_namespace {
+                    let statement = match DeviceScope::sign(
+                        root.signing_key(),
+                        account,
+                        device,
+                        scope.clone(),
+                        next_scope_epoch,
+                        0,
+                    ) {
+                        Ok(statement) => statement,
+                        Err(err) => eyre::bail!("failed to sign the device scope: {err}"),
+                    };
+                    match calimero_governance_store::sign_apply_and_publish(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        &account_namespace,
+                        &signer_sk,
+                        GroupOp::AccountDeviceCertified {
+                            certificate: Box::new(cached.proof.clone()),
+                            scope: Box::new(AccountProof {
+                                genesis: cached.proof.genesis,
+                                chain: vec![],
+                                statement,
+                            }),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => report.observe("relink_device", "AccountDeviceCertified"),
+                        Err(err) => info!(%device, %err,
+                            "relinked, but the widened scope was not recorded in the account namespace"),
+                    }
+                }
+
                 Ok(RelinkDeviceResponse::new(account, device, scope, outcomes))
             }
             .into_actor(self),
@@ -129,6 +184,7 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_account::AccountGenesis;
+    use calimero_context_client::group::EnsureAccountNamespaceRequest;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
         AccountBindingRepository, GroupKeyring, MembershipRepository, MetaRepository,
@@ -265,7 +321,7 @@ mod tests {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x33, &[app(APP_ONE)]);
 
-        let (_account, widened) =
+        let (_root, widened) =
             resolve_target(&store, device, vec![app(APP_TWO)]).expect("extend the scope");
         assert_eq!(widened.applications, vec![app(APP_ONE), app(APP_TWO)]);
 
@@ -280,7 +336,7 @@ mod tests {
         );
 
         // And a repair that names nothing must not narrow it back.
-        let (_account, repaired) = resolve_target(&store, device, vec![]).expect("repair");
+        let (_root, repaired) = resolve_target(&store, device, vec![]).expect("repair");
         assert_eq!(repaired.applications, vec![app(APP_ONE), app(APP_TWO)]);
     }
 
@@ -292,8 +348,7 @@ mod tests {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x35, &[]);
 
-        let (_account, cached) =
-            resolve_target(&store, device, vec![app(APP_ONE)]).expect("repair");
+        let (_root, cached) = resolve_target(&store, device, vec![app(APP_ONE)]).expect("repair");
 
         assert!(
             cached.applications.is_empty(),
@@ -318,8 +373,7 @@ mod tests {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x34, &[app(APP_ONE)]);
 
-        let (_account, cached) =
-            resolve_target(&store, device, vec![app(APP_ONE)]).expect("extend");
+        let (_root, cached) = resolve_target(&store, device, vec![app(APP_ONE)]).expect("extend");
 
         assert_eq!(cached.applications, vec![app(APP_ONE)]);
     }
@@ -399,5 +453,56 @@ mod tests {
                 .expect("read the bindings"),
             "the link has to have APPLIED, not merely been reported"
         );
+    }
+
+    /// Widening a device's scope is a new statement at a higher epoch, so the
+    /// registry every other device reads is what moves, not just the cache.
+    #[actix::test]
+    async fn a_relink_publishes_the_widened_scope_at_the_next_epoch() {
+        let store = a_node_holding_its_own_account();
+        let harness = actor::over(store.clone()).await;
+        let namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
+
+        let device = certify_device(&store, 0x31, &[app(APP_ONE)]);
+
+        let _first = harness
+            .manager
+            .send(RelinkDeviceRequest {
+                device,
+                applications: vec![app(APP_TWO)],
+            })
+            .await
+            .expect("the manager answers")
+            .expect("relinked");
+
+        let (recorded, epoch) =
+            calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
+                .device(device)
+                .expect("read")
+                .expect("the relink recorded the device");
+        assert_eq!(recorded.applications, vec![app(APP_ONE), app(APP_TWO)]);
+        assert_eq!(epoch, 0, "the first statement for this device");
+
+        let _second = harness
+            .manager
+            .send(RelinkDeviceRequest {
+                device,
+                applications: vec![],
+            })
+            .await
+            .expect("the manager answers")
+            .expect("repaired");
+        let (_again, epoch) =
+            calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
+                .device(device)
+                .expect("read")
+                .expect("row");
+        assert_eq!(epoch, 1, "a second statement must supersede the first");
     }
 }
