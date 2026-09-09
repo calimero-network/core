@@ -10952,22 +10952,36 @@ fn an_unbound_delivery_still_seeds_a_key_when_none_is_held() {
     assert_eq!(stored.1, delivered);
 }
 
-/// The key really did switch: a BOUND delivery replaces a held key.
+/// A BOUND delivery cannot replace a held key either, and that is the fix.
 ///
-/// The seed-not-replace rule must not strand a node on a stale key, and this is
-/// the case that proves it does not. A group rotates; this node holds the old
-/// key and missed the rotation. The ops encrypted under the new key arrive and
-/// name its `key_id`, so the delivery carrying it is *bound* — and a bound
-/// delivery is exempt, because the hash decides instead of arrival order.
+/// This test asserted the opposite one commit ago. The question "what if the
+/// key really switched?" led to exempting a bound delivery from
+/// seed-not-replace, on the reasoning that a rotation legitimately replaces the
+/// current key. Composed review of this path showed the exemption was the worst
+/// line in it.
 ///
-/// The rule only ever declines a key that nothing signed vouches for. A real
-/// switch is always vouched for: either by the `KeyRotation` op itself, which
-/// takes a different path entirely (`apply_key_rotation` stores with a non-zero
-/// epoch that outranks every epoch-`0` key, and binds content to
-/// `rotation.new_key_id`), or — as here — by the group ops already encrypted
-/// under the new key.
+/// `expected_key_ids` comes from the cleartext `key_id` of buffered
+/// `NamespaceOp::Group` envelopes. The receive path verifies only the topic and
+/// the signature (`handlers/network_event/namespace.rs`), an unresolvable
+/// `key_id` decrypts nothing and raises nothing, and the op is logged anyway —
+/// so the signer chooses that field and nothing checks it. The "third-party
+/// attestation" the binding was documented on is mintable by the same principal
+/// that then satisfies it, which made *bound* strictly more powerful than
+/// *unbound*: it turned "may seed" into "may replace".
+///
+/// Nothing legitimate needed the exemption, which is why this direction is
+/// safe. A real rotation never reaches this code: `apply_key_rotation` requires
+/// admin authority at the op's cut, binds content to `rotation.new_key_id`, and
+/// stores at a real DAG epoch that outranks every epoch-`0` key. A node holding
+/// the old key decrypts the rotation op and takes that path; a node holding no
+/// key is seeding. And the rotation op is causally ahead of every op encrypted
+/// under the new key, so a node that has those has the rotation too — the
+/// scenario this test used to construct cannot outlive a backfill.
+///
+/// `self_leave_rotation::group_key_rotated_discharges_the_debt_and_is_idempotent`
+/// is where a real switch is asserted.
 #[test]
-fn a_bound_delivery_replaces_a_held_key_when_the_group_rotated() {
+fn a_bound_delivery_cannot_replace_a_held_key_either() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     let store = test_store();
@@ -11062,9 +11076,10 @@ fn a_bound_delivery_replaces_a_held_key_when_the_group_rotated() {
         .unwrap()
         .expect("a key must still be current");
     assert_eq!(
-        current, new_key,
-        "a real switch must get through: the delivery is bound, so seed-not-replace \
-         does not apply and the node must not be stranded on the old key"
+        current, old_key,
+        "a delivery may not replace a held key even when an op names the delivered \
+         one: that op's key_id is chosen by its signer and checked by nothing, so \
+         honouring it as authority to replace is the escalation this refuses"
     );
-    assert_ne!(current_id, old_key_id);
+    assert_eq!(current_id, old_key_id);
 }

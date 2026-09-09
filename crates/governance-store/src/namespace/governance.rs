@@ -1673,8 +1673,30 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        // An unbound delivery may SEED this group's key. It may never REPLACE
-        // one (#3871).
+        // A delivery may SEED this group's key. It may never REPLACE one, and
+        // that holds whether or not an op names the key (#3871).
+        //
+        // The earlier form exempted a *bound* delivery, on the reasoning that a
+        // rotation legitimately replaces the current key. Composed review of
+        // this path showed the exemption was the most dangerous line here.
+        // `expected_key_ids` comes from the cleartext `key_id` of buffered
+        // `NamespaceOp::Group` envelopes, which the signer chooses and which no
+        // gate checks: the receive path verifies only the topic and the
+        // signature, an unresolvable `key_id` decrypts nothing and raises
+        // nothing, and the op is logged regardless. So the "attestation" is
+        // mintable by whoever wants to satisfy it, and being bound was strictly
+        // MORE power than being unbound — it turned "may seed" into "may
+        // replace".
+        //
+        // Nothing legitimate needed that exemption. A real rotation never
+        // reaches this code: `apply_key_rotation` requires admin authority at
+        // the op's cut, binds content to `rotation.new_key_id`, and stores
+        // through `store_key_with_epoch` at a real DAG epoch, which outranks
+        // every epoch-`0` key monotonically. And a node holding the old key can
+        // decrypt the rotation op itself, so it takes that path — while a node
+        // holding NO key is seeding, not replacing. The rotation op is also
+        // causally ahead of every op encrypted under the new key, so a node
+        // that has those has the rotation too.
         //
         // `key_rank` orders equal non-zero epochs by `key_id` so concurrent
         // rotations converge, but epoch-`0` keys carry no DAG ordering at all
@@ -1704,24 +1726,23 @@ impl<'a> NamespaceGovernance<'a> {
         //
         // Re-delivering the key already held is not a replacement and stays
         // allowed, so a retry that re-drives the same envelope is idempotent.
-        if expected_key_ids.is_empty() {
-            if let Some(held) = GroupKeyring::new(self.store, gid)
-                .load_current_key()
-                .map_err(|e| eyre::eyre!("load_current_key: {e}"))?
-            {
-                let served = GroupKeyring::key_id_for(&group_key);
-                if held.0 != served {
-                    tracing::warn!(
-                        group_id = %hex::encode(group_id),
-                        responder = %responder_identity,
-                        held_key_id = %hex::encode(held.0),
-                        served_key_id = %hex::encode(served),
-                        "refusing a group key that nothing signed names while a key for this \
-                         group is already held: an unbound delivery may seed a key, never \
-                         replace one"
-                    );
-                    return Ok(None);
-                }
+        if let Some(held) = GroupKeyring::new(self.store, gid)
+            .load_current_key()
+            .map_err(|e| eyre::eyre!("load_current_key: {e}"))?
+        {
+            let served = GroupKeyring::key_id_for(&group_key);
+            if held.0 != served {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id),
+                    responder = %responder_identity,
+                    held_key_id = %hex::encode(held.0),
+                    served_key_id = %hex::encode(served),
+                    bound = !expected_key_ids.is_empty(),
+                    "refusing a delivered group key while a key for this group is already \
+                     held: a delivery may seed a key, never replace one — a replacement \
+                     comes from an admin-signed rotation, not from a delivery"
+                );
+                return Ok(None);
             }
         }
 
