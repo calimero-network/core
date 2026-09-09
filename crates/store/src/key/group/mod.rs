@@ -18,7 +18,7 @@ use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
 // Group-key prefix allocation ledger. Every byte in `0x20..=0x4E` is taken
-// except `0x25` and `0x2B` (retired, below) and `0x4D`; the next free byte is `0x4D`.
+// except `0x25`, `0x2B` and `0x2C` (retired, below) and `0x4D`; the next free byte is `0x4D`.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two

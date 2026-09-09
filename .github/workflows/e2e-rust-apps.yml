@@ -646,6 +646,10 @@ jobs:
             file: workflows/account-paired-device-founds-namespace.yml
             app: scaffolding-e2e
             registry_fetch: "false"
+          - workflow: account-namespace-devices-follow
+            file: workflows/account-namespace-devices-follow.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: account-root-backup-restore
             file: workflows/account-root-backup-restore.yml
             app: scaffolding-e2e
