@@ -137,9 +137,6 @@ pub fn certify_device(
     let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
         .record(&proof, applications, 0)
         .expect("record the device in the account namespace");
-    devices
-        .remember_device_cert(&proof, applications)
-        .expect("remember the device");
     device
 }
 
