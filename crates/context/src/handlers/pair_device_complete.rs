@@ -890,12 +890,16 @@ mod tests {
             ),
             "a revoked device has to be refused by name, not by a generic bail; got: {refused}"
         );
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("this node holds the account root, so it names its own namespace");
         assert!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read the certificate store")
+            AccountDeviceRegistry::new(&store, namespace)
+                .device(device)
+                .expect("read")
                 .is_none(),
-            "no certificate may exist for a spent device id"
+            "no registry entry may exist for a device refused before it could be certified"
         );
     }
 
@@ -955,15 +959,6 @@ mod tests {
             .expect("the paired device is in the registry");
         assert_eq!(recorded.applications, vec![app(APP_ONE)]);
         assert_eq!(epoch, 0);
-        // Any row left in the node-local cache is the link fold's scope-less
-        // guess, never a scope pairing wrote.
-        assert!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(response.device)
-                .expect("read")
-                .is_none_or(|cached| cached.applications.is_empty()),
-            "the registry is the only place a device's scope is written now"
-        );
     }
 
     /// Pairing the same device again replaces the scope the first pairing

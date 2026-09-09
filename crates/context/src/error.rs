@@ -175,8 +175,7 @@ pub enum ContextError {
     /// rebuilt from folded state.
     #[error(
         "this node holds no certificate for device {device}, so it cannot extend it \
-         anywhere. Only a device of this account that was paired from here, or whose \
-         link this node has folded, can be relinked"
+         anywhere. Only a device this account's registry names can be relinked"
     )]
     PairingUnknownDevice {
         /// The device the caller named (for the message only).
