@@ -27,8 +27,9 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountRoot, NodeAccountRootValue,
-    NodeDeviceIdentity, NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
+    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
+    NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -758,6 +759,31 @@ impl<'a> NodeDeviceRepository<'a> {
             .handle()
             .get(&key)?
             .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
+    }
+
+    /// The account namespace recorded here, at creation or at pair-init.
+    /// Unused outside tests until namespace creation and pair-init wire it in.
+    #[allow(dead_code)]
+    fn stored_account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NodeAccountNamespace::new())?
+            .map(|value: NodeAccountNamespaceValue| ContextGroupId::from(value.namespace_id)))
+    }
+
+    /// Record the account namespace this node follows.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn store_account_namespace(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        self.store.handle().put(
+            &NodeAccountNamespace::new(),
+            &NodeAccountNamespaceValue {
+                namespace_id: namespace_id.to_bytes(),
+            },
+        )?;
+        Ok(())
     }
 
     /// Keep the proof a link op carried for THIS device.
@@ -3063,6 +3089,20 @@ mod tests {
             repo.imported_certificate().expect("read").as_deref(),
             Some(bytes.as_slice()),
         );
+    }
+
+    /// The row a device writes at pair-init and the holder at creation; absent
+    /// means no account namespace is known here.
+    #[test]
+    fn the_account_namespace_row_round_trips() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.stored_account_namespace().expect("read"), None);
+
+        let id = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&id).expect("write");
+
+        assert_eq!(repo.stored_account_namespace().expect("read"), Some(id));
     }
 
     /// Re-importing must replace, not refuse.
