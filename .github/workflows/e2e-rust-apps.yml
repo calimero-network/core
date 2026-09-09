@@ -954,6 +954,13 @@ jobs:
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
+          # An ordinary two-node concurrent-editing smoke test. It used to be
+          # registered as this rework's red-expected acceptance test and did not
+          # work in that role — it PASSES on RGA (#3853). Kept as the plain
+          # scenario it is; the acceptance pair is registered further down.
+          - workflow: collaborative-editor-concurrent
+            file: workflows/collaborative-editor-concurrent.yml
+            app: collaborative-editor
           # The acceptance PAIR for the Fugue rework. Both halves are required:
           # a green Fugue run means nothing on its own, because it is only
           # evidence if the identical scenario FAILS on RGA.
