@@ -137,6 +137,7 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
     use calimero_governance_store::{AccountDeviceRegistry, AccountRoot, NodeDeviceRepository};
@@ -145,6 +146,7 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{NodeAccountDeviceCert, NodeAccountDeviceCertValue};
     use calimero_store::Store;
+    use tokio::time::sleep;
 
     use super::run;
     use crate::test_support::{actor, certify_device};
@@ -201,6 +203,20 @@ mod tests {
         (store, root)
     }
 
+    /// Wait for the migration the harness spawned from `Actor::started`. The
+    /// rows go last, after every statement landed, so an empty cache is the
+    /// signal that everything the migration will publish is in the registry.
+    async fn migrated(store: &Store) {
+        let devices = NodeDeviceRepository::new(store);
+        for _ in 0..100 {
+            if devices.legacy_device_certs().expect("read").is_empty() {
+                return;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the migration left the cached rows behind for five seconds");
+    }
+
     /// One statement per cached row, at the scope the pairing gave it, and the
     /// rows gone afterwards so a second start republishes nothing.
     #[actix::test]
@@ -209,15 +225,8 @@ mod tests {
         let scoped = cached_row(&store, root.signing_key(), 0x61, &[app(APP_ONE)]);
         let wide = cached_row(&store, root.signing_key(), 0x62, &[]);
 
-        let harness = actor::over(store.clone()).await;
-        run(
-            &store,
-            &harness.node_client,
-            harness.context_client.ack_router(),
-            &harness.context_client,
-        )
-        .await
-        .expect("the migration runs");
+        let _harness = actor::over(store.clone()).await;
+        migrated(&store).await;
 
         let devices = NodeDeviceRepository::new(&store);
         let namespace = devices
@@ -240,10 +249,6 @@ mod tests {
             .expect("the unscoped device is in the registry");
         assert!(wide_row.applications.is_empty());
         assert_eq!(wide_epoch, 0);
-        assert!(
-            devices.legacy_device_certs().expect("read").is_empty(),
-            "the rows must be gone, or every start republishes them"
-        );
     }
 
     /// The registry is authoritative. A device already on the DAG keeps the scope
@@ -255,15 +260,8 @@ mod tests {
         let device = certify_device(&store, 0x64, &[app(APP_ONE)]);
         let _stale = cached_row(&store, root.signing_key(), 0x64, &[]);
 
-        let harness = actor::over(store.clone()).await;
-        run(
-            &store,
-            &harness.node_client,
-            harness.context_client.ack_router(),
-            &harness.context_client,
-        )
-        .await
-        .expect("the migration runs");
+        let _harness = actor::over(store.clone()).await;
+        migrated(&store).await;
 
         let devices = NodeDeviceRepository::new(&store);
         let namespace = devices
@@ -280,10 +278,6 @@ mod tests {
             "the registry's scope wins over the cache's"
         );
         assert_eq!(epoch, 0, "and nothing republished it at a fresh epoch");
-        assert!(
-            devices.legacy_device_certs().expect("read").is_empty(),
-            "the stale row is still drained, or every start reconsiders it"
-        );
     }
 
     /// The one direction the cache may still move the registry. A second holder
@@ -296,15 +290,8 @@ mod tests {
         let device = certify_device(&store, 0x65, &[]);
         let _pairing = cached_row(&store, root.signing_key(), 0x65, &[app(APP_ONE)]);
 
-        let harness = actor::over(store.clone()).await;
-        run(
-            &store,
-            &harness.node_client,
-            harness.context_client.ack_router(),
-            &harness.context_client,
-        )
-        .await
-        .expect("the migration runs");
+        let _harness = actor::over(store.clone()).await;
+        migrated(&store).await;
 
         let devices = NodeDeviceRepository::new(&store);
         let namespace = devices
@@ -324,7 +311,6 @@ mod tests {
             epoch, 1,
             "the narrower statement has to supersede the wide one"
         );
-        assert!(devices.legacy_device_certs().expect("read").is_empty());
     }
 
     /// Only the account's own root can sign a scope for it. A row certifying a
@@ -335,15 +321,8 @@ mod tests {
         let (store, _root) = holder_store();
         let stranger = cached_row(&store, &PrivateKey::from([0x72; 32]), 0x66, &[]);
 
-        let harness = actor::over(store.clone()).await;
-        run(
-            &store,
-            &harness.node_client,
-            harness.context_client.ack_router(),
-            &harness.context_client,
-        )
-        .await
-        .expect("the migration runs");
+        let _harness = actor::over(store.clone()).await;
+        migrated(&store).await;
 
         let devices = NodeDeviceRepository::new(&store);
         let namespace = devices
@@ -357,10 +336,6 @@ mod tests {
                 .is_none(),
             "nothing this account's root could sign was published"
         );
-        assert!(
-            devices.legacy_device_certs().expect("read").is_empty(),
-            "the row is dropped, or every start retries what can never land"
-        );
     }
 
     /// Only the account root can sign a scope. A node that lost its root - the
@@ -371,6 +346,8 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let _stranded = cached_row(&store, &PrivateKey::from([0x71; 32]), 0x63, &[]);
 
+        // Called directly rather than awaited: with no root both this copy and
+        // the harness's own are no-ops, so there is nothing to wait for.
         let harness = actor::over(store.clone()).await;
         run(
             &store,
