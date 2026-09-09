@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MetaRepository, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     AccountApplicationApiEntry, AccountApplicationsApiResponse,
@@ -32,9 +32,13 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountApplicationApiEntry>>>
         return Ok(None);
     }
 
+    let account_namespace = NodeDeviceRepository::new(store).account_namespace()?;
     let meta = MetaRepository::new(store);
     let mut by_application: BTreeMap<ApplicationId, Vec<ContextGroupId>> = BTreeMap::new();
     for namespace in NamespaceRepository::new(store).participating_namespaces()? {
+        if Some(namespace) == account_namespace {
+            continue;
+        }
         if let Some(value) = meta.load(&namespace)? {
             by_application
                 .entry(value.target.application_id)
@@ -167,6 +171,38 @@ mod tests {
         let mut want = vec![app_one, app_two];
         want.sort();
         assert_eq!(got, want);
+    }
+
+    /// The account namespace targets nothing and is not a project, so it never
+    /// contributes an application.
+    #[test]
+    fn the_account_namespace_contributes_no_application() {
+        let store = seeded_account();
+        let namespaces = NamespaceRepository::new(&store);
+        let meta = MetaRepository::new(&store);
+        let app = ApplicationId::from([0x77; 32]);
+
+        namespaces.note_participation(&ns(NS_A)).expect("join A");
+        meta.save(&ns(NS_A), &meta_for(app)).expect("save meta A");
+        namespaces
+            .note_participation(&ns(NS_B))
+            .expect("follow the account namespace");
+        meta.save(
+            &ns(NS_B),
+            &GroupMetaValue {
+                target: GroupTarget::default(),
+                ..meta_for(app)
+            },
+        )
+        .expect("save the account namespace meta");
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&ns(NS_B))
+            .expect("record it");
+
+        let applications = collect(&store).expect("collect").expect("has account");
+
+        assert_eq!(applications.len(), 1);
+        assert_eq!(applications[0].application_id, app);
     }
 
     #[test]
