@@ -26,6 +26,8 @@ use crate::AdminState;
 /// over however many the caller listed. The list is the caller's to supply: this
 /// node is a member of nothing and cannot discover which namespaces the account
 /// speaks in.
+/// Naming the account namespace is enough on its own; the node records it and
+/// follows it like one more namespace.
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<AccountPairInitApiRequest>,
