@@ -36,19 +36,20 @@ description: >
 
     1. `pair-init` on node-2 names BOTH namespaces; `pair-complete` on node-1
        scopes to app A alone. The device therefore LISTENS on both and is BOUND
-       in one. That asymmetry is the whole design: a subscription the holder
-       never reaches costs nothing, and a binding published where the device is
-       not listening is picked up whenever it does subscribe.
+       in one of them. That asymmetry is the whole design: a subscription the
+       holder never reaches costs nothing, and a binding published where the
+       device is not listening is picked up whenever it does subscribe.
 
     2. `GET /admin-api/account/devices` on the holder must report the row as
-       scoped to exactly app A and bound in app A's namespace only. The absence
-       is the assertion that carries weight - a fan-out that ignored the scope
-       would satisfy every positive here and fail on that one.
+       scoped to exactly app A, and bound in app A's namespace and the account
+       namespace every device follows - two, never app B's. The count is the
+       assertion that carries weight - a fan-out that ignored the scope would
+       satisfy every positive here and fail on that one.
 
     3. `relink` with app B widens the STORED scope and publishes into app B's
-       namespace, and reports app A's namespace as `alreadyBound` rather than
-       re-endorsing a live binding. The widening being persisted is what makes
-       step 4 possible.
+       namespace alone, skipping every namespace the device already holds a
+       binding in rather than re-endorsing a live one. The widening being
+       persisted is what makes step 4 possible.
 
     4. node-1 creates a THIRD namespace, targeting app A, and nothing re-pairs.
        The device must be bound there anyway. This is the acceptance for
@@ -63,27 +64,26 @@ description: >
        and the bundle blob reaches it because a context's own application bundle
        is served to any requester.
 
-    6. One revocation, naming one namespace, must report all THREE. That list is
-       built by walking the namespaces this node takes part in and skipping any
-       holding no binding, so three entries is the pairing, the relink and the
-       auto-bind all having genuinely landed.
+    6. One revocation, naming one namespace, must report all THREE the steps
+       above bound the device in. That list is built by walking the namespaces
+       this node takes part in and skipping any holding no binding, so all three
+       being there is the pairing, the relink and the auto-bind all having
+       genuinely landed.
 
     7. The revoked node must stop presenting the device and the account. A
        revocation is terminal and one device row serves every namespace, so the
        id is spent everywhere; a node that went on reporting it would be naming
        a device no peer will admit and an account it no longer speaks for.
 
-  Five refusals ride along, each asked at the one state where it is reachable.
+  Four refusals ride along, each asked at the one state where it is reachable.
   Their mapping to statuses is unit-tested one arm at a time; what a unit test
   cannot say is whether a real request lands on the arm the mapping names or on
   the check before it, and the state a refusal needs is exactly what a scenario
   has to arrange:
 
-    * A tampered statement, a mismatched confirmation code (`400`) and a scope
-      this node signs nowhere in (`409`), all before the real pairing - each
-      refusal step runs its own idempotent `pair-init` and completes nothing.
-      The unreachable scope is app B, asked for while app B still has no
-      namespace, which is what makes an application resolve to nothing here.
+    * A tampered statement and a mismatched confirmation code (`400`), both
+      before the real pairing - each refusal step runs its own idempotent
+      `pair-init` and completes nothing.
     * A relink of a device this node holds no certificate for (`404`) and a
       repair run on the paired device rather than the holder (`403`), while the
       pairing STANDS. The second is only reachable there: a revoked device
@@ -94,14 +94,18 @@ description: >
       holder - the only node whose lookup gets far enough to reach the
       tombstone.
 
-  Two refusals are deliberately not driven here. `PairingNoScopeKey` (409)
-  cannot be reached from the same node's state as the other `409` - this node
-  holds a scope key in every namespace it takes part in, and one it does not
-  take part in fails the identity check first. `PairingNotTheAccountHolder`
-  (403) on `pair-complete` needs a statement over the account this node's OWN
-  root owns, and a node stops publishing that root the moment it adopts another
-  account, so no caller can produce one; the same refusal is driven on `relink`,
-  which needs no statement.
+  A scope this node speaks nowhere in used to be the fifth refusal, a `409`
+  asked while app B still had no namespace. It is a success now, asserted where
+  it happens: the account namespace is always a fan-out target and always holds
+  a key, so the device is certified and bound there and nowhere else.
+
+  Two refusals are deliberately not driven here. `PairingNoScopeKey` (409) is
+  unreachable from this node's state - it holds a scope key in every namespace
+  it takes part in, and one it does not take part in fails the identity check
+  first. `PairingNotTheAccountHolder` (403) on `pair-complete` needs a statement
+  over the account this node's OWN root owns, and a node stops publishing that
+  root the moment it adopts another account, so no caller can produce one; the
+  same refusal is driven on `relink`, which needs no statement.
 
   Deliberately not asserted here: the read/write lockout after revocation.
   `account-device-revoke-lockout` pins that end to end already, and repeating it
@@ -259,9 +263,9 @@ steps:
       - '{{ns_a1}}'
       - '{{alice_root}}'
 
-  # `409`, not `400`: the payload is perfect, and the scope is checked before it
-  # is looked at - so this says the SCOPE was refused rather than the keys.
-  - name: Pair-complete refuses a scope this node signs nowhere in
+  # No refusal left to make: the account namespace is always a fan-out target and
+  # always holds a key, so an app with no namespace yet still binds the device.
+  - name: Pair-complete accepts a scope this node speaks nowhere in yet
     type: account_pair
     node: account-scope-node-2
     holder: account-scope-node-1
@@ -270,7 +274,33 @@ steps:
       - '{{ns_a1}}'
     applications:
       - '{{app_b}}'
-    expect_status: 409
+    outputs:
+      paired_device: deviceId
+
+  - name: A scope with no namespace of its own binds in the account namespace alone
+    type: assert_api_response
+    node: account-scope-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      applications.0: '{{app_b}}'
+    absent:
+      - namespaces.1
+
+  # Puts the scope back before B1 exists to be carried into. A pair-complete
+  # replaces the stored scope, and the step above left this device certified for
+  # app B - the one application the run below must prove the pairing never
+  # reaches.
+  - name: Re-pair node-2, narrowing the scope back to app A
+    type: account_pair
+    node: account-scope-node-2
+    holder: account-scope-node-1
+    root_key: '{{alice_root}}'
+    namespaces:
+      - '{{ns_a1}}'
+    applications:
+      - '{{app_a}}'
 
   # ── The second namespace, which the scope must NOT reach ───────────
 
@@ -346,7 +376,7 @@ steps:
   # Reads node-1's own store, which its own `pair-complete` wrote before it
   # answered, so no barrier stands between this and the pairing.
   # `assert_api_response`, not `account_devices`: only this step takes `absent`,
-  # which is what pins each list to one entry and makes the absence assertable.
+  # which is what pins each list to its length and makes the absence assertable.
   - name: The paired device reaches app A's namespace and not app B's
     type: assert_api_response
     node: account-scope-node-1
@@ -357,10 +387,12 @@ steps:
       isSelf: false
       revoked: false
       applications.0: '{{app_a}}'
-      namespaces.0: '{{ns_a1}}'
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
     absent:
       - applications.1
-      - namespaces.1
+      - namespaces.2
 
   # ── What a repair refuses while the pairing stands ─────────────────
 
@@ -385,8 +417,8 @@ steps:
 
   # ── Widen the scope without the device being present ───────────────
 
-  # Exactly one namespace is published into and one skipped, which is what lets
-  # the captures below name them by position.
+  # Exactly one namespace is published into; every other one the device already
+  # holds a binding in is skipped, and only the linked entry is named by position.
   - name: Relink the paired device, widening its scope to app B
     type: account_relink
     node: account-scope-node-1
@@ -398,21 +430,17 @@ steps:
       relink_scope: applications
       relink_linked_ns: linkedIn.0.namespaceId
       relink_key_delivered: linkedIn.0.keyDelivered
-      relink_skipped_ns: skipped.0.namespaceId
-      relink_skipped_reason: skipped.0.reason
 
   # Publication is per-DAG, so "it worked" is a set of namespaces rather than a
-  # boolean, and a skip has to say why - re-publishing where the device was
-  # already bound would re-endorse a live binding on every call.
-  - name: The relink published into B1 with its key, and left A1 alone
+  # boolean, and B1 is the only one it can grow by - re-publishing where the
+  # device was already bound would re-endorse a live binding on every call.
+  - name: The relink published into B1 with its key
     type: json_assert
     statements:
       - 'json_equal({{relinked_device}}, {{paired_device}})'
       - 'json_subset({{relink_scope}}, ["{{app_a}}", "{{app_b}}"])'
       - 'json_equal({{relink_linked_ns}}, {{ns_b1}})'
       - 'json_equal({{relink_key_delivered}}, true)'
-      - 'json_equal({{relink_skipped_ns}}, {{ns_a1}})'
-      - 'json_equal({{relink_skipped_reason}}, "alreadyBound")'
 
   - name: Settle the relink's op in namespace B1
     type: wait_for_sync
@@ -541,10 +569,11 @@ steps:
     outputs:
       revoked_in: revokedIn
 
-  # The payoff of everything above. Three entries from a call naming one, and
-  # each has a different reason for being there: A1 from the pairing, B1 from
-  # the relink, A2 from the auto-bind. Any of the three missing means that step
-  # never actually published a binding, however cleanly it reported.
+  # The payoff of everything above. A call naming one namespace has to reach
+  # three, each for a different reason: A1 from the pairing, B1 from the relink,
+  # A2 from the auto-bind - besides the account namespace, which every device is
+  # bound in. Any of the three missing means that step never published a
+  # binding, however cleanly it reported.
   - name: The revocation reached every namespace the device was bound in
     type: assert
     statements:
