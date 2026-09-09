@@ -753,6 +753,45 @@ impl<'a> MembershipRepository<'a> {
         Ok(anchors)
     }
 
+    /// The signing keys that speak for this group's trusted anchors.
+    ///
+    /// [`Self::trusted_anchors`] answers "who is authoritative here" against
+    /// ACCOUNTS, but an op is authenticated by the signing key of the DEVICE
+    /// that published it, so each anchor account is expanded to its live
+    /// bindings — an anchor running two machines must be recognised at both.
+    ///
+    /// Peer *selection* asks this same question and swallows a read failure
+    /// into an empty set, because there an empty set only costs preference.
+    /// An authorization caller cannot afford that, which is why this is
+    /// fallible: see the `# Errors` note.
+    ///
+    /// # Errors
+    ///
+    /// When the anchor set, the namespace resolution, or the live bindings
+    /// cannot be read. A store failure is NOT "not an anchor" — reading it
+    /// that way would refuse a legitimate publisher, so callers must let this
+    /// propagate rather than defaulting to a denial.
+    pub fn anchor_device_keys(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<BTreeSet<calimero_primitives::identity::PublicKey>> {
+        let anchors = self.trusted_anchors(group_id)?;
+        if anchors.is_empty() {
+            // No governance state names an authority for this group yet, so
+            // there is genuinely nobody to recognise. Returning early also
+            // skips a full `live_bindings` walk that could only be filtered
+            // down to nothing.
+            return Ok(BTreeSet::new());
+        }
+        let namespace = NamespaceRepository::new(self.store).resolve(group_id)?;
+        Ok(crate::AccountBindingRepository::new(self.store)
+            .live_bindings(&namespace)?
+            .iter()
+            .filter(|binding| anchors.contains(&binding.account))
+            .map(|binding| binding.sign_pk)
+            .collect())
+    }
+
     /// True if `identity` is the namespace owner, an admin, or an
     /// admitted TEE node. See original `is_authoritative_namespace_identity`.
     pub fn is_authoritative_namespace_identity(

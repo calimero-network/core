@@ -172,6 +172,67 @@ pub fn published_root(
         .expect("seal a root op for a test")
 }
 
+/// The wire form production publishes for a JOIN, given the group its
+/// invitation targets.
+///
+/// [`published_root`] is not the helper for this: `seal_root_op_for_publish`
+/// answers `Root(op)` for `MemberJoined` / `MemberJoinedAt`, because
+/// `root_op_is_sealable` says those two are not sealable under the NAMESPACE
+/// key — a namespace-root joiner holds no key, and its key arrives only in
+/// answer to the join it is publishing.
+///
+/// A **subgroup**-targeted join is different: its bundle delivers that group's
+/// key, `join_group` stores it before publishing, and the apply refuses a
+/// cleartext one (#3858). So a fixture that publishes it in the clear is
+/// under-building the state rather than exercising a real one, and its test
+/// fails on the fixture instead of on its subject.
+///
+/// The covering key is minted when the store has none, which is what the join
+/// bundle would have delivered.
+///
+/// # Panics
+///
+/// Panics if the keyring cannot be read or written, or if the op cannot be
+/// sealed — in a test that means the fixture is wrong.
+#[must_use]
+pub fn published_join(
+    store: &Store,
+    namespace: &ContextGroupId,
+    op: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let target = match &op {
+        RootOp::MemberJoined {
+            signed_invitation, ..
+        }
+        | RootOp::MemberJoinedAt {
+            signed_invitation, ..
+        } => signed_invitation.invitation.group_id,
+        // Not a join; nothing here applies.
+        _ => return NamespaceOp::Root(op),
+    };
+    if target.to_bytes() == namespace.to_bytes() {
+        return NamespaceOp::Root(op);
+    }
+
+    let covering = calimero_governance_store::key_covering_group(store, &target)
+        .expect("resolve the covering group");
+    let keyring = calimero_governance_store::GroupKeyring::new(store, covering);
+    if keyring
+        .load_current_key()
+        .expect("read the covering keyring")
+        .is_none()
+    {
+        let _ = keyring
+            .store_key(&[0x5Bu8; 32])
+            .expect("mint the key the join bundle would have delivered");
+    }
+    calimero_governance_store::seal_root_op_for_group_if_keyed(store, target, &op)
+        .expect("seal a subgroup-targeted join for a test")
+        .expect("the covering key was just ensured, so the seal must produce a sealed op")
+}
+
 /// The [`RootOp`] a signed namespace op carries, opened if it arrived sealed.
 ///
 /// The projection folds the OPENED root — `scope_projection` decrypts a
@@ -191,14 +252,25 @@ pub fn opened_root(
     namespace: &ContextGroupId,
     signed: &calimero_context_client::local_governance::SignedNamespaceOp,
 ) -> Option<calimero_context_client::local_governance::RootOp> {
-    let calimero_context_client::local_governance::NamespaceOp::RootSealed { key_id, encrypted } =
-        &signed.op
-    else {
-        return None;
+    // Both sealed shapes, each resolved in the keyring that can open it. A
+    // subgroup-sealed join resolves in the group the envelope names, not the
+    // namespace's — reading it there would miss the key and panic on a fixture
+    // that is in fact correct.
+    let (keyring_group, key_id, encrypted) = match &signed.op {
+        calimero_context_client::local_governance::NamespaceOp::RootSealed {
+            key_id,
+            encrypted,
+        } => (*namespace, key_id, encrypted),
+        calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup {
+            group_id,
+            key_id,
+            encrypted,
+        } => (*group_id, key_id, encrypted),
+        _ => return None,
     };
-    let key = calimero_governance_store::GroupKeyring::new(store, *namespace)
+    let key = calimero_governance_store::GroupKeyring::new(store, keyring_group)
         .load_key_by_id(key_id.as_bytes())
-        .expect("read the namespace keyring")
+        .expect("read the keyring the envelope names")
         .expect("the fixture kept the key it sealed under");
     Some(
         calimero_governance_store::GroupKeyring::decrypt_root_op(&key, encrypted)

@@ -540,11 +540,32 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // unkeyed joiner has nowhere else to go: its key arrives from a
                 // `KeyDelivery` an admin publishes on SEEING this op, so refusing
                 // to publish unsealed would be a deadlock, not a policy.
-                let member_joined_op = match calimero_governance_store::seal_root_op_if_keyed(
-                    &datastore,
-                    namespace_id.into(),
-                    &join_root,
-                ) {
+                // Which key seals it depends on what this joiner was actually
+                // given. A namespace-root invitation delivers the namespace key,
+                // so the namespace-key seal applies. A SUBGROUP-targeted one
+                // delivers that subgroup's key and never the namespace's — so
+                // the namespace-key seal finds nothing, and before #3858 the
+                // join went out in the clear, telling every peer on the
+                // namespace topic which account joined which group and when.
+                //
+                // `seal_root_op_for_group_if_keyed` resolves the covering group
+                // through `key_covering_group`, so a Restricted chain seals
+                // under the subgroup and an Open chain under the namespace —
+                // never under a key row nothing encrypts to (#3859).
+                let seal_attempt = if group_id.to_bytes() == namespace_id {
+                    calimero_governance_store::seal_root_op_if_keyed(
+                        &datastore,
+                        namespace_id.into(),
+                        &join_root,
+                    )
+                } else {
+                    calimero_governance_store::seal_root_op_for_group_if_keyed(
+                        &datastore,
+                        group_id,
+                        &join_root,
+                    )
+                };
+                let member_joined_op = match seal_attempt {
                     Ok(Some(sealed)) => sealed,
                     Ok(None) => {
                         info!(

@@ -46,26 +46,18 @@ pub(crate) fn anchor_device_keys(
     store: &calimero_store::Store,
     group_id: &calimero_context_config::types::ContextGroupId,
 ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
-    let Ok(anchors) =
-        calimero_governance_store::MembershipRepository::new(store).trusted_anchors(group_id)
-    else {
-        return std::collections::BTreeSet::new();
-    };
-    let Ok(namespace) =
-        calimero_governance_store::NamespaceRepository::new(store).resolve(group_id)
-    else {
-        return std::collections::BTreeSet::new();
-    };
-    let Ok(bindings) =
-        calimero_governance_store::AccountBindingRepository::new(store).live_bindings(&namespace)
-    else {
-        return std::collections::BTreeSet::new();
-    };
-    bindings
-        .iter()
-        .filter(|binding| anchors.contains(&binding.account))
-        .map(|binding| binding.sign_pk)
-        .collect()
+    // One definition of "who speaks for this group's anchors", kept in
+    // `governance-store` beside `trusted_anchors` and the apply path that
+    // authorizes a `KeyDelivery` against the same set (#3871).
+    //
+    // Peer selection can afford to read a store failure as "no anchors": here
+    // that only costs preference, and `key_servers_allowed` still refuses to
+    // accept an unverifiable key when the set comes back empty. The
+    // authorization caller cannot afford it, which is why the fallible form is
+    // the one that lives in the store crate.
+    calimero_governance_store::MembershipRepository::new(store)
+        .anchor_device_keys(group_id)
+        .unwrap_or_default()
 }
 
 mod blobs;

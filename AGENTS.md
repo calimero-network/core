@@ -54,6 +54,12 @@ cargo fmt --check
 # Lint, exactly as CI runs it. `-D warnings` is the gate; `-A warnings` allows
 # every lint, so it passes locally and then fails in CI.
 cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
+
+# Everything CI's `Rust` job runs, read from the workflow rather than copied
+# from it -- so it cannot drift into running less than CI does.
+./scripts/check-like-ci.py --list          # what CI runs, in order
+./scripts/check-like-ci.py                 # run all of it
+./scripts/check-like-ci.py --only clippy   # or a subset, by name
 ```
 
 A pre-commit hook (`cargo fmt --check` on staged Rust files) installs itself on
@@ -260,6 +266,16 @@ Every node in a merobox run is the **same build against fresh state**. So it val
 4. For anything touching on-disk formats or wire encoding, also reason about old-data/mixed-version cases explicitly - E2E won't.
 
 ## Definition of Done
+
+**Run `./scripts/check-like-ci.py` rather than the list below by hand.** It reads
+`.github/workflows/ci-checks.yml` and runs that job's steps in order, continuing
+past a failure the way CI's `if: !cancelled()` does, so one pass reports
+everything. The list below is what it will run; keeping a second copy in your
+head is how PRs go red, and the drift is always in the direction of running
+*less* than CI. Three consecutive PRs died on three different narrowings:
+per-crate clippy instead of `--workspace --all-targets`, `-p <crate> --lib`
+instead of a crate's `tests/` integration targets, and default features instead
+of the `mock-attestation` step. Each one looked like "I ran the tests".
 
 Before creating a PR:
 

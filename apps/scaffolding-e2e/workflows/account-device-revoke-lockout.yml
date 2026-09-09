@@ -83,6 +83,12 @@ description: >
        line no code path emits in this shape. The refusal is still logged at
        `info` on the responder for the day a scenario can drive it.
 
+    8. The lockout has an exit, and an online node reaches it with no operator
+       command: the tombstone lands, the key rotates, and the recovery pull and
+       pair-init between them release the spent row, so a re-pair mints a fresh
+       replica under the same account. The offline case, where the tombstone
+       never arrives, is `account-device-reset-offline.yml`.
+
   What this does NOT cover (intentionally):
     * Self-service revocation (an account revoking its own lost device without
       an admin). Needs the root-signed revocation proof, which is a wire
@@ -515,6 +521,41 @@ steps:
       key: from-phone
       value: phone-really-should-not-land
     expected_failure: true
+
+  # ── Phase 8: the lockout's exit, without an operator command ──────
+  #
+  # A node that is online needs no command to get out: once the tombstone lands
+  # and the key rotates, the recovery pull releases the spent row and mints a
+  # fresh device under the node's own account root, and pair-init releases a
+  # revoked or uncertified row on its own. So the re-pair below mints a fresh
+  # replica under the same account, with node-3 left running throughout.
+  #
+  # The offline case, where the tombstone never arrives, is what
+  # `merod account device --reset --force` is for, driven by
+  # `account-device-reset-offline.yml`.
+
+  - name: Re-pair node-3 onto Alice's account
+    type: account_pair
+    node: account-revoke-node-3
+    holder: account-revoke-node-2
+    root_key: '{{root_key}}'
+    namespaces:
+      - '{{namespace_id}}'
+
+  - name: What node-3 speaks as after the re-pair
+    type: node_identity
+    node: account-revoke-node-3
+    outputs:
+      repaired_account: accountId
+      repaired_device: deviceId
+
+  # A fresh replica under the same account, which is the whole point: the account
+  # survived the revocation, the device id did not.
+  - name: The re-pair minted a fresh device under the same account
+    type: json_assert
+    statements:
+      - 'json_not_equal({{repaired_device}}, {{paired_device}})'
+      - 'json_equal({{repaired_account}}, {{alice_account}})'
 
 # ── Wiring ─────────────────────────────────────────────────────────
 #

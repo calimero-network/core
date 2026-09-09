@@ -9,7 +9,6 @@
 # Remove a line by adding a `wait_for_sync` covering the nodes involved. A stale entry
 # is reported as a notice rather than an error, so a fix never needs to touch this file
 # to go green — but leaving the line means the next regression in that step is silenced.
-apps/scaffolding-e2e/workflows/account-device-revoke-lockout.yml: R1 barrier 'Settle' omits ['account-revoke-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
 apps/scaffolding-e2e/workflows/account-device-revoke-lockout.yml: R1 barrier 'Settle the survivor's write across the remaining devices' omits ['account-revoke-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
 apps/scaffolding-e2e/workflows/dm-subgroup-privacy.yml: R1 barrier 'Wait for private-context sync between node-2 and node-3' omits ['e2e-node-1'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
 apps/scaffolding-e2e/workflows/group-private-add-then-write.yml: R1 barrier 'Round 1 sync' omits ['private-add-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish

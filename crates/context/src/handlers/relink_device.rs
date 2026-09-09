@@ -17,7 +17,9 @@ use eyre::Result as EyreResult;
 use tracing::info;
 
 use crate::error::ContextError;
-use crate::handlers::pair_device_complete::{require_this_node_holds, signing_identity};
+use crate::handlers::pair_device_complete::{
+    require_not_revoked, require_this_node_holds, signing_identity,
+};
 use crate::ContextManager;
 
 /// The certificate a relink will re-publish, and the scope it will use.
@@ -48,14 +50,7 @@ fn resolve_target(
         .into());
     };
 
-    let revoked = devices.revoked_in(device)?;
-    if !revoked.is_empty() {
-        return Err(ContextError::PairingDeviceRevoked {
-            device: device.to_string(),
-            namespaces: format!("{revoked:?}"),
-        }
-        .into());
-    }
+    require_not_revoked(store, device)?;
 
     // An empty stored scope already covers every application, so adding to it could
     // only narrow the device rather than widen it.
