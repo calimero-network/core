@@ -2092,17 +2092,20 @@ impl SyncManager {
                     continue;
                 }
                 let store = self.context_client.datastore_handle().into_inner();
+                // What we asked this peer for, as a set: a group stranded
+                // across a rotation awaits more than one id, and the apply now
+                // accepts any of them rather than one picked arbitrarily. Empty
+                // means no governance op names a key for this group, which is
+                // what leaves the responder trusted for content and is why
+                // `key_servers_allowed` restricts that case to anchors.
+                let expected_key_ids = key_id.as_slice();
                 let outcome = calimero_governance_store::apply_received_group_key(
                     &store,
                     namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
-                    // What we asked this peer for. `Some` whenever a governance
-                    // op is awaiting a specific key, which is what makes the
-                    // responder untrusted for content rather than merely
-                    // less-preferred.
-                    key_id,
+                    expected_key_ids,
                 );
                 drop(store);
                 match outcome {

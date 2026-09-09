@@ -1494,7 +1494,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope_bytes: &[u8],
         responder_identity: PublicKey,
-        expected_key_id: Option<[u8; 32]>,
+        expected_key_ids: &[[u8; 32]],
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let envelope: KeyEnvelope = match borsh::from_slice(envelope_bytes) {
             Ok(env) => env,
@@ -1507,7 +1507,7 @@ impl<'a> NamespaceGovernance<'a> {
             group_id,
             &envelope,
             responder_identity,
-            expected_key_id,
+            expected_key_ids,
         )
     }
 
@@ -1520,13 +1520,13 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope: &KeyEnvelope,
         responder_identity: PublicKey,
-        expected_key_id: Option<[u8; 32]>,
+        expected_key_ids: &[[u8; 32]],
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         self.apply_received_group_key_envelope_at_depth(
             group_id,
             envelope,
             responder_identity,
-            expected_key_id,
+            expected_key_ids,
             0,
         )
     }
@@ -1542,7 +1542,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         envelope: &KeyEnvelope,
         responder_identity: PublicKey,
-        expected_key_id: Option<[u8; 32]>,
+        expected_key_ids: &[[u8; 32]],
         depth: u8,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let ns_id = ContextGroupId::from(self.namespace_id.to_bytes());
@@ -1651,15 +1651,23 @@ impl<'a> NamespaceGovernance<'a> {
         // Rejection is `Ok(None)`, the same benign shape as an envelope
         // addressed elsewhere: the joiner moves on to the next peer rather than
         // failing the round, so one dishonest member cannot deny the key.
-        if let Some(expected) = expected_key_id {
+        if !expected_key_ids.is_empty() {
             let served = GroupKeyring::key_id_for(&group_key);
-            if served != expected {
+            // ANY of them, not one chosen arbitrarily. A group stranded across a
+            // rotation has buffered ops naming two different keys, and both are
+            // legitimately deliverable — picking one and refusing the other
+            // would reject a key the node is genuinely waiting for.
+            if !expected_key_ids.contains(&served) {
                 tracing::warn!(
                     group_id = %hex::encode(group_id),
                     responder = %responder_identity,
-                    expected_key_id = %hex::encode(expected),
+                    expected_key_ids = %expected_key_ids
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<_>>()
+                        .join(","),
                     served_key_id = %hex::encode(served),
-                    "rejecting received group key: it is not the key the awaiting op names"
+                    "rejecting received group key: it is not a key any awaiting op names"
                 );
                 return Ok(None);
             }
@@ -2611,6 +2619,36 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(divergence)
     }
 
+    /// The `key_id`s some already-applied signed op says this group's key has.
+    ///
+    /// This is the content half of authorizing a delivery, and the reason it is
+    /// worth anything is the provenance: these ids come from buffered
+    /// `NamespaceOp::Group` envelopes, signed by group members, which is a
+    /// THIRD party relative to whoever is delivering. A `key_id` carried on the
+    /// delivery itself would be signed by the deliverer alongside the key it
+    /// chose, so the hash would match by construction and check nothing — which
+    /// is why this needs no new field on `RootOp::KeyDelivery` and no wire
+    /// change at all. It is the same source `apply_received_group_key` is given
+    /// on the pull path (`namespace_group_keys_awaiting`).
+    ///
+    /// Empty means "nothing signed names a key for this group yet", which is
+    /// the ordinary state for a first delivery: then the anchor gate is the only
+    /// check, exactly as `key_servers_allowed` decides on the pull path.
+    ///
+    /// # Errors
+    ///
+    /// When the buffered-op walk fails. The caller must not read that as "no
+    /// binding" — that would silently downgrade a delivery from checked to
+    /// unchecked on an I/O blip.
+    fn awaited_key_ids_for(&self, group_id: &ContextGroupId) -> EyreResult<Vec<[u8; 32]>> {
+        Ok(NamespaceRetryService::new(self.store, self.namespace_id)
+            .awaited_group_keys()?
+            .into_iter()
+            .filter(|(gid, _)| *gid == group_id.to_bytes())
+            .map(|(_, key_id)| key_id)
+            .collect())
+    }
+
     /// Who may authorize a `KeyDelivery` for `group_id` on this namespace.
     ///
     /// Normally the group's own trusted anchors. But a delivery legitimately
@@ -2698,13 +2736,18 @@ impl<'a> NamespaceGovernance<'a> {
                 // with a deliberate no-op handler, so this side effect IS the
                 // op — and it used to run for any signer at all.
                 //
-                // The `expected_key_id: None` below is not a shortcut, it is the
-                // truth: a `KeyDelivery` names no `key_id`, so no hash can check
-                // the key it carries. That makes every delivery the
-                // *unverifiable* case, and the direct-pull path already ruled on
-                // those — `key_servers_allowed` accepts an unverifiable key from
-                // a trusted anchor and from nobody else, refusing outright when
-                // no anchor is known. This path applied that rule to nobody.
+                // A `KeyDelivery` names no `key_id` of its own, so the op
+                // cannot vouch for the bytes it carries — and a `key_id` added
+                // to it would be signed by the deliverer alongside the key it
+                // chose, matching by construction and checking nothing. What
+                // can speak to the content is a DIFFERENT signed op: a buffered
+                // `NamespaceOp::Group` envelope naming the group's `key_id`.
+                // That is bound below where one exists; where none does the
+                // delivery is genuinely unverifiable, and the direct-pull path
+                // already ruled on those — `key_servers_allowed` accepts an
+                // unverifiable key from a trusted anchor and from nobody else,
+                // refusing outright when no anchor is known. This path applied
+                // that rule to nobody.
                 // `check_sender` only pins the envelope to `op.signer`, which a
                 // self-signed op satisfies by construction, so provenance stood
                 // in for authority: an ordinary member could wrap a key of its
@@ -2735,30 +2778,55 @@ impl<'a> NamespaceGovernance<'a> {
                 // cannot read later ops) this delivery has the pull behind it.
                 match self.key_delivery_anchors(group_id) {
                     Ok((anchors, _)) if anchors.contains(&op.signer) => {
-                        match self.apply_received_group_key_envelope_at_depth(
-                            group_id.to_bytes(),
-                            envelope,
-                            op.signer,
-                            // `None`: a `KeyDelivery` carries no `key_id` to
-                            // check against. What bounds who may deliver one is
-                            // the anchor gate above, not a hash comparison.
-                            None,
-                            depth,
-                        ) {
-                            Ok(retry_divergence) => {
-                                if retry_divergence.is_some() {
-                                    effects.divergence = retry_divergence;
+                        // Authorized. Now bind the CONTENT where anything
+                        // signed can speak to it: if a buffered op already
+                        // names this group's `key_id`, the delivered key must
+                        // hash to it, and the deliverer stops being trusted for
+                        // content. Empty when nothing names one yet, which is
+                        // the ordinary first-delivery case and leaves the
+                        // anchor gate as the only check.
+                        match self.awaited_key_ids_for(group_id) {
+                            Ok(expected_key_ids) => {
+                                match self.apply_received_group_key_envelope_at_depth(
+                                    group_id.to_bytes(),
+                                    envelope,
+                                    op.signer,
+                                    &expected_key_ids,
+                                    depth,
+                                ) {
+                                    Ok(retry_divergence) => {
+                                        if retry_divergence.is_some() {
+                                            effects.divergence = retry_divergence;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            group_id = %hex::encode(group_id.to_bytes()),
+                                            error = %e,
+                                            "KeyDelivery side-effect failed; DAG apply continues"
+                                        );
+                                        effects.key_unwrap_failures.push(KeyUnwrapFailure {
+                                            group_id: group_id.to_bytes(),
+                                            reason: format!("KeyDelivery side-effect failed: {e}"),
+                                        });
+                                    }
                                 }
                             }
                             Err(e) => {
+                                // Refuse rather than adopt unchecked: an I/O
+                                // failure here is not evidence that no op names
+                                // a key, and treating it as such is precisely
+                                // the downgrade this binding exists to prevent.
                                 tracing::warn!(
                                     group_id = %hex::encode(group_id.to_bytes()),
                                     error = %e,
-                                    "KeyDelivery side-effect failed; DAG apply continues"
+                                    "could not resolve which key an awaiting op names, so this \
+                                     KeyDelivery cannot be content-checked; leaving it to the \
+                                     key pull"
                                 );
                                 effects.key_unwrap_failures.push(KeyUnwrapFailure {
                                     group_id: group_id.to_bytes(),
-                                    reason: format!("KeyDelivery side-effect failed: {e}"),
+                                    reason: format!("KeyDelivery awaited-key lookup failed: {e}"),
                                 });
                             }
                         }
@@ -3345,13 +3413,13 @@ pub fn apply_received_group_key(
     group_id: [u8; 32],
     envelope_bytes: &[u8],
     responder_identity: PublicKey,
-    expected_key_id: Option<[u8; 32]>,
+    expected_key_ids: &[[u8; 32]],
 ) -> EyreResult<Option<super::super::DivergenceReport>> {
     NamespaceGovernance::new(store, namespace_id).apply_received_group_key(
         group_id,
         envelope_bytes,
         responder_identity,
-        expected_key_id,
+        expected_key_ids,
     )
 }
 /// Prepare a root op for publishing, resolving this namespace's key here.
