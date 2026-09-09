@@ -1086,7 +1086,10 @@ jobs:
         if: matrix.image != 'merod:local-dht'
         run: |
           url=$(./scripts/e2e-fixture-registry.sh)
-          ./scripts/set-registry-mode.sh merod:local http "$url"
+          # Stamp the image this lane actually boots, not always the shared one.
+          # A lane on its own image (merod:local-mock-tee) would otherwise run
+          # unstamped, never reach the registry, and trip the fetch gate below.
+          ./scripts/set-registry-mode.sh "${{ matrix.image || 'merod:local' }}" http "$url"
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
