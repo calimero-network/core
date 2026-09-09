@@ -3247,6 +3247,7 @@ mod tests {
             )
             .expect("fold"));
         assert!(repo.imported_certificate().expect("read").is_none());
+        assert!(repo.certifier().expect("read").is_none());
     }
 
     /// A cert for a different device of the same account is not this node's own

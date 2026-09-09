@@ -40,7 +40,10 @@ fn in_scope_here(
     cert: &KnownDeviceCert,
 ) -> EyreResult<bool> {
     if !devices.is_account_holder()? {
-        return Ok(devices.certifier()?.as_ref() == Some(&cert.proof.statement.sign_pk));
+        let ours = devices
+            .get()?
+            .is_some_and(|held| held.account == cert.proof.statement.account);
+        return Ok(ours && devices.certifier()?.as_ref() == Some(&cert.proof.statement.sign_pk));
     }
     // A forced root import deletes the device row and keeps the cached
     // certificates, so a holder's own cache can name a discarded account.
@@ -305,7 +308,9 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
 
     use super::*;
-    use crate::test_fixtures::{namespace_publish_fixture, test_group_id, test_store};
+    use crate::test_fixtures::{
+        namespace_publish_fixture, test_group_id, test_store, test_store_without_account_root,
+    };
     use crate::{AccountBindingRepository, MembershipRepository};
 
     const APP_ONE: [u8; 32] = [0x11; 32];
@@ -443,6 +448,54 @@ mod tests {
             }
         );
         assert_eq!(planned(&store, &namespace, &other), BindOutcome::OutOfScope);
+    }
+
+    /// A forced root import discards an account but keeps its cached
+    /// certificates, and a later pairing can name a certifier key that signed
+    /// there too. The account this device now speaks for is what settles it.
+    #[test]
+    fn a_paired_device_binds_no_sibling_of_an_account_it_no_longer_speaks_for() {
+        let store = paired_store(&PrivateKey::from([0x31; 32]));
+        let namespace = test_group_id();
+        namespace_serving(&store, &namespace, APP_ONE);
+        let discarded = known(&PrivateKey::from([0x32; 32]), 0x0C, vec![]);
+        NodeDeviceRepository::new(&store)
+            .store_certifier(&PrivateKey::from([0x0C; 32]).public_key())
+            .expect("certifier");
+
+        assert_eq!(
+            planned(&store, &namespace, &discarded),
+            BindOutcome::OutOfScope
+        );
+    }
+
+    /// A node that never had a root of its own is a non-holder too, and the
+    /// certifier rule is the whole of what it knows about where a sibling belongs.
+    #[test]
+    fn a_root_free_paired_device_binds_the_device_that_certified_it() {
+        let root_sk = PrivateKey::from([0x33; 32]);
+        let store = test_store_without_account_root();
+        let devices = NodeDeviceRepository::new(&store);
+        let _held = devices
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt");
+        let namespace = test_group_id();
+        namespace_serving(&store, &namespace, APP_ONE);
+        let certifier = known(&root_sk, 0x0C, vec![]);
+        devices
+            .store_certifier(&certifier.proof.statement.sign_pk)
+            .expect("certifier");
+
+        assert_eq!(
+            planned(&store, &namespace, &certifier),
+            BindOutcome::Linked {
+                key_delivered: true
+            }
+        );
+        assert_eq!(
+            planned(&store, &namespace, &known(&root_sk, 0x0D, vec![])),
+            BindOutcome::OutOfScope
+        );
     }
 
     /// A forced root import discards the account without deleting the

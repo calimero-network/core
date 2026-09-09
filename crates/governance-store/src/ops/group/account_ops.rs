@@ -326,10 +326,7 @@ pub(crate) fn apply_device_unlinked(
 /// projection disagrees records nothing for an op the publisher recorded, and the
 /// two `scope_root`s part company with no later op able to reconcile them. Logging
 /// only "not a member" leaves that indistinguishable from an ordinary refusal.
-fn endorser_is_member(
-    ctx: &GroupApplyCtx<'_>,
-    endorser: &calimero_primitives::identity::PublicKey,
-) -> EyreResult<bool> {
+fn endorser_is_member(ctx: &GroupApplyCtx<'_>, endorser: &PublicKey) -> EyreResult<bool> {
     // The endorsement names a member KEY, but membership is recorded against
     // the account it speaks for, so resolve before asking either plane. An
     // endorser whose key is bound to no account here vouches for nobody — the
