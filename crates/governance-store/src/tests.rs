@@ -10965,12 +10965,15 @@ mod parked_op_retries_to_success {
 /// idempotent under replay shows up.
 mod account_plane_apply {
     use super::*;
-    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff};
+    use calimero_account::{
+        AccountGenesis, AccountProof, DeviceCert, DeviceId, DeviceScope, KemPublicKey,
+        RootKeyHandoff,
+    };
     use calimero_context_client::local_governance::GroupOp;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
 
-    use crate::AccountBindingRepository;
+    use crate::{AccountBindingRepository, AccountDeviceRegistry, AccountRoot};
 
     fn key(seed: u8) -> PrivateKey {
         PrivateKey::from([seed; 32])
@@ -11953,6 +11956,260 @@ mod account_plane_apply {
             repo.account_key(&gid, account).unwrap().map(|r| r.0),
             Some(1),
             "a replayed rotation must not advance the epoch twice"
+        );
+    }
+
+    /// A namespace owned by the account THIS NODE's own root holds, with
+    /// `signer_sk` bound to it - the shape an account namespace has, since its
+    /// founder is its only member and the registry rows are its own devices.
+    ///
+    /// The binding is minted directly rather than through `enrol_member`, which
+    /// derives an account from the signing key and so would own the namespace on
+    /// behalf of a principal no root in this store holds.
+    fn account_namespace_owned_by_this_node(
+        store: &Store,
+        gid: &ContextGroupId,
+        signer_sk: &PrivateKey,
+    ) -> AccountRoot {
+        let root = crate::NodeDeviceRepository::new(store)
+            .provision_account_root()
+            .unwrap();
+        let account = root.account();
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            account,
+            DeviceId::mint(account, [0x01; 16]),
+            &signer_sk.public_key(),
+            &KemPublicKey::from([0x01; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let _binding = AccountBindingRepository::new(store)
+            .apply_link(gid, &root.genesis(), &[], &cert)
+            .unwrap()
+            .expect("the founder's own device binds");
+        MetaRepository::new(store)
+            .save(gid, &sample_meta_with_admin(account))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+        root
+    }
+
+    /// The pair of proofs the op carries, minted under a bare root key so this
+    /// one helper serves both this node's root and a stranger's.
+    fn certified(
+        root_sk: &PrivateKey,
+        device: DeviceId,
+        applications: Vec<ApplicationId>,
+        scope_epoch: u32,
+    ) -> (AccountProof<DeviceCert>, AccountProof<DeviceScope>) {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let cert = DeviceCert::sign(
+            root_sk,
+            account,
+            device,
+            &key(9).public_key(),
+            &KemPublicKey::from([9u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let scope =
+            DeviceScope::sign(root_sk, account, device, applications, scope_epoch, 0).unwrap();
+        (
+            AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            },
+            AccountProof {
+                genesis,
+                chain: vec![],
+                statement: scope,
+            },
+        )
+    }
+
+    /// The good case, through the real pipeline: the account that owns this
+    /// namespace records one of its devices, with the scope its root signed.
+    #[test]
+    fn the_owning_account_records_a_device_and_its_scope() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let device = DeviceId::from([0x71; 32]);
+        let app = ApplicationId::from([0x33; 32]);
+        let (certificate, scope) = certified(root.signing_key(), device, vec![app], 0);
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+        )
+        .unwrap();
+
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, gid)
+            .device(device)
+            .unwrap()
+            .expect("the registry row is written");
+        assert_eq!(recorded.applications, vec![app]);
+        assert_eq!(epoch, 0);
+        assert_eq!(
+            recorded.proof.statement.device, device,
+            "the whole proof is kept, root signature included"
+        );
+    }
+
+    /// A member of the namespace who is not the account it belongs to writes
+    /// nothing. Otherwise anyone in a group could scope somebody else's devices.
+    #[test]
+    fn a_signer_of_another_account_records_nothing() {
+        let store = test_store();
+        let gid = test_group_id();
+        let root = account_namespace_owned_by_this_node(&store, &gid, &key(1));
+
+        // A second member of the same namespace, speaking for a different account.
+        let stranger_sk = key(4);
+        let stranger = enrol_member(&store, &gid, &stranger_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&gid, &stranger, GroupMemberRole::Member)
+            .unwrap();
+
+        let device = DeviceId::from([0x72; 32]);
+        let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &stranger_sk,
+            GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            AccountDeviceRegistry::new(&store, gid)
+                .device(device)
+                .unwrap()
+                .is_none(),
+            "a member of the namespace is not the account that owns it"
+        );
+    }
+
+    /// A certificate of another account, presented by the owner. Both proofs are
+    /// verified against the OWNER, so somebody else's genuine certificate is
+    /// still refused here.
+    #[test]
+    fn a_certificate_of_another_account_records_nothing() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let device = DeviceId::from([0x73; 32]);
+        let (certificate, scope) = certified(&key(6), device, vec![], 0);
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+        )
+        .unwrap();
+
+        assert!(AccountDeviceRegistry::new(&store, gid)
+            .device(device)
+            .unwrap()
+            .is_none());
+    }
+
+    /// A replayed older scope must not re-narrow a device the account has since
+    /// widened.
+    #[test]
+    fn a_stale_scope_epoch_leaves_the_row_alone() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let device = DeviceId::from([0x74; 32]);
+        let app_one = ApplicationId::from([0x11; 32]);
+        let app_two = ApplicationId::from([0x22; 32]);
+        let (certificate, widened) =
+            certified(root.signing_key(), device, vec![app_one, app_two], 1);
+        let (_again, narrow) = certified(root.signing_key(), device, vec![app_one], 0);
+
+        for scope in [widened, narrow] {
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &owner_sk,
+                GroupOp::AccountDeviceCertified {
+                    certificate: Box::new(certificate.clone()),
+                    scope: Box::new(scope),
+                },
+            )
+            .unwrap();
+        }
+
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, gid)
+            .device(device)
+            .unwrap()
+            .expect("row");
+        assert_eq!(recorded.applications, vec![app_one, app_two]);
+        assert_eq!(epoch, 1);
+    }
+
+    /// The park the link gate already takes, reached through the signer instead
+    /// of an endorser: an unresolvable cut must stall the op rather than decide
+    /// it from live rows, or two replicas keep different registries for it.
+    #[test]
+    fn an_unresolvable_cut_parks_a_certification_instead_of_refusing_it() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let device = DeviceId::from([0x75; 32]);
+        let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
+
+        let err = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountDeviceCertified {
+                certificate: Box::new(certificate),
+                scope: Box::new(scope),
+            },
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not decide the signer's membership");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+        assert!(
+            AccountDeviceRegistry::new(&store, gid)
+                .device(device)
+                .unwrap()
+                .is_none(),
+            "a parked op must not write a registry row"
         );
     }
 }
