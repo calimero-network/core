@@ -5,13 +5,14 @@
 //! dialable, and hold everything for the contexts they follow, so they go first.
 //!
 //! Ordering is applied BEFORE the candidate list is chunked into probe batches,
-//! and the sweep is capped at `PROBE_BATCH * MAX_PROBE_BATCHES` = 32 candidates
-//! (see `blob.rs`). So on a context larger than that, this ordering does not
-//! merely decide the order in which candidates are asked — it decides WHICH
-//! candidates are asked at all. An availability node placed 33rd by the
-//! subscriber set would never be probed; placed first, it answers on the first
-//! round trip. That makes anchor-first a correctness-relevant ordering on large
-//! contexts, not just a latency optimisation.
+//! and a sweep stops at `DISCOVERY_DEADLINE` — or at `MAX_PROBE_CANDIDATES`
+//! candidates at the very latest (see `blob.rs`). So on a context whose
+//! subscriber set outruns either bound, this ordering does not merely decide
+//! the order in which candidates are asked — it decides WHICH candidates are
+//! asked at all. An availability node placed last by the subscriber set might
+//! never be probed; placed first, it answers on the first round trip. That
+//! makes anchor-first a correctness-relevant ordering on large contexts, not
+//! just a latency optimisation.
 //!
 //! The role information lives in `calimero-node`'s governance/peer-identity
 //! plumbing, which is `pub(crate)` there — and `calimero-node` depends on this
@@ -126,18 +127,19 @@ mod tests {
         assert_eq!(ordered, vec![peer(2), peer(1)]);
     }
 
-    /// The reason ordering runs before batching: an anchor sitting past the
-    /// 32-candidate sweep cap is not merely probed late, it is never probed.
+    /// The reason ordering runs before batching: an anchor deep in the
+    /// candidate list is not merely probed late, it may never be probed at all
+    /// once the sweep runs out of deadline or hits its ceiling.
     #[test]
     fn an_anchor_beyond_the_sweep_cap_is_pulled_into_the_first_batch() {
-        let mut candidates: Vec<libp2p::PeerId> = (0..40_u8).map(peer).collect();
-        let anchor = peer(39);
+        let mut candidates: Vec<libp2p::PeerId> = (0..255_u8).map(peer).collect();
+        let anchor = peer(254);
         assert_eq!(candidates.last(), Some(&anchor));
 
         candidates = order_candidates(candidates, &[anchor]);
 
         assert_eq!(candidates[0], anchor);
-        assert_eq!(candidates.len(), 40, "no candidate is dropped");
+        assert_eq!(candidates.len(), 255, "no candidate is dropped");
     }
 
     #[test]
