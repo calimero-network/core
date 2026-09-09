@@ -294,7 +294,7 @@ Its id is derived from the account root under a fixed tag, so the holder names i
 The holder creates it the first time it completes a pairing, as a root group that targets no application, and binds every device it certifies into it.
 `pair-init` takes the id as `accountNamespace`, records it and follows it like any namespace, so the `namespaces` list may be left empty.
 It is not a project: `GET /admin-api/namespaces` and `GET /admin-api/account/applications` never show it, while `GET /admin-api/account/devices` lists it among a device's bindings, because the device is bound there.
-What the account writes into it, and what a device does with that, are described below as they land.
+What the account records there, and what a device does with it, arrive with the changes that follow this one.
 
 ### Pairing is repeated, not a snapshot
 
