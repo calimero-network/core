@@ -4,11 +4,22 @@
 #
 # Uses curl against the admin API rather than meroctl: the merod image ships no
 # CLI, so a `target: local` script has none to call.
+# The node's admin URL. A Docker node publishes its RPC port; a binary-mode
+# node records it in the config merobox wrote under ./data.
 node_url() {
-    _container="$1"
-    _hostport=$(docker port "${_container}" 2528/tcp 2>/dev/null | head -1 | sed 's/.*://')
+    _node="$1"
+    _hostport=$(docker port "${_node}" 2528/tcp 2>/dev/null | head -1 | sed 's/.*://')
     if [ -z "${_hostport}" ]; then
-        echo "could not resolve published RPC port for ${_container}" >&2
+        # Searched, not spelled out: merobox has moved the config's depth under
+        # ./data between releases, and it writes `listen` as a multi-line array.
+        _config=$(find "data/${_node}" -name config.toml 2>/dev/null | head -1)
+        if [ -n "${_config}" ]; then
+            _hostport=$(awk '/^\[server\]/{f=1;next} /^\[/{f=0} f' "${_config}" \
+                | grep -o '/tcp/[0-9]*' | head -1 | cut -d/ -f3)
+        fi
+    fi
+    if [ -z "${_hostport}" ]; then
+        echo "could not resolve the RPC port for ${_node}" >&2
         return 1
     fi
     echo "http://127.0.0.1:${_hostport}"
