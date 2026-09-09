@@ -253,18 +253,25 @@ holder that restarts stays discoverable. A probe deliberately does not
 distinguish "not authorised" from "not held": both answer `found: false`, which
 costs a wasted candidate and never a wrong fetch.
 
-The Kademlia provider-record API (`announce_blob_to_kad` /
-`find_blob_providers`) still exists as published API but has no in-tree caller:
-producers announce to availability nodes and consumers probe, so nothing writes
-or reads that record on the standard path.
+### The Kademlia record, and why it is still written
 
-An announcement is opportunistic: only some paths publish one, and a restart
-drops the records a node held.
-So a lookup that comes back empty, or fails outright, falls back within the same
-attempt to the peers subscribed to the context's gossipsub topic - the
-authoritative set of members entitled to these bytes, and the route by which a
-late joiner reaches a context's application bytecode, which nothing announces at
-install time.
+The Kademlia provider-record API (`announce_blob_to_kad` / `find_blob_providers`)
+is **deprecated**, and nothing in the tree reads it — discovery is probing, and
+only probing.
+
+The **write** survives anyway, and `announce_blob_to_network` performs it
+alongside the availability-node notice. A peer still running the pre-probe code
+discovers blobs by DHT lookup and by nothing else, so an upgraded node that
+stopped writing the record would become invisible to it. The reverse direction
+needs no such help: an un-upgraded peer answers an ordinary blob request, so a
+probing node still finds it. Only the write is load-bearing for mixed versions,
+which is why only the write was kept. Both routes sit behind the same
+withholding gate, so an http-mode node advertises application bytecode by
+neither.
+
+The record is opportunistic in a way probing is not — only some paths publish
+one, and a restart drops what a node held — which is exactly why nothing reads
+it any more. It goes once no un-upgraded peer remains.
 
 :::note
 Global (context-less) blob queries are not supported — discovery always names a
