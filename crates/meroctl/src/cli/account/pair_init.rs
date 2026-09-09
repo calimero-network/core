@@ -29,17 +29,19 @@ use crate::cli::Environment;
 /// member of nothing.
 ///
 /// Name every namespace this device should listen on. One device is minted for
-/// the whole set — one id, one key pair and one code to read out — because the
+/// the whole set - one id, one key pair and one code to read out - because the
 /// certificate covers the account rather than a scope. The set has to be given:
 /// a member of nothing can neither read its account's namespaces off a DAG nor
-/// derive them, so only the device that holds the account knows them.
+/// derive them, so only the device that holds the account knows them. Naming
+/// the account namespace alone is enough - the device records it and follows
+/// it like one more namespace.
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Mint a device on this node for an existing account")]
 pub struct PairInitCommand {
     #[clap(
         name = "NAMESPACE_ID",
-        num_args = 1..,
-        required = true,
+        num_args = 0..,
+        required_unless_present = "account_namespace",
         help = "The hex-encoded namespace IDs this device will listen on"
     )]
     pub namespace_ids: Vec<String>,
@@ -50,6 +52,13 @@ pub struct PairInitCommand {
         help = "The account's epoch-0 root key, 64 hex chars"
     )]
     pub root_key: String,
+
+    #[clap(
+        long,
+        value_name = "HEX",
+        help = "The account namespace id the holder reports on `account show`; enough on its own"
+    )]
+    pub account_namespace: Option<String>,
 }
 
 impl PairInitCommand {
@@ -59,6 +68,7 @@ impl PairInitCommand {
             .pair_device_init(AccountPairInitApiRequest {
                 account_root_public_key: self.root_key,
                 namespaces: self.namespace_ids,
+                account_namespace: self.account_namespace,
             })
             .await?;
 

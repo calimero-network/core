@@ -4,7 +4,8 @@
 //! The first half of pairing, run on the *new* device. Mints the `DeviceId`, KEM
 //! key and signing key the holder needs in order to certify it, and publishes no
 //! op. One device across every namespace named, because the certificate covers
-//! the account rather than a scope.
+//! the account rather than a scope. The account namespace, when named, is one
+//! more of them, and is recorded so the node can name it back.
 //!
 //! This node is deliberately not a member: membership stays with the account, so
 //! this uses `get_or_create_namespace_identity` and `subscribe_namespace` rather
@@ -27,9 +28,22 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         PairDeviceInitRequest {
             namespaces,
             genesis,
+            account_namespace,
         }: PairDeviceInitRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let mut namespaces = namespaces;
+        if let Some(account_namespace) = account_namespace {
+            if let Err(err) = NodeDeviceRepository::new(&self.datastore)
+                .store_account_namespace(&account_namespace)
+            {
+                return ActorResponse::reply(Err(err));
+            }
+            if !namespaces.contains(&account_namespace) {
+                namespaces.push(account_namespace);
+            }
+        }
+
         // Provision this node's signing identity for each namespace. Not a
         // membership claim and not gated on one — it is the key this node will
         // sign its own ops with once the account holder has linked it.
@@ -185,6 +199,7 @@ mod tests {
             .send(PairDeviceInitRequest {
                 namespaces: vec![ONE.into(), TWO.into()],
                 genesis: adopted_account(),
+                account_namespace: None,
             })
             .await
             .expect("the manager answers")
@@ -225,6 +240,7 @@ mod tests {
             .send(PairDeviceInitRequest {
                 namespaces: vec![],
                 genesis: adopted_account(),
+                account_namespace: None,
             })
             .await
             .expect("the manager answers")
@@ -241,5 +257,40 @@ mod tests {
                 .is_none(),
             "a refused pairing must not have spent this node's device slot"
         );
+    }
+
+    /// One id is enough. The device records it and follows it exactly as it
+    /// follows a namespace named in the list.
+    #[actix::test]
+    async fn the_account_namespace_is_recorded_and_followed() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut harness = actor::over(store.clone()).await;
+        let account_namespace = ContextGroupId::from([0x4E; 32]);
+
+        let response = harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![],
+                genesis: adopted_account(),
+                account_namespace: Some(account_namespace),
+            })
+            .await
+            .expect("the manager answers")
+            .expect("pair-init mints a device");
+
+        assert_eq!(
+            NodeDeviceRepository::new(&store)
+                .account_namespace()
+                .expect("read"),
+            Some(account_namespace)
+        );
+        assert_eq!(
+            NamespaceRepository::new(&store)
+                .participating_namespaces()
+                .expect("read"),
+            vec![account_namespace]
+        );
+        assert_eq!(harness.subscribed(), vec![topic([0x4E; 32])]);
+        assert_eq!(response.account, adopted_account().account_id());
     }
 }

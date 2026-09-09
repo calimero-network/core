@@ -44,6 +44,14 @@ pub async fn handler(
         }
     }
 
+    let account_namespace = match req.account_namespace.as_deref() {
+        Some(id) => match decode32(id, "accountNamespace") {
+            Ok(bytes) => Some(bytes.into()),
+            Err(err) => return err.into_response(),
+        },
+        None => None,
+    };
+
     info!(
         namespaces = namespaces.len(),
         account = %genesis.account_id(),
@@ -55,6 +63,7 @@ pub async fn handler(
         .pair_device_init(PairDeviceInitRequest {
             namespaces,
             genesis,
+            account_namespace,
         })
         .await
         .map_err(parse_api_error);
