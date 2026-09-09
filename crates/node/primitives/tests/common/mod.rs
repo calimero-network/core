@@ -75,6 +75,17 @@ impl Handler<NetworkMessage> for FakePeer {
                 };
                 let _ignored = outcome.send(answer);
             }
+            // Discovery asks each subscriber directly instead of reading a
+            // provider record, so holding the blob — announced or not — is what
+            // makes a peer answer yes. `ServesUnannounced` is exactly the case
+            // probing exists to rescue: the DHT never named this peer.
+            NetworkMessage::ProbeBlob { outcome, .. } => {
+                let answer = match &self.behavior {
+                    PeerBehavior::Serves(_) | PeerBehavior::ServesUnannounced(_) => true,
+                    PeerBehavior::NoProviders | PeerBehavior::QueryFails => false,
+                };
+                let _ignored = outcome.send(Ok(answer));
+            }
             NetworkMessage::RequestBlob { outcome, .. } => {
                 let answer = match &self.behavior {
                     PeerBehavior::Serves(bytes) | PeerBehavior::ServesUnannounced(bytes) => {
