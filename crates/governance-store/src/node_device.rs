@@ -1175,11 +1175,14 @@ impl<'a> NodeDeviceRepository<'a> {
             }))
     }
 
-    /// Every device certificate of this node's own account.
+    /// The device certificates a pre-registry holder cached.
+    ///
+    /// Read once, by the migration in `calimero-context`, which publishes them
+    /// into the account namespace and then calls [`Self::forget_legacy_device_certs`].
     ///
     /// # Errors
     /// Propagates the store scan or read failure.
-    pub fn device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+    pub fn legacy_device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
         let keys = collect_keys_with_prefix(
             self.store,
             NodeAccountDeviceCert::new([0u8; 32]),
@@ -1197,6 +1200,24 @@ impl<'a> NodeDeviceRepository<'a> {
             }
         }
         Ok(certs)
+    }
+
+    /// Drop every cached certificate, once the registry holds them.
+    ///
+    /// # Errors
+    /// Propagates the store scan or write failure.
+    pub fn forget_legacy_device_certs(&self) -> EyreResult<()> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NodeAccountDeviceCert::new([0u8; 32]),
+            NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+            |_k| true,
+        )?;
+        let mut handle = self.store.handle();
+        for key in keys {
+            handle.delete(&key)?;
+        }
+        Ok(())
     }
 
     /// The namespaces, among those this node takes part in, where `device` is
@@ -1390,7 +1411,7 @@ mod tests {
                 .is_empty(),
             "a cert nothing else is known about reaches every namespace"
         );
-        assert_eq!(repo.device_certs().expect("scan").len(), 2);
+        assert_eq!(repo.legacy_device_certs().expect("scan").len(), 2);
     }
 
     /// An empty scope is every application, and a named one is only its own -

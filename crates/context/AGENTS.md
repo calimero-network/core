@@ -56,6 +56,8 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 
 **Spawn ordering is load-bearing** (see the comment block in `lib.rs`'s `Actor::started`): `auto_follow::spawn` must run before `self_purge::spawn` because auto-follow subscribes to `op_events` synchronously and has no startup re-scan of its own.
 
+`account_migration::spawn` also runs there, but it is a one-shot rather than a listener: a holder upgraded from before the account-device registry existed still keeps its device certificates node-local, so this publishes each one into the account namespace and then drops the cached rows. It drops them only once every op has landed, so a partial run is republished by the next start.
+
 ## Cache Capacity Constants (`src/lib.rs`)
 
 | Constant | Value | Cache | Eviction basis |
