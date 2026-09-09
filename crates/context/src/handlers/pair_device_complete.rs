@@ -2,9 +2,11 @@
 //! link it, and hand it the scope key.
 //!
 //! The second half of pairing, run on the device holding the account. Publishes
-//! two ops: `AccountDeviceLinked` (encrypted, carries the root-signed certificate
-//! and confers authority) and `RootOp::KeyDelivery` (the current scope key wrapped
-//! to the device).
+//! three ops: `AccountDeviceLinked` (encrypted, carries the root-signed
+//! certificate and confers authority), `RootOp::KeyDelivery` (the current scope
+//! key wrapped to the device), and `AccountDeviceCertified` into the account
+//! namespace, recording the device's certificate and the applications it may
+//! speak for.
 //!
 //! The delivery is a SEALED root op, and the paired device is not expected to read
 //! it. It holds no scope key, so it could not: what it does instead is what any
@@ -41,16 +43,14 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope, PairingOffer};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, PairingOffer};
 use calimero_context_client::group::{
     BindOutcome, EnsureAccountNamespaceRequest, PairDeviceCompleteRequest,
     PairDeviceCompleteResponse,
 };
-use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    AccountDeviceRegistry, GroupKeyring, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+    GroupKeyring, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
@@ -425,46 +425,20 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 }
 
                 // After the bind, so the device already holds the account key when
-                // the op reaches the topic. A publish failure leaves the pairing
-                // standing: the key was delivered and a relink republishes this.
+                // the op reaches the topic. A failure here is not the caller's.
                 if let Some(account_namespace) = account_namespace {
-                    // The next statement for this device, the way a relink mints
-                    // one: only a higher epoch supersedes, and a re-pairing must.
-                    let scope_epoch = AccountDeviceRegistry::new(&store, account_namespace)
-                        .device(device)?
-                        .map_or(0, |(_cert, epoch)| epoch.saturating_add(1));
-                    let scope = DeviceScope::sign(
-                        account_root.signing_key(),
-                        account,
-                        device,
-                        cert.applications.clone(),
-                        scope_epoch,
-                        0,
-                    )
-                    .map_err(|err| eyre::eyre!("failed to sign the device scope: {err}"))?;
-                    match calimero_governance_store::sign_apply_and_publish(
+                    crate::account_namespace::publish_device_certified(
                         &store,
                         &node_client,
                         &ack_router,
-                        &account_namespace,
+                        account_namespace,
                         &signer_sk,
-                        GroupOp::AccountDeviceCertified {
-                            certificate: Box::new(cert.proof.clone()),
-                            scope: Box::new(AccountProof {
-                                genesis,
-                                chain: vec![],
-                                statement: scope,
-                            }),
-                        },
+                        &account_root,
+                        &cert.proof,
+                        &cert.applications,
+                        "pair_device_complete",
                     )
-                    .await
-                    {
-                        Ok(report) => {
-                            report.observe("pair_device_complete", "AccountDeviceCertified");
-                        }
-                        Err(err) => warn!(%device, %err,
-                              "paired, but the device was not recorded in the account namespace"),
-                    }
+                    .await;
                 }
 
                 Ok(PairDeviceCompleteResponse::new(
@@ -486,7 +460,7 @@ mod tests {
 
     use calimero_account::AccountGenesis;
     use calimero_governance_store::{
-        AccountBindingRepository, MembershipRepository, MetaRepository,
+        AccountBindingRepository, AccountDeviceRegistry, MembershipRepository, MetaRepository,
     };
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;

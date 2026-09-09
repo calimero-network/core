@@ -3,16 +3,17 @@
 //! node takes part in now. A revoked device is refused outright rather than
 //! skipped per namespace: the `DeviceId` is spent everywhere, not just where the
 //! tombstone landed.
+//!
+//! It closes by publishing `AccountDeviceCertified` into the account namespace,
+//! restating the device's certificate and scope at the next scope epoch.
 
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountProof, DeviceId, DeviceScope};
+use calimero_account::DeviceId;
 use calimero_context_client::group::{RelinkDeviceRequest, RelinkDeviceResponse};
-use calimero_context_client::local_governance::GroupOp;
-use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountRoot, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+    AccountRoot, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
@@ -89,21 +90,6 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
         };
         let account = root.account();
 
-        let account_namespace = match NodeDeviceRepository::new(&store).account_namespace() {
-            Ok(namespace) => namespace,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-        // The next statement for this device. No row yet means no statement yet,
-        // which is what a device certified before the registry existed looks like.
-        let next_scope_epoch = match account_namespace {
-            Some(namespace) => match AccountDeviceRegistry::new(&store, namespace).device(device) {
-                Ok(Some((_cert, epoch))) => epoch.saturating_add(1),
-                Ok(None) => 0,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            },
-            None => 0,
-        };
-
         // Every namespace this node takes part in, narrowed by the device's own
         // scope inside the loop. Participation is the base set for the same reason
         // pairing's fan-out uses it: publishing needs this node's identity and
@@ -137,40 +123,18 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
 
                 info!(%account, %device, ?outcomes, "relinked a device of this account");
 
-                if let Some(account_namespace) = account_namespace {
-                    let statement = match DeviceScope::sign(
-                        root.signing_key(),
-                        account,
-                        device,
-                        scope.clone(),
-                        next_scope_epoch,
-                        0,
-                    ) {
-                        Ok(statement) => statement,
-                        Err(err) => eyre::bail!("failed to sign the device scope: {err}"),
-                    };
-                    match calimero_governance_store::sign_apply_and_publish(
-                        &store,
-                        &node_client,
-                        &ack_router,
-                        &account_namespace,
-                        &signer_sk,
-                        GroupOp::AccountDeviceCertified {
-                            certificate: Box::new(cached.proof.clone()),
-                            scope: Box::new(AccountProof {
-                                genesis: cached.proof.genesis,
-                                chain: vec![],
-                                statement,
-                            }),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(report) => report.observe("relink_device", "AccountDeviceCertified"),
-                        Err(err) => info!(%device, %err,
-                            "relinked, but the widened scope was not recorded in the account namespace"),
-                    }
-                }
+                crate::account_namespace::publish_device_certified(
+                    &store,
+                    &node_client,
+                    &ack_router,
+                    root.account_namespace(),
+                    &signer_sk,
+                    &root,
+                    &cached.proof,
+                    &scope,
+                    "relink_device",
+                )
+                .await;
 
                 Ok(RelinkDeviceResponse::new(account, device, scope, outcomes))
             }

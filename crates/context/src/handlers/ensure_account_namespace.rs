@@ -8,15 +8,55 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountProof, DeviceScope};
 use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
-use calimero_context_client::local_governance::GroupOp;
-use calimero_governance_store::governance_broadcast::ObserveDelivery;
-use calimero_governance_store::{MetaRepository, NodeDeviceRepository};
-use calimero_primitives::identity::PrivateKey;
+use calimero_context_client::local_governance::AckRouter;
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{AccountRoot, MetaRepository, NodeDeviceRepository};
+use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::Store;
 use tracing::{debug, info, warn};
 
+use crate::account_namespace::publish_device_certified;
 use crate::ContextManager;
+
+/// The holder's own registry row.
+///
+/// A device paired later binds the holder into a namespace it founds, and only
+/// this row carries the root signature that needs.
+async fn record_holder_device(
+    datastore: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace_id: ContextGroupId,
+    signer_pk: &PublicKey,
+    signer_sk: &PrivateKey,
+    root: &AccountRoot,
+) {
+    let credential = match crate::join_credential::build(datastore, &namespace_id, signer_pk) {
+        Ok(credential) => credential,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not build this device's credential, so the holder is not in its own registry"
+            );
+            return;
+        }
+    };
+    publish_device_certified(
+        datastore,
+        node_client,
+        ack_router,
+        namespace_id,
+        signer_sk,
+        root,
+        &credential,
+        &[],
+        "ensure_account_namespace",
+    )
+    .await;
+}
 
 impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
     type Result = ActorResponse<Self, <EnsureAccountNamespaceRequest as Message>::Result>;
@@ -71,50 +111,16 @@ impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
                 {
                     Ok(_created) => {
                         info!(?namespace_id, "created this account's namespace");
-
-                        // The holder belongs in the registry it just created: a device
-                        // paired later binds the holder into a namespace it founds, and
-                        // only this row carries the root signature that needs.
-                        let credential =
-                            crate::join_credential::build(&datastore, &namespace_id, &signer_pk)?;
-                        let genesis = credential.genesis;
-                        let scope = DeviceScope::sign(
-                            root.signing_key(),
-                            credential.statement.account,
-                            credential.statement.device,
-                            Vec::new(),
-                            0,
-                            0,
-                        )
-                        .map_err(|err| eyre::eyre!("failed to sign this device's scope: {err}"))?;
-                        match calimero_governance_store::sign_apply_and_publish(
+                        record_holder_device(
                             &datastore,
                             &node_client,
                             &ack_router,
-                            &namespace_id,
+                            namespace_id,
+                            &signer_pk,
                             &signer_sk,
-                            GroupOp::AccountDeviceCertified {
-                                certificate: credential,
-                                scope: Box::new(AccountProof {
-                                    genesis,
-                                    chain: vec![],
-                                    statement: scope,
-                                }),
-                            },
+                            &root,
                         )
-                        .await
-                        {
-                            Ok(report) => {
-                                report
-                                    .observe("ensure_account_namespace", "AccountDeviceCertified");
-                            }
-                            Err(err) => warn!(
-                                ?err,
-                                ?namespace_id,
-                                "created the account namespace, but could not record this \
-                                 device in it"
-                            ),
-                        }
+                        .await;
                     }
                     // Two first pairings race here; the one that loses finds the
                     // namespace created and has nothing left to do.
