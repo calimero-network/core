@@ -149,7 +149,7 @@ pub struct AccountProof<T> {
     pub statement: T,
 }
 
-impl<T: RootSigned + Copy> AccountProof<T> {
+impl<T: RootSigned + Clone> AccountProof<T> {
     /// Check this proof against the account the caller already trusts.
     ///
     /// `claimed_account` is what ties the credential to something outside it —
@@ -160,7 +160,7 @@ impl<T: RootSigned + Copy> AccountProof<T> {
     /// See [`verify_root_signed`].
     pub fn verify(&self, claimed_account: AccountId) -> Result<Verified<T>, AccountError> {
         verify_root_signed(claimed_account, &self.genesis, &self.chain, &self.statement)?;
-        Ok(Verified::new(self.statement))
+        Ok(Verified::new(self.statement.clone()))
     }
 }
 
