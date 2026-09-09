@@ -342,8 +342,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 11,
-        "the ordinals frozen below are the v11 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 12,
+        "the ordinals frozen below are the v12 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -2153,9 +2153,12 @@ fn context_registered_round_trips_registry_coordinates() {
 }
 
 #[test]
+// The constant only ever grows, so clippy sees this comparison as foldable; it
+// still documents the invariant this test was written to pin.
+#[allow(clippy::assertions_on_constants)]
 fn schema_version_is_bumped_for_the_coordinate_fields() {
-    assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 11,
+    assert!(
+        SIGNED_GROUP_OP_SCHEMA_VERSION >= 11,
         "adding fields to existing GroupOp variants must bump the strictly-checked schema version"
     );
 }
@@ -2294,6 +2297,52 @@ fn an_empty_coordinate_fails_validation() {
     assert!(sample_target_application_set("pkg", "1.0.0")
         .validate()
         .is_ok());
+}
+
+/// The applications ride in from the wire before any authorization runs, and each
+/// one is 32 bytes a hostile op can repeat, so the list is capped at decode.
+#[test]
+fn an_oversized_device_scope_application_list_is_refused() {
+    let sk = PrivateKey::from([0x21; 32]);
+    let root = PrivateKey::from([0x22; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::from([0x23; 32]);
+    let cert = DeviceCert::sign(
+        &root,
+        account,
+        device,
+        &sk.public_key(),
+        &KemPublicKey::from([0x24; 32]),
+        0,
+        0,
+    )
+    .expect("sign the cert");
+    let applications =
+        vec![ApplicationId::from([0x25; 32]); bounds::MAX_DEVICE_SCOPE_APPLICATIONS + 1];
+    let scope = DeviceScope::sign(&root, account, device, applications, 0, 0).expect("sign");
+
+    let op = SignedGroupOp::sign(
+        &sk,
+        ContextGroupId::from([0x26; 32]),
+        vec![],
+        1,
+        GroupOp::AccountDeviceCertified {
+            certificate: Box::new(AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            }),
+            scope: Box::new(AccountProof {
+                genesis,
+                chain: vec![],
+                statement: scope,
+            }),
+        },
+    )
+    .expect("sign the op");
+
+    assert!(matches!(op.validate(), Err(GovernanceError::Bounds(_))));
 }
 
 /// All-zero credential, so the printed vector is reproducible.
