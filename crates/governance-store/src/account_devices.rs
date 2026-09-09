@@ -85,14 +85,14 @@ impl<'a> AccountDeviceRegistry<'a> {
             }))
     }
 
-    /// Every device of the account that this namespace has not revoked.
+    /// Every device row in this namespace's registry, revoked ones included.
     ///
-    /// Filtered here, not at each caller: a binder checks the TARGET namespace's
-    /// tombstones, so one revoked only here would be carried on regardless.
+    /// The device listing needs the revoked rows - `revoked: true` is what a
+    /// settings UI renders - while a binder must never see one; see [`Self::devices`].
     ///
     /// # Errors
     /// Propagates the store scan or read failure.
-    pub fn devices(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+    pub fn all_devices(&self) -> EyreResult<Vec<KnownDeviceCert>> {
         let namespace = self.namespace.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
@@ -101,21 +101,35 @@ impl<'a> AccountDeviceRegistry<'a> {
             |k| k.group_id() == namespace,
         )?;
         let handle = self.store.handle();
-        let bindings = AccountBindingRepository::new(self.store);
         let mut certs = Vec::with_capacity(keys.len());
         for key in keys {
             let Some(value) = handle.get::<GroupAccountDevice>(&key)? else {
                 continue;
             };
-            if bindings.is_revoked(&self.namespace, value.cert.proof.statement.device)? {
-                continue;
-            }
             certs.push(KnownDeviceCert {
                 proof: value.cert.proof,
                 applications: value.cert.applications,
             });
         }
         Ok(certs)
+    }
+
+    /// Every device of the account that this namespace has not revoked.
+    ///
+    /// Filtered here, not at each caller: a binder checks the TARGET namespace's
+    /// tombstones, so one revoked only here would be carried on regardless.
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn devices(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+        let bindings = AccountBindingRepository::new(self.store);
+        let mut kept = Vec::new();
+        for cert in self.all_devices()? {
+            if !bindings.is_revoked(&self.namespace, cert.device())? {
+                kept.push(cert);
+            }
+        }
+        Ok(kept)
     }
 }
 
