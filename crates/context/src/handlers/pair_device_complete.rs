@@ -411,19 +411,6 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 }
                 let key_delivered = key_delivered_everywhere(&outcomes);
 
-                // Kept only once the pairing reached somewhere, so a call that
-                // failed leaves nothing behind. From here on a namespace this
-                // account gains binds the device on its own, because the root
-                // signature - which the replicated binding row drops - is written
-                // down where it was made.
-                if let Err(err) = NodeDeviceRepository::new(&store)
-                    .remember_device_cert(&cert.proof, &cert.applications)
-                {
-                    warn!(%device, %err,
-                          "paired, but this node could not remember the certificate; \
-                           namespaces gained later will need an explicit relink");
-                }
-
                 // After the bind, so the device already holds the account key when
                 // the op reaches the topic. A failure here is not the caller's.
                 if let Some(account_namespace) = account_namespace {
@@ -968,6 +955,15 @@ mod tests {
             .expect("the paired device is in the registry");
         assert_eq!(recorded.applications, vec![app(APP_ONE)]);
         assert_eq!(epoch, 0);
+        // Any row left in the node-local cache is the link fold's scope-less
+        // guess, never a scope pairing wrote.
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .device_cert(response.device)
+                .expect("read")
+                .is_none_or(|cached| cached.applications.is_empty()),
+            "the registry is the only place a device's scope is written now"
+        );
     }
 
     /// Pairing the same device again replaces the scope the first pairing

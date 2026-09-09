@@ -13,7 +13,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::DeviceId;
 use calimero_context_client::group::{RelinkDeviceRequest, RelinkDeviceResponse};
 use calimero_governance_store::{
-    AccountRoot, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+    AccountDeviceRegistry, AccountRoot, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
@@ -30,10 +30,10 @@ use crate::ContextManager;
 /// The certificate a relink will re-publish, and the scope it will use.
 ///
 /// Every refusal lives here, in the order a caller can act on: wrong machine,
-/// unknown device, spent id. The scope extension is persisted before returning,
-/// because the scope is what every LATER namespace gain is judged against - one
-/// that held only for this call would leave the next namespace back where it
-/// started.
+/// unknown device, spent id. The widened scope is returned rather than written:
+/// the statement the handler publishes into the account namespace is what makes
+/// it durable, and what every LATER namespace gain on any device is judged
+/// against.
 fn resolve_target(
     store: &Store,
     device: DeviceId,
@@ -48,7 +48,10 @@ fn resolve_target(
     let root = devices.require_account_root()?;
     require_this_node_holds(store, root.account())?;
 
-    let Some(mut cached) = devices.device_cert(device)? else {
+    // The registry rather than the node-local cache: it is replicated, so a
+    // sibling this node never certified itself is still one it can relink.
+    let registry = AccountDeviceRegistry::new(store, root.account_namespace());
+    let Some((mut cached, _scope_epoch)) = registry.device(device)? else {
         return Err(ContextError::PairingUnknownDevice {
             device: device.to_string(),
         }
@@ -65,7 +68,6 @@ fn resolve_target(
                 cached.applications.push(application);
             }
         }
-        devices.remember_device_cert(&cached.proof, &cached.applications)?;
     }
 
     Ok((root, cached))
@@ -254,6 +256,41 @@ mod tests {
         ));
     }
 
+    /// The registry is the only place a certificate lives now, and it is
+    /// replicated - so a device this node never certified itself, learned from
+    /// the account namespace, is one it can still relink.
+    #[test]
+    fn a_device_only_the_registry_knows_is_relinked() {
+        let store = a_node_holding_its_own_account();
+        let devices = NodeDeviceRepository::new(&store);
+        let root = devices
+            .account_root()
+            .expect("read")
+            .expect("this node holds its own account");
+        let device = DeviceId::from([0x36; 32]);
+        let proof = calimero_account::AccountProof {
+            genesis: root.genesis(),
+            chain: vec![],
+            statement: calimero_account::DeviceCert::sign(
+                root.signing_key(),
+                root.account(),
+                device,
+                &PrivateKey::from([0x36; 32]).public_key(),
+                &calimero_account::KemPublicKey::from([0xC9; 32]),
+                0,
+                0,
+            )
+            .expect("the account root signs its own device cert"),
+        };
+        let _recorded = AccountDeviceRegistry::new(&store, root.account_namespace())
+            .record(&proof, &[app(APP_ONE)], 3)
+            .expect("the certified op's apply wrote this row");
+
+        let (_root, cert) = resolve_target(&store, device, vec![]).expect("the registry knows it");
+
+        assert_eq!(cert.applications, vec![app(APP_ONE)]);
+    }
+
     /// Refused outright rather than skipped per namespace. The tombstone is per
     /// namespace but the id is spent everywhere, so repairing around it would be
     /// repairing the wrong thing - and the refusal has to say that enrolling
@@ -277,31 +314,18 @@ mod tests {
         );
     }
 
-    /// The widening has to outlive the call: the stored scope is what every later
-    /// namespace gain is judged against, so one that held only for this request
-    /// would leave the next namespace exactly where it started.
+    /// The widening is what the relink will publish. It is not written here:
+    /// the statement's apply writes the registry row, which is what every later
+    /// namespace gain on any device of the account is judged against.
     #[test]
-    fn naming_applications_extends_the_stored_scope_persistently() {
+    fn naming_applications_widens_the_scope_the_relink_will_publish() {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x33, &[app(APP_ONE)]);
 
         let (_root, widened) =
             resolve_target(&store, device, vec![app(APP_TWO)]).expect("extend the scope");
+
         assert_eq!(widened.applications, vec![app(APP_ONE), app(APP_TWO)]);
-
-        assert_eq!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read")
-                .expect("present")
-                .applications,
-            vec![app(APP_ONE), app(APP_TWO)],
-            "the widened scope has to be on disk, not merely in this response"
-        );
-
-        // And a repair that names nothing must not narrow it back.
-        let (_root, repaired) = resolve_target(&store, device, vec![]).expect("repair");
-        assert_eq!(repaired.applications, vec![app(APP_ONE), app(APP_TWO)]);
     }
 
     /// An empty scope already covers every application, so naming one must not
@@ -318,15 +342,6 @@ mod tests {
             cached.applications.is_empty(),
             "an all-applications device stayed all-applications, got {:?}",
             cached.applications
-        );
-        assert!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read")
-                .expect("present")
-                .applications
-                .is_empty(),
-            "and the narrowing must not have been persisted either"
         );
     }
 
@@ -445,11 +460,10 @@ mod tests {
             .expect("the manager answers")
             .expect("relinked");
 
-        let (recorded, epoch) =
-            calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
-                .device(device)
-                .expect("read")
-                .expect("the relink recorded the device");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(device)
+            .expect("read")
+            .expect("the relink recorded the device");
         assert_eq!(recorded.applications, vec![app(APP_ONE), app(APP_TWO)]);
         assert_eq!(
             epoch, 1,
@@ -465,11 +479,10 @@ mod tests {
             .await
             .expect("the manager answers")
             .expect("repaired");
-        let (_again, epoch) =
-            calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
-                .device(device)
-                .expect("read")
-                .expect("row");
+        let (_again, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(device)
+            .expect("read")
+            .expect("row");
         assert_eq!(epoch, 2, "a second relink must supersede the first");
     }
 }
