@@ -729,6 +729,7 @@ impl Message for AdmitTeeNodeRequest {
 pub struct PairDeviceInitRequest {
     pub namespaces: Vec<ContextGroupId>, // what the device subscribes to; only the holder knows the set
     pub genesis: AccountGenesis,         // the nonce travels because the device id hashes over it
+    pub account_namespace: Option<ContextGroupId>, // recorded and followed like one more namespace
 }
 
 /// What the pairing device minted, for the account holder to certify.
