@@ -2250,12 +2250,36 @@ impl SyncManager {
     /// ECDH-wrap the key (`build_group_key_delivery`), and reply. Every
     /// non-deliverable case replies with an empty envelope (the requester
     /// tries another peer; no membership oracle leak).
+    /// This node's own device certificate, borsh-encoded, for
+    /// [`MessagePayload::GroupKeyResponseWithResponderProof`].
+    ///
+    /// `Ok(vec![])` when this node has no certificate for its own device — a
+    /// node that was never paired into an account. That is a claim of nothing,
+    /// not a failure.
+    fn own_device_proof_bytes(&self, store: &calimero_store::Store) -> eyre::Result<Vec<u8>> {
+        let devices = calimero_governance_store::NodeDeviceRepository::new(store);
+        let Some(device) = devices.get()?.map(|record| record.device()) else {
+            return Ok(Vec::new());
+        };
+        let Some(cert) = devices.device_cert(device)? else {
+            return Ok(Vec::new());
+        };
+        Ok(borsh::to_vec(&cert.proof)?)
+    }
+
     pub(super) async fn handle_group_key_request(
         &self,
         namespace_id: [u8; 32],
         group_id: [u8; 32],
         requester: calimero_governance_store::KeyRequester,
         requested_key_id: Option<[u8; 32]>,
+        // Attach this node's own device certificate to the reply, because the
+        // requester asked for it (#3888). It lets a requester holding no
+        // governance state -- which can identify no anchor -- accept this key
+        // after checking the proof against its own account root. Attaching it
+        // grants nothing: the requester verifies the chain and accepts only a
+        // proof naming ITS OWN account.
+        with_responder_proof: bool,
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
@@ -2290,12 +2314,32 @@ impl SyncManager {
             "Sending GroupKeyResponse"
         );
 
-        let msg = StreamMessage::Message {
-            sequence_id: 0,
-            payload: MessagePayload::GroupKeyResponse {
+        let payload = if with_responder_proof {
+            // Our own device's certificate, exactly as a link op carries it.
+            // Absent (no certificate for this node, or the read failed) means we
+            // claim nothing and the requester falls back to the anchor rule --
+            // never an error, since the key itself is still being served.
+            let responder_device_proof = self
+                .own_device_proof_bytes(&self.context_client.datastore_handle().into_inner())
+                .unwrap_or_else(|err| {
+                    debug!(%err, "no own-device proof to attach to a group-key response");
+                    Vec::new()
+                });
+            MessagePayload::GroupKeyResponseWithResponderProof {
                 key_envelope_bytes,
                 responder_identity,
-            },
+                responder_device_proof,
+            }
+        } else {
+            MessagePayload::GroupKeyResponse {
+                key_envelope_bytes,
+                responder_identity,
+            }
+        };
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload,
             next_nonce: nonce,
         };
         crate::sync::stream::send(stream, &msg, None).await?;
