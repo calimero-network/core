@@ -1673,6 +1673,58 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
+        // An unbound delivery may SEED this group's key. It may never REPLACE
+        // one (#3871).
+        //
+        // `key_rank` orders equal non-zero epochs by `key_id` so concurrent
+        // rotations converge, but epoch-`0` keys carry no DAG ordering at all
+        // and are ranked by `insertion_seq` — when this node happened to learn
+        // them. `store_key` writes at epoch `0`, so a second epoch-`0` key is
+        // simply newer here and becomes current, and two nodes that learned the
+        // same pair in opposite orders disagree about which key the group uses.
+        // That is a divergence bug as much as a disclosure one, and the
+        // disclosure half is what #3871 turned on: the injected key became the
+        // one the victim encrypted under.
+        //
+        // Fixing it in `key_rank` was the tempting shape and the wrong one. The
+        // ordering also decides which key is current for rows ALREADY on disk,
+        // so changing it would change what an upgraded node encrypts under
+        // while its peers still hold the old answer — a mixed-version break of
+        // exactly the kind merobox cannot see. This instead declines to create
+        // the competing row, leaving the ordering untouched.
+        //
+        // Compatible with every legitimate unbound delivery, by construction
+        // rather than by audit: the pull path asks with no expected id only for
+        // groups from `groups_member_but_keyless`, which are keyless by
+        // definition; `add_group_members` and `admit_tee_node` deliver to a
+        // member that cannot yet decrypt the group; and `device_link`'s op is
+        // sealed under a key the new device does not hold. All of them seed.
+        // A bound delivery is exempt: a rotation legitimately replaces the
+        // current key, and there the hash decides instead.
+        //
+        // Re-delivering the key already held is not a replacement and stays
+        // allowed, so a retry that re-drives the same envelope is idempotent.
+        if expected_key_ids.is_empty() {
+            if let Some(held) = GroupKeyring::new(self.store, gid)
+                .load_current_key()
+                .map_err(|e| eyre::eyre!("load_current_key: {e}"))?
+            {
+                let served = GroupKeyring::key_id_for(&group_key);
+                if held.0 != served {
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id),
+                        responder = %responder_identity,
+                        held_key_id = %hex::encode(held.0),
+                        served_key_id = %hex::encode(served),
+                        "refusing a group key that nothing signed names while a key for this \
+                         group is already held: an unbound delivery may seed a key, never \
+                         replace one"
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
         let key_id = GroupKeyring::new(self.store, gid)
             .store_key(&group_key)
             .map_err(|e| eyre::eyre!("store_group_key: {e}"))?;
