@@ -2611,6 +2611,46 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(divergence)
     }
 
+    /// Who may authorize a `KeyDelivery` for `group_id` on this namespace.
+    ///
+    /// Normally the group's own trusted anchors. But a delivery legitimately
+    /// races ahead of the `GroupCreated` that establishes the group — that is
+    /// the stranded-delivery case the cross-namespace pin above also allows for,
+    /// and `add_group_members` produces it — and until that op folds there is no
+    /// meta and no member row, so the group's own anchor set is EMPTY. Refusing
+    /// on an empty set would refuse exactly the deliveries this op exists for.
+    ///
+    /// So when the group's anchors are unknown, authority falls back to the
+    /// **namespace** the op arrived on. That is not a guess: the op was
+    /// published to this namespace's topic and sealed under its key, and
+    /// `self.namespace_id` is known even when the named group is not. It stays
+    /// narrow in the way that matters — a plain member is not an anchor of the
+    /// namespace either, so the escalation this gate exists to stop is still
+    /// stopped, and the relaxation applies ONLY while the group's own governance
+    /// is unreadable. Once `GroupCreated` folds, the group's own anchors decide
+    /// and a namespace admin no longer qualifies on that basis alone, which is
+    /// the boundary #3858 drew for a Restricted subgroup.
+    ///
+    /// Returns the set and whether it came from the fallback, so a refusal can
+    /// say which question it answered.
+    ///
+    /// # Errors
+    ///
+    /// When either anchor set cannot be read. A store failure is not a verdict;
+    /// see the caller.
+    fn key_delivery_anchors(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<(std::collections::BTreeSet<PublicKey>, bool)> {
+        let repo = MembershipRepository::new(self.store);
+        let own = repo.anchor_device_keys(group_id)?;
+        if !own.is_empty() {
+            return Ok((own, false));
+        }
+        let ns = ContextGroupId::from(self.namespace_id.to_bytes());
+        Ok((repo.anchor_device_keys(&ns)?, true))
+    }
+
     /// Everything a root op does BEYOND folding its own state.
     ///
     /// This used to live inline in [`Self::apply_signed_op`]'s match, which made
@@ -2693,8 +2733,8 @@ impl<'a> NamespaceGovernance<'a> {
                 // every op causally after it, and unlike `apply_key_rotation`
                 // (which must propagate: a rotation dropped is a node that
                 // cannot read later ops) this delivery has the pull behind it.
-                match MembershipRepository::new(self.store).anchor_device_keys(group_id) {
-                    Ok(anchors) if anchors.contains(&op.signer) => {
+                match self.key_delivery_anchors(group_id) {
+                    Ok((anchors, _)) if anchors.contains(&op.signer) => {
                         match self.apply_received_group_key_envelope_at_depth(
                             group_id.to_bytes(),
                             envelope,
@@ -2723,7 +2763,7 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                         }
                     }
-                    Ok(anchors) => {
+                    Ok((anchors, fell_back_to_namespace)) => {
                         // `info`, not `debug`: on the default filter a `debug`
                         // line emits nothing, so an operator asking why a node
                         // never got a key would have no evidence either way. Not
@@ -2734,9 +2774,11 @@ impl<'a> NamespaceGovernance<'a> {
                             group_id = %hex::encode(group_id.to_bytes()),
                             signer = %op.signer,
                             anchors_known = !anchors.is_empty(),
+                            scope = if fell_back_to_namespace { "namespace" } else { "group" },
                             "refusing a KeyDelivery from a non-anchor: an unverifiable \
                              key is accepted only from a trusted anchor of the group it \
-                             is delivered for; leaving it to the key pull"
+                             is delivered for, or of this namespace while that group's \
+                             own governance has not folded yet; leaving it to the key pull"
                         );
                         effects.key_unwrap_failures.push(KeyUnwrapFailure {
                             group_id: group_id.to_bytes(),
