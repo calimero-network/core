@@ -190,10 +190,23 @@ mod tests {
     /// the property the entire snapshot gate rests on: if per-process
     /// thread-local state leaks between measurements, the snapshot is unstable
     /// and the gate flakes.
+    ///
+    /// The collection is built with `new_with_field_name`, NOT `new`. `new`
+    /// mints a RANDOM entity id, and a parent's children live in a hash trie
+    /// (core#3633) whose descent depth follows the hash of that id — so two
+    /// runs of an identical workload read a different number of trie nodes
+    /// while writing exactly the same set. That is why `rows_written` was
+    /// stable at 313 and only `rows_read` moved, and why this failed under
+    /// `calimero-storage/testing` (which CI enables) roughly always rather than
+    /// occasionally. The sibling `byte_counts_are_not_reproducible` already
+    /// records that ids are not deterministic; this test simply must not
+    /// depend on them being so.
     #[test]
     fn row_counts_are_deterministic_across_calls() {
         let workload = || {
-            let mut map = Root::new(UnorderedMap::<String, String, MainStorage>::new);
+            let mut map = Root::new(|| {
+                UnorderedMap::<String, String, MainStorage>::new_with_field_name("determinism")
+            });
             for i in 0..16 {
                 map.insert(format!("k{i}"), "v".to_owned())
                     .expect("insert should succeed");
