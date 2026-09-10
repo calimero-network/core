@@ -9,6 +9,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_store::key::{GroupAccountNamespace, GroupAccountNamespaceValue};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use tracing::debug;
 
 use crate::collect_keys_with_prefix;
 
@@ -28,11 +29,14 @@ impl<'a> AccountNamespaceSet<'a> {
         }
     }
 
-    /// Record `namespace`, replacing whatever application was recorded before:
-    /// a later gain read the namespace's own metadata more recently.
+    /// Record `namespace` under the application the gain read, replacing an
+    /// application recorded before: that gain read the metadata more recently.
+    ///
+    /// A gain that read NO application keeps the one already recorded. It knows
+    /// less than the set does, and a scoped device follows on that value alone.
     ///
     /// # Errors
-    /// Propagates the store write failure.
+    /// Propagates the store read or write failure.
     pub fn record(
         &self,
         namespace: ContextGroupId,
@@ -41,6 +45,22 @@ impl<'a> AccountNamespaceSet<'a> {
         let mut handle = self.store.handle();
         let key =
             GroupAccountNamespace::new(self.account_namespace.to_bytes(), namespace.to_bytes());
+        let application = match application {
+            Some(read) => Some(read),
+            None => {
+                let kept = handle
+                    .get(&key)?
+                    .and_then(|value: GroupAccountNamespaceValue| value.application);
+                if let Some(kept) = kept {
+                    debug!(
+                        ?namespace,
+                        ?kept,
+                        "a gain read no target; kept the recorded one"
+                    );
+                }
+                kept
+            }
+        };
         handle.put(&key, &GroupAccountNamespaceValue { application })?;
         Ok(())
     }
@@ -156,5 +176,19 @@ mod tests {
             set.namespaces().expect("scan"),
             vec![(ns(0x61), Some(app(0x11)))]
         );
+    }
+
+    /// A gain that had not folded the namespace's target must not un-know what
+    /// the set already records: a scoped device follows on that value alone.
+    #[test]
+    fn a_gain_that_read_no_target_keeps_the_recorded_one() {
+        let store = test_store();
+        let set = AccountNamespaceSet::new(&store, ContextGroupId::from(ACCOUNT));
+
+        set.record(ns(0x61), Some(app(0x11))).expect("record");
+        set.record(ns(0x61), None)
+            .expect("re-record, target unread");
+
+        assert_eq!(set.contains(ns(0x61)).expect("read"), Some(Some(app(0x11))));
     }
 }

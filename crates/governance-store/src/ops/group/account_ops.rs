@@ -276,8 +276,8 @@ pub(crate) fn apply_device_certified(
 /// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
 ///
 /// The set is what a device paired later, or widened later, walks to find what
-/// it may follow. A namespace already in the set has its application replaced:
-/// the newer gain read the namespace's own metadata more recently.
+/// it may follow. A gain that read a target replaces the recorded one - "newer"
+/// means later-applied, not causally later - and one that read none keeps it.
 pub(crate) fn apply_namespace_gained(
     ctx: &mut GroupApplyCtx<'_>,
     namespace: &ContextGroupId,

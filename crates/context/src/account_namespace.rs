@@ -169,18 +169,22 @@ async fn publish(
         return Ok(false);
     };
 
-    let (op, expected) = match change {
+    let op = match change {
         AccountNamespaceChange::Gained => {
             let application = target_application(store, namespace)?;
-            (
-                GroupOp::AccountNamespaceGained {
-                    namespace,
-                    application,
-                },
-                Some(application),
-            )
+            if application.is_none() {
+                warn!(
+                    ?namespace,
+                    "target unknown at announce; scoped devices will not follow it \
+                     until it is re-announced"
+                );
+            }
+            GroupOp::AccountNamespaceGained {
+                namespace,
+                application,
+            }
         }
-        AccountNamespaceChange::Left => (GroupOp::AccountNamespaceLeft { namespace }, None),
+        AccountNamespaceChange::Left => GroupOp::AccountNamespaceLeft { namespace },
     };
     let op_kind = op.op_kind_label();
 
@@ -197,8 +201,10 @@ async fn publish(
 
     // The op's own local apply is the only durable write, and an apply that
     // refuses the statement warns rather than failing - so the set is what says it.
-    let recorded =
-        AccountNamespaceSet::new(store, account_namespace).contains(namespace)? == expected;
+    let named = AccountNamespaceSet::new(store, account_namespace)
+        .contains(namespace)?
+        .is_some();
+    let recorded = named == matches!(change, AccountNamespaceChange::Gained);
     if !recorded {
         warn!(
             ?namespace,
