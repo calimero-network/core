@@ -32,10 +32,13 @@ fail() {
 phrase=$(offline_merod "${holder}" account export | sed -n '1p')
 [ -n "${phrase}" ] || fail "the lost holder's recovery phrase came back empty"
 
-printf '%s\n' "${phrase}" > "data/${publisher}/recovery.txt"
+# On a trap and not after the call: under `set -eu` a failing revoke-proof exits
+# before any cleanup line, leaving the holder's phrase on disk.
+phrase_file="data/${publisher}/recovery.txt"
+trap 'rm -f "${phrase_file}"' EXIT
+printf '%s\n' "${phrase}" > "${phrase_file}"
 proof=$(offline_merod "${publisher}" account revoke-proof \
     --device "${device}" --from "$(offline_home "${publisher}")/recovery.txt" | sed -n '1p')
-rm -f "data/${publisher}/recovery.txt"
 [ -n "${proof}" ] || fail "minting the revocation proof produced nothing"
 
 account_namespace=$(api "${publisher}" GET "identity" | jq -r '.data.accountNamespaceId // empty')
