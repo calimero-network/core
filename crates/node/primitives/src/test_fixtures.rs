@@ -75,7 +75,14 @@ pub async fn node_client_over(
     let (ns_sync_tx, _) = mpsc::channel(64);
     let (ns_join_tx, _) = mpsc::channel(16);
     let (open_subgroup_join_tx, _) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, _) = mpsc::channel(16);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     let node_client = NodeClient::new(
         datastore,
@@ -120,13 +127,31 @@ pub async fn node_client_over_answering_joins(
     let (ns_sync_tx, _) = mpsc::channel(64);
     let (ns_join_tx, mut ns_join_rx) = mpsc::channel(16);
     let (open_subgroup_join_tx, _) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, mut relay_sealed_join_rx) = mpsc::channel(16);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     // Detached: the client awaits the oneshot, so the answer has to come from
     // somewhere other than the task making the request.
     let _responder = tokio::spawn(async move {
         while let Some((_params, reply)) = ns_join_rx.recv().await {
             let _ignored = reply.send(Ok(bundle.clone()));
+        }
+    });
+
+    // A joiner that holds no covering key relays its join to the admitter
+    // instead of publishing it in the clear (#3904), and that relay failing
+    // fails the join. Answered here for the same reason the join above is: a
+    // test about what happens AFTER a successful join should not trip over an
+    // absent responder for one of the steps that make the join succeed.
+    let _relay_responder = tokio::spawn(async move {
+        while let Some((_params, reply)) = relay_sealed_join_rx.recv().await {
+            let _ignored = reply.send(Ok(()));
         }
     });
 

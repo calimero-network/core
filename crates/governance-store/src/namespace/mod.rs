@@ -36,9 +36,10 @@ pub use self::governance::{
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     open_relayed_join_for_read, open_sealed_root_op, open_sealed_root_op_for_group,
     redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed,
-    seal_root_op_for_publish, seal_root_op_if_keyed, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
-    ApplyNamespaceOpResult, KeyUnwrapFailure, NamespaceGovernance,
+    seal_root_op_for_publish, seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
+    NamespaceGovernance,
 };
 pub use self::membership::NamespaceMembershipService;
 pub use self::op_log::NamespaceOpLogService;

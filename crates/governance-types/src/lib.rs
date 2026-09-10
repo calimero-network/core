@@ -857,34 +857,40 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         // invitations -- and only them, which is the kind of partial break that
         // reads as a client bug.
         //
-        // A different PUBLISHER does not fix it, and it is worth being exact
-        // about why, because "hand it to the admitter" is the obvious next idea
-        // and it does not work.
+        // `false` here does NOT mean these two travel in the clear any more, and
+        // this is the arm most likely to be misread, so: they do not. Two things
+        // changed after this arm was written, and neither of them is a flip.
         //
-        // The admitter already relays: `admit_join.rs` exists so a keyholder
-        // with no node can be admitted at all, and that node does hold the
-        // namespace key. So the transmitting party is already the right one.
-        // What blocks the seal is the SIGNATURE, not the transport.
-        // `SignedNamespaceOp::to_signable` copies `op` verbatim, so the joiner's
-        // signature covers the exact `NamespaceOp` value -- swapping
-        // `Root(MemberJoined)` for `RootSealed` invalidates it, and moves the op
-        // id with it. The joiner cannot sign the sealed form (no key, as above),
-        // and the admitter cannot re-sign it: `join_op_proves_ownership` requires
-        // `signer == account.statement.sign_pk`, checked by every peer at apply,
-        // and that check is exactly what stops an admitter substituting a
-        // different member. Endorsement can ride along because it sits OUTSIDE
-        // the signature; the op body cannot.
+        //   1. A joiner that DOES hold the covering key seals its own join,
+        //      because `join_group` asks the narrower question this function
+        //      cannot -- "do I hold the key right now" -- via
+        //      `seal_root_op_if_keyed` / `seal_root_op_for_group_if_keyed`
+        //      (#3857-#3859). This function has to answer per VARIANT and answer
+        //      identically on every node, and the variant has publishers that
+        //      hold no key (a browser client signing offline never does), so it
+        //      still answers `false`.
+        //   2. A joiner that does NOT hold it hands the signed op to the
+        //      admitter, which wraps it as `NamespaceOp::RootRelaySealed` and
+        //      publishes under its own envelope (#3904).
         //
-        // Nor is signing-then-sealing available. `seal_root_op_for_publish` runs
-        // BEFORE `sign` on every sealed op deliberately: the signature then
-        // covers the ciphertext, which is what lets a peer holding no namespace
-        // key verify a sealed op without decrypting it. Moving the signature
-        // inside the seal -- verify after decrypt -- would seal these two, at the
-        // cost of keyless verification for every sealed root op, so a non-member
-        // would store skeletons it cannot authenticate.
+        // The signature objection this comment used to end on is what
+        // `RootRelaySealed` answers, and the answer is the "wire break" version:
+        // it seals the whole `SignedNamespaceOp`, so the joiner's signature
+        // travels INSIDE the ciphertext and `open_relayed_join` verifies it after
+        // decrypting. The keyless-verification property is preserved because the
+        // OUTER envelope is the admitter's ordinary signature over the
+        // ciphertext -- a non-member still authenticates the skeleton it stores
+        // without holding a key; it simply learns nothing about who joined. And
+        // `join_op_proves_ownership` still runs on the inner op, so an admitter
+        // that substituted a different member would produce a join every peer
+        // rejects.
         //
-        // Sealing these two is therefore a change to how a sealed op is signed
-        // and verified, i.e. another wire break, not a publisher swap.
+        // Which is also why this arm must STAY `false`. The joiner's inner op is
+        // a cleartext `Root(..)` by construction -- the seal is the admitter's
+        // envelope around it -- so it is signed and applied locally in that
+        // form. Flipping this to `true` would make
+        // `refuse_unsealed_sealable_root` refuse the joiner's own local apply and
+        // break the relay route at its first step.
         RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. } => false,
         // Published by an admin or member who holds the key, like the ones
         // above. It reads as an exception because its RECIPIENT does not hold

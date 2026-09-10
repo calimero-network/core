@@ -61,6 +61,27 @@ pub struct OpenSubgroupJoinParams {
     pub joiner_public_key: PublicKey,
 }
 
+/// Parameters for asking an admitter to seal and publish a join this node
+/// cannot seal itself (issue #3904).
+///
+/// The joiner has already signed the op — this carries it verbatim, so the
+/// admitter wraps rather than re-authors. `admitter_peer` is the peer that
+/// endorsed this very join, which is where the request goes first: it is known
+/// reachable (the endorsement came over a stream to it) and it holds the
+/// namespace key by definition.
+#[derive(Debug)]
+pub struct RelaySealedJoinParams {
+    pub namespace_id: [u8; 32],
+    /// The peer that endorsed the join. Tried first; other namespace mesh peers
+    /// are tried after it, since any keyholder can seal an already-endorsed
+    /// join and the endorsement is what carries the authority.
+    pub admitter_peer: Option<PeerId>,
+    /// The joiner's identity on the namespace, for the transport-binding proof.
+    pub joiner_public_key: PublicKey,
+    /// Borsh `SignedNamespaceOp`, endorsement attached.
+    pub signed_op_bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug)]
 pub struct SyncClient {
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
@@ -73,6 +94,7 @@ pub struct SyncClient {
         OpenSubgroupJoinParams,
         oneshot::Sender<eyre::Result<Vec<u8>>>,
     )>,
+    relay_sealed_join_tx: mpsc::Sender<(RelaySealedJoinParams, oneshot::Sender<eyre::Result<()>>)>,
 }
 
 impl SyncClient {
@@ -88,12 +110,17 @@ impl SyncClient {
             OpenSubgroupJoinParams,
             oneshot::Sender<eyre::Result<Vec<u8>>>,
         )>,
+        relay_sealed_join_tx: mpsc::Sender<(
+            RelaySealedJoinParams,
+            oneshot::Sender<eyre::Result<()>>,
+        )>,
     ) -> Self {
         Self {
             ctx_sync_tx,
             ns_sync_tx,
             ns_join_tx,
             open_subgroup_join_tx,
+            relay_sealed_join_tx,
         }
     }
 
@@ -165,6 +192,26 @@ impl SyncClient {
             .map_err(|_| eyre::eyre!("open subgroup join channel closed"))?;
         rx.await
             .map_err(|_| eyre::eyre!("open subgroup join response channel dropped"))?
+    }
+
+    /// Ask an admitter to seal this node's already-signed join under the
+    /// namespace key and publish it.
+    ///
+    /// For a joiner that holds no covering key: it cannot seal, and the key it
+    /// needs arrives in answer to this very op, so there is no order in which it
+    /// could seal for itself. The admitter can, and every peer still checks the
+    /// joiner's own signature inside the seal.
+    ///
+    /// An `Err` is a failed join, not a fallback: publishing the join in the
+    /// clear instead is the disclosure this path exists to remove.
+    pub async fn relay_sealed_join(&self, params: RelaySealedJoinParams) -> eyre::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.relay_sealed_join_tx
+            .send((params, tx))
+            .await
+            .map_err(|_| eyre::eyre!("relay sealed join channel closed"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("relay sealed join response channel dropped"))?
     }
 }
 
@@ -1034,6 +1081,15 @@ impl NodeClient {
         self.sync_client
             .request_open_subgroup_join(namespace_id, subgroup_id, joiner_public_key)
             .await
+    }
+
+    /// Hand an already-signed join to an admitter to be sealed and published.
+    ///
+    /// See [`SyncClient::relay_sealed_join`]. Exposed on `NodeClient` because
+    /// the caller is `join_group` in the context crate, which holds one of
+    /// these and not a `SyncClient`.
+    pub async fn relay_sealed_join(&self, params: RelaySealedJoinParams) -> eyre::Result<()> {
+        self.sync_client.relay_sealed_join(params).await
     }
 }
 

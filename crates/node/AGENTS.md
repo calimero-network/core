@@ -45,7 +45,7 @@ src/
 ├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
-│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, tests.rs)
+│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, relay_sealed_join.rs, tests.rs)
 │   ├── stream.rs             # Sync streams
 │   ├── config.rs             # Sync configuration
 │   ├── tracking.rs           # Sync tracking
@@ -289,6 +289,25 @@ cargo test -p calimero-node --test network_simulation
   afterwards would leave the artifact's own (legitimate, possibly
   unrelated) application row pointing at a blob the failure path then
   deletes
+- A joiner that holds no key to seal its own join does NOT publish it in
+  the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
+  the exchange that replaced that fallback (#3904): the joiner sends
+  `InitPayload::RelaySealedJoinRequest` with its own signed op, and the
+  admitter wraps it as `NamespaceOp::RootRelaySealed` and publishes.
+  Three things about it are load-bearing. The responder does **no**
+  membership or authority check on the requester — the authority is the
+  endorsement sealed inside the op, which is self-authenticating, so a
+  gate there would only reject legitimate relays. The initiator tries the
+  endorsing admitter first because it is known reachable (the endorsement
+  arrived over a stream to it), which is why `JoinBundle` carries
+  `admitter_peer` at all; it is filled by the requester, never asserted by
+  the responder — and it then falls through to the rest of the namespace
+  topic, because an admitter is NOT guaranteed to hold the key: one still
+  awaiting its own `KeyDelivery` endorses the join and serves an empty
+  envelope, which is precisely how a joiner ends up unkeyed. And a relay that finds no keyholder **fails the join**:
+  falling back to a cleartext publish would make "sealed" and "leaked" the
+  same silence, and an older responder that cannot decode the payload
+  lands in exactly that branch.
 - `add_blob`'s `expected_size` asserts a length the caller already
   knows; it is never a ceiling. Passing a cap through it rejects every
   correct blob under that cap. Bound a stream where the bytes arrive

@@ -3,9 +3,9 @@
 //! Owns the actor-loop machinery that was previously inline in
 //! `SyncManager::start`:
 //!
-//! - The six receive channels (`ctx_sync_rx`, `ns_sync_rx`,
-//!   `ns_join_rx`, `open_subgroup_join_rx`, `session_result_rx`, plus
-//!   the `next_sync` timer).
+//! - The seven receive channels (`ctx_sync_rx`, `ns_sync_rx`,
+//!   `ns_join_rx`, `open_subgroup_join_rx`, `relay_sealed_join_rx`,
+//!   `session_result_rx`, plus the `next_sync` timer).
 //! - The [`SyncSessionSender`] used to dispatch sync sessions.
 //! - The [`SessionTracker`] (per-context state, dispatch backoff,
 //!   wedge-watchdog, mailbox-full rollup).
@@ -30,7 +30,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
-use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
+use calimero_node_primitives::client::{
+    NamespaceJoinParams, OpenSubgroupJoinParams, RelaySealedJoinParams,
+};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::ContextId;
 use eyre::Result;
@@ -90,6 +92,14 @@ pub(crate) trait SyncDriverDispatch {
     /// `open_subgroup_join_rx` arm; the result is forwarded to the
     /// requester's `oneshot::Sender`.
     async fn initiate_open_subgroup_join(&self, params: OpenSubgroupJoinParams) -> Result<Vec<u8>>;
+
+    /// Hand an already-signed join to an admitter to be sealed and published.
+    /// Called from the `relay_sealed_join_rx` arm; the result is forwarded to
+    /// the requester's `oneshot::Sender`.
+    ///
+    /// An `Err` fails the caller's join. That is the point: the alternative is
+    /// publishing the join in the clear, which is what this path removes.
+    async fn initiate_relay_sealed_join(&self, params: RelaySealedJoinParams) -> Result<()>;
 }
 
 /// Sync-manager run-loop driver. Owned by `SyncManager::start` for
@@ -104,6 +114,7 @@ pub(super) struct SyncDriver {
     ns_join_rx: mpsc::Receiver<(NamespaceJoinParams, oneshot::Sender<Result<JoinBundle>>)>,
     open_subgroup_join_rx:
         mpsc::Receiver<(OpenSubgroupJoinParams, oneshot::Sender<Result<Vec<u8>>>)>,
+    relay_sealed_join_rx: mpsc::Receiver<(RelaySealedJoinParams, oneshot::Sender<Result<()>>)>,
     session_tx: SyncSessionSender,
     session_result_rx: mpsc::UnboundedReceiver<SyncSessionResult>,
 
@@ -124,6 +135,7 @@ impl SyncDriver {
             OpenSubgroupJoinParams,
             oneshot::Sender<Result<Vec<u8>>>,
         )>,
+        relay_sealed_join_rx: mpsc::Receiver<(RelaySealedJoinParams, oneshot::Sender<Result<()>>)>,
         session_tx: SyncSessionSender,
         session_result_rx: mpsc::UnboundedReceiver<SyncSessionResult>,
         frequency: Duration,
@@ -136,6 +148,7 @@ impl SyncDriver {
             ns_sync_rx,
             ns_join_rx,
             open_subgroup_join_rx,
+            relay_sealed_join_rx,
             session_tx,
             session_result_rx,
             frequency,
@@ -145,7 +158,7 @@ impl SyncDriver {
 
     /// Run the sync-manager actor loop.
     ///
-    /// Multiplexes over the six receivers, dispatches sync sessions
+    /// Multiplexes over the seven receivers, dispatches sync sessions
     /// for pending contexts, and drives the per-interval bookkeeping
     /// (full-drops rollup, wedge watchdog). The loop has no explicit
     /// termination condition — `next_sync.tick()` keeps firing even
@@ -270,6 +283,16 @@ impl SyncDriver {
                         "Processing open-subgroup join request (initiator side)"
                     );
                     let result = dispatch.initiate_open_subgroup_join(params).await;
+                    let _ignored = reply_tx.send(result);
+                    continue;
+                }
+                Some((params, reply_tx)) = self.relay_sealed_join_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        admitter = ?params.admitter_peer,
+                        "Processing relay-sealed join request (initiator side)"
+                    );
+                    let result = dispatch.initiate_relay_sealed_join(params).await;
                     let _ignored = reply_tx.send(result);
                     continue;
                 }

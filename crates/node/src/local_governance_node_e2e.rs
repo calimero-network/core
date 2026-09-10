@@ -3226,7 +3226,14 @@ async fn build_standalone_sync_manager() -> (SyncManager, Store, NodeState, Temp
     let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
     let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
     let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, relay_sealed_join_rx) = mpsc::channel(16);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     let node_client = NodeClient::new(
         store.clone(),
@@ -3250,6 +3257,7 @@ async fn build_standalone_sync_manager() -> (SyncManager, Store, NodeState, Temp
         ns_sync_rx,
         ns_join_rx,
         open_subgroup_join_rx,
+        relay_sealed_join_rx,
     );
 
     (sync_manager, store, node_state, tmp)

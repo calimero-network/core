@@ -280,6 +280,77 @@ async fn sign_apply_and_publish_returns_the_signed_op() {
     );
 }
 
+/// The relay route's first step: a joiner that cannot seal signs and applies its
+/// join, and does NOT broadcast it. `join_group` then hands the returned op to an
+/// admitter to be sealed and published (#3904).
+///
+/// What this pins is that "without publish" still does the rest of what an author
+/// owes its own node. The local apply is not optional — a later `MemberJoinedOpen`
+/// causally parents onto this op — and neither is the local-apply feed, without
+/// which the in-memory DAG never learns about an op this node authored and every
+/// child a peer sends parks behind a parent it already has.
+///
+/// That nothing is published is a property of the signature rather than an
+/// assertion here: the helper takes no `AckRouter` and returns no
+/// `DeliveryReport`, so there is no broadcast for a caller to accidentally get.
+#[actix::test]
+async fn signing_without_publishing_still_applies_and_feeds_the_local_path() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_node_primitives::messages::NodeMessage;
+
+    let (store, node_client, _ack_router, ns_id, sk, _tmp, mut node_msgs) =
+        namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let member = crate::test_fixtures::account_for(&sk.public_key());
+    let (signed_invitation, admitter_endorsement) = endorsed_invitation(&sk, ns_id, &member);
+    let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member,
+        signed_invitation,
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(&sk.public_key()),
+    });
+
+    let signed = NamespaceGovernance::new(&store, ns_id)
+        .sign_and_apply_without_publish(&node_client, &sk, op, Some(admitter_endorsement))
+        .expect("sign and apply");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "the join must land locally even though it is never broadcast: the relay \
+         publishes it, and a later MemberJoinedOpen parents onto this op"
+    );
+    assert!(
+        signed.admitter_endorsement.is_some(),
+        "the endorsement must survive onto the returned op, or the admitter relays \
+         a join every peer refuses at apply"
+    );
+
+    let expected = signed.content_hash().expect("content hash");
+    let mut observed = Vec::new();
+    let found = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(msg) = node_msgs.recv().await {
+            match msg {
+                NodeMessage::ApplyLocalNamespaceOp { op } => {
+                    return op.content_hash().expect("content hash") == expected;
+                }
+                other => observed.push(other),
+            }
+        }
+        false
+    })
+    .await
+    .expect("the local-apply feed must fire within the timeout");
+
+    assert!(
+        found,
+        "signing without publishing must still hand the op to the local apply feed; \
+         saw {} other node signal(s) instead",
+        observed.len(),
+    );
+}
+
 /// The op an author publishes must reach its OWN governance DAG, not just the
 /// live store: the publish path writes the live rows, the persisted head and the
 /// op-log directly, and nothing else feeds the in-memory DAG or the unified-op

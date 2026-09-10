@@ -11,7 +11,9 @@ use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient, OpenSubgroupJoinParams};
+use calimero_node_primitives::client::{
+    NamespaceJoinParams, NodeClient, OpenSubgroupJoinParams, RelaySealedJoinParams,
+};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
@@ -177,6 +179,7 @@ pub struct SyncManager {
         )>,
     >,
     pub(super) open_subgroup_join_rx: Option<OpenSubgroupJoinRx>,
+    pub(super) relay_sealed_join_rx: Option<RelaySealedJoinRx>,
 
     /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
     /// Set via [`SyncManager::set_session_handles`] after the actor is
@@ -250,6 +253,7 @@ impl Clone for SyncManager {
             ns_sync_rx: None,
             ns_join_rx: None,
             open_subgroup_join_rx: None,
+            relay_sealed_join_rx: None,
             // Cloned `SyncManager`s never drive the `start` loop, so
             // they don't need a session-dispatch handle or a results
             // receiver. The bridge holds its own clone of the
@@ -309,6 +313,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::LevelWiseRequest { .. }
             | InitPayload::NamespaceJoinRequest { .. }
             | InitPayload::OpenSubgroupJoinRequest { .. }
+            | InitPayload::RelaySealedJoinRequest { .. }
     )
 }
 
@@ -413,6 +418,10 @@ impl SyncManager {
             OpenSubgroupJoinParams,
             oneshot::Sender<eyre::Result<Vec<u8>>>,
         )>,
+        relay_sealed_join_rx: mpsc::Receiver<(
+            RelaySealedJoinParams,
+            oneshot::Sender<eyre::Result<()>>,
+        )>,
     ) -> Self {
         let sync_network: Arc<dyn super::network::SyncNetwork> = Arc::new(network_client.clone());
         // Wrap the concrete `NodeState` once here. The trait field is
@@ -440,6 +449,7 @@ impl SyncManager {
             ns_sync_rx: Some(ns_sync_rx),
             ns_join_rx: Some(ns_join_rx),
             open_subgroup_join_rx: Some(open_subgroup_join_rx),
+            relay_sealed_join_rx: Some(relay_sealed_join_rx),
             session_tx: None,
             session_result_rx: None,
             metrics: None,
@@ -539,6 +549,10 @@ impl SyncManager {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
+        let relay_sealed_join_rx = self.relay_sealed_join_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
         let Some(session_tx) = self.session_tx.clone() else {
             error!("SyncManager started without a SyncSessionActor handle (#2316)");
             return;
@@ -562,6 +576,7 @@ impl SyncManager {
             ns_sync_rx,
             ns_join_rx,
             open_subgroup_join_rx,
+            relay_sealed_join_rx,
             session_tx,
             session_result_rx,
             self.sync_config.frequency,
@@ -3503,7 +3518,8 @@ impl SyncManager {
             // real `context_id`.
             let pop_context = match &payload {
                 InitPayload::NamespaceJoinRequest { namespace_id, .. }
-                | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. } => {
+                | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. }
+                | InitPayload::RelaySealedJoinRequest { namespace_id, .. } => {
                     ContextId::from(*namespace_id)
                 }
                 _ => context_id,
@@ -3584,6 +3600,21 @@ impl SyncManager {
                 nonce,
             )
             .await?;
+            return Ok(Some(()));
+        }
+
+        // Early return, like the joins above and for the same reason: the
+        // request names a NAMESPACE and carries a sentinel context id, so the
+        // per-context resolution below has nothing to resolve. It is also not a
+        // membership-gated path — the authority is the endorsement sealed inside
+        // the op, not the peer carrying it (see `decode_relay_request`).
+        if let InitPayload::RelaySealedJoinRequest {
+            namespace_id,
+            signed_op_bytes,
+        } = &payload
+        {
+            self.handle_relay_sealed_join_request(*namespace_id, signed_op_bytes, stream, nonce)
+                .await?;
             return Ok(Some(()));
         }
 
@@ -3847,6 +3878,9 @@ impl SyncManager {
             InitPayload::OpenSubgroupJoinRequest { .. } => {
                 unreachable!("handled by early return above")
             }
+            InitPayload::RelaySealedJoinRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
             InitPayload::GroupKeyRequest { .. }
             | InitPayload::GroupKeyRequestWithResponderProof { .. } => {
                 unreachable!("handled by early return above")
@@ -3954,6 +3988,13 @@ impl super::driver::SyncDriverDispatch for SyncManager {
         params: calimero_node_primitives::client::OpenSubgroupJoinParams,
     ) -> eyre::Result<Vec<u8>> {
         SyncManager::initiate_open_subgroup_join(self, params).await
+    }
+
+    async fn initiate_relay_sealed_join(
+        &self,
+        params: calimero_node_primitives::client::RelaySealedJoinParams,
+    ) -> eyre::Result<()> {
+        SyncManager::initiate_relay_sealed_join(self, params).await
     }
 }
 
@@ -4215,6 +4256,16 @@ mod init_pop_gate_tests {
                 subgroup_id: [0; 32],
                 joiner_public_key: [0; 32].into(),
             },
+            // The payload is self-authenticating (the joiner's signature and
+            // the endorsement travel inside it), so a proof adds no authority.
+            // It is required anyway because it costs nothing here and stops an
+            // unauthenticated dialer naming an identity it does not hold — the
+            // reason a proof-less relay request would be diagnosable only as a
+            // failed apply, one hop away from the cause.
+            InitPayload::RelaySealedJoinRequest {
+                namespace_id: [0; 32],
+                signed_op_bytes: vec![],
+            },
         ];
         for p in &requires {
             assert!(
@@ -4472,6 +4523,7 @@ mod blob_fetch;
 mod handshake;
 mod namespace_join;
 mod namespace_sync;
+mod relay_sealed_join;
 
 // Re-exported for the `tests` submodule, which reaches these namespace helpers
 // via `super::super::` (they now live in `namespace_sync`).
@@ -4483,6 +4535,8 @@ type OpenSubgroupJoinRx = mpsc::Receiver<(
     OpenSubgroupJoinParams,
     oneshot::Sender<eyre::Result<Vec<u8>>>,
 )>;
+/// Channel for outbound relay-sealed join requests with their reply senders.
+type RelaySealedJoinRx = mpsc::Receiver<(RelaySealedJoinParams, oneshot::Sender<eyre::Result<()>>)>;
 /// Per-(context, blob) stale-blob retry bookkeeping: (last attempt, count).
 type StaleBlobAttempts =
     Arc<std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), (Option<Instant>, u32)>>>;

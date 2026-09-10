@@ -262,8 +262,16 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     let (ns_join_tx, ns_join_rx) = mpsc::channel(crate::constants::NS_JOIN_CHANNEL_SIZE);
     let (open_subgroup_join_tx, open_subgroup_join_rx) =
         mpsc::channel(crate::constants::OPEN_SUBGROUP_JOIN_CHANNEL_SIZE);
+    let (relay_sealed_join_tx, relay_sealed_join_rx) =
+        mpsc::channel(crate::constants::RELAY_SEALED_JOIN_CHANNEL_SIZE);
 
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     // Channel for the execute path to notify the node about locally-
     // applied deltas so the in-memory DeltaStore stays current without
@@ -418,6 +426,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         ns_sync_rx,
         ns_join_rx,
         open_subgroup_join_rx,
+        relay_sealed_join_rx,
     );
 
     // Attach the sync-protocol metrics collector. Must happen before any
