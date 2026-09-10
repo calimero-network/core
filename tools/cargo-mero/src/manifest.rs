@@ -79,6 +79,7 @@ pub fn render(meta: &BundleMeta, artifacts: &[StagedArtifact]) -> Result<serde_j
             icon: meta.icon.clone(),
             tags: meta.tags.clone(),
             license: meta.license.clone(),
+            category: meta.category.clone(),
         }),
         // Sibling of `metadata` so it stays outside app-id derivation. Defaults
         // to the package, which is what the deep-link resolver matches on.
@@ -115,6 +116,7 @@ mod tests {
             icon: None,
             slug: None,
             license: None,
+            category: None,
             tags: vec![],
             github: None,
             docs: None,
@@ -176,6 +178,7 @@ mod tests {
             icon: None,
             slug: None,
             license: None,
+            category: None,
             tags: vec![],
             github: None,
             docs: None,

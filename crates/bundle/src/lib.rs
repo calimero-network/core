@@ -39,6 +39,13 @@ pub struct BundleMetadata {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    /// Primary storefront category, from the registry's closed vocabulary
+    /// (`cargo_mero::meta::CATEGORIES`). Optional on the wire so bundles
+    /// published before it existed still deserialize, and so an older node
+    /// reading a newer bundle is unaffected — this struct has no
+    /// `deny_unknown_fields`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 /// Declarative interfaces (intents) implemented or required by the application

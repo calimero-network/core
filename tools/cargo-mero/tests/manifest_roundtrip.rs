@@ -15,6 +15,9 @@ fn full_meta() -> BundleMeta {
         icon: Some("data:image/png;base64,iVBORw0KGgo=".into()),
         slug: Some("com.example.demo".into()),
         license: Some("MIT".into()),
+        // Populated, not None: this fixture exists to prove every field
+        // survives a manifest round-trip, and a None would skip the new one.
+        category: Some("social".into()),
         tags: vec!["social".into()],
         github: Some("https://github.com/acme/demo".into()),
         docs: Some("https://docs.acme.com".into()),
@@ -51,6 +54,7 @@ fn sparse_meta() -> BundleMeta {
         icon: None,
         slug: None,
         license: None,
+        category: None,
         tags: vec![],
         github: None,
         docs: None,

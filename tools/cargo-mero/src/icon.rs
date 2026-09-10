@@ -129,6 +129,7 @@ mod tests {
             icon: icon.map(str::to_owned),
             slug: None,
             license: None,
+            category: None,
             tags: Vec::new(),
             github: None,
             docs: None,
