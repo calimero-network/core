@@ -441,6 +441,38 @@ pub enum InitPayload {
         /// encrypted under, which a current-key-only responder could not.
         key_id: Option<[u8; 32]>,
     },
+    /// Same request as [`GroupKeyRequest`](InitPayload::GroupKeyRequest), but
+    /// the requester also asks the responder to prove **which account it is a
+    /// device of**, and will accept a key from a non-anchor peer that proves it
+    /// is a device of the requester's OWN account.
+    ///
+    /// Why this exists (#3888, #3892): only a trusted anchor may serve a group
+    /// key, because an unwrapped key is bytes and a node that stores one an
+    /// insider chose seals its later writes under it. But a node that holds no
+    /// governance state can identify no anchors — `trusted_anchors` reads group
+    /// meta it has not folded — and that is exactly the node that needs a key.
+    /// A freshly paired device is the case: anchor-only starves it, which is how
+    /// the `account-device-*` scenarios failed.
+    ///
+    /// Its own account is the trust it *does* have, out of band: pairing wrote
+    /// the account root genesis into its store, and every sibling device's
+    /// certificate chains to that root. It cannot learn a sibling's certificate
+    /// from local state — the only path that records one is an **encrypted**
+    /// GroupOp apply (`account_ops.rs`), locked behind the very key being
+    /// fetched — so the responder has to present it here.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload` (after
+    /// `GroupKeyRequest`) so all existing variant discriminants are unchanged.
+    /// An older responder cannot decode this variant and drops the stream; a
+    /// requester that gets no answer retries with the plain `GroupKeyRequest`,
+    /// whose response is then accepted only from an anchor, exactly as before.
+    GroupKeyRequestWithResponderProof {
+        namespace_id: [u8; 32],
+        group_id: [u8; 32],
+        requester_public_key: PublicKey,
+        requester_device: Option<DeviceId>,
+        key_id: Option<[u8; 32]>,
+    },
 }
 
 // =============================================================================
@@ -689,6 +721,34 @@ pub enum MessagePayload<'a> {
         key_envelope_bytes: Vec<u8>,
         /// Responder's namespace identity public key (the wrap sender).
         responder_identity: PublicKey,
+    },
+    /// Answer to
+    /// [`GroupKeyRequestWithResponderProof`](InitPayload::GroupKeyRequestWithResponderProof):
+    /// the same envelope, plus the responder's own device certificate.
+    ///
+    /// The certificate is what lets a requester holding no governance state
+    /// accept this key from a peer that is not an identifiable anchor: it
+    /// verifies the proof against the account root genesis its own pairing
+    /// wrote, and accepts only if the chain is valid AND names the requester's
+    /// own account. Anything else falls back to the anchor rule.
+    ///
+    /// A certificate here is a claim, not a grant. It is checked, and it can
+    /// only ever widen acceptance to **this node's own account** — never to
+    /// another account, however well-formed its chain.
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload` (after
+    /// `GroupKeyResponse`) so all existing variant discriminants are unchanged.
+    GroupKeyResponseWithResponderProof {
+        /// ECDH-wrapped group-key envelope (borsh-serialized
+        /// `KeyEnvelope`). Empty ⇒ no key delivered.
+        key_envelope_bytes: Vec<u8>,
+        /// Responder's namespace identity public key (the wrap sender).
+        responder_identity: PublicKey,
+        /// Borsh-serialized `AccountProof<DeviceCert>` for the responder's own
+        /// device: genesis, handoff chain, certificate. Empty ⇒ the responder
+        /// holds no certificate for itself and is claiming nothing, so the
+        /// anchor rule alone decides.
+        responder_device_proof: Vec<u8>,
     },
 }
 

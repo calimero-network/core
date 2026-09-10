@@ -242,7 +242,7 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     }))
 }
 
-/// How many of an anchor-first-ordered candidate list may serve a group key.
+/// May this responder serve a group key?
 ///
 /// A group key is the one thing on the sync paths a peer is trusted for by
 /// *content* rather than by signature. An op is signature-verified before it
@@ -251,40 +251,43 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
 /// insider chose seals its own later writes under it, and cannot decode the
 /// group's real ops.
 ///
-/// So the answer depends on whether this particular request can be verified:
+/// Exactly two grounds, and the caller must have established both honestly:
 ///
-/// * **`verifiable`** — a governance op awaits a specific `key_id`, and that op
-///   is signed, so `SHA256(served) == expected` settles it and the responder is
-///   not trusted at all. Every candidate may serve; the anchor ordering ahead of
-///   this is then only about not wasting round-trips. Restricting to anchors
-///   here would buy nothing and cost availability.
-/// * **not verifiable** — a keyless member of a group no op names a key for yet,
-///   which is cold start. There is nothing to compare against, so trust in the
-///   responder is all there is, and **only an anchor may serve**: `None` rather
-///   than fall through to an arbitrary member.
+/// * **`is_anchor`** — the peer presented an identity belonging to a trusted
+///   anchor of this group (owner, admin, or admitted TEE).
+/// * **`own_account_device`** — the peer proved, with a certificate chaining to
+///   the account root this node already holds, that it is a device of **this
+///   node's own account**. Out-of-band trust from pairing, and the only ground
+///   available to a node holding no governance state — which can identify no
+///   anchor at all, because `trusted_anchors` reads group meta it has not
+///   folded. A freshly paired device is exactly that node.
 ///
-/// `None` means refuse and retry later, deliberately in preference to accepting
-/// an unverifiable key from a non-anchor. That trades a liveness risk for a
-/// confidentiality one — a namespace whose anchors are all unreachable cannot
-/// complete a cold join — which is the intended policy, not an oversight.
+/// Anything else is refused, and the caller tries the next candidate.
 ///
-/// The two `None` cases are distinguished by `anchors_known` so callers can log
-/// them apart: "no anchor is reachable" is the accepted cost, while "no anchor
-/// can even be identified" points at unfolded governance state and is worth
-/// noticing.
-pub(crate) fn key_servers_allowed(
-    total_candidates: usize,
-    anchor_count: usize,
-    anchors_known: bool,
-    verifiable: bool,
-) -> Option<usize> {
-    if verifiable {
-        return (total_candidates > 0).then_some(total_candidates);
-    }
-    if !anchors_known || anchor_count == 0 {
-        return None;
-    }
-    Some(anchor_count)
+/// ## Why this is a per-response decision
+///
+/// This replaced `key_servers_allowed`, which answered "how many of an
+/// anchor-first-ordered list may serve" *before* any response existed. Two
+/// separate defects came out of that shape:
+///
+/// 1. It took a `verifiable` flag and let **every** candidate serve when some op
+///    awaited a `key_id`, reasoning that the op was signed so the hash settled
+///    it. Signed by anyone: the id is read from the cleartext `key_id` of a
+///    buffered `NamespaceOp::Group` envelope, which no gate checks, so a party
+///    that could reach the namespace topic could mint the id, widen the set to
+///    include itself, and satisfy its own hash check (#3888).
+/// 2. Removing that widening left anchor-only, which refuses the node that most
+///    needs a key: no governance state means no identifiable anchor. The
+///    `account-device-*` E2E scenarios failed on it, surfacing two steps away as
+///    "context does not belong to any group" — without the namespace key the
+///    encrypted GroupOps mapping a context to its group never fold (#3892).
+///
+/// `own_account_device` cannot be known until the answer is in hand, so the
+/// decision belongs here, after a response, rather than in a pruning step
+/// before one. Anchor-first ordering survives as a preference: it decides who is
+/// *asked* first, never who is *believed*.
+pub(crate) const fn key_server_accepted(is_anchor: bool, own_account_device: bool) -> bool {
+    is_anchor || own_account_device
 }
 
 /// Stable-partition `peers` so peers with an observed trusted-anchor
@@ -696,44 +699,53 @@ mod tests {
             ]
         );
     }
-    /// A verifiable request may use any candidate: the hash decides, so the
-    /// responder is not trusted and restricting to anchors would only cost
-    /// availability.
+    /// **The gate.** An anchor may serve; so may a proven device of this
+    /// node's own account; nobody else may.
     #[test]
-    fn a_verifiable_key_request_may_use_any_candidate() {
-        assert_eq!(key_servers_allowed(5, 2, true, true), Some(5));
-        assert_eq!(
-            key_servers_allowed(5, 0, false, true),
-            Some(5),
-            "not even an identifiable anchor is needed when the key can be checked"
+    fn only_an_anchor_or_an_own_account_device_may_serve_a_key() {
+        assert!(
+            key_server_accepted(true, false),
+            "a trusted anchor of the group, which is the ordinary case"
         );
-        assert_eq!(
-            key_servers_allowed(0, 0, true, true),
-            None,
-            "but there still has to be somebody to ask"
+        assert!(
+            key_server_accepted(false, true),
+            "a proven device of this node's own account — the only ground available \
+             to a node holding no governance state, which can identify no anchor"
+        );
+        assert!(
+            !key_server_accepted(false, false),
+            "neither: refuse and try the next candidate, never accept a key from a \
+             peer this node has no reason to trust"
+        );
+        assert!(
+            key_server_accepted(true, true),
+            "both grounds at once is still a yes, not a contradiction"
         );
     }
 
-    /// **The gate.** An unverifiable request — cold start, no op naming a key —
-    /// is restricted to anchors, and refuses rather than falling through.
+    /// An awaited `key_id` is not a ground at all (#3888).
+    ///
+    /// The predicate takes no `key_id` argument, and that absence is the fix
+    /// rather than an omission. `key_servers_allowed` used to let every
+    /// candidate serve when an op awaited an id — `(5, 0, false, true) =>
+    /// Some(5)`: no identifiable anchor, yet all five allowed — because a signed
+    /// op named the id. It is signed by anyone: the id comes from a cleartext
+    /// field no gate checks, so the party that minted it could then satisfy its
+    /// own hash check. A verdict that must not depend on the id cannot take it
+    /// as input.
+    ///
+    /// This test exists to fail if someone reintroduces that parameter.
     #[test]
-    fn an_unverifiable_key_request_is_restricted_to_anchors() {
-        assert_eq!(
-            key_servers_allowed(5, 2, true, false),
-            Some(2),
-            "only the anchors, which the anchor-first ordering has put in front"
-        );
-        assert_eq!(
-            key_servers_allowed(5, 0, true, false),
-            None,
-            "anchors are known but none is reachable: refuse and retry, never \
-             fall through to an arbitrary member"
-        );
-        assert_eq!(
-            key_servers_allowed(5, 0, false, false),
-            None,
-            "and no identifiable anchor refuses too — the distinction is for the \
-             log line, not for the verdict"
-        );
+    fn an_awaited_key_id_is_not_a_ground_for_serving() {
+        // The whole input space, and no id anywhere in it.
+        for is_anchor in [false, true] {
+            for own_account_device in [false, true] {
+                assert_eq!(
+                    key_server_accepted(is_anchor, own_account_device),
+                    is_anchor || own_account_device,
+                    "acceptance must rest on trust in the responder alone"
+                );
+            }
+        }
     }
 }

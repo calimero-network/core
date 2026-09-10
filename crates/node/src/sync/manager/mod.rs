@@ -3587,22 +3587,59 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        if let InitPayload::GroupKeyRequest {
+        // Both key-request variants land here. They differ only in whether the
+        // reply carries this node's own device certificate: the requester asks
+        // for it when it may need to accept the key from a non-anchor that is a
+        // device of the requester's own account (#3888).
+        let group_key_request = match &payload {
+            InitPayload::GroupKeyRequest {
+                namespace_id,
+                group_id,
+                requester_public_key,
+                requester_device,
+                key_id,
+            } => Some((
+                *namespace_id,
+                *group_id,
+                *requester_public_key,
+                *requester_device,
+                *key_id,
+                false,
+            )),
+            InitPayload::GroupKeyRequestWithResponderProof {
+                namespace_id,
+                group_id,
+                requester_public_key,
+                requester_device,
+                key_id,
+            } => Some((
+                *namespace_id,
+                *group_id,
+                *requester_public_key,
+                *requester_device,
+                *key_id,
+                true,
+            )),
+            _ => None,
+        };
+        if let Some((
             namespace_id,
             group_id,
             requester_public_key,
             requester_device,
             key_id,
-        } = &payload
+            with_responder_proof,
+        )) = group_key_request
         {
             self.handle_group_key_request(
-                *namespace_id,
-                *group_id,
+                namespace_id,
+                group_id,
                 calimero_governance_store::KeyRequester {
-                    identity: *requester_public_key,
-                    device: *requester_device,
+                    identity: requester_public_key,
+                    device: requester_device,
                 },
-                *key_id,
+                key_id,
+                with_responder_proof,
                 stream,
                 nonce,
             )
@@ -3810,7 +3847,8 @@ impl SyncManager {
             InitPayload::OpenSubgroupJoinRequest { .. } => {
                 unreachable!("handled by early return above")
             }
-            InitPayload::GroupKeyRequest { .. } => {
+            InitPayload::GroupKeyRequest { .. }
+            | InitPayload::GroupKeyRequestWithResponderProof { .. } => {
                 unreachable!("handled by early return above")
             }
         };
