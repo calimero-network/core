@@ -1,0 +1,291 @@
+name: E2E Account - A Lost Holder Is Retired From Namespaces Its Revoker Never Joined
+description: >
+  The lost-laptop case in full. Revoking a device is the account's authority and
+  a proof carries it, but publication is per-DAG: the op takes effect in a
+  namespace only once somebody publishes it there. The device that holds the
+  proof is scope-limited by design, so there are namespaces it is not in and can
+  never publish into - and until now the laptop went on writing in exactly those.
+
+  The cast:
+
+    * node-1 - Alice's laptop, and the holder. Installs both applications,
+      creates A1 (app A) and B1 (app B) and the context in B1, writes into it,
+      and is then lost.
+    * node-2 - Alice's phone, scoped to app A. It takes part in A1 and the
+      account namespace, and never in B1. It publishes the revocation.
+    * node-3 - Alice's tablet, scoped to app B. It takes part in B1 and the
+      account namespace, and never in A1. It is the only device of Alice's that
+      is in B1 at all once the laptop is gone.
+
+  What each phase is load-bearing for:
+
+    1. The laptop writes into B1's context. The write matters as evidence the
+       device was genuinely live: retiring one that never worked proves nothing.
+    2. The laptop is stopped and its phrase read off its home, then the phone
+       mints the proof from the phrase alone and publishes it into the ACCOUNT
+       namespace. The phone holds no account root and reaches A1 and the account
+       namespace and nothing else, so B1 is beyond it.
+    3. The tablet folds the revocation off the account namespace and republishes
+       it into B1. Asserted as the lost device being bound in NO namespace on the
+       tablet: the account namespace's own tombstone accounts for one of the two,
+       and only the carry accounts for the other.
+    4. The laptop comes back and cannot write into B1's context any more. The
+       tablet is an admin there, so the carry rotated the scope key too, and the
+       laptop is frozen at the state it had.
+
+  The write refusal is asserted on the tablet's read, not on the call's own
+  outcome: a merobox `call` with `expected_failure` only warns when the call
+  succeeds, and a revoked device writes locally while its peers refuse the delta.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-carry-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-carry-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-carry-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: account-carry-node-3
+    username: dev
+    password: dev-password
+
+  # ── Phase 1: two projects, two scopes, one live device ────────────
+
+  - name: Install app A on node-1
+    type: install_application
+    node: account-carry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_a: applicationId
+
+  # B is the multi-service bundle only so that B1's context names a service:
+  # scaffolding-e2e is the only other bundle, and A has to be a different one.
+  - name: Install app B on node-1
+    type: install_application
+    node: account-carry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_b: applicationId
+
+  # The tablet joins B1's context, so it needs the bytecode B1 runs.
+  - name: Install app B on node-3
+    type: install_application
+    node: account-carry-node-3
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+
+  - name: Node-1 creates A1
+    type: create_namespace
+    node: account-carry-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a: namespaceId
+
+  - name: Node-1 creates B1
+    type: create_namespace
+    node: account-carry-node-1
+    application_id: '{{app_b}}'
+    outputs:
+      ns_b: namespaceId
+
+  - name: Node-1 creates the context in B1
+    type: create_context
+    node: account-carry-node-1
+    application_id: '{{app_b}}'
+    group_id: '{{ns_b}}'
+    service_name: store-a
+    outputs:
+      context_id: contextId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-carry-node-1
+    outputs:
+      lost_device: deviceId
+
+  # Scoped to app A and enrolled into A1 by name, so the phone's reach is A1 and
+  # the account namespace and provably not B1.
+  - name: Pair node-2 onto Alice's account, scoped to app A
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-carry-node-1
+      - account-carry-node-2
+      - '{{ns_a}}'
+      - '{{app_a}}'
+
+  - name: Pair node-3 onto Alice's account, scoped to app B
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-carry-node-1
+      - account-carry-node-3
+      - '{{ns_b}}'
+      - '{{app_b}}'
+
+  - name: The tablet converges on B1
+    type: assert_api_response
+    node: account-carry-node-3
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_b}}'
+    match:
+      targetApplicationId: '{{app_b}}'
+    retries: 45
+    interval: 2
+
+  - name: The tablet follows the context as a device of Alice's account
+    type: join_context
+    node: account-carry-node-3
+    context_id: '{{context_id}}'
+
+  - name: Settle before the laptop writes
+    type: wait_for_sync
+    nodes:
+      - account-carry-node-1
+      - account-carry-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: The soon-to-be-lost laptop writes into B1's context
+    type: call
+    node: account-carry-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-the-laptop
+      value: before-the-loss
+
+  - name: Settle so the tablet sees it
+    type: wait_for_sync
+    nodes:
+      - account-carry-node-1
+      - account-carry-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: The tablet saw the laptop's write
+    type: call
+    node: account-carry-node-3
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-the-laptop
+    outputs:
+      before_loss: result
+
+  - name: The laptop was live before it was lost
+    type: json_assert
+    statements:
+      - 'json_equal({{before_loss}}, {"output": "before-the-loss"})'
+
+  # ── Phase 2: the laptop is gone, the phrase is not ────────────────
+
+  - name: The laptop is lost
+    type: stop_node
+    nodes: account-carry-node-1
+
+  - name: The phone revokes the laptop from the phrase alone
+    type: script
+    script: scripts/account-carry-revocation.sh
+    target: local
+    args:
+      - account-carry-node-1
+      - account-carry-node-2
+      - '{{lost_device}}'
+
+  # ── Phase 3: the tablet carries it where the phone could not ──────
+
+  # The assertion this scenario exists for. The lost device was bound in the
+  # account namespace and in B1 on this node; the phone's publish accounts for
+  # the first, and only the carry accounts for the second - so an empty list is
+  # the tombstone having reached B1.
+  - name: The tablet carried the tombstone into B1
+    type: assert_api_response
+    node: account-carry-node-3
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{lost_device}}'
+    match:
+      revoked: true
+    absent:
+      - namespaces.0
+    retries: 45
+    interval: 2
+
+  # ── Phase 4: what the tombstone forbids ───────────────────────────
+
+  - name: The laptop comes back to be asked
+    type: start_node
+    nodes: account-carry-node-1
+
+  - name: Log back in to node-1
+    type: login
+    node: account-carry-node-1
+    username: dev
+    password: dev-password
+
+  # Placed while the two still agree on the context state, so it converges and
+  # proves the mesh is alive. After the refused write below their states differ
+  # by construction and no sync barrier could return.
+  - name: Settle so the laptop is back in the mesh
+    type: wait_for_sync
+    nodes:
+      - account-carry-node-1
+      - account-carry-node-3
+    context_id: '{{context_id}}'
+    timeout: 120
+    trigger_sync: true
+
+  - name: The retired laptop can no longer write
+    type: call
+    node: account-carry-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-the-laptop
+      value: after-the-loss
+    expected_failure: true
+
+  - name: Give the refused delta every chance to land
+    type: wait
+    seconds: 25
+
+  - name: The tablet still reads the value from before the loss
+    type: call
+    node: account-carry-node-3
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-the-laptop
+    outputs:
+      after_loss: result
+
+  - name: The retired laptop's write never landed
+    type: json_assert
+    statements:
+      - 'json_equal({{after_loss}}, {"output": "before-the-loss"})'
+
+stop_all_nodes: true
