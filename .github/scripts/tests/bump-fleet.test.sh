@@ -327,6 +327,88 @@ expect_exit 3 "a package nobody declares is 'not applicable'" \
   bash "$BUMP" --surface npm --pkg @calimero-network/nothing=1.0.0 --dir "$D" --no-lock
 
 # ─────────────────────────────────────────────────────────────────────────────
+echo "nested workspace roots (calimero-studio: neither known path)"
+# ─────────────────────────────────────────────────────────────────────────────
+# Two workspace roots deep in the tree, each with its own lockfile, plus the
+# merod images that have to move with them. Before this shape existed the
+# script exited 3 here — "this does not apply" — and calimero-studio's pin sat
+# twelve releases behind because nothing ever opened a pull request.
+D=$(mkfixture nested)
+mkdir -p "$D/foundation-app/base/logic/crates/service" \
+         "$D/foundation-app/base/test" \
+         "$D/foundation-app/recipes/tally" \
+         "$D/foundation-app/overlays/rooms/test"
+cat > "$D/foundation-app/base/logic/Cargo.toml" <<'EOF'
+[workspace]
+members = ["crates/service"]
+
+[workspace.dependencies]
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "0.11.0-rc.1" }
+calimero-storage = { git = "https://github.com/calimero-network/core", tag = "0.11.0-rc.1" }
+EOF
+echo '[[package]]' > "$D/foundation-app/base/logic/Cargo.lock"
+# A MEMBER crate: inherits the pin, carries no git URL. Must not be rewritten,
+# and must not be counted as a root to resolve.
+cat > "$D/foundation-app/base/logic/crates/service/Cargo.toml" <<'EOF'
+[package]
+name = "svc"
+
+[dependencies]
+calimero-sdk = { workspace = true }
+EOF
+cat > "$D/foundation-app/recipes/Cargo.toml" <<'EOF'
+[workspace]
+members = ["tally"]
+
+[workspace.dependencies]
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "0.11.0-rc.1" }
+EOF
+echo '[[package]]' > "$D/foundation-app/recipes/Cargo.lock"
+cat > "$D/foundation-app/base/test/smoke.workflow.yml" <<'EOF'
+nodes:
+  image: ghcr.io/calimero-network/merod:0.11.0-rc.1
+EOF
+cat > "$D/foundation-app/overlays/rooms/test/smoke.workflow.yml" <<'EOF'
+nodes:
+  image: ghcr.io/calimero-network/merod:0.11.0-rc.1
+EOF
+commit "$D"
+
+CH="$ROOT/nested-changed.txt"
+expect_exit 0 "bumps every nested root" env CHANGED_FILES_OUT="$CH" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/foundation-app/base/logic/Cargo.toml" 'tag = "0.11.0-rc.2"' "  base logic root moved"
+expect_file "$D/foundation-app/recipes/Cargo.toml" 'tag = "0.11.0-rc.2"' "  recipes root moved"
+expect_file "$D/foundation-app/base/test/smoke.workflow.yml" 'merod:0.11.0-rc.2' "  base merod image moved"
+expect_file "$D/foundation-app/overlays/rooms/test/smoke.workflow.yml" 'merod:0.11.0-rc.2' "  overlay merod image moved"
+expect_absent "$D/foundation-app/base/logic/crates/service/Cargo.toml" '0.11.0-rc.2' "  a member crate is left alone"
+expect_file "$CH" 'foundation-app/recipes/Cargo.toml' "  changed-files names the nested manifest"
+expect_absent "$CH" 'crates/service/Cargo.toml' "  ...and not the member crate"
+
+expect_exit 4 "second run is a no-op" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+
+# One root behind the other IS the drift, so it must not read as "already done".
+# Reporting off the first manifest alone would have hidden exactly this.
+( cd "$D" && perl -i -pe 's{0\.11\.0-rc\.2}{0.11.0-rc.1}g' foundation-app/recipes/Cargo.toml \
+    && git -c user.email=t@t -c user.name=t commit -qam skew )
+expect_exit 0 "one root left behind is not 'already pinned'" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/foundation-app/recipes/Cargo.toml" 'tag = "0.11.0-rc.2"' "  the straggler moved"
+
+# A tree whose only core pin is at a nested path the script does not know still
+# has to be distinguishable from a tree with no pin at all.
+D=$(mkfixture nested-only-member); mkdir -p "$D/somewhere/deep"
+cat > "$D/somewhere/deep/Cargo.toml" <<'EOF'
+[dependencies]
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "0.11.0-rc.1" }
+EOF
+commit "$D"
+expect_exit 0 "an unconventional path is still bumped" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/somewhere/deep/Cargo.toml" 'tag = "0.11.0-rc.2"' "  ...and rewritten"
+
+# ─────────────────────────────────────────────────────────────────────────────
 echo "no surface at all"
 # ─────────────────────────────────────────────────────────────────────────────
 D=$(mkfixture bare); echo '{}' > "$D/package.json"; commit "$D"
