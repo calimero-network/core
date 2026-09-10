@@ -10767,24 +10767,29 @@ fn a_key_delivery_matching_the_awaited_key_is_applied() {
     assert_eq!(stored.1, real_key);
 }
 
-/// An unbound delivery may seed this group's key. It may never replace one.
+/// A delivered key SUPERSEDES a stale one, and it is stamped so that ordering
+/// decides rather than arrival time.
 ///
-/// This is the residual after the anchor gate (#3875) and the content binding:
-/// an anchor delivering a key that NOTHING signed names, for a group whose key
-/// this node already holds. Both earlier halves pass — the signer is entitled
-/// to deliver, and there is no awaited id to contradict — and the delivered key
-/// still becomes current, because `store_key` writes at epoch `0` and
-/// `key_rank` ranks equal epoch-`0` keys by local `insertion_seq`. The node
-/// then encrypts under a key chosen out-of-band, and a peer that learned the
-/// same two keys in the other order disagrees about which is current, so this
-/// is a convergence bug as much as a disclosure one.
+/// **This asserted the exact opposite, and that rule broke `master` for four
+/// pushes.** #3887 made a delivery able to seed a group's key but never replace
+/// one, reasoning that every legitimate delivery seeds "by construction"
+/// because `add_group_members` and `admit_tee_node` deliver to a member that
+/// cannot yet decrypt. Cannot decrypt is not the same as holds nothing. A
+/// **re-added** member is the counterexample: `MemberRemoved` rotates the key,
+/// the removed node cannot apply that rotation because it is excluded from the
+/// wrap, so it sits on a stale key — and the delivery that re-admits it was
+/// refused for "already holding a key". `group-kick-and-readd-deny-list` failed
+/// on precisely that step, `Wait for MemberAdded + KeyDelivery to propagate`.
 ///
-/// Fixed by declining the competing row rather than by reordering `key_rank`:
-/// the ordering also decides which key is current for rows already on disk, so
-/// changing it would change what an upgraded node encrypts under while its
-/// peers still hold the old answer.
+/// The problem that refusal reached for was ORDERING, and this is the fix for
+/// it: `store_key` writes at epoch `0` and `key_rank` breaks epoch-`0` ties on
+/// `insertion_seq` — local arrival — so a delivered key used to become current
+/// merely by arriving later, and two nodes that learned the same pair in
+/// opposite orders disagreed. The delivery is now stamped with the op's
+/// sequence, exactly as `apply_key_rotation` stamps a rotation and for the same
+/// stated reason. Authorization is the anchor gate's job (#3875), not this.
 #[test]
-fn an_unbound_delivery_cannot_replace_a_key_already_held() {
+fn a_delivered_key_supersedes_a_stale_key_and_ordering_is_by_epoch() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     let store = test_store();
@@ -10792,7 +10797,7 @@ fn an_unbound_delivery_cannot_replace_a_key_already_held() {
     let sub_gid = ContextGroupId::from([0x91u8; 32]);
     let namespace_id = ns_gid.to_bytes();
 
-    // A genuine anchor of the subgroup, so the gate from #3875 passes.
+    // A genuine anchor of the subgroup, so #3875's gate passes.
     let admin_sk = PrivateKey::from([0x92u8; 32]);
     let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
     MetaRepository::new(&store)
@@ -10821,24 +10826,16 @@ fn an_unbound_delivery_cannot_replace_a_key_already_held() {
         .store_key(&namespace_key)
         .unwrap();
 
-    // The subgroup's real key is ALREADY held, and no buffered op names one —
-    // so the delivery below is unbound and there is nothing for the content
-    // check to compare against.
-    let held_key = [0x95u8; 32];
-    let held_key_id = GroupKeyring::new(&store, sub_gid)
-        .store_key(&held_key)
+    // The stale key: what a kicked member is left holding after a rotation it
+    // could not apply.
+    let stale_key = [0x95u8; 32];
+    let stale_key_id = GroupKeyring::new(&store, sub_gid)
+        .store_key(&stale_key)
         .unwrap();
-    assert!(
-        namespace_group_keys_awaiting(&store, namespace_id.into())
-            .unwrap()
-            .is_empty(),
-        "precondition: nothing signed names a key for this group, or this would \
-         exercise the content binding instead"
-    );
 
-    let substituted = [0xEEu8; 32];
+    let rotated_key = [0xEEu8; 32];
     let envelope =
-        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &substituted)
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &rotated_key)
             .unwrap();
     let sealed = NamespaceOp::RootSealed {
         key_id: GroupKeyring::key_id_for(&namespace_key).into(),
@@ -10856,230 +10853,67 @@ fn an_unbound_delivery_cannot_replace_a_key_already_held() {
     let next_nonce = gov.read_head_record().expect("head").next_nonce;
     let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
         .expect("the anchor signs the delivery");
-    gov.apply_signed_op(&op)
-        .expect("the refusal is a skipped effect, not a DAG failure");
+    gov.apply_signed_op(&op).expect("the delivery applies");
 
     let (current_id, current) = GroupKeyring::new(&store, sub_gid)
         .load_current_key()
         .unwrap()
-        .expect("the held key must still be there");
+        .expect("a key must be current");
     assert_eq!(
-        current, held_key,
-        "an unbound delivery must not become the key this node encrypts under \
-         when a key for the group is already held"
+        current, rotated_key,
+        "the delivery must supersede the stale key, or a re-added member never \
+         recovers from the rotation it could not apply"
     );
-    assert_eq!(current_id, held_key_id);
-}
-
-/// The seeding half, which is the case every legitimate unbound delivery is.
-///
-/// Without this the rule above could have been implemented as "refuse every
-/// unbound delivery", which would break `add_group_members`, `admit_tee_node`
-/// and the membership-driven pull — all of which deliver to a node that holds
-/// no key for the group.
-#[test]
-fn an_unbound_delivery_still_seeds_a_key_when_none_is_held() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-
-    let store = test_store();
-    let ns_gid = ContextGroupId::from([0xA8u8; 32]);
-    let sub_gid = ContextGroupId::from([0xA9u8; 32]);
-    let namespace_id = ns_gid.to_bytes();
-
-    let admin_sk = PrivateKey::from([0xAAu8; 32]);
-    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_account))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
-        .unwrap();
-    nest_for_test(&store, &ns_gid, &sub_gid);
-    MetaRepository::new(&store)
-        .save(&sub_gid, &sample_meta_with_admin(admin_account))
-        .unwrap();
-
-    let our_sk = PrivateKey::from([0xABu8; 32]);
-    let our_pk = our_sk.public_key();
-    let our_account = enrol_member(&store, &ns_gid, &our_pk);
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
-        .unwrap();
-
-    let namespace_key = [0xACu8; 32];
-    let _ = GroupKeyring::new(&store, ns_gid)
-        .store_key(&namespace_key)
-        .unwrap();
-
-    // The distinguishing precondition: no key for the subgroup.
-    assert!(
-        GroupKeyring::new(&store, sub_gid)
-            .load_current_key()
-            .unwrap()
-            .is_none(),
-        "precondition: nothing to replace, so this is the seeding case"
+    assert_ne!(
+        current_id, stale_key_id,
+        "and the stale key is no longer current"
     );
 
-    let delivered = [0xADu8; 32];
-    let envelope =
-        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &delivered).unwrap();
-    let sealed = NamespaceOp::RootSealed {
-        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
-        encrypted: GroupKeyring::encrypt_root_op(
-            &namespace_key,
-            &RootOp::KeyDelivery {
-                group_id: sub_gid.to_bytes().into(),
-                envelope,
-            },
-        )
-        .unwrap(),
-    };
-
-    let gov = NamespaceGovernance::new(&store, namespace_id.into());
-    let next_nonce = gov.read_head_record().expect("head").next_nonce;
-    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
-        .expect("the anchor signs the delivery");
-    gov.apply_signed_op(&op)
-        .expect("apply the seeding delivery");
-
-    let stored = GroupKeyring::new(&store, sub_gid)
-        .load_current_key()
-        .unwrap()
-        .expect("an unbound delivery must still seed a key when none is held");
-    assert_eq!(stored.1, delivered);
-}
-
-/// A BOUND delivery cannot replace a held key either, and that is the fix.
-///
-/// This test asserted the opposite one commit ago. The question "what if the
-/// key really switched?" led to exempting a bound delivery from
-/// seed-not-replace, on the reasoning that a rotation legitimately replaces the
-/// current key. Composed review of this path showed the exemption was the worst
-/// line in it.
-///
-/// `expected_key_ids` comes from the cleartext `key_id` of buffered
-/// `NamespaceOp::Group` envelopes. The receive path verifies only the topic and
-/// the signature (`handlers/network_event/namespace.rs`), an unresolvable
-/// `key_id` decrypts nothing and raises nothing, and the op is logged anyway —
-/// so the signer chooses that field and nothing checks it. The "third-party
-/// attestation" the binding was documented on is mintable by the same principal
-/// that then satisfies it, which made *bound* strictly more powerful than
-/// *unbound*: it turned "may seed" into "may replace".
-///
-/// Nothing legitimate needed the exemption, which is why this direction is
-/// safe. A real rotation never reaches this code: `apply_key_rotation` requires
-/// admin authority at the op's cut, binds content to `rotation.new_key_id`, and
-/// stores at a real DAG epoch that outranks every epoch-`0` key. A node holding
-/// the old key decrypts the rotation op and takes that path; a node holding no
-/// key is seeding. And the rotation op is causally ahead of every op encrypted
-/// under the new key, so a node that has those has the rotation too — the
-/// scenario this test used to construct cannot outlive a backfill.
-///
-/// `self_leave_rotation::group_key_rotated_discharges_the_debt_and_is_idempotent`
-/// is where a real switch is asserted.
-#[test]
-fn a_bound_delivery_cannot_replace_a_held_key_either() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-
-    let store = test_store();
-    let ns_gid = ContextGroupId::from([0xB8u8; 32]);
-    let sub_gid = ContextGroupId::from([0xB9u8; 32]);
-    let namespace_id = ns_gid.to_bytes();
-
-    let admin_sk = PrivateKey::from([0xBAu8; 32]);
-    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+    // The ordering property, asserted through behaviour rather than by reading
+    // the epoch column: an epoch-`0` key stored AFTERWARDS does not displace
+    // the delivered one. Under the old `store_key` path it would have, on
+    // `insertion_seq` alone -- which is the divergence #3871 described, since
+    // two nodes learning the pair in opposite orders would disagree.
+    let competing_key = [0xAAu8; 32];
+    let _ = GroupKeyring::new(&store, sub_gid)
+        .store_key(&competing_key)
         .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
-        .unwrap();
-    nest_for_test(&store, &ns_gid, &sub_gid);
-    MetaRepository::new(&store)
-        .save(&sub_gid, &sample_meta_with_admin(admin_account))
-        .unwrap();
-
-    let our_sk = PrivateKey::from([0xBBu8; 32]);
-    let our_pk = our_sk.public_key();
-    let our_account = enrol_member(&store, &ns_gid, &our_pk);
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
-        .unwrap();
-
-    let namespace_key = [0xBCu8; 32];
-    let _ = GroupKeyring::new(&store, ns_gid)
-        .store_key(&namespace_key)
-        .unwrap();
-
-    // This node holds the OLD key and missed the switch.
-    let old_key = [0xBDu8; 32];
-    let old_key_id = GroupKeyring::new(&store, sub_gid)
-        .store_key(&old_key)
-        .unwrap();
-
-    // The group's traffic is now under a new key, and those ops name its id —
-    // which is what makes the delivery below bound rather than unbound.
-    let new_key = [0xBEu8; 32];
-    let new_key_id = GroupKeyring::key_id_for(&new_key);
-    let buffered = SignedNamespaceOp::sign(
-        &admin_sk,
-        namespace_id.into(),
-        vec![],
-        1,
-        NamespaceOp::Group {
-            group_id: sub_gid.to_bytes().into(),
-            key_id: new_key_id.into(),
-            encrypted: GroupKeyring::encrypt_op(&new_key, &GroupOp::Noop).unwrap(),
-            key_rotation: None,
-        },
-    )
-    .unwrap();
-    NamespaceOpLogService::new(&store, namespace_id.into())
-        .store_signed_operation(&buffered)
-        .unwrap();
-    assert!(
-        namespace_group_keys_awaiting(&store, namespace_id.into())
-            .unwrap()
-            .iter()
-            .any(|(gid, kid)| *gid == sub_gid.to_bytes() && *kid == new_key_id),
-        "precondition: the node awaits the NEW key, which is what binds the delivery"
-    );
-
-    let envelope =
-        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &new_key).unwrap();
-    let sealed = NamespaceOp::RootSealed {
-        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
-        encrypted: GroupKeyring::encrypt_root_op(
-            &namespace_key,
-            &RootOp::KeyDelivery {
-                group_id: sub_gid.to_bytes().into(),
-                envelope,
-            },
-        )
-        .unwrap(),
-    };
-
-    let gov = NamespaceGovernance::new(&store, namespace_id.into());
-    let next_nonce = gov.read_head_record().expect("head").next_nonce;
-    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
-        .expect("the anchor signs the delivery");
-    gov.apply_signed_op(&op).expect("apply the bound delivery");
-
-    let (current_id, current) = GroupKeyring::new(&store, sub_gid)
+    let (_, still_current) = GroupKeyring::new(&store, sub_gid)
         .load_current_key()
         .unwrap()
         .expect("a key must still be current");
     assert_eq!(
-        current, old_key,
-        "a delivery may not replace a held key even when an op names the delivered \
-         one: that op's key_id is chosen by its signer and checked by nothing, so \
-         honouring it as authority to replace is the escalation this refuses"
+        still_current, rotated_key,
+        "a later epoch-0 key must NOT outrank a delivered key carrying a real \
+         epoch: ordering is by epoch, not by when this node happened to learn it"
     );
-    assert_eq!(current_id, old_key_id);
+}
+
+/// Re-delivering the same key is idempotent.
+///
+/// `store_key_with_epoch` is per-key-id monotone (`if epoch <= existing.epoch {
+/// return }`), so the sealed-root retry re-driving the same envelope -- which it
+/// does on every pass, since it re-feeds every sealed root op -- neither churns
+/// the row nor reorders anything.
+#[test]
+fn redelivering_the_same_key_is_idempotent() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xC1u8; 32]);
+    let key = [0xC2u8; 32];
+
+    let ring = GroupKeyring::new(&store, gid);
+    let first = ring.store_key_with_epoch(&key, 7).unwrap();
+    let again = ring.store_key_with_epoch(&key, 7).unwrap();
+    assert_eq!(
+        first, again,
+        "the same key at the same epoch is the same row"
+    );
+
+    let lower = ring.store_key_with_epoch(&key, 3).unwrap();
+    assert_eq!(
+        lower, first,
+        "and a lower epoch is ignored rather than lowering the row's standing"
+    );
+    let (current_id, current) = ring.load_current_key().unwrap().expect("current");
+    assert_eq!((current_id, current), (first, key));
 }
