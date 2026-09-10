@@ -641,7 +641,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // A subgroup is not: its namespace was announced when the account
                 // gained that.
                 if parent_group_id.is_none() {
-                    let _recorded = crate::account_namespace::announce(
+                    crate::account_namespace::announce(
                         &datastore,
                         &node_client,
                         &ack_router,
@@ -1194,9 +1194,8 @@ mod tests {
                 .is_none(),
             "and no op may be applied to the account namespace"
         );
-        // The load-bearing one: the two above also hold when the publish is
-        // attempted and refused a layer down, so what pins the guard is that the
-        // account namespace's topic was never reached at all.
+        // The load-bearing one: the two above also hold when a publish is
+        // attempted and refused a layer down, so the topic is what pins the guard.
         let topic = governance_broadcast::ns_topic(account_namespace.to_bytes().into()).to_string();
         assert!(
             !harness.broadcast_topics().contains(&topic),

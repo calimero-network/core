@@ -158,12 +158,20 @@ impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
                     }
 
                     // Seed the set with what this node already takes part in, so a
-                    // device paired later reads the account's whole history off one
-                    // DAG rather than needing every id handed to it again.
-                    let already =
-                        NamespaceRepository::new(&datastore).participating_namespaces()?;
+                    // device paired later reads the account's whole history off one DAG.
+                    let already = match NamespaceRepository::new(&datastore)
+                        .participating_namespaces()
+                    {
+                        Ok(namespaces) => namespaces,
+                        // Skipped, never fatal: the namespace exists by now, and
+                        // failing here would skip recording the holder's own device.
+                        Err(err) => {
+                            warn!(%err, "could not read this node's namespaces to seed the set");
+                            Vec::new()
+                        }
+                    };
                     for namespace in already {
-                        let _recorded = crate::account_namespace::announce(
+                        crate::account_namespace::announce(
                             &datastore,
                             &node_client,
                             &ack_router,

@@ -143,7 +143,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
 
                 // The account left, so every other device of it has to stop
                 // following the namespace too.
-                let _recorded = crate::account_namespace::announce(
+                crate::account_namespace::announce(
                     &datastore,
                     &node_client,
                     &ack_router,

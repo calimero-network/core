@@ -10,7 +10,10 @@
 //! This node is deliberately not a member: membership stays with the account, so
 //! each namespace named is followed through `follow_namespace::follow` - the same
 //! helper the account-follow listener uses - rather than through `join_namespace`,
-//! which would publish `MemberJoinedAt`.
+//! which would publish `MemberJoinedAt`. That happens before a refusal can, so a
+//! pairing this node declines leaves the caller's namespaces followed; the
+//! participation rows were already written pre-refusal, and the endpoint is
+//! admin-authenticated.
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::PairingOffer;
@@ -73,7 +76,7 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                     NodeDeviceRepository::new(&store).ensure_enrolled_into(&namespaces, genesis)?;
 
                 // Sign what we minted. The three values below are otherwise bare
-                // assertions by the time they reach the account holder — anyone able to
+                // assertions by the time they reach the account holder - anyone able to
                 // alter the payload in transit could put their own keys under this
                 // device id, and the certificate would name them. Signing with the
                 // device's own key proves the party offering the material generated it.

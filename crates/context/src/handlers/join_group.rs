@@ -724,7 +724,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // And tell the account's other devices, so they follow it too.
                 // After the bind, never before: no device may follow a namespace
                 // before the authority it needs there exists.
-                let _recorded = crate::account_namespace::announce(
+                crate::account_namespace::announce(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -923,9 +923,8 @@ mod tests {
         }
     }
 
-    /// The bundle a peer answers a join with. The endorsement it carries is what
-    /// authorises the membership, so a join without one is refused rather than
-    /// recorded, and nothing a successful join writes can be asserted on.
+    /// The bundle a peer answers a join with. Its endorsement authorises the
+    /// membership, so without one nothing a successful join writes exists to assert on.
     fn an_endorsing_bundle() -> calimero_node_primitives::join_bundle::JoinBundle {
         let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
         bundle.admitter_endorsement_bytes = Some(

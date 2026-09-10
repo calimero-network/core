@@ -120,11 +120,9 @@ pub(crate) enum AccountNamespaceChange {
 /// Tell this account's other devices that this node gained or left `namespace`.
 ///
 /// Best effort by design: a device that misses it re-reads the set from the DAG,
-/// and no creation, join or leave may fail because a publish did not. Mirrors
-/// `publish_device_certified`'s shape: `true` only once the local apply has
-/// recorded the set row, `false` when the set does not show the change; a
-/// failure, as opposed to a skip, is warned. `site` names the caller on the
-/// delivery metric.
+/// and no creation, join or leave may fail because a publish did not. Nothing to
+/// read back - a skip, a failure and a set that did not take the change are all
+/// warned here. `site` names the caller on the delivery metric.
 pub(crate) async fn announce(
     store: &Store,
     node_client: &NodeClient,
@@ -132,18 +130,14 @@ pub(crate) async fn announce(
     namespace: ContextGroupId,
     change: AccountNamespaceChange,
     site: &'static str,
-) -> bool {
-    match publish(store, node_client, ack_router, namespace, change, site).await {
-        Ok(recorded) => recorded,
-        Err(err) => {
-            warn!(
-                ?err,
-                ?namespace,
-                ?change,
-                "failed to tell this account's other devices about a namespace"
-            );
-            false
-        }
+) {
+    if let Err(err) = publish(store, node_client, ack_router, namespace, change, site).await {
+        warn!(
+            ?err,
+            ?namespace,
+            ?change,
+            "failed to tell this account's other devices about a namespace"
+        );
     }
 }
 
@@ -154,19 +148,19 @@ async fn publish(
     namespace: ContextGroupId,
     change: AccountNamespaceChange,
     site: &'static str,
-) -> EyreResult<bool> {
+) -> EyreResult<()> {
     let Some(account_namespace) = NodeDeviceRepository::new(store).account_namespace()? else {
-        return Ok(false);
+        return Ok(());
     };
     if account_namespace == namespace {
-        return Ok(false);
+        return Ok(());
     }
     // Participation, not the row: the holder names its account namespace before
     // creating it, and this is what says there is a DAG to write to.
     let Some((_signer_pk, signer_sk)) =
         NamespaceRepository::new(store).identity(&account_namespace)?
     else {
-        return Ok(false);
+        return Ok(());
     };
 
     let op = match change {
@@ -204,15 +198,14 @@ async fn publish(
     let named = AccountNamespaceSet::new(store, account_namespace)
         .contains(namespace)?
         .is_some();
-    let recorded = named == matches!(change, AccountNamespaceChange::Gained);
-    if !recorded {
+    if named != matches!(change, AccountNamespaceChange::Gained) {
         warn!(
             ?namespace,
             ?change,
             "the account namespace did not take the change"
         );
     }
-    Ok(recorded)
+    Ok(())
 }
 
 /// The application `namespace` targets, as this node has folded it so far.
