@@ -32,11 +32,23 @@ use calimero_context_client::group::{
     RevocationOutcome, RevokeDeviceRequest, RevokeDeviceResponse,
 };
 use calimero_context_client::local_governance::GroupOp;
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::identity::PrivateKey;
+use calimero_store::Store;
+use eyre::Result as EyreResult;
 use tracing::warn;
 
 use crate::ContextManager;
+
+/// The namespaces a withdrawal is published into, this node's account namespace
+/// LAST: its apply drives this node's own carry, which must find the rest gone.
+pub(crate) fn revocation_namespaces(store: &Store) -> EyreResult<Vec<ContextGroupId>> {
+    let account_namespace = NodeDeviceRepository::new(store).account_namespace()?;
+    let mut namespaces = NamespaceRepository::new(store).participating_namespaces()?;
+    namespaces.sort_by_key(|namespace| Some(*namespace) == account_namespace);
+    Ok(namespaces)
+}
 
 impl Handler<RevokeDeviceRequest> for ContextManager {
     type Result = ActorResponse<Self, <RevokeDeviceRequest as Message>::Result>;
@@ -189,7 +201,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
                 // Publication stays per-DAG. Wider validity is not wider reach: the
                 // op takes effect in a namespace when it is published there, which
                 // is what this loop does, one namespace at a time.
-                let namespaces = NamespaceRepository::new(&store).participating_namespaces()?;
+                let namespaces = revocation_namespaces(&store)?;
                 let mut revoked_in = Vec::new();
 
                 for ns in namespaces {
@@ -240,5 +252,42 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+    use calimero_store::db::InMemoryDB;
+
+    use super::{revocation_namespaces, ContextGroupId, Store};
+
+    /// Last, whatever the key-ordered scan says: the account namespace's apply
+    /// drives this node's own carry, which then finds the rest already gone.
+    #[test]
+    fn the_account_namespace_is_withdrawn_from_last() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        // Sorts FIRST in the scan, so the order cannot come out right by luck.
+        let account_namespace = ContextGroupId::from([0x01; 32]);
+        let projects = [
+            ContextGroupId::from([0x81; 32]),
+            ContextGroupId::from([0x82; 32]),
+        ];
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&account_namespace)
+            .expect("record what the pairing named");
+        let namespaces = NamespaceRepository::new(&store);
+        for namespace in [account_namespace, projects[0], projects[1]] {
+            let _identity = namespaces
+                .participate_in(&namespace)
+                .expect("take part in it");
+        }
+
+        assert_eq!(
+            revocation_namespaces(&store).expect("read the namespaces"),
+            vec![projects[0], projects[1], account_namespace],
+        );
     }
 }

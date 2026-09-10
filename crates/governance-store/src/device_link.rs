@@ -306,13 +306,16 @@ pub async fn revoke_device_in(
     op: GroupOp,
 ) -> EyreResult<bool> {
     // Admin-ness is a question about THIS namespace, and so is the account a
-    // signing key speaks for, so both are answered where the op is going.
-    let signer_account = member_account_in_namespace(store, namespace, &signer_sk.public_key())?;
-    let is_admin_here = signer_account.is_some_and(|account| {
-        MembershipRepository::new(store)
-            .is_admin(namespace, &account)
-            .unwrap_or(false)
-    });
+    // signing key speaks for, so both are answered where the op is going. A read
+    // that fails costs the rotation and never the withdrawal, as the one beside it.
+    let is_admin_here = member_account_in_namespace(store, namespace, &signer_sk.public_key())
+        .ok()
+        .flatten()
+        .is_some_and(|account| {
+            MembershipRepository::new(store)
+                .is_admin(namespace, &account)
+                .unwrap_or(false)
+        });
 
     let report = if is_admin_here {
         GroupGovernancePublisher::new(store, node_client, *namespace)
@@ -348,8 +351,12 @@ mod tests {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::GroupMetaValue;
 
+    use calimero_primitives::context::GroupMemberRole;
+
     use super::*;
-    use crate::test_fixtures::{namespace_publish_fixture, test_group_id, test_store};
+    use crate::test_fixtures::{
+        enrol_member, namespace_publish_fixture, test_group_id, test_store,
+    };
     use crate::{AccountBindingRepository, MembershipRepository};
 
     const APP_ONE: [u8; 32] = [0x11; 32];
@@ -1055,6 +1062,65 @@ mod tests {
             Some(BindOutcome::Linked {
                 key_delivered: true
             }),
+        );
+    }
+
+    /// The one thing the extraction changed: what the operator is told about the
+    /// rotation. Only an admin's withdrawal carries one; a member leaves it owed.
+    #[actix::test]
+    async fn the_rotation_rides_along_only_for_an_admin_signer() {
+        let (store, node_client, ack_router, ns_id, admin_sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&admin_sk.public_key());
+        let cert = certify(&root, 0x7D, [0x7D; 32]);
+        let device = cert.statement.device;
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &cert.genesis, &cert.chain, &cert.statement)
+            .expect("bind the device the withdrawal names");
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key the rotation replaces");
+        let op = GroupOp::AccountDeviceUnlinked {
+            account: cert.statement.account,
+            device,
+            proof: None,
+        };
+
+        assert!(
+            revoke_device_in(
+                &store,
+                &node_client,
+                &ack_router,
+                &ns,
+                &admin_sk,
+                device,
+                op.clone()
+            )
+            .await
+            .expect("the admin's withdrawal publishes"),
+            "an admin may rotate, so the rotation rides on the withdrawal"
+        );
+
+        let member_sk = PrivateKey::from([0x5A; 32]);
+        let member = enrol_member(&store, &ns, &member_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns, &member, GroupMemberRole::Member)
+            .expect("a plain member of this namespace");
+
+        assert!(
+            !revoke_device_in(
+                &store,
+                &node_client,
+                &ack_router,
+                &ns,
+                &member_sk,
+                device,
+                op
+            )
+            .await
+            .expect("the member's withdrawal publishes"),
+            "a plain member withdraws the device and leaves the rotation owed"
         );
     }
 }
