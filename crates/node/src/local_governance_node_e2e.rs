@@ -2090,13 +2090,20 @@ async fn restricted_ctx_redriven_after_group_created() {
 
     apply_signed_namespace_op(&store, &key_delivery_op).expect("apply KeyDelivery");
 
-    // The key landed (so retry HAD a candidate and DID run)...
+    // The delivery is DEFERRED, not applied (#3891). Its group has not folded
+    // here, so `key_delivery_anchors` resolves no anchors for it and there is no
+    // verdict to reach. This assertion is INVERTED from what it was: it used to
+    // require the key to land HERE, which is the namespace-anchor fallback that
+    // let a namespace anchor key a Restricted subgroup it is not a member of.
+    // `GroupCreated` re-drives the delivery below, so nothing is lost -- which
+    // is the whole point of deferring rather than refusing.
     assert!(
         GroupKeyring::new(&store, sub_gid)
             .load_key_by_id(&key_id)
             .expect("load key by id")
-            .is_some(),
-        "KeyDelivery must store the subgroup key (the retry trigger ran)"
+            .is_none(),
+        "the delivery must be deferred while the subgroup's own anchors are \
+         unresolvable, not authorized against the NAMESPACE's anchors"
     );
     // ...but the retry FAILED at the staleness check (subgroup meta absent →
     // GroupNotFoundForHash), so the context is STILL not registered: stranded.
@@ -2141,6 +2148,20 @@ async fn restricted_ctx_redriven_after_group_created() {
             .expect("load subgroup meta")
             .is_some(),
         "GroupCreated must have written the subgroup meta row"
+    );
+
+    // The deferred delivery was re-driven by `GroupCreated`, and it had to land
+    // BEFORE the buffered-op retry could decrypt anything -- which is why the
+    // sealed-root re-drive runs ahead of that retry's `holds_any_key` gate in
+    // `root_op_side_effects`. End-to-end proof that deferral costs nothing.
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_key_by_id(&key_id)
+            .expect("load key by id")
+            .is_some(),
+        "GroupCreated must re-drive the deferred KeyDelivery: the subgroup's own \
+         anchors now resolve and name this signer, so the same delivery applies \
+         on its merits"
     );
 
     // ---- (a) the previously-buffered ContextRegistered is now applied --------

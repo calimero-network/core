@@ -2765,17 +2765,35 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// When either anchor set cannot be read. A store failure is not a verdict;
     /// see the caller.
+    /// Who may authorize a `KeyDelivery` for `group_id`: that group's own
+    /// anchors, and nobody else.
+    ///
+    /// This used to fall back to the NAMESPACE's anchors whenever the group's
+    /// own set was empty, so that a delivery racing ahead of its group's
+    /// `GroupCreated` still applied. That window was far wider than intended
+    /// (#3891): `anchor_device_keys` is empty for a group with no meta and no
+    /// member rows *on this node*, for a 32-byte id naming no group at all, and
+    /// whenever a group's real anchors exist but no device binding has folded
+    /// here yet. Inside it a namespace owner/admin/TEE could plant a key for a
+    /// **Restricted** subgroup it is not a member of and holds no key for —
+    /// exactly the boundary #3858/#3860 drew — for the whole of every member's
+    /// pre-join window.
+    ///
+    /// The stranded delivery is not refused, it is DEFERRED. Nothing here reads
+    /// state the delivery's own arrival could have raced, so there is no
+    /// cold-start gate to get wrong: when the group is unknown the answer is
+    /// simply "not yet", and `GroupCreated` re-drives the sealed-root retry as
+    /// one of its side effects, which re-feeds this op once meta and the admin
+    /// row exist. Then this function answers with the group's real anchors and
+    /// the same delivery applies — or is refused on its merits, which is the
+    /// point. `add_group_members` seals its delivery
+    /// (`seal_root_op_for_publish`), so `collect_sealed_root_ops` sees it and
+    /// the retry is a genuine second door rather than a hope.
     fn key_delivery_anchors(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<(std::collections::BTreeSet<PublicKey>, bool)> {
-        let repo = MembershipRepository::new(self.store);
-        let own = repo.anchor_device_keys(group_id)?;
-        if !own.is_empty() {
-            return Ok((own, false));
-        }
-        let ns = ContextGroupId::from(self.namespace_id.to_bytes());
-        Ok((repo.anchor_device_keys(&ns)?, true))
+    ) -> EyreResult<std::collections::BTreeSet<PublicKey>> {
+        MembershipRepository::new(self.store).anchor_device_keys(group_id)
     }
 
     /// Everything a root op does BEYOND folding its own state.
@@ -2866,7 +2884,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // (which must propagate: a rotation dropped is a node that
                 // cannot read later ops) this delivery has the pull behind it.
                 match self.key_delivery_anchors(group_id) {
-                    Ok((anchors, _)) if anchors.contains(&op.signer) => {
+                    Ok(anchors) if anchors.contains(&op.signer) => {
                         // Authorized. Now bind the CONTENT where anything
                         // signed can speak to it: if a buffered op already
                         // names this group's `key_id`, the delivered key must
@@ -2920,22 +2938,48 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                         }
                     }
-                    Ok((anchors, fell_back_to_namespace)) => {
+                    Ok(anchors) if anchors.is_empty() => {
+                        // DEFERRED, not refused, and the log must not conflate
+                        // the two. An empty anchor set means this group's
+                        // governance has not folded here yet, so there is no
+                        // verdict to reach -- `GroupCreated` re-drives the
+                        // sealed-root retry as one of its side effects, which
+                        // re-feeds this op once meta and the admin row exist.
+                        // Falling back to the NAMESPACE's anchors here is what
+                        // let a namespace anchor key a Restricted subgroup it is
+                        // not in (#3891).
+                        //
                         // `info`, not `debug`: on the default filter a `debug`
                         // line emits nothing, so an operator asking why a node
-                        // never got a key would have no evidence either way. Not
-                        // `warn`, because a peer that cannot yet name this
-                        // group's anchors reaches here legitimately and the pull
-                        // recovers it — `anchors_known` tells those two apart.
+                        // never got a key would have no evidence either way.
                         tracing::info!(
                             group_id = %hex::encode(group_id.to_bytes()),
                             signer = %op.signer,
-                            anchors_known = !anchors.is_empty(),
-                            scope = if fell_back_to_namespace { "namespace" } else { "group" },
+                            "deferring a KeyDelivery: this group's governance has not \
+                             folded here, so its trusted anchors cannot be resolved and \
+                             the delivery is neither authorized nor refused on its \
+                             merits; GroupCreated re-drives it, and the key pull is the \
+                             durable backstop"
+                        );
+                        effects.key_unwrap_failures.push(KeyUnwrapFailure {
+                            group_id: group_id.to_bytes(),
+                            reason: format!(
+                                "KeyDelivery deferred: this group's anchors are not \
+                                 resolvable yet, so signer {} is unjudged",
+                                op.signer
+                            ),
+                        });
+                    }
+                    Ok(_) => {
+                        // Refused on the merits: the group's real anchors are
+                        // known and this signer is not one of them. Final for
+                        // this op, unlike the deferral above.
+                        tracing::info!(
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            signer = %op.signer,
                             "refusing a KeyDelivery from a non-anchor: an unverifiable \
                              key is accepted only from a trusted anchor of the group it \
-                             is delivered for, or of this namespace while that group's \
-                             own governance has not folded yet; leaving it to the key pull"
+                             is delivered for; leaving it to the key pull"
                         );
                         effects.key_unwrap_failures.push(KeyUnwrapFailure {
                             group_id: group_id.to_bytes(),
@@ -3081,6 +3125,52 @@ impl<'a> NamespaceGovernance<'a> {
                 // since purge clears keys) the retry is skipped without
                 // touching the op-log. Best-effort: log, never
                 // propagate.
+                // #3891: a `KeyDelivery` for this group that arrived BEFORE this
+                // op was deferred, not refused -- its anchors could not be
+                // resolved because this very op had not folded. Now they can, so
+                // re-feed the sealed root ops and let the same delivery be
+                // judged on the group's real anchors. This runs before the
+                // group-op retry below because the delivery is what stores the
+                // key that retry needs, and before its `holds_any_key` gate,
+                // which is false precisely while the key is still undelivered.
+                //
+                // Only on a FRESH arrival (`depth == 0`), and that is not a
+                // depth bound dressed up -- it is the condition that makes sense.
+                // `retry_sealed_root_ops` re-feeds every sealed root op in the
+                // log, `GroupCreated` included, and it does not check
+                // `MAX_RETRY_REENTRY` itself: it hands `depth + 1` to
+                // `root_op_side_effects`, and the existing call sites are the
+                // ones sitting under a guard. Re-entering from here with `depth`
+                // unchanged recurses until the stack goes, which is what
+                // `governance_group_created_honors_can_create_subgroup_at_root_only`
+                // caught. A replayed `GroupCreated` needs no pass of its own
+                // anyway: it is already inside one, which will walk the rest of
+                // the log without help.
+                //
+                // The fold ran before this (`apply_root_op` above), so meta and
+                // the admin row exist by now and a deferred delivery for this
+                // group is judged on the group's own anchors. Ops are walked in
+                // store-key order, so a delivery re-fed BEFORE its
+                // `GroupCreated` inside one pass defers once more and waits for
+                // the next trigger or the pull -- bounded, and not the path a
+                // real arrival takes.
+                if depth == 0 {
+                    match self.retry_sealed_root_ops(depth) {
+                        Ok(pass) => {
+                            if pass.divergence.is_some() {
+                                effects.divergence = pass.divergence;
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            ?e,
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            "sealed-root re-drive after GroupCreated failed, so a deferred \
+                             KeyDelivery for this group stays deferred until the next pass \
+                             or the key pull (#3891)"
+                        ),
+                    }
+                }
+
                 let gid = *group_id;
                 let gid_typed = gid;
                 let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
