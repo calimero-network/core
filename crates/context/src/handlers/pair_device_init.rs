@@ -16,7 +16,7 @@ use calimero_account::PairingOffer;
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
 use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::identity::PrivateKey;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::ContextManager;
 
@@ -146,6 +146,11 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                     node_client
                         .subscribe_namespace(namespace_id.to_bytes())
                         .await?;
+                    // Every other subscriber pulls straight after subscribing:
+                    // gossip only carries what is published from now on.
+                    if let Err(err) = node_client.sync_namespace(namespace_id.to_bytes()).await {
+                        warn!(?namespace_id, %err, "failed to queue the namespace governance pull");
+                    }
                 }
 
                 info!(
