@@ -10398,20 +10398,31 @@ fn a_key_delivery_from_an_admitted_tee_node_is_applied() {
     assert_eq!(stored.1, subgroup_key);
 }
 
-/// A delivery that races ahead of its group's `GroupCreated` still applies, if
-/// the signer is an anchor of the NAMESPACE.
+/// A delivery that races ahead of its group's `GroupCreated` is DEFERRED, and
+/// `GroupCreated` re-drives it.
 ///
 /// This is the stranded-delivery case: `add_group_members` publishes the key
 /// alongside the group's creation, and the key can arrive first. Until
 /// `GroupCreated` folds there is no meta and no member row, so the group's own
-/// anchor set is empty — and a gate that refused on an empty set would refuse
-/// exactly the deliveries the op exists for. `local_governance_node_e2e`'s
-/// `restricted_ctx_redriven_after_group_created` is the end-to-end version of
-/// this, but it compiles only under `--features mock-attestation`, so the rule
-/// gets a home here too.
+/// anchor set is empty.
+///
+/// **This test asserted the opposite one commit ago**, and the reversal is the
+/// point. The old rule fell back to the NAMESPACE's anchors while a group's own
+/// governance had not folded, so that such a delivery applied immediately. That
+/// window is far wider than "racing a `GroupCreated`" — it is also every
+/// member's entire pre-join window for a Restricted subgroup, and a 32-byte id
+/// naming no group at all — so a namespace anchor could plant a key for a
+/// Restricted subgroup it is not a member of, crossing the boundary #3858/#3860
+/// drew (#3891).
+///
+/// Deferring loses nothing, which is what makes the fallback unnecessary rather
+/// than merely dangerous: `GroupCreated`'s side effects re-drive the sealed-root
+/// retry, which re-feeds this very op once meta and the admin row exist, and
+/// `add_group_members` seals its delivery so `collect_sealed_root_ops` sees it.
+/// The pull remains the durable backstop.
 #[test]
-fn a_stranded_key_delivery_applies_from_a_namespace_anchor() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     let store = test_store();
     let ns_gid = ContextGroupId::from([0xE8u8; 32]);
@@ -10445,7 +10456,7 @@ fn a_stranded_key_delivery_applies_from_a_namespace_anchor() {
             .load(&sub_gid)
             .unwrap()
             .is_none(),
-        "precondition: the subgroup must be unfolded, or this tests the ordinary path"
+        "precondition: the subgroup has not folded, so its anchors are unresolvable"
     );
 
     let namespace_key = [0xECu8; 32];
@@ -10457,30 +10468,76 @@ fn a_stranded_key_delivery_applies_from_a_namespace_anchor() {
     let envelope =
         GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &subgroup_key)
             .unwrap();
-    let sealed = NamespaceOp::RootSealed {
-        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
-        encrypted: GroupKeyring::encrypt_root_op(
-            &namespace_key,
-            &RootOp::KeyDelivery {
-                group_id: sub_gid.to_bytes().into(),
-                envelope,
-            },
-        )
-        .unwrap(),
-    };
+    let delivery = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::KeyDelivery {
+            group_id: sub_gid.to_bytes().into(),
+            envelope,
+        },
+    );
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
-    let next_nonce = gov.read_head_record().expect("head").next_nonce;
-    let op = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], next_nonce, sealed)
-        .expect("the namespace admin signs the delivery");
-    gov.apply_signed_op(&op)
-        .expect("apply the stranded delivery");
+    let head = gov.read_head_record().expect("head");
+    let signed = SignedNamespaceOp::sign(
+        &admin_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        delivery,
+    )
+    .expect("the namespace admin signs the delivery");
+    gov.apply_signed_op(&signed)
+        .expect("a deferral is a skipped effect, not a DAG failure");
+
+    // Deferred: nothing was stored, because nothing here could judge the signer.
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "a delivery for a group whose anchors cannot be resolved must not be \
+         authorized by the NAMESPACE's anchors: that is what let a namespace \
+         anchor key a Restricted subgroup it is not in"
+    );
+
+    // Now the group's governance folds, naming this same admin as its admin —
+    // so the group's own anchor set resolves, and the re-drive judges the
+    // delivery on it.
+    let head = gov.read_head_record().expect("head");
+    let create = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::GroupCreated {
+            admin: admin_account,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
+            restricted: true,
+        },
+    );
+    let signed_create = SignedNamespaceOp::sign(
+        &admin_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        create,
+    )
+    .expect("the namespace admin signs GroupCreated");
+    gov.apply_signed_op(&signed_create)
+        .expect("GroupCreated applies");
 
     let stored = GroupKeyring::new(&store, sub_gid)
         .load_current_key()
         .unwrap()
-        .expect("a namespace anchor may seed a key for a group that has not folded yet");
-    assert_eq!(stored.1, subgroup_key);
+        .expect(
+            "GroupCreated must re-drive the deferred delivery: the group's own anchors \
+             now resolve and name this signer, so the delivery is authorized on its \
+             merits rather than on a namespace-wide fallback",
+        );
+    assert_eq!(
+        stored.1, subgroup_key,
+        "and the key that lands is the one the delivery carried"
+    );
 }
 
 /// The stranded-delivery fallback is not a hole.
