@@ -8,6 +8,20 @@ use serde_json::Value;
 
 use crate::workspace;
 
+/// The registry's closed category vocabulary, mirrored from
+/// `app-registry/packages/backend/src/lib/metadata-policy.js`. Exactly one per
+/// app; free-form `tags` remain open alongside it.
+pub const CATEGORIES: &[&str] = &[
+    "games",
+    "productivity",
+    "communication",
+    "art-design",
+    "planning",
+    "social",
+    "utilities",
+    "developer-tools",
+];
+
 /// Resolved bundle metadata, as `build` and `bundle` consume it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleMeta {
@@ -19,6 +33,8 @@ pub struct BundleMeta {
     pub icon: Option<String>,
     pub slug: Option<String>,
     pub license: Option<String>,
+    /// Primary storefront category. Exactly one, from `CATEGORIES`.
+    pub category: Option<String>,
     pub tags: Vec<String>,
     pub github: Option<String>,
     pub docs: Option<String>,
@@ -52,6 +68,7 @@ struct RawCalimeroMeta {
     icon: Option<String>,
     slug: Option<String>,
     license: Option<String>,
+    category: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
     github: Option<String>,
@@ -275,6 +292,23 @@ fn load_from_values(
         }
     }
 
+    // A category typo should fail at `cargo mero build`, not after a signed
+    // publish round-trip. The registry enforces the same closed set; these two
+    // lists must not drift.
+    let category = match raw.category {
+        Some(c) => {
+            let c = c.trim().to_lowercase();
+            if !CATEGORIES.contains(&c.as_str()) {
+                return Err(eyre!(
+                    "unknown category `{c}`: expected one of {}",
+                    CATEGORIES.join(", ")
+                ));
+            }
+            Some(c)
+        }
+        None => None,
+    };
+
     Ok(BundleMeta {
         package,
         name: raw.name.or_else(|| Some(crate_name.to_string())),
@@ -283,6 +317,7 @@ fn load_from_values(
         icon: raw.icon,
         slug: raw.slug,
         license: raw.license,
+        category,
         tags: raw.tags,
         github: raw.github,
         docs: raw.docs,
@@ -558,6 +593,45 @@ mod tests {
         assert_eq!(meta.tags, vec!["social".to_owned(), "chat".to_owned()]);
         assert_eq!(meta.github.as_deref(), Some("https://github.com/acme/demo"));
         assert_eq!(meta.docs.as_deref(), Some("https://docs.acme.com"));
+    }
+
+    #[test]
+    fn accepts_a_known_category_and_normalises_its_case() {
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            category = "Art-Design"
+        "#;
+        let meta = parse_for_test(toml).expect("parses");
+        assert_eq!(meta.category.as_deref(), Some("art-design"));
+    }
+
+    #[test]
+    fn rejects_a_category_outside_the_registry_vocabulary() {
+        // The registry refuses this at publish. Failing at build time turns a
+        // signed round-trip into a compile-time typo.
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            category = "gamez"
+        "#;
+        let err = parse_for_test(toml).expect_err("must reject");
+        assert!(
+            err.to_string().contains("unknown category `gamez`"),
+            "unhelpful error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_missing_category_is_not_an_error_here() {
+        // Every published bundle predates the field; the registry decides
+        // whether its absence blocks a publish, not the builder.
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+        "#;
+        let meta = parse_for_test(toml).expect("parses");
+        assert_eq!(meta.category, None);
     }
 
     #[test]
