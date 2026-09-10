@@ -284,6 +284,20 @@ pub fn opened_root(
     )
 }
 
+/// Poll `read` until it answers true, bounded. A gain whose namespace has no
+/// target yet is announced off the caller, so a set read straight after a
+/// create or an ensure is a race the caller cannot win.
+#[cfg(test)]
+pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if read() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
 /// A live [`ContextManager`](crate::ContextManager) over a caller-supplied
 /// store, for handler logic that only an actor can reach.
 ///

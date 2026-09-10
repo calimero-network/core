@@ -1204,6 +1204,61 @@ mod tests {
         );
     }
 
+    /// A gain announced before its namespace's target has folded would record no
+    /// application, and no scoped device would ever follow it. Nothing re-drives
+    /// the gain, so it has to wait for the target rather than record none.
+    #[actix::test]
+    async fn a_gain_waits_for_its_namespaces_target_before_recording_it() {
+        let store = store();
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        // App-less, so the gain reads no target: the state a join is in while
+        // the namespace's own meta has not folded here yet.
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let metas = MetaRepository::new(&store);
+        let mut meta = metas
+            .load(&created.group_id)
+            .expect("read the meta")
+            .expect("the creation wrote one");
+        meta.target.application_id = ApplicationId::from(APP);
+        metas
+            .save(&created.group_id, &meta)
+            .expect("the target folds after the gain was announced");
+
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        assert!(
+            crate::test_support::eventually(|| set
+                .contains(created.group_id)
+                .expect("read the set")
+                == Some(Some(ApplicationId::from(APP))))
+            .await,
+            "the gain never recorded the target application its namespace folded"
+        );
+    }
+
     /// The account namespace runs no application. Its target stays the unset one
     /// a cold-start seed writes, and no target op is put on its DAG: the ladder
     /// rung is written only by that op, so an empty ladder proves it never went.

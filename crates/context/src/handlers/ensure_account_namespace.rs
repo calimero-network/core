@@ -458,18 +458,26 @@ mod tests {
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
 
-        let mut backfilled: Vec<_> = AccountNamespaceSet::new(&store, account_namespace)
-            .namespaces()
-            .expect("read the set")
-            .into_iter()
-            .map(|(namespace, _)| namespace)
-            .collect();
-        backfilled.sort();
+        // Neither has a target, so each gain is announced only once its wait for
+        // one runs out - off the ensure, which is why this polls.
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        let backfilled = || {
+            let mut listed: Vec<_> = set
+                .namespaces()
+                .expect("read the set")
+                .into_iter()
+                .map(|(namespace, _)| namespace)
+                .collect();
+            listed.sort();
+            listed
+        };
         let mut expected = vec![ContextGroupId::from(NS_ONE), ContextGroupId::from(NS_TWO)];
         expected.sort();
-        assert_eq!(
-            backfilled, expected,
-            "one op per namespace already taken part in, and never the account namespace itself"
+        assert!(
+            crate::test_support::eventually(|| backfilled() == expected).await,
+            "one op per namespace already taken part in, and never the account \
+             namespace itself; got {:?}",
+            backfilled()
         );
 
         // The backfill rides `if !exists` only, so a second ensure must not re-run it.

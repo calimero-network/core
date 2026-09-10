@@ -7,6 +7,9 @@
 //! with no account namespace of its own has nowhere to write, and it is never
 //! announced into itself - is the same at all four of its callers.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use calimero_account::{AccountProof, DeviceCert, DeviceScope};
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
@@ -20,7 +23,14 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::warn;
+use tokio::time::sleep;
+use tracing::{debug, warn};
+
+#[cfg(not(test))]
+const TARGET_WAIT_INTERVAL: Duration = Duration::from_secs(1); // how often a target-less gain re-reads the namespace's meta
+#[cfg(test)]
+const TARGET_WAIT_INTERVAL: Duration = Duration::from_millis(20); // the same wait, shortened so tests do not sit out the real one
+const TARGET_WAIT_ATTEMPTS: u32 = 30; // how many of those before the gain is announced with no target
 
 /// Record `certificate` and `applications` in `namespace`'s registry, at the
 /// next scope epoch for that device.
@@ -122,8 +132,65 @@ pub(crate) enum AccountNamespaceChange {
 /// Best effort by design: a device that misses it re-reads the set from the DAG,
 /// and no creation, join or leave may fail because a publish did not. Nothing to
 /// read back - a skip, a failure and a set that did not take the change are all
-/// warned here. `site` names the caller on the delivery metric.
+/// warned here, and a gain with no target yet publishes after this has returned.
+/// `site` names the caller on the delivery metric.
 pub(crate) async fn announce(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &Arc<AckRouter>,
+    namespace: ContextGroupId,
+    change: AccountNamespaceChange,
+    site: &'static str,
+) {
+    if let AccountNamespaceChange::Gained = change {
+        // A namespace's meta can fold well after the bind that gained it, and no
+        // event says when, so a gain with no target waits for one off the caller.
+        if matches!(target_application(store, namespace), Ok(None)) {
+            wait_for_target_then_announce(store, node_client, ack_router, namespace, site);
+            return;
+        }
+    }
+    publish_or_warn(store, node_client, ack_router, namespace, change, site).await;
+}
+
+/// Announce the gain of `namespace` once its target application is known, or
+/// with none once [`TARGET_WAIT_ATTEMPTS`] have passed. Detached; never awaited.
+fn wait_for_target_then_announce(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &Arc<AckRouter>,
+    namespace: ContextGroupId,
+    site: &'static str,
+) {
+    let store = store.clone();
+    let node_client = node_client.clone();
+    let ack_router = Arc::clone(ack_router);
+    drop(tokio::spawn(async move {
+        for _ in 0..TARGET_WAIT_ATTEMPTS {
+            sleep(TARGET_WAIT_INTERVAL).await;
+            if !matches!(target_application(&store, namespace), Ok(None)) {
+                break;
+            }
+        }
+        if matches!(target_application(&store, namespace), Ok(None)) {
+            debug!(
+                ?namespace,
+                "no target application after waiting; announcing the gain with none"
+            );
+        }
+        publish_or_warn(
+            &store,
+            &node_client,
+            &ack_router,
+            namespace,
+            AccountNamespaceChange::Gained,
+            site,
+        )
+        .await;
+    }));
+}
+
+async fn publish_or_warn(
     store: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
@@ -164,20 +231,10 @@ async fn publish(
     };
 
     let op = match change {
-        AccountNamespaceChange::Gained => {
-            let application = target_application(store, namespace)?;
-            if application.is_none() {
-                warn!(
-                    ?namespace,
-                    "target unknown at announce; scoped devices will not follow it \
-                     until it is re-announced"
-                );
-            }
-            GroupOp::AccountNamespaceGained {
-                namespace,
-                application,
-            }
-        }
+        AccountNamespaceChange::Gained => GroupOp::AccountNamespaceGained {
+            namespace,
+            application: target_application(store, namespace)?,
+        },
         AccountNamespaceChange::Left => GroupOp::AccountNamespaceLeft { namespace },
     };
     let op_kind = op.op_kind_label();

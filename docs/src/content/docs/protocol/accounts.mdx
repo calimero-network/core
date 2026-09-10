@@ -311,7 +311,9 @@ The **namespace set**: one row per namespace the account is a member of, with th
 Whichever device gains a namespace writes the line, and it is written *after* the links it publishes there, so no device follows a namespace before the authority it needs there exists.
 A gain announced before the account namespace itself exists publishes nothing at all - the holder names the id before creating it, and there is no DAG to write to yet - which is why the holder backfills instead.
 When it first creates its account namespace it backfills one line per namespace it already takes part in, so a device paired later reads the account's whole history off one DAG.
-A gain that reaches the line before its namespace's target application has folded records no application, and no scoped device follows it until a later gain restates it; recording one never un-knows an application the set already holds.
+A gain that reaches the line before its namespace's target application has folded does not write it yet: it waits, re-reading the namespace's own metadata for up to thirty seconds, because no event announces a first target and nothing would re-drive the gain.
+Once the window closes it writes the line anyway, with no application - an app-less root is legitimate, and an unscoped device follows either way.
+Recording a line never un-knows an application the set already holds.
 
 **What a device does with it.**
 On a gain whose application its own registry scope covers, it follows the namespace: it records participation, subscribes, and pulls the namespace once.

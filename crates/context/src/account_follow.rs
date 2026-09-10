@@ -212,10 +212,20 @@ fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
             if namespace == account_namespace {
                 continue;
             }
-            if set.contains(namespace)?.is_none()
-                && !members.is_member(&namespace, &held.account)?
-            {
-                left.push(namespace);
+            let dropped = || -> EyreResult<bool> {
+                Ok(set.contains(namespace)?.is_none()
+                    && !members.is_member(&namespace, &held.account)?)
+            };
+            match dropped() {
+                Ok(true) => left.push(namespace),
+                Ok(false) => {}
+                // Skipped, not fatal: a namespace whose reads fail is one this
+                // sweep knows nothing about, and the next start asks again.
+                Err(err) => warn!(
+                    ?err,
+                    ?namespace,
+                    "account-follow: failed to decide whether the account left a namespace"
+                ),
             }
         }
         Ok(left)
@@ -611,17 +621,25 @@ mod tests {
         ))
     }
 
-    /// Poll until `namespace`'s topic shows up among the unsubscribes. The
-    /// recorder drains on read, so what it hands back has to accumulate.
-    async fn unfollowed(harness: &mut actor::Harness, namespace: ContextGroupId) -> bool {
-        let topic = format!("ns/{}", hex::encode(namespace.to_bytes()));
+    fn topic(namespace: ContextGroupId) -> String {
+        format!("ns/{}", hex::encode(namespace.to_bytes()))
+    }
+
+    /// Poll until `done` holds over every unsubscribe seen so far, and hand back
+    /// what was seen. The recorder drains on read, so the accumulation is here.
+    async fn unsubscribes_until(
+        harness: &mut actor::Harness,
+        done: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let mut seen = Vec::new();
         for _ in 0..100 {
-            if harness.unsubscribed().contains(&topic) {
-                return true;
+            seen.append(&mut harness.unsubscribed());
+            if done(&seen) {
+                break;
             }
             sleep(Duration::from_millis(50)).await;
         }
-        false
+        seen
     }
 
     /// Unsubscribing IS unfollowing, so the arm is pinned on the topic the node
@@ -639,10 +657,10 @@ mod tests {
             namespace: left,
         });
 
-        let dropped = unfollowed(&mut harness, left).await;
+        let seen = unsubscribes_until(&mut harness, |seen| seen.contains(&topic(left))).await;
         listener.abort();
         assert!(
-            dropped,
+            seen.contains(&topic(left)),
             "a leave the account announced has to drop the namespace's topic"
         );
     }
@@ -661,10 +679,10 @@ mod tests {
         let mut harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
 
-        let dropped = unfollowed(&mut harness, left).await;
+        let seen = unsubscribes_until(&mut harness, |seen| seen.contains(&topic(left))).await;
         listener.abort();
         assert!(
-            dropped,
+            seen.contains(&topic(left)),
             "the sweep never unfollowed a namespace its account had already left"
         );
     }
@@ -685,31 +703,38 @@ mod tests {
             .add_member(&kept, &account, GroupMemberRole::Member)
             .expect("and its account is still a member of it");
 
-        // The follow half runs after the unfollow half, so a namespace it
-        // reached is the barrier that says the unfollow half has finished.
+        // One barrier per half, so the assertion holds whichever runs first: the
+        // follow half reaches `followed`, and the unfollow half drops `left`.
         let followed = ContextGroupId::from([0x98; 32]);
         AccountNamespaceSet::new(&store, account_namespace)
             .record(followed, Some(app(0x11)))
             .expect("in scope");
+        let left = ContextGroupId::from([0x99; 32]);
+        let _identity = namespaces
+            .participate_in(&left)
+            .expect("takes part in it, and the set names it nowhere");
 
         let mut harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
+        let mut seen = Vec::new();
+        let mut swept = false;
         for _ in 0..100 {
-            if namespaces
-                .participating_namespaces()
-                .expect("read the participation rows")
-                .contains(&followed)
-            {
+            seen.append(&mut harness.unsubscribed());
+            swept = seen.contains(&topic(left))
+                && namespaces
+                    .participating_namespaces()
+                    .expect("read the participation rows")
+                    .contains(&followed);
+            if swept {
                 break;
             }
             sleep(Duration::from_millis(50)).await;
         }
         listener.abort();
 
+        assert!(swept, "both halves of the sweep have to have run");
         assert!(
-            !harness
-                .unsubscribed()
-                .contains(&format!("ns/{}", hex::encode(kept.to_bytes()))),
+            !seen.contains(&topic(kept)),
             "a namespace the account is still a member of must stay followed"
         );
     }
