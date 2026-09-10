@@ -118,6 +118,7 @@ pub(crate) async fn ensure_account_namespace(
                 context_client.ack_router(),
                 namespace,
                 crate::account_namespace::AccountNamespaceChange::Gained,
+                "ensure_account_namespace",
             )
             .await;
         }
