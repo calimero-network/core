@@ -75,6 +75,11 @@ impl PredefinedEntry for key::GroupAccountDevice {
     type DataType<'a> = key::GroupAccountDeviceValue;
 }
 
+impl PredefinedEntry for key::GroupAccountNamespace {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupAccountNamespaceValue;
+}
+
 impl PredefinedEntry for key::GroupReentryBlock {
     type Codec = Borsh;
     type DataType<'a> = key::GroupReentryBlockValue;
