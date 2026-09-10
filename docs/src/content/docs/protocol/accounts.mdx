@@ -309,15 +309,23 @@ A holder upgraded from before the registry publishes its cached certificates int
 
 The **namespace set**: one row per namespace the account is a member of, with the application it targets.
 Whichever device gains a namespace writes the line, and it is written *after* the links it publishes there, so no device follows a namespace before the authority it needs there exists.
-When the holder first creates its account namespace it backfills one line per namespace it already takes part in, so a device paired later reads the account's whole history off one DAG.
+A gain announced before the account namespace itself exists publishes nothing at all - the holder names the id before creating it, and there is no DAG to write to yet - which is why the holder backfills instead.
+When it first creates its account namespace it backfills one line per namespace it already takes part in, so a device paired later reads the account's whole history off one DAG.
+A gain that reaches the line before its namespace's target application has folded records no application, and no scoped device follows it until a later gain restates it; recording one never un-knows an application the set already holds.
 
 **What a device does with it.**
-On a gain whose application its own registry scope covers, it follows the namespace: it records participation and subscribes, which publishes nothing and claims no membership.
-From there the existing machinery converges it - the beacon rescue pulls the DAG, the key pull succeeds because the gainer already bound this device, the target folds, the bytecode is acquired, and contexts join through the account's auto-follow flags.
+On a gain whose application its own registry scope covers, it follows the namespace: it records participation, subscribes, and pulls the namespace once.
+The pull is part of following, not a rescue: gossip only carries what is published from that moment on, so without it the namespace's existing DAG would arrive only on the next beacon.
+From there the existing machinery converges it - the key pull succeeds because the gainer already bound this device, the target folds, the bytecode is acquired, and contexts join through the account's auto-follow flags.
 A device whose own scope has not arrived yet follows nothing and catches up when it does: on learning its own certificate and scope it walks the whole set and follows every namespace that scope now covers.
 That is also how a device widened after the fact reaches the projects it may now see.
 
-On a leave it unsubscribes from the namespace's topic and keeps the local rows, exactly as the holder's own `leave_namespace` does, so a later gain re-follows into state that is already there.
+On a leave it pulls the namespace once more and then unsubscribes from its topic, keeping the local rows exactly as the holder's own `leave_namespace` does, so a later gain re-follows into state that is already there.
+The pull comes first because the device's own view of the namespace turns on folding that namespace's `MemberLeft`, which travels on the topic about to be dropped.
+
+**Every start sweeps, both ways.**
+Nothing re-drives an op applied while no listener was up, so a device begins by walking the set itself: it follows every namespace the set names that its scope covers, and unfollows every namespace it takes part in that the set no longer names.
+The unfollow half needs a second read to agree - the account's member row in that namespace has to show the account gone - so a set this device has not finished syncing, which names nothing, can never cut it off a namespace it is still in.
 
 **Repeating a bind is cheap, and that is why any of this works.**
 A certificate carries **no namespace and no expiry**.
@@ -345,7 +353,8 @@ A relink on the holder then binds it there and publishes its certificate, and fr
 
 **A cloud device is nothing special here.**
 A node paired as a device of the account with full scope follows the account namespace and every project namespace in its scope, beacons on their topics, serves pulls, and binds new siblings.
-A phone then converges while the laptop is offline, which is otherwise the one thing the design still needs: without such a device, convergence waits until some other device of the account is reachable. The DAG makes the wait harmless, but it is still a wait.
+A phone then converges while the laptop is offline, which is otherwise the one thing the design still needs: without such a device, convergence waits until some other device of the account is reachable.
+The DAG makes the wait harmless, but it is still a wait.
 
 **What it costs, and what it leaks.**
 One more namespace per account - a topic, beacons and a DAG - created lazily at the first pairing, so a single-device account pays nothing.

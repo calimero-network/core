@@ -90,7 +90,8 @@ steps:
       ns_a: namespaceId
 
   # Before the join, naming no project namespace: everything the phone learns
-  # about A comes from the account namespace. Scoped to app A so the script's barrier can poll its own scope.
+  # about A comes from the account namespace. Scoped to app A so the script's
+  # barrier can poll its own scope.
   - name: Pair node-2 onto Alice's account, with only the account namespace
     type: script
     script: scripts/account-namespace-pair-into.sh
