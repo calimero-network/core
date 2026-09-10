@@ -670,6 +670,16 @@ jobs:
           - workflow: account-revoke-lost-device
             file: workflows/account-revoke-lost-device.yml
             app: scaffolding-e2e
+          # Neither turns on a registry fetch: the founder scenario joins no
+          # context, and the lost-holder one installs its bundles locally first.
+          - workflow: account-sibling-projected-by-founder
+            file: workflows/account-sibling-projected-by-founder.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
+          - workflow: account-lost-holder-revoked-everywhere
+            file: workflows/account-lost-holder-revoked-everywhere.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
