@@ -1,9 +1,20 @@
-//! Following what this account gains, and unfollowing what it leaves.
+//! Following what this account gains, unfollowing what it leaves, and projecting
+//! a sibling it certifies.
 //!
 //! The device side of the account namespace: a listener on the op-event channel,
 //! beside [`crate::auto_follow`] and shaped like it. Three events, and all three
 //! only from THIS node's account namespace - anything on another group's DAG is
 //! another account's business.
+//!
+//! Projecting is carrying a newly certified sibling into the namespaces this node
+//! takes part in whose target its scope covers. Every online device folds that one
+//! op, so k of them would publish the same m binds; a random wait of up to
+//! [`PROJECTION_JITTER_MAX_MS`] first lets a faster sibling's link land, which the
+//! per-namespace already-bound read inside the bind then skips.
+//!
+//! What projection does not repair: a sibling whose certificate this node folded
+//! BEFORE it took part in N is never carried into N by this node, because
+//! following N binds nobody. A relink is what repairs that.
 //!
 //! Following is [`crate::handlers::follow_namespace`]: note participation,
 //! subscribe, pull. From there the existing machinery converges the namespace - the
@@ -24,6 +35,7 @@
 //! the last two, and dropping it on that alone would unfollow what it is still in.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use calimero_account::DeviceId;
 use calimero_context_client::client::ContextClient;
@@ -42,9 +54,15 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
+use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::handlers::pair_device_complete::{namespaces_in_scope, signing_identity};
+
+#[cfg(not(test))]
+const PROJECTION_JITTER_MAX_MS: u64 = 2_000; // damps k devices publishing one certification's m binds at once
+#[cfg(test)]
+const PROJECTION_JITTER_MAX_MS: u64 = 5; // the tests assert on the bind, not on the wait
 
 struct HandleState {
     abort: AbortHandle,
@@ -353,8 +371,9 @@ pub(crate) fn namespaces_now_covered(
 ///
 /// `None` for this node's own device - the holder that signed it published it
 /// already - and never the account namespace, whose unset target no scope could
-/// name. The registry row is read unfiltered: a device revoked in a target is
-/// stopped by that namespace's own tombstone, inside `bind_device_everywhere`.
+/// name. Also `None` for a device revoked ANYWHERE this node takes part: the id
+/// is spent everywhere, and a revoker publishes its tombstone only where it takes
+/// part, so the target's own DAG is no gate.
 pub(crate) fn namespaces_to_bind_into(
     store: &Store,
     group_id: [u8; 32],
@@ -362,13 +381,21 @@ pub(crate) fn namespaces_to_bind_into(
 ) -> Option<(KnownDeviceCert, Vec<ContextGroupId>)> {
     let account_namespace = account_namespace_if_ours(store, group_id)?;
     let devices = NodeDeviceRepository::new(store);
-    if devices
-        .get()
-        .ok()
-        .flatten()
-        .is_some_and(|held| held.device() == device)
-    {
-        return None;
+    match devices.get() {
+        Ok(Some(held)) if held.device() == device => return None,
+        Ok(_) => {}
+        Err(err) => {
+            warn!(?err, %device, "account-follow: failed to read this node's own device");
+            return None;
+        }
+    }
+    match devices.revoked_in(device) {
+        Ok(revoked) if !revoked.is_empty() => return None,
+        Ok(_) => {}
+        Err(err) => {
+            warn!(?err, %device, "account-follow: failed to read where a sibling is revoked");
+            return None;
+        }
     }
     let cert = match AccountDeviceRegistry::new(store, account_namespace).device(device) {
         Ok(Some((cert, _epoch))) => cert,
@@ -429,6 +456,9 @@ async fn handle_device_certified(
     }
 }
 
+/// `Linked { key_delivered: true }` below is published, not accepted: a projector
+/// that is no admin there has its `KeyDelivery` refused, and the sibling recovers
+/// the key by pulling it, as any participant holding none does.
 async fn handle_sibling_certified(
     store: &Store,
     node_client: &NodeClient,
@@ -446,6 +476,12 @@ async fn handle_sibling_certified(
             return;
         }
     };
+    // Wait before publishing, not before deciding: the bind re-reads each target,
+    // so a link a faster sibling landed in the meantime is skipped there.
+    sleep(Duration::from_millis(rand::random_range(
+        0..=PROJECTION_JITTER_MAX_MS,
+    )))
+    .await;
     let outcomes =
         bind_device_everywhere(store, node_client, ack_router, &targets, &signer_sk, &cert).await;
     info!(
@@ -522,8 +558,9 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::op_events::OpEvent;
     use calimero_governance_store::{
-        op_events, AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository,
-        MetaRepository, NamespaceRepository, NodeDeviceRepository,
+        op_events, AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet,
+        GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+        NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -1037,5 +1074,65 @@ mod tests {
                 .expect("an unscoped sibling belongs everywhere this node is");
 
         assert_eq!(targets, vec![project]);
+    }
+
+    /// A revoked id is spent everywhere, so there is nowhere left to carry it.
+    /// The target's own tombstone is not the gate: a revoker publishes one only
+    /// where it takes part, so a namespace it is a stranger to never hears.
+    #[test]
+    fn a_sibling_revoked_anywhere_is_projected_nowhere() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let project = ContextGroupId::from([0x85; 32]);
+        a_namespace_targeting(&store, project, app(0x11));
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
+        let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x66, &[]);
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, sibling)
+            .expect("tombstone the sibling where this node did hear of it");
+
+        assert!(
+            namespaces_to_bind_into(&store, account_namespace.to_bytes(), sibling).is_none(),
+            "a device revoked in one namespace this node takes part in must reach no other"
+        );
+    }
+
+    /// The arm itself, driven the way the sweep tests drive it. Pinned on the
+    /// topic the publish reached rather than on the decision behind it.
+    #[actix::test]
+    async fn a_sibling_certified_on_the_account_topic_is_published_into_a_namespace_here() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let project = ContextGroupId::from([0x86; 32]);
+        a_namespace_targeting(&store, project, app(0x11));
+        let _key_id = GroupKeyring::new(&store, project)
+            .store_key(&[0x42; 32])
+            .expect("hold this namespace's scope key, without which nothing is published");
+        let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x67, &[app(0x11)]);
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::AccountDeviceCertified {
+            group_id: account_namespace.to_bytes(),
+            device: sibling,
+        });
+
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            seen.append(&mut harness.broadcast_topics());
+            if seen.contains(&topic(project)) {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        listener.abort();
+
+        assert!(
+            seen.contains(&topic(project)),
+            "the listener never published a certified sibling into the namespace this \
+             node takes part in that its scope covers"
+        );
     }
 }
