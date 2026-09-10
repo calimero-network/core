@@ -1,4 +1,5 @@
-//! Extending a device this account already certified into one more namespace.
+//! Extending a device this account already certified into one more namespace,
+//! and withdrawing one from a namespace it reached.
 //!
 //! Cheap because a [`DeviceCert`](calimero_account::DeviceCert) names no namespace
 //! and no expiry, so this needs only the stored certificate, a fresh endorsement
@@ -17,7 +18,8 @@ use eyre::Result as EyreResult;
 use tracing::{debug, info, warn};
 
 use crate::{
-    AccountBindingRepository, AccountDeviceRegistry, GroupKeyring, KnownDeviceCert, MetaRepository,
+    member_account_in_namespace, AccountBindingRepository, AccountDeviceRegistry,
+    GroupGovernancePublisher, GroupKeyring, KnownDeviceCert, MembershipRepository, MetaRepository,
     NodeDeviceRepository,
 };
 
@@ -286,6 +288,58 @@ pub async fn bind_device_everywhere(
         outcomes.push((*namespace, outcome));
     }
     outcomes
+}
+
+/// Publish the withdrawal of `device` into `namespace`, with the scope-key
+/// rotation where this node may sign one.
+///
+/// The rotation is admin-only - peers accept a sidecar only from an admin at the
+/// cut - so elsewhere the device loses the right to write at once and the
+/// rotation is left owed. `Ok(true)` means it rode along.
+pub async fn revoke_device_in(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    device: DeviceId,
+    op: GroupOp,
+) -> EyreResult<bool> {
+    // Admin-ness is a question about THIS namespace, and so is the account a
+    // signing key speaks for, so both are answered where the op is going.
+    let signer_account = member_account_in_namespace(store, namespace, &signer_sk.public_key())?;
+    let is_admin_here = signer_account.is_some_and(|account| {
+        MembershipRepository::new(store)
+            .is_admin(namespace, &account)
+            .unwrap_or(false)
+    });
+
+    let report = if is_admin_here {
+        GroupGovernancePublisher::new(store, node_client, *namespace)
+            .sign_apply_and_publish_device_revocation(ack_router, signer_sk, op)
+            .await?
+    } else {
+        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, op)
+            .await?
+    };
+
+    if !is_admin_here {
+        warn!(
+            namespace_id = ?namespace,
+            %device,
+            "revoked without a key rotation: this node is not an admin here, so the device \
+             loses the right to write immediately but keeps the key it already holds until \
+             an admin rotates"
+        );
+    }
+    info!(
+        namespace_id = ?namespace,
+        %device,
+        published = report.is_some(),
+        key_rotated = is_admin_here,
+        "device revoked"
+    );
+    Ok(is_admin_here)
 }
 
 #[cfg(test)]
