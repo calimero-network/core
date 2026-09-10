@@ -1,7 +1,7 @@
-//! Apply handlers for the account plane: device link, device revocation, and
-//! account root-key rotation.
+//! Apply handlers for the account plane: device link and certification, the
+//! account's namespace set, device revocation, and account root-key rotation.
 //!
-//! The three share a file because they share one invariant, and separating them
+//! They share a file because they share one invariant, and separating them
 //! would let it drift: **every one of them must be idempotent and
 //! order-independent**. The apply pipeline re-runs a mutation before the op-log
 //! dedup gate fires, and governance ops arrive in whatever order the DAG hands
@@ -259,7 +259,7 @@ pub(crate) fn apply_device_certified(
     if !recorded {
         return Ok(());
     }
-    ctx.queue_event(crate::op_events::OpEvent::AccountDeviceCertified {
+    ctx.queue_event(OpEvent::AccountDeviceCertified {
         group_id: group_id.to_bytes(),
         device,
     });
@@ -437,7 +437,7 @@ pub(crate) fn apply_device_unlinked(
     // once, but it keeps the key it already holds, so it can keep READING until
     // someone rotates for an unrelated reason.
     crate::PendingDeviceRotationRepository::new(ctx.store()).mark(&group_id, device)?;
-    ctx.queue_event(crate::op_events::OpEvent::DeviceRevoked {
+    ctx.queue_event(OpEvent::DeviceRevoked {
         group_id: group_id.to_bytes(),
         account: *account,
         device: *device,

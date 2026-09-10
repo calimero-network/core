@@ -111,8 +111,17 @@ pub(crate) async fn ensure_account_namespace(
 
         // Seed the set with what this node already takes part in, so a device
         // paired later reads the account's whole history off one DAG.
-        for namespace in NamespaceRepository::new(store).participating_namespaces()? {
-            let _recorded = crate::account_namespace::announce(
+        let already = match NamespaceRepository::new(store).participating_namespaces() {
+            Ok(namespaces) => namespaces,
+            // Skipped, never fatal: the namespace exists by now, and failing
+            // here would skip recording the holder's own device.
+            Err(err) => {
+                warn!(%err, "could not read this node's namespaces to seed the set");
+                Vec::new()
+            }
+        };
+        for namespace in already {
+            crate::account_namespace::announce(
                 store,
                 context_client.node_client(),
                 context_client.ack_router(),
