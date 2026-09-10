@@ -550,14 +550,36 @@ async fn handle_sibling_certified(
             return;
         }
     };
-    // Wait before publishing, not before deciding: the bind re-reads each target,
-    // so a link a faster sibling landed in the meantime is skipped there.
+    publish_sibling_link(store, node_client, ack_router, &targets, &signer_sk, &cert).await;
+}
+
+/// Wait, then bind - the wait damps k devices publishing one certification's m
+/// binds at once, and the per-namespace already-bound read skips what landed.
+async fn publish_sibling_link(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    targets: &[ContextGroupId],
+    signer_sk: &PrivateKey,
+    cert: &KnownDeviceCert,
+) {
+    let device = cert.device();
     sleep(Duration::from_millis(rand::random_range(
         0..=PROJECTION_JITTER_MAX_MS,
     )))
     .await;
+    // The one rule the per-namespace bind does not repeat, and a revocation can
+    // have folded during the wait: a spent id belongs in no namespace at all.
+    match NodeDeviceRepository::new(store).revoked_in(device) {
+        Ok(revoked) if revoked.is_empty() => {}
+        Ok(_) => return,
+        Err(err) => {
+            warn!(?err, %device, "account-follow: failed to re-read where a sibling is revoked");
+            return;
+        }
+    }
     let outcomes =
-        bind_device_everywhere(store, node_client, ack_router, &targets, &signer_sk, &cert).await;
+        bind_device_everywhere(store, node_client, ack_router, targets, signer_sk, cert).await;
     info!(
         %device,
         ?outcomes,
@@ -734,7 +756,8 @@ mod tests {
 
     use super::{
         carry_into, follows_on_gain, handle_revocation_carry, namespaces_now_covered,
-        namespaces_to_bind_into, namespaces_to_revoke_in, run, signing_identity, unfollows_on_left,
+        namespaces_to_bind_into, namespaces_to_revoke_in, publish_sibling_link, run,
+        signing_identity, unfollows_on_left,
     };
     use crate::test_support::actor;
 
@@ -1373,6 +1396,49 @@ mod tests {
             seen.contains(&topic(project)),
             "the listener never published a certified sibling into the namespace this \
              node takes part in that its scope covers"
+        );
+    }
+
+    /// The revoked-anywhere rule, re-read after the wait. A revocation that folds
+    /// while the projection sleeps has to stop it publishing anything.
+    #[actix::test]
+    async fn a_sibling_revoked_during_the_wait_is_published_nowhere() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let project = ContextGroupId::from([0x8B; 32]);
+        a_namespace_targeting(&store, project, app(0x11));
+        let _key_id = GroupKeyring::new(&store, project)
+            .store_key(&[0x42; 32])
+            .expect("hold this namespace's scope key, without which nothing is published");
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
+        let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x6B, &[app(0x11)]);
+        let (cert, targets) =
+            namespaces_to_bind_into(&store, account_namespace.to_bytes(), sibling)
+                .expect("the decision is taken before the wait");
+        let signer_sk =
+            PrivateKey::from(signing_identity(&store, &targets).expect("an identity to sign with"));
+
+        let mut harness = actor::over(store.clone()).await;
+        let _started = harness.broadcast_topics();
+        // Tombstoned where no target would see it, so only the re-read can refuse.
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, sibling)
+            .expect("the revocation folds while the projection waits");
+        publish_sibling_link(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            &targets,
+            &signer_sk,
+            &cert,
+        )
+        .await;
+
+        assert!(
+            !harness.broadcast_topics().contains(&topic(project)),
+            "a sibling revoked while the projection waited must reach no namespace"
         );
     }
 

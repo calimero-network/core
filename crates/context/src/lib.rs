@@ -811,20 +811,22 @@ impl Actor for ContextManager {
         rotation_listener::shutdown();
         rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
 
-        // One-shot. A holder upgraded from before the registry still keeps its
-        // device certificates node-local, where no other device of the account
-        // can read them.
-        account_migration::spawn(
+        // What the account gains and leaves, followed and unfollowed on this
+        // device. Shutdown-then-spawn to rebind, as the singleton listeners above.
+        // Ahead of the migration below, so the certificates its one-shot publishes
+        // are projected: no sweep re-drives a projection this listener missed.
+        account_follow::shutdown();
+        account_follow::spawn(
             self.datastore.clone(),
             self.node_client.clone(),
             Arc::clone(&self.ack_router),
             self.context_client.clone(),
         );
 
-        // What the account gains and leaves, followed and unfollowed on this
-        // device. Shutdown-then-spawn to rebind, as the singleton listeners above.
-        account_follow::shutdown();
-        account_follow::spawn(
+        // One-shot. A holder upgraded from before the registry still keeps its
+        // device certificates node-local, where no other device of the account
+        // can read them.
+        account_migration::spawn(
             self.datastore.clone(),
             self.node_client.clone(),
             Arc::clone(&self.ack_router),
