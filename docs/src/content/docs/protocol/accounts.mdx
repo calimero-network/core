@@ -313,6 +313,7 @@ A gain announced before the account namespace itself exists publishes nothing at
 When it first creates its account namespace it backfills one line per namespace it already takes part in, so a device paired later reads the account's whole history off one DAG.
 A gain that reaches the line before its namespace's target application has folded does not write it yet: it waits, re-reading the namespace's own metadata for up to thirty seconds, because no event announces a first target and nothing would re-drive the gain.
 Once the window closes it writes the line anyway, with no application - an app-less root is legitimate, and an unscoped device follows either way.
+Either way it writes nothing if the account has left the namespace in the meantime: a waiting gain must never overtake a leave, because re-naming a namespace in the set is something no later sweep can undo.
 Recording a line never un-knows an application the set already holds.
 
 **What a device does with it.**
@@ -327,7 +328,8 @@ The pull comes first because the device's own view of the namespace turns on fol
 
 **Every start sweeps, both ways.**
 Nothing re-drives an op applied while no listener was up, so a device begins by walking the set itself: it follows every namespace the set names that its scope covers, and unfollows every namespace it takes part in that the set no longer names.
-The unfollow half needs a second read to agree - the account's member row in that namespace has to show the account gone - so a set this device has not finished syncing, which names nothing, can never cut it off a namespace it is still in.
+The unfollow half acts only once this device has folded the namespace and the account's member row there is gone.
+Both extra reads matter, because a namespace this device has never synced answers "absent" to each of them just as a left one does; requiring the namespace's own governance to be present locally is what tells silence from a verdict.
 
 **Repeating a bind is cheap, and that is why any of this works.**
 A certificate carries **no namespace and no expiry**.

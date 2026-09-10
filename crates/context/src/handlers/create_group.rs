@@ -1165,6 +1165,9 @@ mod tests {
             .account_namespace()
             .expect("read the account namespace")
             .expect("the holder names one");
+        // Targeted, so the announce takes the synchronous path: an app-less one
+        // defers instead, and the guard below would never be reached at all.
+        install_application(&store, ApplicationId::from(APP));
 
         let mut harness = actor::over(store.clone()).await;
         let created = harness
@@ -1172,7 +1175,7 @@ mod tests {
             .send(CreateGroupRequest {
                 group_id: Some(GROUP.into()),
                 bytecode_id: None,
-                application_id: None,
+                application_id: Some(ApplicationId::from(APP)),
                 name: None,
                 parent_group_id: None,
                 restricted: true,
@@ -1201,6 +1204,79 @@ mod tests {
             !harness.broadcast_topics().contains(&topic),
             "no governance broadcast may be attempted on a namespace this node \
              does not take part in"
+        );
+    }
+
+    /// A leave published while a gain is still waiting for its target must win.
+    /// The pending gain would otherwise re-name a namespace the account left,
+    /// and the sweep cannot undo that: it needs the set to have dropped it.
+    #[actix::test]
+    async fn a_gain_still_waiting_is_dropped_when_the_account_leaves_the_namespace() {
+        let store = store();
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+
+        let create = |group: [u8; 32]| CreateGroupRequest {
+            group_id: Some(group.into()),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        };
+        // App-less, so both gains defer. The left one is created FIRST, so the
+        // control's publish proves the left one's chance to publish has passed.
+        let left = harness
+            .manager
+            .send(create(GROUP))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+        let control = harness
+            .manager
+            .send(create([0xC4; 32]))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let account = devices
+            .get()
+            .expect("read this node's device")
+            .expect("it has one")
+            .account;
+        MembershipRepository::new(&store)
+            .remove_member(&left.group_id, &account)
+            .expect("the account leaves it while the gain is still waiting");
+
+        let metas = MetaRepository::new(&store);
+        for group in [left.group_id, control.group_id] {
+            let mut meta = metas.load(&group).expect("read the meta").expect("one row");
+            meta.target.application_id = ApplicationId::from(APP);
+            metas.save(&group, &meta).expect("the target folds");
+        }
+
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        assert!(
+            crate::test_support::eventually(|| set
+                .contains(control.group_id)
+                .expect("read the set")
+                .is_some())
+            .await,
+            "the control gain has to land, or this proves nothing"
+        );
+        assert_eq!(
+            set.contains(left.group_id).expect("read the set"),
+            None,
+            "a gain whose namespace the account has left must not be published"
         );
     }
 

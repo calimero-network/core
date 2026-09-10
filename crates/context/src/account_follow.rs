@@ -18,9 +18,10 @@
 //! a later gain re-follows into state that is already there.
 //!
 //! Every start sweeps both ways, because nothing re-drives an op applied while no
-//! listener was up. The unfollow half is deliberately conservative: the set has to
-//! have dropped the namespace AND its member row to show the account gone, so a
-//! half-synced set never cuts this node off a namespace it is still in.
+//! listener was up. The unfollow half is deliberately conservative: this node has
+//! to have folded the namespace, the set has to have dropped it, AND its member
+//! row has to show the account gone. An unsynced namespace answers "absent" to
+//! the last two, and dropping it on that alone would unfollow what it is still in.
 
 use std::sync::Mutex;
 
@@ -31,7 +32,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert, MembershipRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -194,10 +195,22 @@ fn own_registry_scope(store: &Store) -> Option<(ContextGroupId, KnownDeviceCert)
     }
 }
 
+/// Has this node folded `namespace`'s governance at all? Without a head, an
+/// absent set row and an absent member row are silence rather than a verdict.
+fn folded_here(store: &Store, namespace: ContextGroupId) -> EyreResult<bool> {
+    Ok(
+        !NamespaceDagService::new(store, namespace.to_bytes().into())
+            .read_head_record()?
+            .parent_hashes
+            .is_empty(),
+    )
+}
+
 /// The namespaces this node takes part in that its account has left.
 ///
-/// Two reads, and both have to say so: a set this node has not finished syncing
-/// names nothing, and unfollowing on that alone would cut off a live namespace.
+/// Three reads, and all three have to say so: an unsynced namespace and an
+/// unsynced set both read as absent, and unfollowing on that would cut this
+/// node off a namespace it is still in.
 fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
     let devices = NodeDeviceRepository::new(store);
     let resolved = || -> EyreResult<Vec<ContextGroupId>> {
@@ -213,7 +226,8 @@ fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
                 continue;
             }
             let dropped = || -> EyreResult<bool> {
-                Ok(set.contains(namespace)?.is_none()
+                Ok(folded_here(store, namespace)?
+                    && set.contains(namespace)?.is_none()
                     && !members.is_member(&namespace, &held.account)?)
             };
             match dropped() {
@@ -625,6 +639,21 @@ mod tests {
         format!("ns/{}", hex::encode(namespace.to_bytes()))
     }
 
+    /// This node has folded `namespace`'s governance, so its absent set row and
+    /// absent member row are verdicts rather than the silence of an unsynced one.
+    fn folded(store: &Store, namespace: ContextGroupId) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::NamespaceGovHead::new(namespace.to_bytes()),
+                &calimero_store::key::NamespaceGovHeadValue {
+                    sequence: 1,
+                    dag_heads: vec![[0x01; 32]],
+                },
+            )
+            .expect("record a governance head for it");
+    }
+
     /// Poll until `done` holds over every unsubscribe seen so far, and hand back
     /// what was seen. The recorder drains on read, so the accumulation is here.
     async fn unsubscribes_until(
@@ -675,6 +704,7 @@ mod tests {
         let _identity = NamespaceRepository::new(&store)
             .participate_in(&left)
             .expect("this node still takes part in it");
+        folded(&store, left);
 
         let mut harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
@@ -684,6 +714,36 @@ mod tests {
         assert!(
             seen.contains(&topic(left)),
             "the sweep never unfollowed a namespace its account had already left"
+        );
+    }
+
+    /// A namespace this node has not synced answers "absent" to both reads: the
+    /// set names nothing, and a missing member row reads as not a member. Only
+    /// a folded namespace can say the account actually left.
+    #[actix::test]
+    async fn an_unsynced_namespace_is_kept_because_nothing_says_the_account_left() {
+        let store = store();
+        let (_account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let namespaces = NamespaceRepository::new(&store);
+        let unsynced = ContextGroupId::from([0x9A; 32]);
+        let _unsynced = namespaces
+            .participate_in(&unsynced)
+            .expect("paired into it, and nothing about it has arrived yet");
+        // A namespace that really was left, as the barrier: the sweep reaching
+        // it is what says the sweep has run at all.
+        let left = ContextGroupId::from([0x9B; 32]);
+        let _left = namespaces.participate_in(&left).expect("takes part in it");
+        folded(&store, left);
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        let seen = unsubscribes_until(&mut harness, |seen| seen.contains(&topic(left))).await;
+        listener.abort();
+
+        assert!(seen.contains(&topic(left)), "the sweep has to have run");
+        assert!(
+            !seen.contains(&topic(unsynced)),
+            "a namespace this node has never folded is unsynced, not left"
         );
     }
 
@@ -713,6 +773,7 @@ mod tests {
         let _identity = namespaces
             .participate_in(&left)
             .expect("takes part in it, and the set names it nowhere");
+        folded(&store, left);
 
         let mut harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);

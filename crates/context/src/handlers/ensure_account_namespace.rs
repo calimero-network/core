@@ -208,9 +208,10 @@ mod tests {
     use calimero_context_client::group::EnsureAccountNamespaceRequest;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        AccountDeviceRegistry, AccountNamespaceSet, MetaRepository, NamespaceRepository,
-        NodeDeviceRepository,
+        AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository, MetaRepository,
+        NamespaceRepository, NodeDeviceRepository,
     };
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{GroupAccountDevice, GroupTarget};
@@ -442,11 +443,29 @@ mod tests {
     #[actix::test]
     async fn creation_backfills_the_namespaces_this_node_already_takes_part_in() {
         let store = holder_store();
+        let devices = NodeDeviceRepository::new(&store);
+        let account = devices
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS_ONE)],
+                devices
+                    .require_account_root()
+                    .expect("the holder's root")
+                    .genesis(),
+            )
+            .expect("mint this node's device")
+            .account;
         let namespaces = NamespaceRepository::new(&store);
+        let members = MembershipRepository::new(&store);
         for id in [NS_ONE, NS_TWO] {
+            let namespace = ContextGroupId::from(id);
             let _identity = namespaces
-                .participate_in(&ContextGroupId::from(id))
+                .participate_in(&namespace)
                 .expect("take part in a namespace before the account has one");
+            // Taking part means the account is a member: a deferred gain reads
+            // this row before publishing, so a bare participation row is not it.
+            members
+                .add_member(&namespace, &account, GroupMemberRole::Admin)
+                .expect("and the account is a member of it");
         }
 
         let harness = actor::over(store.clone()).await;

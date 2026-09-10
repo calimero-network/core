@@ -15,8 +15,8 @@ use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountNamespaceSet, AccountRoot, MetaRepository, NamespaceRepository,
-    NodeDeviceRepository,
+    AccountDeviceRegistry, AccountNamespaceSet, AccountRoot, MembershipRepository, MetaRepository,
+    NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -172,6 +172,15 @@ fn wait_for_target_then_announce(
                 break;
             }
         }
+        // A `Left` published inside the window would otherwise be undone here,
+        // and nothing can drop a namespace the set has re-named.
+        if !still_a_member(&store, namespace) {
+            debug!(
+                ?namespace,
+                "the account left it while the gain waited; dropping the gain"
+            );
+            return;
+        }
         if matches!(target_application(&store, namespace), Ok(None)) {
             debug!(
                 ?namespace,
@@ -188,6 +197,28 @@ fn wait_for_target_then_announce(
         )
         .await;
     }));
+}
+
+/// Is this node's account still a member of `namespace`? Answered from the
+/// member row a leave's own `MemberLeft` apply removes.
+///
+/// Fails closed: a dropped gain is repaired by gaining the namespace again, a
+/// gain published after a leave is repaired by nothing.
+fn still_a_member(store: &Store, namespace: ContextGroupId) -> bool {
+    let resolved = || -> EyreResult<bool> {
+        let Some(held) = NodeDeviceRepository::new(store).get()? else {
+            return Ok(false);
+        };
+        MembershipRepository::new(store).is_member(&namespace, &held.account)
+    };
+    resolved().unwrap_or_else(|err| {
+        warn!(
+            ?err,
+            ?namespace,
+            "could not confirm the account still holds a namespace"
+        );
+        false
+    })
 }
 
 async fn publish_or_warn(
