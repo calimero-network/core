@@ -193,6 +193,19 @@ steps:
     retries: 45
     interval: 2
 
+  # The tablet's chain in two halves, so the tail below is not competing with the
+  # follow and the DAG pull inside one budget. Strictly earlier than the binding.
+  - name: The tablet converges on C
+    type: assert_api_response
+    node: account-project-node-3
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_c}}'
+    match:
+      targetApplicationId: '{{app}}'
+    retries: 45
+    interval: 2
+
   # And the tablet agrees: it followed C off the same account namespace, pulled
   # the key its new link authorises, and folded the binding the phone published.
   - name: The tablet reads its own binding in C
@@ -206,7 +219,7 @@ steps:
     contains:
       namespaces:
         - '{{ns_c}}'
-    retries: 60
+    retries: 90
     interval: 2
 
 stop_all_nodes: true
