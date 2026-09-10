@@ -40,6 +40,24 @@
 //! outer envelope's signature proves only who relayed. `join_op_proves_ownership` then requires the signer to be the
 //! account's own device key, so a relayer that swapped the member for one of its
 //! own would produce an op every peer rejects.
+//!
+//! # Why there is no dedup on the responder
+//!
+//! A replayed endorsed join reaches this handler as a valid request, and it is
+//! accepted: the responder seals and publishes it, and the apply path is what
+//! refuses it — `contains_op` on the INNER op for one that also arrived in the
+//! clear, and the per-signer nonce window for one that only ever arrived
+//! relayed. Those two are what stop a re-sealed old join resurrecting a removed
+//! member, and they are tested where they live.
+//!
+//! Refusing here on "already applied locally" looks like a free improvement and
+//! is not. A joiner whose relay succeeded but whose *response* was lost retries
+//! against another peer, which by then may already hold the op from gossip — so
+//! that check would fail a join that in fact succeeded. Answering `accepted` for
+//! an already-known op would be correct but is the same outcome as publishing a
+//! duplicate the apply path drops, at more complexity. The cost of not checking
+//! is one signature and one publish per replayed request, which is the same cost
+//! any namespace peer can impose by publishing to the topic directly.
 
 use calimero_crypto::Nonce;
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};

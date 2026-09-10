@@ -1198,8 +1198,14 @@ mod publish_on_namespace_now_tests {
         let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(8);
         let (ns_join_tx, _ns_join_rx) = mpsc::channel(8);
         let (open_subgroup_join_tx, _open_rx) = mpsc::channel(8);
-        let sync_client =
-            SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+        let (relay_sealed_join_tx, _relay_sealed_join_rx) = mpsc::channel(8);
+        let sync_client = SyncClient::new(
+            ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
+            open_subgroup_join_tx,
+            relay_sealed_join_tx,
+        );
 
         let node_client = NodeClient::new(
             store,
