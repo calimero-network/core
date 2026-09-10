@@ -441,6 +441,11 @@ pub(crate) fn apply_device_unlinked(
         group_id: group_id.to_bytes(),
         account: *account,
         device: *device,
+        // Only the proof that actually authorised this: one that did not verify
+        // authorises nothing elsewhere either, and the admin gate does not travel.
+        proof: self_service
+            .then(|| proof.map(|proof| Box::new(proof.clone())))
+            .flatten(),
     });
 
     tracing::info!(
