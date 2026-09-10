@@ -822,8 +822,7 @@ impl Actor for ContextManager {
         );
 
         // What the account gains and leaves, followed and unfollowed on this
-        // device. Same shutdown-then-spawn rebinding rationale as the two
-        // listeners above.
+        // device. Shutdown-then-spawn to rebind, as the singleton listeners above.
         account_follow::shutdown();
         account_follow::spawn(
             self.datastore.clone(),
