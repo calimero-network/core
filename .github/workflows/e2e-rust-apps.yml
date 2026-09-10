@@ -1297,11 +1297,12 @@ jobs:
           # collapsed back to anchor-only. Two red rounds and a security hole
           # came out of that, and the suite could not have told us.
           #
-          # So this reports the distribution rather than asserting one: nobody
-          # yet knows which ground each scenario legitimately uses, and pinning a
-          # guess is how a gate starts failing for the wrong reason. Observe
-          # first, assert once the distribution is known -- the same way the
-          # projection and op-store gates were built. INFORMATIONAL, never fails.
+          # This step stays INFORMATIONAL and never fails, deliberately: most
+          # scenarios never perform a direct pull at all, because the delivery
+          # reaches them first, so asserting a marker HERE would fail the quiet
+          # ones. The floor now sits in `key-recovery-coverage`, which pools the
+          # whole suite and fails if either ground went unexercised everywhere --
+          # the same split as the projection gate and `projection-coverage`.
           #
           # ANSI escapes sit between a field name and its `=` in node logs, so
           # the sed is not optional; matching the raw pattern finds nothing.
@@ -1462,18 +1463,143 @@ jobs:
           fi
           echo "the gate concluded ${concluded} comparison(s) across the suite"
 
+  key-recovery-coverage:
+    name: Assert both key-serve grounds were exercised
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      # The counterpart to the per-scenario observe-only report. `key_server_accepted`
+      # allows exactly two grounds -- the responder is a trusted anchor of the group,
+      # or it proved by certificate that it is a device of this node's OWN account
+      # (#3888, #3892) -- and the per-scenario step only PRINTS which ground was used.
+      # Printing is not gating: if a ground stopped working entirely, every scenario
+      # would print zero of it and the suite would stay green.
+      #
+      # That is not hypothetical. #3892 shipped the own-account ground INERT: a node
+      # that provisioned its own account root holds no certificate for its own device,
+      # so the proof was always empty and acceptance silently collapsed back to
+      # anchor-only. The whole suite passed anyway, twice, and could not have told us.
+      #
+      # #3896 deliberately observed rather than asserted, because the legitimate
+      # distribution was unknown and pinning a guess is how a gate starts failing for
+      # the wrong reason. It is now known (run 34473093881):
+      #
+      #     account-device-revoke-lockout   2 x own_account_device
+      #     group-subgroup-cold-sync        1 x anchor
+      #
+      # and it matches the design rather than accidentally covering it -- account and
+      # device scenarios recover from a second device of the SAME account, cross-account
+      # group scenarios recover from a group anchor. So the floor can be asserted.
+      #
+      # It is asserted HERE and not per scenario for the same reason as
+      # `projection-coverage`: most scenarios never perform a direct pull at all,
+      # because the delivery reaches them first, so demanding a marker from each one
+      # would fail the quiet ones. The systemic failure worth gating is a ground going
+      # unexercised across the ENTIRE suite.
+      - name: Download scenario logs
+        id: logs
+        # Tolerated so the assertion below runs and can say precisely WHY there
+        # are no logs; a bare failure here would be indistinguishable from a
+        # suite that legitimately produced none.
+        uses: actions/download-artifact@v8
+        with:
+          pattern: logs-*
+          merge-multiple: true
+          path: all-logs
+        continue-on-error: true
+
+      - name: Assert each ground was exercised somewhere
+        run: |
+          # Missing logs is benign in exactly one case: the matrix never ran, so
+          # there was nothing to check and the `test` job already says why. A
+          # download failure, or a matrix that ran and left nothing behind, is
+          # the fail-open case this job exists to prevent -- it must not pass as
+          # "nothing to inspect".
+          if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
+              case "${{ needs.test.result }}" in
+                skipped|cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+                  exit 0
+                  ;;
+              esac
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the key-serve coverage floor could not be checked"
+              exit 1
+          fi
+          # ANSI escapes sit between a field name and its `=` in node logs, so the
+          # sed is not optional; matching the raw pattern finds nothing.
+          grounds=$(grep -rho 'key_recovery_authorized_by.*' all-logs/ 2>/dev/null \
+            | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
+            | grep -oE 'key_recovery_authorized_by="?[a-z_]+"?' \
+            | sed -E 's/.*=//; s/"//g' || true)
+          echo "suite-wide group-key recoveries by authorizing ground:"
+          if [ -n "${grounds}" ]; then
+              echo "${grounds}" | sort | uniq -c | sort -rn
+          else
+              echo "  (none)"
+          fi
+          # Attribution, printed whether or not the floor holds. The suite-wide
+          # count alone does not say WHICH scenario supplied a ground, and the
+          # floor currently rests on very few of them -- so when it goes red the
+          # first question is always "which supplier stopped supplying?". Answering
+          # it from the count alone means downloading the artifact by hand.
+          # Artifacts are merged into one directory and every log file is named
+          # after its scenario, so the filename is the attribution.
+          echo "which scenarios supplied them:"
+          supplied=0
+          for f in $(grep -rl 'key_recovery_authorized_by' all-logs/ 2>/dev/null || true); do
+              supplied=1
+              n=$(grep -c 'key_recovery_authorized_by' "${f}" || true)
+              g=$(grep -ho 'key_recovery_authorized_by.*' "${f}" \
+                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
+                | grep -oE 'key_recovery_authorized_by="?[a-z_]+"?' \
+                | sed -E 's/.*=//; s/"//g' | sort -u | paste -sd, - || true)
+              echo "  $(basename "${f}"): ${n} (${g})"
+          done
+          if [ "${supplied}" -eq 0 ]; then
+              echo "  (no log file mentions the marker at all)"
+          fi
+          anchor=$(echo "${grounds}" | grep -cx 'anchor' || true)
+          own=$(echo "${grounds}" | grep -cx 'own_account_device' || true)
+          # A ground name that is neither is reported rather than ignored: renaming
+          # the value in code would otherwise fail both floors below with a message
+          # blaming the scenarios instead of the rename.
+          other=$(echo "${grounds}" | grep -vx -e 'anchor' -e 'own_account_device' | sort -u | paste -sd, - || true)
+          if [ -n "${other}" ]; then
+              echo "::warning::unrecognized authorizing ground(s): ${other} — either a third ground was added (extend this floor) or the marker's values were renamed"
+          fi
+          # Spelled as `if` blocks, not `[ ... ] && x=y`: the runner is `bash -e`,
+          # where a false test as the last command of an `&&` list exits the script,
+          # so the happy path (a ground IS present) would abort this step.
+          missing=""
+          if [ "${anchor}" -eq 0 ]; then
+              missing="anchor"
+          fi
+          if [ "${own}" -eq 0 ]; then
+              missing="${missing:+${missing} and }own_account_device"
+          fi
+          if [ -n "${missing}" ]; then
+              echo "::error::no group-key recovery anywhere in the suite was authorized by: ${missing} (anchor=${anchor}, own_account_device=${own}) — unexercised, so a regression breaking it would leave this suite green, which is exactly how #3892 shipped inert"
+              echo "the scenarios that supplied each ground when this floor was set:"
+              echo "  own_account_device — account-device-revoke-lockout"
+              echo "  anchor             — group-subgroup-cold-sync"
+              echo "if one of those scenarios was intentionally changed, another must exercise the ground; do NOT lower this floor to match a regression"
+              exit 1
+          fi
+          echo "both key-serve grounds exercised across the suite (anchor=${anchor}, own_account_device=${own})"
+
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam, projection-coverage]
+    needs: [test, auth-seam, projection-coverage, key-recovery-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
