@@ -141,6 +141,17 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                     observe_handler_delivery("leave_namespace", "MemberLeft", report);
                 }
 
+                // The account left, so every other device of it has to stop
+                // following the namespace too.
+                let _recorded = crate::account_namespace::announce(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    namespace_id,
+                    crate::account_namespace::AccountNamespaceChange::Left,
+                )
+                .await;
+
                 let _ = node_client
                     .unsubscribe_namespace(namespace_id.to_bytes())
                     .await;
@@ -158,5 +169,97 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
+    use calimero_governance_store::{
+        AccountNamespaceSet, MembershipRepository, MetaRepository, NodeDeviceRepository,
+    };
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::*;
+    use crate::test_support::actor;
+
+    const GROUP: [u8; 32] = [0xF1; 32];
+
+    /// Leaving is the ACCOUNT leaving, so a device that goes on following the
+    /// namespace is following one it may no longer read.
+    ///
+    /// The namespace is created app-less and then handed to a second admin: the
+    /// owner and the last admin are both refused a self-leave, and neither
+    /// refusal is what this test is about.
+    #[actix::test]
+    async fn leaving_a_namespace_drops_it_from_the_account_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+        assert!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set")
+                .is_some(),
+            "the creation put it in the set, which is what the leave has to undo"
+        );
+
+        let other =
+            crate::test_support::enrol(&store, &created.group_id, &PublicKey::from([0xF2; 32]));
+        MembershipRepository::new(&store)
+            .add_member(&created.group_id, &other, GroupMemberRole::Admin)
+            .expect("a second admin");
+        let meta = MetaRepository::new(&store);
+        let mut row = meta
+            .load(&created.group_id)
+            .expect("read the meta")
+            .expect("the namespace has one");
+        row.owner_identity = other;
+        meta.save(&created.group_id, &row).expect("hand it over");
+
+        let _left = harness
+            .manager
+            .send(LeaveNamespaceRequest {
+                namespace_id: created.group_id,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the leave runs");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            None,
+            "a namespace the account left is no longer one of its own"
+        );
     }
 }
