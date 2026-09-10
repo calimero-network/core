@@ -2081,7 +2081,10 @@ impl SyncManager {
                 // it. Two grounds, and nothing else, make a responder acceptable.
                 let is_anchor = anchor_peers.contains(peer);
                 let own_account_device = !responder_device_proof.is_empty()
-                    && self.proof_names_own_account(&responder_device_proof);
+                    && self.responder_is_own_account_device(
+                        &responder_device_proof,
+                        responder_identity,
+                    );
                 if !crate::sync::peers::key_server_accepted(is_anchor, own_account_device) {
                     warn!(
                         group_id = %hex::encode(group_id),
@@ -2303,54 +2306,128 @@ impl SyncManager {
     /// ECDH-wrap the key (`build_group_key_delivery`), and reply. Every
     /// non-deliverable case replies with an empty envelope (the requester
     /// tries another peer; no membership oracle leak).
-    /// Does `proof_bytes` prove the responder is a device of **this node's own
-    /// account**?
+    /// Does `proof_bytes` prove that **the peer that answered** is a device of
+    /// **this node's own account**?
     ///
-    /// The out-of-band trust a keyless node does have: pairing wrote the account
-    /// root genesis into its store, and every sibling device's certificate
-    /// chains to that root. It cannot learn a sibling's certificate from local
-    /// state -- the only path recording one is an encrypted GroupOp apply --
-    /// which is why the responder sends it (#3888).
+    /// Both halves are load-bearing, and each closes a distinct hole.
     ///
-    /// Our own account id is passed as the claimed account, so a proof for any
-    /// OTHER account fails by construction rather than by a check that could be
-    /// forgotten. `AccountProof::verify` is explicit about why that argument
+    /// **This node's own account.** Read from the local device row, which
+    /// carries `account` outright. NOT from `account_root()`: a paired device
+    /// holds no account root at all -- `require_account_root` says as much, "for
+    /// a node meant to hold none" -- and a freshly paired device is exactly the
+    /// caller this exists for, so reading the root would have made the check
+    /// always false on the one node that needs it. Passing our own account id as
+    /// the claimed account means a proof for any OTHER account fails by
+    /// construction; `AccountProof::verify` is explicit about why that argument
     /// exists: "without it a caller would happily verify a perfectly well-formed
     /// credential for an account nobody asked about."
     ///
-    /// False on every failure -- no account root, an undecodable proof, a chain
-    /// that does not verify, or a valid proof for someone else's account. A
-    /// claim that cannot be checked is not a claim.
-    fn proof_names_own_account(&self, proof_bytes: &[u8]) -> bool {
+    /// **The peer that answered.** A certificate is public: it travels in every
+    /// device-link op. So verifying only that it chains to our account would let
+    /// ANY peer that has seen one of our certificates replay it and be believed
+    /// -- it would prove that the certificate is genuine, not that the sender
+    /// holds it. Requiring `sign_pk` to be the identity that wrapped this
+    /// envelope closes that: the wrap is ECDH from that identity's secret, so an
+    /// envelope this node can open is proof the sender held it. A node's
+    /// namespace signing identity IS its certified device key -- that is the map
+    /// `binding_for_sign_pk` resolves authors through -- so the two are
+    /// comparable.
+    ///
+    /// False on every failure: no device row, an undecodable proof, a chain that
+    /// does not verify, a valid proof for another account, or a valid proof
+    /// naming a key this responder did not answer with. A claim that cannot be
+    /// checked is not a claim.
+    fn responder_is_own_account_device(
+        &self,
+        proof_bytes: &[u8],
+        responder_identity: PublicKey,
+    ) -> bool {
         let store = self.context_client.datastore_handle().into_inner();
-        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
-        let Ok(Some(root)) = devices.account_root() else {
+        let Ok(Some(device_row)) =
+            calimero_governance_store::NodeDeviceRepository::new(&store).get()
+        else {
             return false;
         };
-        let own_account = root.genesis().account_id();
         let Ok(proof) = borsh::from_slice::<
             calimero_account::AccountProof<calimero_account::DeviceCert>,
         >(proof_bytes) else {
             return false;
         };
-        proof.verify(own_account).is_ok()
+        if proof.verify(device_row.account).is_err() {
+            return false;
+        }
+        proof.statement.sign_pk == responder_identity
     }
 
-    /// This node's own device certificate, borsh-encoded, for
+    /// A certificate proving this node's device speaks for its account as the
+    /// answering identity, borsh-encoded for
     /// [`MessagePayload::GroupKeyResponseWithResponderProof`].
     ///
-    /// `Ok(vec![])` when this node has no certificate for its own device — a
-    /// node that was never paired into an account. That is a claim of nothing,
-    /// not a failure.
-    fn own_device_proof_bytes(&self, store: &calimero_store::Store) -> eyre::Result<Vec<u8>> {
+    /// `Ok(vec![])` means this node can prove nothing and is claiming nothing --
+    /// the requester then falls back to the anchor rule. Not a failure.
+    ///
+    /// Prefers a stored certificate, but only one certifying `answering_identity`:
+    /// the requester requires the proof to name the key that wrapped the
+    /// envelope, so a certificate for some other key of ours would be sent only
+    /// to be rejected.
+    ///
+    /// Otherwise it MINTS one, and that case is the whole point. A node that
+    /// provisioned its own root holds NO certificate for its own device:
+    /// `provision_account_root` stores the root and nothing else, and the only
+    /// paths calling `remember_device_cert` are minting one for somebody else or
+    /// folding a link op. So the first cut of this shipped an always-empty proof
+    /// and the mechanism was inert -- the `account-device-*` scenarios failed
+    /// exactly as they had before it existed.
+    ///
+    /// Minting is not a shortcut. We hold the account root, and a device
+    /// certificate is precisely what that root signs to say "this key speaks for
+    /// my account": the same construction, at the same epochs, as every other
+    /// minting site in the tree.
+    ///
+    /// Deliberately NOT persisted. `remember_device_cert` is keyed by device id,
+    /// so writing this would overwrite a genuine certificate -- possibly one at a
+    /// higher `device_epoch` -- with a locally minted one. One Ed25519 signature
+    /// per served key is cheaper than that risk.
+    fn own_device_proof_bytes(
+        &self,
+        store: &calimero_store::Store,
+        answering_identity: PublicKey,
+    ) -> eyre::Result<Vec<u8>> {
+        use calimero_account::{AccountProof, DeviceCert};
+
         let devices = calimero_governance_store::NodeDeviceRepository::new(store);
-        let Some(device) = devices.get()?.map(|record| record.device()) else {
+        let Some(device_row) = devices.get()? else {
             return Ok(Vec::new());
         };
-        let Some(cert) = devices.device_cert(device)? else {
+        let device = device_row.device();
+
+        if let Some(known) = devices.device_cert(device)? {
+            if known.proof.statement.sign_pk == answering_identity {
+                return Ok(borsh::to_vec(&known.proof)?);
+            }
+        }
+
+        let Some(root) = devices.account_root()? else {
+            // A paired device holds no account root, so it cannot certify
+            // itself. It can still RECEIVE a key this way; it just cannot
+            // serve one.
             return Ok(Vec::new());
         };
-        Ok(borsh::to_vec(&cert.proof)?)
+        let genesis = root.genesis();
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            genesis.account_id(),
+            device,
+            &answering_identity,
+            &device_row.kem_public_key(),
+            0,
+            0,
+        )?;
+        Ok(borsh::to_vec(&AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        })?)
     }
 
     #[expect(
@@ -2411,7 +2488,10 @@ impl SyncManager {
             // claim nothing and the requester falls back to the anchor rule --
             // never an error, since the key itself is still being served.
             let responder_device_proof = self
-                .own_device_proof_bytes(&self.context_client.datastore_handle().into_inner())
+                .own_device_proof_bytes(
+                    &self.context_client.datastore_handle().into_inner(),
+                    responder_identity,
+                )
                 .unwrap_or_else(|err| {
                     debug!(%err, "no own-device proof to attach to a group-key response");
                     Vec::new()
