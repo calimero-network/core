@@ -828,7 +828,11 @@ impl Actor for ContextManager {
         // What the account gains and leaves, followed and unfollowed on this
         // device. Shutdown-then-spawn to rebind, as the singleton listeners above.
         account_follow::shutdown();
-        account_follow::spawn(self.datastore.clone(), self.node_client.clone());
+        account_follow::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+        );
     }
 }
 
