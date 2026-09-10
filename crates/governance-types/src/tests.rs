@@ -342,8 +342,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 12,
-        "the ordinals frozen below are the v12 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 13,
+        "the ordinals frozen below are the v13 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
