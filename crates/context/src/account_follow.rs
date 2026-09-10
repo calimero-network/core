@@ -747,8 +747,8 @@ mod tests {
         );
     }
 
-    /// Both reads have to agree. A set this node has not finished syncing names
-    /// nothing, and unfollowing on that alone would cut off a live namespace.
+    /// The member row is the last word. This namespace is folded here and the
+    /// set omits it, so only "the account is still a member of it" keeps it.
     #[actix::test]
     async fn a_namespace_the_set_omits_is_kept_while_the_account_is_still_a_member() {
         let store = store();
@@ -759,6 +759,9 @@ mod tests {
         let _identity = namespaces
             .participate_in(&kept)
             .expect("this node takes part in it");
+        // Folded here, so the two conditions before the member row both pass and
+        // the chain cannot short-circuit ahead of the one under test.
+        folded(&store, kept);
         MembershipRepository::new(&store)
             .add_member(&kept, &account, GroupMemberRole::Member)
             .expect("and its account is still a member of it");
