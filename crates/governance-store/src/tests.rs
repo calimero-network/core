@@ -12316,16 +12316,28 @@ mod account_plane_apply {
         let gained = ContextGroupId::from([0x81; 32]);
         let app = ApplicationId::from([0x44; 32]);
 
-        sign_apply_local_group_op_borsh(
+        let (handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &owner_sk,
-            GroupOp::AccountNamespaceGained {
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespaceGained {
                 namespace: gained,
                 application: Some(app),
             },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         )
         .unwrap();
+        assert!(handled);
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceGained {
+                group_id: gid.to_bytes(),
+                namespace: gained,
+                application: Some(app),
+            }],
+            "a recorded namespace owes the wake-up that decides who follows it"
+        );
 
         assert_eq!(
             AccountNamespaceSet::new(&store, gid)
@@ -12335,8 +12347,8 @@ mod account_plane_apply {
         );
     }
 
-    /// The leave half, and its no-op case: a device that never folded the gain
-    /// still applies the leave without erroring.
+    /// The leave half, and its no-op case: a leave for a namespace this device
+    /// never gained still fires the event, which is what makes it unfollow.
     #[test]
     fn a_left_namespace_leaves_the_set() {
         let store = test_store();
@@ -12352,15 +12364,35 @@ mod account_plane_apply {
                 application: None,
             },
             GroupOp::AccountNamespaceLeft { namespace: gained },
-            GroupOp::AccountNamespaceLeft {
-                namespace: never_gained,
-            },
         ] {
             sign_apply_local_group_op_borsh(&store, &gid, &owner_sk, op).unwrap();
         }
 
+        // The one apply that differs from the certified one, so the one that
+        // has to be driven through the path events come back on.
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespaceLeft {
+                namespace: never_gained,
+            },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceLeft {
+                group_id: gid.to_bytes(),
+                namespace: never_gained,
+            }],
+            "a leave with no row behind it still owes the unfollow"
+        );
+
         let set = AccountNamespaceSet::new(&store, gid);
         assert_eq!(set.contains(gained).unwrap(), None);
+        assert_eq!(set.contains(never_gained).unwrap(), None);
         assert_eq!(set.namespaces().unwrap(), vec![]);
     }
 
