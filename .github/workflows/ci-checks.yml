@@ -12,6 +12,7 @@ on:
       - "e2e-tests/**"
       - "tools/**"
       - "scripts/check-wasm-size.sh"
+      - "scripts/check-storage-cost.sh"
       - ".github/workflows/ci-checks.yml"
 
 env:
@@ -282,3 +283,62 @@ jobs:
 
       - name: Check wasm sizes against the runtime module-size limit
         run: ./scripts/check-wasm-size.sh
+
+  bench-compile:
+    name: Benchmarks compile
+    # Benches are not run here — timing on a shared runner is noise. This job
+    # exists because a bench target nothing compiles silently rots: PR #2203's
+    # merkle bench inlined `Index::calculate_full_hash_for_children`, which the
+    # child trie later deleted, and nothing noticed for months.
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: bench-compile
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Compile every bench target
+        run: cargo bench --workspace --benches --no-run
+
+  # Storage costs are deterministic — same inputs, same read/write/remove counts
+  # on any machine — so this gates. Wall-clock benchmarks do NOT gate; they run
+  # post-merge in benchmarks.yml, because timing noise on shared runners makes a
+  # time-based gate a false-alarm generator, and because a timing bench against
+  # an in-memory store would not have caught core#3602 at all.
+  storage-cost:
+    name: Storage cost gate
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: storage-cost
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Shape first, constants second. The shape tests catch a complexity
+      # regression even when the snapshot was regenerated to absorb it, which is
+      # precisely how a reviewer gets fooled otherwise.
+      # `--include-ignored` is load-bearing: `tests/reproducible.rs` is
+      # `#[ignore]`d so the workspace-wide DEBUG `cargo test` above does not
+      # spend twenty-plus minutes re-deriving tolerances on every PR. This
+      # release job is the only place it runs, so dropping the flag drops the
+      # check that every declared `tolerance_pct` still bounds the spread it
+      # claims to.
+      - name: Assert cost curves keep their declared shape
+        run: cargo test -p storage-cost --release -- --include-ignored
+
+      - name: Check storage costs against the committed snapshot
+        run: ./scripts/check-storage-cost.sh

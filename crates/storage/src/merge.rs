@@ -73,7 +73,7 @@ pub use custom_registry::clear_custom_merge_registry;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::collections::crdt_meta::{CrdtType, CustomTypeId, MergeError, Mergeable};
-use crate::collections::{Counter, ReplicatedGrowableArray};
+use crate::collections::{Counter, FugueText, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
 /// Canonical wire format for a host→WASM root-state merge invocation.
@@ -462,6 +462,15 @@ pub fn merge_by_crdt_type(
         // a correct-but-unreached arm to satisfy the exhaustive match.
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
+        // Tree-Fugue text - union of run-length blocks, delete-wins per block
+        CrdtType::FugueText => merge_fugue_text(existing, incoming),
+
+        // One run-length block of a Tree-Fugue document. The LEAF arm — this is
+        // the one the sync path actually reaches, because a `TextBlock` lives as
+        // an `UnorderedMap` entry and it is the ENTRY that carries this tag (the
+        // collection element carries `FugueText`). See `merge_fugue_text_block`.
+        CrdtType::FugueTextBlock => merge_fugue_text_block(existing, incoming),
+
         // App-defined types
         CrdtType::Custom(type_id) => Err(MergeError::WasmRequired { type_id: *type_id }),
     }
@@ -572,6 +581,46 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     Mergeable::merge(&mut existing_rga, &incoming_rga)?;
 
     borsh::to_vec(&existing_rga).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
+/// Merge two `FugueText` documents (Tree-Fugue collaborative text).
+///
+/// Blocks are unioned; a block `existing` has tombstoned is never resurrected,
+/// and the tombstone flag is delete-wins. Ordering needs no merge at all — it is
+/// recomputed from the `(parent, side)` edges of whatever block set results.
+///
+/// # Arguments
+///
+/// * `existing` - Currently stored document (Borsh-serialized)
+/// * `incoming` - Incoming document to merge (Borsh-serialized)
+///
+/// # Returns
+///
+/// Merged document as Borsh-serialized bytes.
+fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    let mut existing_doc: FugueText =
+        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+    let incoming_doc: FugueText =
+        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+
+    Mergeable::merge(&mut existing_doc, &incoming_doc)?;
+
+    borsh::to_vec(&existing_doc).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
+/// Merge two stored ENTRIES of a `FugueText` block map.
+///
+/// This is the arm the sync path actually reaches for text: the collection
+/// element carries [`CrdtType::FugueText`], but the bytes that collide on the
+/// wire are one `UnorderedMap` entry, stamped [`CrdtType::FugueTextBlock`].
+///
+/// Delegates the whole join to
+/// [`FugueText::merge_block_entry_bytes`](crate::collections::FugueText), which
+/// owns the layout (`borsh(Entry<(BlockKey, TextBlock)>)`) and applies the
+/// elementwise tombstone OR plus longer-text rule — the same join
+/// `merge_blocks_from` uses, so there is exactly one block-join implementation.
+fn merge_fugue_text_block(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    FugueText::<MainStorage>::merge_block_entry_bytes(existing, incoming)
 }
 
 /// Merge two UnorderedMaps.

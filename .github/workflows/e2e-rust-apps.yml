@@ -447,6 +447,12 @@ jobs:
       - name: Build collaborative-editor bundle
         run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
 
+      - name: Build fugue-collab app
+        run: cargo mero build --manifest-path apps/fugue-collab/Cargo.toml
+
+      - name: Build fugue-collab bundle
+        run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-init app
         run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
@@ -519,6 +525,7 @@ jobs:
             apps/blobs/res/state-schema.json
             apps/abi_conformance/res/*
             apps/collaborative-editor/res/*
+            apps/fugue-collab/res/*
             apps/kv-store-init/res/*
             apps/kv-store-with-handlers/res/*
             apps/kv-store-with-user-and-frozen-storage/res/*
@@ -541,6 +548,12 @@ jobs:
     name: Test (${{ matrix.workflow }})
     needs: [build-image, build-apps]
     runs-on: ubuntu-24.04-8cpu
+    # Per-entry opt-in via `matrix.expect_red` (default false — undefined is
+    # falsy in this comparison). Set on collaborative-editor-concurrent only:
+    # it is a red-expected acceptance test for the Fugue rework (see its
+    # matrix entry below) and must not fail the workflow run while it is
+    # expected to stay red.
+    continue-on-error: ${{ matrix.expect_red == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -944,6 +957,50 @@ jobs:
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
+          # An ordinary two-node concurrent-editing smoke test. It used to be
+          # registered as this rework's red-expected acceptance test and did not
+          # work in that role — it PASSES on RGA (#3853). Kept as the plain
+          # scenario it is; the acceptance pair is registered further down.
+          - workflow: collaborative-editor-concurrent
+            file: workflows/collaborative-editor-concurrent.yml
+            app: collaborative-editor
+          # The acceptance PAIR for the Fugue rework. Both halves are required:
+          # a green Fugue run means nothing on its own, because it is only
+          # evidence if the identical scenario FAILS on RGA.
+          #
+          # `collaborative-editor-concurrent` used to sit here as the sole
+          # red-expected entry, and it did not work: measured against this tree
+          # it PASSES on RGA (#3853). Backward interleaving is Table 1's "can
+          # occur", not "must occur" — RGA orders same-origin siblings by id, so
+          # a writer that types its passage and heading back-to-back yields
+          # P1<H1<P2<H2 and each heading still lands beside its own passage.
+          # Merely making the edits concurrent does not pose the question.
+          #
+          # The scenario below poses it by going ROUND-ROBIN: every writer
+          # appends its passage, and only then does each go back for its
+          # heading, giving P1<P2<P3<H1<H2<H3 so every heading sorts ahead of
+          # every passage. Isolation is forced by stopping the other nodes and
+          # is ASSERTED before each of the six writes, so a leaked peer edit
+          # fails loudly rather than quietly making the run vacuous.
+          #
+          # Do NOT weaken either half. If the control goes GREEN, the scenario
+          # has stopped exercising the defect and the Fugue run beside it proves
+          # nothing — that is the failure mode #3853 records.
+          #
+          # `registry_fetch: false` on both: the scenario installs the bundle
+          # directly on EVERY node, before isolation begins, because master
+          # acquires bytecode lazily and a node cut off from its peers has
+          # nobody to fetch from. Nothing is pulled from the fixture registry as
+          # a result, which is correct here and not a missing-registry bug.
+          - workflow: fugue-collab-figure2
+            file: workflows/fugue-collab-figure2.yml
+            app: fugue-collab
+            registry_fetch: false
+          - workflow: rga-figure2-control
+            file: workflows/rga-figure2-control.yml
+            app: collaborative-editor
+            expect_red: true
+            registry_fetch: false
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init

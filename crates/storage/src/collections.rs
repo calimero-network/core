@@ -26,6 +26,19 @@ pub mod vector;
 pub use vector::Vector;
 pub mod rga;
 pub use rga::ReplicatedGrowableArray;
+pub mod fugue;
+pub use fugue::{FugueError, FugueNode, FugueTree, Side};
+pub mod fugue_text;
+pub use fugue_text::FugueText;
+// A measurement control for `FugueText`, not a product collection: one storage
+// entity per Fugue node (the paper's "Tree-Fugue Simple"), so the cost of
+// run-length blocks can be isolated from the cost of Fugue's ordering. Gated
+// off by default so it stays out of the published surface and out of any node
+// build; `cfg(test)` keeps this crate's own unit tests for it running.
+#[cfg(any(test, feature = "fugue-simple"))]
+pub mod fugue_text_simple;
+#[cfg(any(test, feature = "fugue-simple"))]
+pub use fugue_text_simple::FugueTextSimple;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
@@ -703,6 +716,26 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// collections that know their value type pass `Some` — the generic
     /// `insert` cannot, since `T` there is already the erased item.
     pub(crate) fn insert_with_storage_type(
+        &mut self,
+        id: Option<Id>,
+        item: T,
+        storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
+    ) -> StoreResult<(Id, T)> {
+        self.insert_with_storage_type_and_crdt_type(id, item, storage_type, crdt_type)
+    }
+
+    /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally
+    /// stamping the ENTRY element with its own `crdt_type`.
+    ///
+    /// Entry elements are otherwise untyped (`Element::new` leaves `crdt_type`
+    /// as `None`), and an untyped entity is merged by last-writer-wins in
+    /// `Interface::try_merge_non_root`. That is correct for a container whose
+    /// values never collide, and wrong for one whose values do — see
+    /// `CrdtType::FugueTextBlock`, the only caller today. The tag is persisted
+    /// through `Index::add_child_to` at creation and travels with the action, so
+    /// a receiving replica dispatches on it too.
+    pub(crate) fn insert_with_storage_type_and_crdt_type(
         &mut self,
         id: Option<Id>,
         item: T,

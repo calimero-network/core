@@ -220,6 +220,44 @@ pub enum CrdtType {
     /// boundary (snapshots, persisted index metadata, mixed-binary peers),
     /// surfacing as `EntityIndex` borsh decode failures.
     RotationLog,
+
+    /// Tree-Fugue text.
+    ///
+    /// Collaborative text with Fugue ordering, stored as run-length blocks in an
+    /// `UnorderedMap` keyed by the id of each run's first node. Order is a pure
+    /// function of the synced `(parent, side)` edges, so merge is the map's own
+    /// add-wins union — no ordering state crosses the wire beyond the edges.
+    /// Merge: union of blocks; delete-wins per block.
+    ///
+    /// DECLARED LAST for the same reason as [`RotationLog`](Self::RotationLog):
+    /// borsh enum discriminants are positional and must only ever be appended.
+    FugueText,
+
+    /// One run-length block of a [`FugueText`](Self::FugueText) document.
+    ///
+    /// The LEAF counterpart of `FugueText`: `FugueText` tags the collection
+    /// element, this tags each `UnorderedMap` **entry** holding one `TextBlock`.
+    /// The distinction is load-bearing rather than cosmetic. Entry entities are
+    /// created by `Element::new`, which stamps no `crdt_type`, so without this
+    /// tag a same-key value collision reaches `Interface::try_merge_non_root`
+    /// as untyped "legacy data" and is resolved by last-writer-wins.
+    ///
+    /// LWW is wrong here because a `FugueText` block is MUTABLE: a run grows in
+    /// place when a local append coalesces into it, and shrinks in place when a
+    /// remote insertion splits it. Two replicas therefore routinely hold
+    /// different values for one key — a longer coalesced copy and a shorter
+    /// split copy — and picking one by timestamp DROPS the nodes only the other
+    /// defines. (`Rga` needs no leaf tag because an `RgaChar` is immutable once
+    /// written, so its keys can never collide on differing values.)
+    ///
+    /// Merge: elementwise tombstone OR, longer `text` wins — the same join
+    /// `FugueText::merge_blocks_from` applies, which is a lattice join and so
+    /// order-independent, idempotent and commutative.
+    ///
+    /// Tagged 16 in the hand-written encoding below. Discriminants stopped
+    /// being positional when the tag space moved to `0x80`, so the number is
+    /// assigned explicitly and may only ever be appended to.
+    FugueTextBlock,
 }
 
 /// Current-format tags are the legacy tag plus this offset.
@@ -273,6 +311,10 @@ impl BorshSerialize for CrdtType {
                 writer.write_all(&[tag(14)])?;
                 BorshSerialize::serialize(id, writer)
             }
+            // 15 and 16, not 14 and 15: `Custom` took 14 when it traded its
+            // name for a digest, and these tags are hashed into `delta_id`.
+            Self::FugueText => writer.write_all(&[tag(15)]),
+            Self::FugueTextBlock => writer.write_all(&[tag(16)]),
         }
     }
 }
@@ -325,6 +367,10 @@ impl BorshDeserialize for CrdtType {
             )?))),
             13 => Ok(Self::RotationLog),
             14 if !legacy => Ok(Self::Custom(CustomTypeId::deserialize_reader(reader)?)),
+            // Current-format only: these variants postdate the 0x80 move, so a
+            // legacy tag of 15 or 16 is not one of ours and must not decode.
+            15 if !legacy => Ok(Self::FugueText),
+            16 if !legacy => Ok(Self::FugueTextBlock),
             _ => Err(borsh::io::Error::new(
                 borsh::io::ErrorKind::InvalidData,
                 "unknown CrdtType discriminant",
@@ -429,6 +475,7 @@ impl CrdtType {
                 | Self::SortedSet { .. }
                 | Self::Vector { .. }
                 | Self::Rga
+                | Self::FugueText
         )
     }
 
@@ -511,6 +558,9 @@ mod tests {
         assert!(CrdtType::SortedSet.is_collection());
         assert!(CrdtType::Vector.is_collection());
         assert!(CrdtType::Rga.is_collection());
+        assert!(CrdtType::FugueText.is_collection());
+        // A single block is a LEAF value, not a collection.
+        assert!(!CrdtType::FugueTextBlock.is_collection());
         assert!(!CrdtType::lww_register().is_collection());
         assert!(!CrdtType::GCounter.is_collection());
         assert!(!CrdtType::PnCounter.is_collection());
@@ -555,6 +605,8 @@ mod tests {
             CrdtType::SharedStorage,
             CrdtType::Custom(CustomTypeId::of("my_type")),
             CrdtType::RotationLog,
+            CrdtType::FugueText,
+            CrdtType::FugueTextBlock,
         ];
 
         for crdt_type in &types {
@@ -583,6 +635,8 @@ mod tests {
             CrdtType::SharedStorage,
             CrdtType::Custom(CustomTypeId::of("my_type")),
             CrdtType::RotationLog,
+            CrdtType::FugueText,
+            CrdtType::FugueTextBlock,
         ];
 
         for crdt_type in &types {
@@ -616,6 +670,8 @@ mod tests {
             tag(&CrdtType::Custom(CustomTypeId::of("c"))),
             CRDT_TYPE_TAG_V2 + 14
         );
+        assert_eq!(tag(&CrdtType::FugueText), CRDT_TYPE_TAG_V2 + 15);
+        assert_eq!(tag(&CrdtType::FugueTextBlock), CRDT_TYPE_TAG_V2 + 16);
     }
 
     /// These bytes are persisted, sent on the wire and hashed into `delta_id`,

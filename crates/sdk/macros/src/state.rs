@@ -1470,6 +1470,7 @@ fn generate_assign_deterministic_ids_impl(
                     | "SortedSet"
                     | "Counter"
                     | "ReplicatedGrowableArray"
+                    | "FugueText"
                     | "UserStorage"
                     | "FrozenStorage"
                     | "SharedStorage"
@@ -1558,6 +1559,38 @@ mod tests {
     /// `#[derive(Mergeable)]` — would silently fall through, dropping all
     /// concurrent updates to those fields with no diagnostic. Today every
     /// field gets a merge call; the trait bound enforces correctness.
+    /// Every text-CRDT collection must reach `__assign_deterministic_ids`.
+    ///
+    /// A top-level field the list misses falls back to `Id::random()`, so every
+    /// node mints a different collection id, its entries land under different
+    /// parents and the field NEVER merges — permanent divergence, silent, and
+    /// reachable by any app. `FugueText` was missing here when it landed.
+    #[test]
+    fn assign_deterministic_ids_covers_every_text_crdt() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct AppRoot {
+                pub legacy: ReplicatedGrowableArray,
+                pub doc: FugueText,
+                pub opaque: SomeUserType,
+            }
+        };
+        let ident = item.ident.clone();
+        let generics = item.generics.clone();
+        let orig = StructOrEnumItem::Struct(item);
+        let rendered = generate_assign_deterministic_ids_impl(&ident, &generics, &orig).to_string();
+
+        for field in ["legacy", "doc"] {
+            assert!(
+                rendered.contains(&format!("self . {field} . reassign_deterministic_id")),
+                "`{field}` must be reassigned a deterministic id, in:\n{rendered}",
+            );
+        }
+        assert!(
+            !rendered.contains("opaque"),
+            "a non-collection field must not be reassigned, in:\n{rendered}",
+        );
+    }
+
     #[test]
     fn merge_impl_calls_every_field_including_user_types() {
         let item: syn::ItemStruct = parse_quote! {

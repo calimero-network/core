@@ -4,6 +4,7 @@
 //! - LwwRegister
 //! - Counter
 //! - ReplicatedGrowableArray (RGA)
+//! - FugueText (Tree-Fugue collaborative text)
 //! - UnorderedMap
 //! - SortedMap
 //! - UnorderedSet
@@ -15,7 +16,7 @@
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
-    Counter, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
+    Counter, FugueText, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
     UnorderedSet, ValueRef, Vector,
 };
 #[cfg(test)]
@@ -275,6 +276,38 @@ impl Mergeable for ReplicatedGrowableArray {
         // so a concurrently-deleted char is never resurrected. Delegated to
         // a generic method so it is unit-testable across isolated storage scopes.
         self.merge_chars_from(other)?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// FugueText (Tree-Fugue collaborative text)
+// ============================================================================
+
+impl CrdtMeta for FugueText {
+    fn crdt_type() -> CrdtType {
+        CrdtType::FugueText
+    }
+
+    fn storage_strategy() -> StorageStrategy {
+        // Blob, matching RGA: the container is a thin wrapper whose blocks
+        // sync as separate entities of the inner map.
+        StorageStrategy::Blob
+    }
+
+    fn can_contain_crdts() -> bool {
+        false // Blocks hold characters, not CRDTs
+    }
+}
+
+#[diagnostic::do_not_recommend]
+impl Mergeable for FugueText {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // Same shape as the RGA impl: `TextBlock` is plain data, not a CRDT, so
+        // the union is done explicitly rather than through `blocks.merge()`.
+        // `merge_blocks_from` never resurrects a block `self` tombstoned and
+        // ORs the per-block delete flag, so delete wins.
+        self.merge_blocks_from(other)?;
         Ok(())
     }
 }
@@ -1213,6 +1246,14 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> MergeStrategy for Counter<A
 
 #[diagnostic::do_not_recommend]
 impl MergeStrategy for ReplicatedGrowableArray {
+    const DISPATCHED: bool = false;
+}
+
+// A built-in collection with a fixed rule, exactly like `ReplicatedGrowableArray`:
+// the merge is `FugueText::merge_blocks_from`'s lattice join, chosen by the
+// collection and never by the app, so it is not dispatched.
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for FugueText {
     const DISPATCHED: bool = false;
 }
 

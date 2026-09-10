@@ -163,7 +163,11 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::Counter),
                                     inner_type: None,
                                 },
-                                CrdtType::Rga => TypeRef::Collection {
+                                // FugueText is collaborative text like RGA, so it
+                                // surfaces under the same ABI collection kind —
+                                // only the ordering rule differs, and ordering is
+                                // not part of the ABI shape.
+                                CrdtType::Rga | CrdtType::FugueText => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
@@ -235,11 +239,16 @@ pub fn infer_schema_from_database(
                                     crdt_type: None,
                                     inner_type: None,
                                 },
-                                CrdtType::RotationLog => {
-                                    // Internal SharedStorage writer-set history
-                                    // (core#2716 P3) — a hashed book-keeping
-                                    // child, never a user-facing field. Surface
-                                    // it as an opaque record if it ever appears.
+                                CrdtType::RotationLog | CrdtType::FugueTextBlock => {
+                                    // Internal book-keeping children, never
+                                    // user-facing ROOT fields: `RotationLog` is
+                                    // the SharedStorage writer-set history
+                                    // (core#2716 P3), `FugueTextBlock` is one
+                                    // run-length block INSIDE a `FugueText`
+                                    // (the document itself surfaces under
+                                    // `CrdtType::FugueText` above). Surface
+                                    // either as an opaque record if it ever
+                                    // appears here.
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },
                                         crdt_type: None,

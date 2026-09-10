@@ -286,6 +286,22 @@ type SharedStampAuthorization = (BTreeMap<AccountId, OpMask>, PublicKey);
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
+/// Where the bytes reaching [`Interface::save_internal`] came from.
+///
+/// Most merge decisions are the same either way, but not all: a CRDT whose
+/// per-key join is a LATTICE join (union-like, never a pick) must run that join
+/// on applied bytes and must NOT run it on local bytes. A local write already
+/// descends from the stored value, so joining the two would make the stored
+/// value un-shrinkable — see `CrdtType::FugueTextBlock`, whose runs are split
+/// (shortened) in place by a mid-run insertion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteOrigin {
+    /// This node's own write, from guest execution.
+    Local,
+    /// A remote action landing through [`Interface::apply_action`].
+    Applied,
+}
+
 impl<S: StorageAdaptor> Interface<S> {
     /// Resolve a [`SharedMember`](StorageType::SharedMember)'s writer set from
     /// its `anchor`'s **locally verified** state, mirroring
@@ -2499,7 +2515,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 // Save data (might merge, producing different hash)
-                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata.clone())?
+                let Some((_, _full_hash)) =
+                    Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Applied)?
                 else {
                     debug!(
                         %id,
@@ -3210,6 +3227,7 @@ impl<S: StorageAdaptor> Interface<S> {
         id: Id,
         data: &[u8],
         metadata: Metadata,
+        origin: WriteOrigin,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
         // Serialize the WHOLE read-merge-write-rehash sequence, not just the
         // index update. The entry-value write (`storage_write(Key::Entry(id))`)
@@ -3250,6 +3268,11 @@ impl<S: StorageAdaptor> Interface<S> {
                         | crate::collections::crdt_meta::CrdtType::Custom(_)
                 )
             ) && !crate::collections::is_app_root_entry(id)
+                || origin == WriteOrigin::Applied
+                    && matches!(
+                        metadata.crdt_type,
+                        Some(crate::collections::crdt_meta::CrdtType::FugueTextBlock)
+                    )
             {
                 // `Custom` joins this arm for the same reason, and it is
                 // load-bearing rather than tidy. The `is_app_root_entry` guard
@@ -3268,6 +3291,25 @@ impl<S: StorageAdaptor> Interface<S> {
                 // 900 on one node and 100 on the other. The merge has to run in
                 // both directions or it is not commutative, and the entities
                 // never converge.
+                //
+                // `FugueTextBlock` (one run-length block of a `FugueText`) joins
+                // this timestamp-blind arm for the same reason: its join is a
+                // lattice join, not a pick, so the LWW-by-HLC branches below
+                // would DROP one side. Both directions of the race stale-skip
+                // there — the split copy is younger than the coalesced copy it
+                // must absorb on one replica, and older than it on the other —
+                // so the branch has to be bypassed on both, not just one.
+                //
+                // APPLIED ONLY. A LOCAL write is not a merge: its bytes descend
+                // from the stored bytes, and a local mutation only ever GROWS a
+                // run (coalescing appends to `text`; nothing shortens it) or
+                // ACCUMULATES tombstone bits. So the incoming copy is already a
+                // lattice-superset of the stored one on both components, the
+                // join would return it unchanged, and skipping the join saves a
+                // decode on the hot path. Pinned by
+                // `fugue_text::tests::local_writes__are_lattice_supersets_of_what_they_overwrite`
+                // — if a local write ever shrinks a run, that test fails and this
+                // arm must widen to every origin.
                 //
                 // P3 (core#2716) per-`delta_id` rotation-log child. Merge
                 // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
@@ -3291,6 +3333,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        origin,
                     )?,
                 }
             } else if last_metadata.updated_at > metadata.updated_at {
@@ -3388,6 +3431,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        origin,
                     )?
                 } else {
                     data.to_vec()
@@ -3403,6 +3447,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        origin,
                     )?
                 } else {
                     data.to_vec()
@@ -3799,6 +3844,7 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: &Metadata,
         existing_timestamp: u64,
         incoming_timestamp: u64,
+        origin: WriteOrigin,
     ) -> Result<Vec<u8>, StorageError> {
         use crate::collections::crdt_meta::{CrdtType, MergeError};
         use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
@@ -3858,10 +3904,14 @@ impl<S: StorageAdaptor> Interface<S> {
             // (the value-union merge did not, leaving a sticky HC loop). The
             // old `merge_rotation_log` union was only needed by the abandoned
             // single-blob representation.
+            // A LOCAL `FugueTextBlock` write is not a merge either — see the
+            // APPLIED-ONLY note on the timestamp-blind intercept in
+            // `save_internal`. The block join only ever runs on applied bytes.
             let is_lww = matches!(
                 crdt_type,
                 CrdtType::LwwRegister { .. } | CrdtType::RotationLog
-            );
+            ) || (origin == WriteOrigin::Local
+                && matches!(crdt_type, CrdtType::FugueTextBlock));
             if is_lww {
                 return Ok(lww_pick(existing, incoming));
             }
@@ -4158,7 +4208,9 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
+        let Some((is_new, full_hash)) =
+            Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Local)?
+        else {
             return Ok(None);
         };
 

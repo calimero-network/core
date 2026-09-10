@@ -1,0 +1,210 @@
+description: >
+  Two-node concurrent editing over RGA. NOT the acceptance test for the Fugue
+  rework, despite what the comments further down still say — measured against
+  this tree it PASSES on RGA, which is exactly what a scenario that fails to
+  pose the question looks like (#3853).
+
+  The reason is that RGA orders same-origin siblings by id, so the outcome turns
+  on the relative ORDER of the ids, not on concurrency alone. Here each writer
+  types its passage and then its heading back-to-back, giving P1<H1<P2<H2 — and
+  each heading still lands beside its own passage. Nor does omitting
+  `wait_for_sync` create concurrency: gossip on loopback propagates in
+  milliseconds while the HTTP round-trips take tens of them, so back-to-back
+  calls simply serialise.
+
+  The real acceptance pair is `apps/fugue-collab/workflows/fugue-collab-figure2.yml`
+  and its control `../rga-figure2-control.yml`, which go round-robin
+  (P1<P2<P3<H1<H2<H3) and assert isolation before every write.
+
+  Kept as an ordinary two-node concurrent-editing smoke test, which it is.
+name: Collaborative Editor Concurrent Workflow
+
+# Force pull Docker images even if they exist locally
+force_pull_image: true
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: calimero-node
+
+steps:
+  # ============================================
+  # Setup Phase: Install app and create context
+  # ============================================
+
+  # Step 1: Install the collaborative editor application on Node 1
+  - name: Install Collaborative Editor on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: ../../dist/com.calimero.collaborative-editor-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create mesh with both nodes
+  - name: Create Mesh
+    type: create_mesh
+    context_node: calimero-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - calimero-node-2
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # ============================================
+  # Seed the document, matching paper Figure 2 (which starts from a document
+  # containing "existing text..." above both users' sections - not an empty
+  # document). This is also the working precondition for node 2 to write at
+  # all: create_mesh alone leaves node 2's context with zero delta-log
+  # entries. collaborative-editor.yml never hits this because node 2's first
+  # write (step 63) always happens long after node 1's first edit ("Hello")
+  # has synced - node 2 never writes into an empty context. Seeding here
+  # reproduces that same working precondition AND the paper's setup in one
+  # step. This seed step sits BEFORE all four concurrent edits; no wait or
+  # sync goes between them, or they stop being concurrent.
+  # ============================================
+
+  - name: Seed the document from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "existing text. "
+
+  - name: Wait for seed to propagate to Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Seeded Text (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      seeded_text_node2: result
+
+  - name: Assert Node 2 genuinely has the seeded text
+    type: json_assert
+    statements:
+      - 'json_equal({{seeded_text_node2}}, {"output": "existing text. "})'
+
+  # ============================================
+  # Scenario: backward-insertion interleaving (paper Figure 2)
+  #
+  # This scenario is the acceptance test for the Fugue rework. Starting from
+  # the 15-character seeded document ("existing text. "), each node appends
+  # its own "passage" at the end (position 15, the seeded length), then
+  # moves back to the start of its own passage (also position 15 - each
+  # node's own prior insert there shifts nothing else) and inserts a
+  # "heading" immediately before it, with NO propagation wait between Node
+  # 1's pair of edits and Node 2's pair - the merge is genuinely concurrent.
+  # This matches Figure 2 of "The Art of the Fugue", which starts from an
+  # existing document rather than an empty one.
+  #
+  # It is EXPECTED TO FAIL under today's RGA: RGA is proven to interleave
+  # concurrent backward insertions from different users (Weidner, Gentle,
+  # Kleppmann, "The Art of the Fugue", Table 1), so each node's
+  # heading+passage pair is not guaranteed to stay contiguous in the merged
+  # document. The `contains` assertions below check exactly that contiguity,
+  # per node, on both replicas. They must start red under RGA and must turn
+  # green once Fugue lands - do not weaken them to make them pass early.
+  #
+  # (Note: same-position *forward* concurrent insertion - i.e. two nodes
+  # both inserting at position 0 with no wait - is already covered by
+  # collaborative-editor.yml's "Insert ABC from Node 1" / "Insert XYZ from
+  # Node 2" steps, so it is intentionally not duplicated here.)
+  # ============================================
+
+  - name: Node 1 types passage
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE1"
+
+  - name: Node 1 goes back and types heading
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD1"
+
+  - name: Node 2 types passage
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE2"
+
+  - name: Node 2 goes back and types heading
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD2"
+
+  - name: Wait for interleaving edits to propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Text After Interleaving (Node 1)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      interleave_text_node1: result
+
+  - name: Get Text After Interleaving (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      interleave_text_node2: result
+
+  - name: Assert both nodes converged on interleaving case
+    type: json_assert
+    statements:
+      - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
+
+  # Contiguity assertions - the actual acceptance criterion for the Fugue
+  # rework. Each node's heading must stay immediately adjacent to its own
+  # passage, on both replicas. Expected to FAIL under today's RGA.
+  - name: Assert each contribution stays contiguous (Node 1's view)
+    type: assert
+    statements:
+      - "contains({{interleave_text_node1}}, 'HEAD1PASSAGE1')"
+      - "contains({{interleave_text_node1}}, 'HEAD2PASSAGE2')"
+
+  - name: Assert each contribution stays contiguous (Node 2's view)
+    type: assert
+    statements:
+      - "contains({{interleave_text_node2}}, 'HEAD1PASSAGE1')"
+      - "contains({{interleave_text_node2}}, 'HEAD2PASSAGE2')"
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 60
