@@ -234,6 +234,7 @@ cargo test -p calimero-node --test network_simulation
 - `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
   mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
   directly on those fields
+- **Only two things make a peer acceptable to serve a group key** (`key_server_accepted`): it is a trusted anchor of that group, or it proved with a certificate chaining to this node's own account root that it is a device of this node's own account. Decided **per response**, never by pruning the candidate list first — the second ground cannot be known until the answer is in hand. An awaited `key_id` is NOT a ground and the predicate deliberately takes no such argument: that id is read from a cleartext field no gate checks, so whoever mints it can then satisfy its own hash check (#3888). Anchor-first ordering decides who is *asked* first, never who is *believed*. And do not reduce this to anchors alone: `trusted_anchors` reads group meta, so a node holding no governance state identifies NO anchor, and that is exactly the freshly paired device the pull exists for — the `account-device-*` scenarios fail on it, surfacing two steps away as "context does not belong to any group" because without the key the GroupOps mapping a context to its group never fold (#3892).
 - `ReadinessCache::insert` does NOT verify signatures or membership -
   the receiver-side gate `verify_readiness_beacon` is the choke point;
   callers from outside the receiver path must verify first
