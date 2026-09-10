@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4E` is taken
-// except `0x25`, `0x2B` and `0x2C` (retired, below); the next free byte is `0x4F`.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4F` is taken
+// except `0x25`, `0x2B` and `0x2C` (retired, below); the next free byte is `0x50`.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -2360,6 +2360,75 @@ impl Debug for GroupAccountDevice {
     }
 }
 
+/// Prefix for [`GroupAccountNamespace`].
+pub const GROUP_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x4F;
+
+/// A namespace this namespace's account takes part in (see
+/// [`GROUP_ACCOUNT_NAMESPACE_PREFIX`]).
+///
+/// Written only in an account namespace. Key layout `prefix(1) +
+/// account_namespace(32) + namespace(32)` = 65 bytes, the same shape as
+/// [`GroupDeviceBinding`], so a `(account_namespace, *)` prefix scan enumerates
+/// one account's whole set.
+///
+/// The first range is `account_namespace`, not the `group_id` the byte-identical
+/// [`GroupAccountDevice`] calls its own: here it is always the account's.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountNamespace(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountNamespace {
+    #[must_use]
+    pub fn new(account_namespace: [u8; 32], namespace: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_NAMESPACE_PREFIX])
+            .concat(GenericArray::from(account_namespace))
+            .concat(GenericArray::from(namespace))))
+    }
+
+    #[must_use]
+    pub fn account_namespace(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountNamespace {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountNamespace {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountNamespace {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountNamespace")
+            .field("account_namespace", &self.account_namespace())
+            .field("namespace", &self.namespace())
+            .finish()
+    }
+}
+
 /// The certificate and scope a [`GroupAccountDevice`] row carries.
 ///
 /// The whole proof rather than its fields, for the same reason
@@ -2376,6 +2445,15 @@ pub struct GroupAccountDeviceValue {
     pub applications: Vec<ApplicationId>,
     /// Which scope statement wrote this row. Only a higher one supersedes.
     pub scope_epoch: u32,
+}
+
+/// The target a [`GroupAccountNamespace`] row records. `None` is a namespace
+/// whose target had not synced when the gainer read it, so only an unscoped
+/// device follows it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountNamespaceValue {
+    pub application: Option<ApplicationId>,
 }
 
 /// An account's current root key within a group (see [`GROUP_ACCOUNT_KEY_PREFIX`]).
@@ -3720,6 +3798,7 @@ mod tests {
             ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
+            ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
