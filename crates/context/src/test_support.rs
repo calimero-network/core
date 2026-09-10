@@ -319,6 +319,7 @@ pub(crate) mod actor {
     /// variant when a path under test starts issuing one.
     struct StubNetwork {
         subscribed: UnboundedSender<String>,
+        unsubscribed: UnboundedSender<String>,
         broadcast: UnboundedSender<String>,
     }
 
@@ -336,6 +337,7 @@ pub(crate) mod actor {
                     let _ignored = outcome.send(Ok(request.0));
                 }
                 NetworkMessage::Unsubscribe { request, outcome } => {
+                    let _ignored = self.unsubscribed.send(request.0.to_string());
                     let _ignored = outcome.send(Ok(request.0));
                 }
                 NetworkMessage::MeshPeerCount { request, outcome } => {
@@ -359,6 +361,7 @@ pub(crate) mod actor {
         pub node_client: NodeClient,
         pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
+        unsubscribed: UnboundedReceiver<String>,
         broadcast: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
@@ -371,6 +374,16 @@ pub(crate) mod actor {
         pub(crate) fn subscribed(&mut self) -> Vec<String> {
             let mut topics = Vec::new();
             while let Ok(topic) = self.subscribed.try_recv() {
+                topics.push(topic);
+            }
+            topics
+        }
+
+        /// Every topic unsubscribed from so far. Drains, so a caller polling
+        /// for one has to accumulate what it takes.
+        pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
+            let mut topics = Vec::new();
+            while let Ok(topic) = self.unsubscribed.try_recv() {
                 topics.push(topic);
             }
             topics
@@ -404,6 +417,7 @@ pub(crate) mod actor {
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
+        let (unsubscribed_tx, unsubscribed) = unbounded_channel();
         let (broadcast_tx, broadcast) = unbounded_channel();
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
@@ -411,6 +425,7 @@ pub(crate) mod actor {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
+                unsubscribed: unsubscribed_tx,
                 broadcast: broadcast_tx,
             }
         });
@@ -444,6 +459,7 @@ pub(crate) mod actor {
             node_client,
             context_client,
             subscribed,
+            unsubscribed,
             broadcast,
             _dirs: (data_dir, blob_dir),
             _network: stub,
