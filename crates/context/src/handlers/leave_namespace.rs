@@ -225,11 +225,15 @@ mod tests {
             .await
             .expect("the manager answers")
             .expect("the namespace is created");
+        // App-less, so the gain is announced only once its wait for a target
+        // runs out - off the create, which is why this polls.
+        let set = AccountNamespaceSet::new(&store, account_namespace);
         assert!(
-            AccountNamespaceSet::new(&store, account_namespace)
+            crate::test_support::eventually(|| set
                 .contains(created.group_id)
                 .expect("read the set")
-                .is_some(),
+                .is_some())
+            .await,
             "the creation put it in the set, which is what the leave has to undo"
         );
 
