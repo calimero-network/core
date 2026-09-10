@@ -12,9 +12,15 @@
 //! through the account's auto-follow flags. Both halves are idempotent, so
 //! following one this node already takes part in costs nothing.
 //!
-//! Unfollowing is the unsubscribe alone. Local state for the namespace is kept,
-//! as the holder's own `leave_namespace` keeps it, so a later gain re-follows
-//! into state that is already there.
+//! Unfollowing pulls the namespace once and then unsubscribes: the local view of
+//! it turns on folding its own `MemberLeft`, which never arrives on a dropped
+//! topic. Local state is kept, as the holder's own `leave_namespace` keeps it, so
+//! a later gain re-follows into state that is already there.
+//!
+//! Every start sweeps both ways, because nothing re-drives an op applied while no
+//! listener was up. The unfollow half is deliberately conservative: the set has to
+//! have dropped the namespace AND its member row to show the account gone, so a
+//! half-synced set never cuts this node off a namespace it is still in.
 
 use std::sync::Mutex;
 
@@ -24,7 +30,8 @@ use calimero_context_client::group::FollowNamespaceRequest;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert, NodeDeviceRepository,
+    AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert, MembershipRepository,
+    NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -81,8 +88,11 @@ async fn run(
 ) {
     info!("account-follow handler started");
 
-    // Nothing re-drives a gain applied while no listener was up - a lagged recv,
-    // or the shutdown-to-spawn window of a restart - so every start sweeps.
+    // Nothing re-drives a gain or a leave applied while no listener was up - a
+    // lagged recv, or a restart's shutdown-to-spawn window - so a start sweeps both.
+    for namespace in namespaces_the_account_left(&store) {
+        unfollow(&node_client, namespace).await;
+    }
     if let Some((account_namespace, own)) = own_registry_scope(&store) {
         for namespace in namespaces_now_covered(&store, account_namespace.to_bytes(), own.device())
         {
@@ -180,6 +190,44 @@ fn own_registry_scope(store: &Store) -> Option<(ContextGroupId, KnownDeviceCert)
         Err(err) => {
             warn!(?err, "account-follow: failed to read this node's own scope");
             None
+        }
+    }
+}
+
+/// The namespaces this node takes part in that its account has left.
+///
+/// Two reads, and both have to say so: a set this node has not finished syncing
+/// names nothing, and unfollowing on that alone would cut off a live namespace.
+fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
+    let devices = NodeDeviceRepository::new(store);
+    let resolved = || -> EyreResult<Vec<ContextGroupId>> {
+        let (Some(account_namespace), Some(held)) = (devices.account_namespace()?, devices.get()?)
+        else {
+            return Ok(Vec::new());
+        };
+        let set = AccountNamespaceSet::new(store, account_namespace);
+        let members = MembershipRepository::new(store);
+        let mut left = Vec::new();
+        for namespace in NamespaceRepository::new(store).participating_namespaces()? {
+            if namespace == account_namespace {
+                continue;
+            }
+            if set.contains(namespace)?.is_none()
+                && !members.is_member(&namespace, &held.account)?
+            {
+                left.push(namespace);
+            }
+        }
+        Ok(left)
+    };
+    match resolved() {
+        Ok(left) => left,
+        Err(err) => {
+            warn!(
+                ?err,
+                "account-follow: failed to read what this account has left"
+            );
+            Vec::new()
         }
     }
 }
@@ -287,6 +335,19 @@ async fn handle_namespace_left(
     if !unfollows_on_left(store, group_id, namespace) {
         return;
     }
+    // Pull it once before dropping the topic: this node's view of the namespace
+    // turns on folding its `MemberLeft`, which travels there and not here.
+    if let Err(err) = node_client.sync_namespace(namespace.to_bytes()).await {
+        warn!(
+            ?err,
+            ?namespace,
+            "account-follow: failed to pull a namespace before unfollowing it"
+        );
+    }
+    unfollow(node_client, namespace).await;
+}
+
+async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
     match node_client
         .unsubscribe_namespace(namespace.to_bytes())
         .await
@@ -327,11 +388,13 @@ mod tests {
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::op_events::OpEvent;
     use calimero_governance_store::{
-        op_events, AccountDeviceRegistry, AccountNamespaceSet, NamespaceRepository,
-        NodeDeviceRepository,
+        op_events, AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository,
+        NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
@@ -504,14 +567,7 @@ mod tests {
             .expect("a gain that landed while this device had no listener");
 
         let harness = actor::over(store.clone()).await;
-        // Beside the one `Actor::started` spawned, because that one is a
-        // process-global singleton any other harness in this binary would abort.
-        let listener = tokio::spawn(run(
-            op_events::subscribe(),
-            store.clone(),
-            harness.node_client.clone(),
-            harness.context_client.clone(),
-        ));
+        let listener = listen(&store, &harness);
 
         let namespaces = NamespaceRepository::new(&store);
         for _ in 0..100 {
@@ -542,6 +598,120 @@ mod tests {
             account_namespace.to_bytes(),
             ns(0x91)
         ));
+    }
+
+    /// A listener of this test's own, beside the one `Actor::started` spawned:
+    /// that one is a process-global singleton another harness may have aborted.
+    fn listen(store: &Store, harness: &actor::Harness) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(run(
+            op_events::subscribe(),
+            store.clone(),
+            harness.node_client.clone(),
+            harness.context_client.clone(),
+        ))
+    }
+
+    /// Poll until `namespace`'s topic shows up among the unsubscribes. The
+    /// recorder drains on read, so what it hands back has to accumulate.
+    async fn unfollowed(harness: &mut actor::Harness, namespace: ContextGroupId) -> bool {
+        let topic = format!("ns/{}", hex::encode(namespace.to_bytes()));
+        for _ in 0..100 {
+            if harness.unsubscribed().contains(&topic) {
+                return true;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// Unsubscribing IS unfollowing, so the arm is pinned on the topic the node
+    /// client dropped rather than on the decision that reached it.
+    #[actix::test]
+    async fn a_leave_this_account_announced_drops_the_namespaces_topic() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let left = ContextGroupId::from([0x95; 32]);
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::AccountNamespaceLeft {
+            group_id: account_namespace.to_bytes(),
+            namespace: left,
+        });
+
+        let dropped = unfollowed(&mut harness, left).await;
+        listener.abort();
+        assert!(
+            dropped,
+            "a leave the account announced has to drop the namespace's topic"
+        );
+    }
+
+    /// The other half of the start-up sweep. Nothing re-drives a leave applied
+    /// while no listener was up, and the topic would stay subscribed forever.
+    #[actix::test]
+    async fn a_namespace_left_while_nothing_listened_is_unfollowed_on_the_next_start() {
+        let store = store();
+        let (_account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let left = ContextGroupId::from([0x96; 32]);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&left)
+            .expect("this node still takes part in it");
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+
+        let dropped = unfollowed(&mut harness, left).await;
+        listener.abort();
+        assert!(
+            dropped,
+            "the sweep never unfollowed a namespace its account had already left"
+        );
+    }
+
+    /// Both reads have to agree. A set this node has not finished syncing names
+    /// nothing, and unfollowing on that alone would cut off a live namespace.
+    #[actix::test]
+    async fn a_namespace_the_set_omits_is_kept_while_the_account_is_still_a_member() {
+        let store = store();
+        let (account_namespace, _device, root_sk) = a_device_scoped_to(&store, &[app(0x11)]);
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
+        let kept = ContextGroupId::from([0x97; 32]);
+        let namespaces = NamespaceRepository::new(&store);
+        let _identity = namespaces
+            .participate_in(&kept)
+            .expect("this node takes part in it");
+        MembershipRepository::new(&store)
+            .add_member(&kept, &account, GroupMemberRole::Member)
+            .expect("and its account is still a member of it");
+
+        // The follow half runs after the unfollow half, so a namespace it
+        // reached is the barrier that says the unfollow half has finished.
+        let followed = ContextGroupId::from([0x98; 32]);
+        AccountNamespaceSet::new(&store, account_namespace)
+            .record(followed, Some(app(0x11)))
+            .expect("in scope");
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        for _ in 0..100 {
+            if namespaces
+                .participating_namespaces()
+                .expect("read the participation rows")
+                .contains(&followed)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        listener.abort();
+
+        assert!(
+            !harness
+                .unsubscribed()
+                .contains(&format!("ns/{}", hex::encode(kept.to_bytes()))),
+            "a namespace the account is still a member of must stay followed"
+        );
     }
 
     /// A sibling's leave never cuts this device off its own account topic, which
