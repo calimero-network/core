@@ -81,6 +81,15 @@ async fn run(
 ) {
     info!("account-follow handler started");
 
+    // Nothing re-drives a gain applied while no listener was up - a lagged recv,
+    // or the shutdown-to-spawn window of a restart - so every start sweeps.
+    if let Some((account_namespace, own)) = own_registry_scope(&store) {
+        for namespace in namespaces_now_covered(&store, account_namespace.to_bytes(), own.device())
+        {
+            follow(&context_client, namespace).await;
+        }
+    }
+
     // Per-event work runs on its own task and this set owns the handles, so
     // aborting the handler aborts the follows still in flight - as `auto_follow`.
     let mut tasks = tokio::task::JoinSet::new();
@@ -94,8 +103,8 @@ async fn run(
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 warn!(
                     skipped,
-                    "account-follow subscriber lagged; the account namespace's DAG is \
-                     authoritative and the next certified op re-drives the whole set"
+                    "account-follow subscriber lagged; a gain dropped here is followed by \
+                     the sweep on this node's next start"
                 );
                 continue;
             }
@@ -224,10 +233,17 @@ pub(crate) fn namespaces_now_covered(
 /// Does a leave announced in `group_id` ask this node to unfollow?
 ///
 /// Deliberately not gated on a registry row: a device unfollows what its account
-/// left whether or not its own scope has arrived.
-pub(crate) fn unfollows_on_left(store: &Store, group_id: [u8; 32]) -> bool {
+/// left whether or not its own scope has arrived. Never the account namespace
+/// itself, which is the topic every event acted on here arrives over.
+pub(crate) fn unfollows_on_left(
+    store: &Store,
+    group_id: [u8; 32],
+    namespace: ContextGroupId,
+) -> bool {
     match NodeDeviceRepository::new(store).account_namespace() {
-        Ok(Some(account_namespace)) => account_namespace.to_bytes() == group_id,
+        Ok(Some(account_namespace)) => {
+            account_namespace.to_bytes() == group_id && namespace != account_namespace
+        }
         Ok(None) => false,
         Err(err) => {
             warn!(
@@ -268,7 +284,7 @@ async fn handle_namespace_left(
     group_id: [u8; 32],
     namespace: ContextGroupId,
 ) {
-    if !unfollows_on_left(store, group_id) {
+    if !unfollows_on_left(store, group_id, namespace) {
         return;
     }
     match node_client
@@ -307,21 +323,29 @@ async fn follow(context_client: &ContextClient, namespace: ContextGroupId) {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        AccountDeviceRegistry, AccountNamespaceSet, NodeDeviceRepository,
+        op_events, AccountDeviceRegistry, AccountNamespaceSet, NamespaceRepository,
+        NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
+    use tokio::time::sleep;
 
-    use super::{follows_on_gain, namespaces_now_covered, unfollows_on_left};
+    use super::{follows_on_gain, namespaces_now_covered, run, unfollows_on_left};
+    use crate::test_support::actor;
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
     const OTHER_GROUP: [u8; 32] = [0xC9; 32];
+
+    fn ns(seed: u8) -> ContextGroupId {
+        ContextGroupId::from([seed; 32])
+    }
 
     fn app(seed: u8) -> ApplicationId {
         ApplicationId::from([seed; 32])
@@ -433,7 +457,7 @@ mod tests {
         let (_account_namespace, device, _root_sk) = a_device_scoped_to(&store, &[]);
 
         assert!(!follows_on_gain(&store, OTHER_GROUP, Some(app(0x11))));
-        assert!(!unfollows_on_left(&store, OTHER_GROUP));
+        assert!(!unfollows_on_left(&store, OTHER_GROUP, ns(0x91)));
         assert_eq!(namespaces_now_covered(&store, OTHER_GROUP, device), vec![]);
     }
 
@@ -466,6 +490,44 @@ mod tests {
         );
     }
 
+    /// Nothing re-drives a gain that was applied while no listener was up: the
+    /// certified event fires once, an applied op is never re-applied, and a
+    /// namespace with no participation row is invisible to the startup sweep. So
+    /// the listener sweeps the account's set itself, every time it starts.
+    #[actix::test]
+    async fn a_gain_applied_while_nothing_listened_is_followed_on_the_next_start() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[app(0x11)]);
+        let missed = ContextGroupId::from([0x94; 32]);
+        AccountNamespaceSet::new(&store, account_namespace)
+            .record(missed, Some(app(0x11)))
+            .expect("a gain that landed while this device had no listener");
+
+        let harness = actor::over(store.clone()).await;
+        // Beside the one `Actor::started` spawned, because that one is a
+        // process-global singleton any other harness in this binary would abort.
+        let listener = tokio::spawn(run(
+            op_events::subscribe(),
+            store.clone(),
+            harness.node_client.clone(),
+            harness.context_client.clone(),
+        ));
+
+        let namespaces = NamespaceRepository::new(&store);
+        for _ in 0..100 {
+            if namespaces
+                .participating_namespaces()
+                .expect("read the participation rows")
+                .contains(&missed)
+            {
+                listener.abort();
+                return;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the listener never followed a namespace its account had already gained");
+    }
+
     /// A leave is unfollowed whether or not this device's own scope ever arrived.
     #[test]
     fn a_left_namespace_is_unfollowed_without_a_registry_row() {
@@ -475,6 +537,24 @@ mod tests {
             .store_account_namespace(&account_namespace)
             .expect("record what the pairing named");
 
-        assert!(unfollows_on_left(&store, account_namespace.to_bytes()));
+        assert!(unfollows_on_left(
+            &store,
+            account_namespace.to_bytes(),
+            ns(0x91)
+        ));
+    }
+
+    /// A sibling's leave never cuts this device off its own account topic, which
+    /// is where every other event it acts on arrives.
+    #[test]
+    fn the_account_namespace_itself_is_never_unfollowed() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+
+        assert!(!unfollows_on_left(
+            &store,
+            account_namespace.to_bytes(),
+            account_namespace
+        ));
     }
 }
