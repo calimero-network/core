@@ -14,8 +14,12 @@ description: >
     * node-2 - Alice's phone, scoped to app A. It takes part in A1 and the
       account namespace, and never in B1. It publishes the revocation.
     * node-3 - Alice's tablet, scoped to app B. It takes part in B1 and the
-      account namespace, and never in A1. It is the only device of Alice's that
-      is in B1 at all once the laptop is gone.
+      account namespace, and never in A1. It joins B1's context and carries the
+      revocation into B1, which the phone can never reach.
+    * node-4 - Alice's desktop, scoped to app B and paired into B1 too, joining
+      no context. Another device of the account rather than the carrier, so the
+      tombstone it reads in B1 is the withdrawal reaching a node that neither
+      published the proof nor created anything there.
 
   What each phase is load-bearing for:
 
@@ -28,10 +32,11 @@ description: >
     3. The tablet folds the revocation off the account namespace and republishes
        it into B1. Asserted as the lost device being bound in NO namespace on the
        tablet: the account namespace's own tombstone accounts for one of the two,
-       and only the carry accounts for the other.
-    4. The laptop comes back and cannot write into B1's context any more. The
-       tablet is an admin there, so the carry rotated the scope key too, and the
-       laptop is frozen at the state it had.
+       and only the carry accounts for the other. Asserted again on the desktop,
+       which is in B1 without having created or written anything there.
+    4. The laptop comes back and cannot write into B1's context any more: its
+       binding in B1 is tombstoned, so every peer refuses its delta and the
+       context is frozen at the state it had.
 
   The write refusal is asserted on the tablet's read, not on the call's own
   outcome: a merobox `call` with `expected_failure` only warns when the call
@@ -42,7 +47,7 @@ force_pull_image: false
 auth_mode: embedded
 
 nodes:
-  count: 3
+  count: 4
   image: merod:local
   prefix: account-carry-node
 
@@ -62,6 +67,12 @@ steps:
   - name: Login on node-3
     type: login
     node: account-carry-node-3
+    username: dev
+    password: dev-password
+
+  - name: Login on node-4
+    type: login
+    node: account-carry-node-4
     username: dev
     password: dev-password
 
@@ -85,10 +96,17 @@ steps:
     outputs:
       app_b: applicationId
 
-  # The tablet joins B1's context, so it needs the bytecode B1 runs.
+  # Both B1 members install locally, so nothing in this scenario ever asks the
+  # registry: the tablet joins B1's context, the desktop only follows B1.
   - name: Install app B on node-3
     type: install_application
     node: account-carry-node-3
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+
+  - name: Install app B on node-4
+    type: install_application
+    node: account-carry-node-4
     path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
     dev: true
 
@@ -143,6 +161,16 @@ steps:
       - '{{ns_b}}'
       - '{{app_b}}'
 
+  - name: Pair node-4 onto Alice's account, scoped to app B
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-carry-node-1
+      - account-carry-node-4
+      - '{{ns_b}}'
+      - '{{app_b}}'
+
   - name: The tablet converges on B1
     type: assert_api_response
     node: account-carry-node-3
@@ -161,6 +189,10 @@ steps:
 
   - name: Settle before the laptop writes
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - the desktop joins no context, so a context barrier
+      cannot cover it. Its pairing script returns only once it has folded the
+      account namespace, and the one read of it below carries `retries`.
     nodes:
       - account-carry-node-1
       - account-carry-node-3
@@ -225,6 +257,21 @@ steps:
   - name: The tablet carried the tombstone into B1
     type: assert_api_response
     node: account-carry-node-3
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{lost_device}}'
+    match:
+      revoked: true
+    absent:
+      - namespaces.0
+    retries: 45
+    interval: 2
+
+  # The same tombstone on a node that carried nothing and created nothing: the
+  # withdrawal is B1's state now, not one node's local view of it.
+  - name: The desktop holds the same tombstone in B1
+    type: assert_api_response
+    node: account-carry-node-4
     path: /admin-api/account/devices
     where:
       deviceId: '{{lost_device}}'
