@@ -14,11 +14,14 @@
 use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
-use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
+use crate::op_events::OpEvent;
+use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
     DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
@@ -170,6 +173,31 @@ fn remember_own_link_if_ours(
     }
 }
 
+/// The account the signer of an account-namespace op speaks for, or `None` when
+/// it may not write this namespace's account state at all.
+///
+/// Admin AT THE CUT, never the live meta row: `admin_identity` moves under
+/// `TransferOwnership`, so two replicas at different fold depths would disagree.
+/// An admin bound to no account here is refused too - it is nobody this
+/// namespace can name.
+fn owning_account_signer(ctx: &GroupApplyCtx<'_>, what: &str) -> EyreResult<Option<AccountId>> {
+    let group_id = *ctx.group_id();
+
+    // `?` rather than a swallowed `false`, as the unlink gate does: an
+    // unresolvable cut must park the op for retry, not read as "not an admin".
+    if !ctx.permissions().is_admin(ctx.signer())? {
+        tracing::warn!(group_id = ?group_id, what, signer = %ctx.signer(),
+                       "the signer is not an admin at this op's cut");
+        return Ok(None);
+    }
+    let Some(account) = ctx.signer_account()? else {
+        tracing::warn!(group_id = ?group_id, what, signer = %ctx.signer(),
+                       "the signer speaks for no account in this namespace");
+        return Ok(None);
+    };
+    Ok(Some(account))
+}
+
 /// `GroupOp::AccountDeviceCertified` - record a device of this namespace's own
 /// account in its registry.
 ///
@@ -194,23 +222,14 @@ pub(crate) fn apply_device_certified(
     let group_id = *ctx.group_id();
     let account = certificate.statement.account;
 
-    // `?` rather than a swallowed `false`, as the unlink gate does: an
-    // unresolvable cut must park the op for retry, not read as "not an admin".
-    if !ctx.permissions().is_admin(ctx.signer())? {
-        tracing::warn!(
-            group_id = ?group_id,
-            signer = %ctx.signer(),
-            %account,
-            "account device certified: the signer is not an admin at this op's cut"
-        );
+    let Some(signer_account) = owning_account_signer(ctx, "account device certified")? else {
         return Ok(());
-    }
-    let signer_account = ctx.signer_account()?;
-    if signer_account != Some(account) {
+    };
+    if signer_account != account {
         tracing::warn!(
             group_id = ?group_id,
             signer = %ctx.signer(),
-            ?signer_account,
+            %signer_account,
             %account,
             "account device certified: the signer does not speak for the account the \
              statements name"
@@ -251,6 +270,53 @@ pub(crate) fn apply_device_certified(
         applications = scope.statement.applications.len(),
         "account device certified"
     );
+    Ok(())
+}
+
+/// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
+///
+/// The set is what a device paired later, or widened later, walks to find what
+/// it may follow. A namespace already in the set has its application replaced:
+/// the newer gain read the namespace's own metadata more recently.
+pub(crate) fn apply_namespace_gained(
+    ctx: &mut GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+    application: Option<ApplicationId>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    if owning_account_signer(ctx, "account namespace gained")?.is_none() {
+        return Ok(());
+    }
+
+    AccountNamespaceSet::new(ctx.store(), group_id).record(*namespace, application)?;
+    ctx.queue_event(OpEvent::AccountNamespaceGained {
+        group_id: group_id.to_bytes(),
+        namespace: *namespace,
+        application,
+    });
+    tracing::info!(group_id = ?group_id, ?namespace, ?application, "account namespace gained");
+    Ok(())
+}
+
+/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left.
+///
+/// The event fires whether or not a row was there to delete: a device following
+/// the namespace from its pairing list has to unfollow it just the same.
+pub(crate) fn apply_namespace_left(
+    ctx: &mut GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    if owning_account_signer(ctx, "account namespace left")?.is_none() {
+        return Ok(());
+    }
+
+    AccountNamespaceSet::new(ctx.store(), group_id).forget(*namespace)?;
+    ctx.queue_event(OpEvent::AccountNamespaceLeft {
+        group_id: group_id.to_bytes(),
+        namespace: *namespace,
+    });
+    tracing::info!(group_id = ?group_id, ?namespace, "account namespace left");
     Ok(())
 }
 
@@ -505,11 +571,7 @@ pub(crate) fn apply_keys_rotated(
 /// Not an error: the op is validly signed and belongs in the DAG, it simply
 /// records nothing. Returning `Err` would stall the apply and burn no nonce,
 /// leaving the node retrying an op that can never succeed.
-fn log_refusal(
-    group_id: &calimero_context_config::types::ContextGroupId,
-    what: &str,
-    reason: &BindingRejected,
-) {
+fn log_refusal(group_id: &ContextGroupId, what: &str, reason: &BindingRejected) {
     tracing::warn!(
         group_id = ?group_id,
         %reason,
