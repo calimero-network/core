@@ -169,6 +169,7 @@ impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
                             &ack_router,
                             namespace,
                             crate::account_namespace::AccountNamespaceChange::Gained,
+                            "ensure_account_namespace",
                         )
                         .await;
                     }

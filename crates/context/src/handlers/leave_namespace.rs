@@ -149,6 +149,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                     &ack_router,
                     namespace_id,
                     crate::account_namespace::AccountNamespaceChange::Left,
+                    "leave_namespace",
                 )
                 .await;
 

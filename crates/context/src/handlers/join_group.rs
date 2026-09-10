@@ -730,6 +730,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &ack_router,
                     namespace_id.into(),
                     crate::account_namespace::AccountNamespaceChange::Gained,
+                    "join_group",
                 )
                 .await;
 
@@ -922,6 +923,26 @@ mod tests {
         }
     }
 
+    /// The bundle a peer answers a join with. The endorsement it carries is what
+    /// authorises the membership, so a join without one is refused rather than
+    /// recorded, and nothing a successful join writes can be asserted on.
+    fn an_endorsing_bundle() -> calimero_node_primitives::join_bundle::JoinBundle {
+        let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
+        bundle.admitter_endorsement_bytes = Some(
+            borsh::to_vec(
+                &calimero_governance_types::AdmitterEndorsement::sign(
+                    &PrivateKey::from([0xD3; 32]),
+                    &GROUP,
+                    &calimero_account::AccountId::from([0xD7; 32]),
+                    &[0xD4; 32],
+                )
+                .expect("sign the endorsement"),
+            )
+            .expect("borsh the endorsement"),
+        );
+        bundle
+    }
+
     /// The sibling of the creation's auto-bind: a namespace joined after a
     /// pairing is one the paired device was never bound in, so without this the
     /// join succeeds and that device silently never sees the group.
@@ -940,24 +961,7 @@ mod tests {
             .expect("hold the scope key");
         let device = certify_device(&store, 0xD6, &[]);
 
-        // A peer that answers the join, because the endorsement it carries is
-        // what authorises the membership — the auto-bind asserted below runs
-        // only on a join that got that far.
-        let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
-        bundle.admitter_endorsement_bytes = Some(
-            borsh::to_vec(
-                &calimero_governance_types::AdmitterEndorsement::sign(
-                    &PrivateKey::from([0xD3; 32]),
-                    &GROUP,
-                    &calimero_account::AccountId::from([0xD7; 32]),
-                    &[0xD4; 32],
-                )
-                .expect("sign the endorsement"),
-            )
-            .expect("borsh the endorsement"),
-        );
-
-        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
         let _joined = harness
             .manager
             .send(JoinGroupRequest {
@@ -990,21 +994,7 @@ mod tests {
             .provision_account_root()
             .expect("the holder's root");
 
-        let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
-        bundle.admitter_endorsement_bytes = Some(
-            borsh::to_vec(
-                &calimero_governance_types::AdmitterEndorsement::sign(
-                    &PrivateKey::from([0xD3; 32]),
-                    &GROUP,
-                    &calimero_account::AccountId::from([0xD7; 32]),
-                    &[0xD4; 32],
-                )
-                .expect("sign the endorsement"),
-            )
-            .expect("borsh the endorsement"),
-        );
-
-        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
         let account_namespace = harness
             .manager
             .send(EnsureAccountNamespaceRequest)

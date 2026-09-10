@@ -647,6 +647,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         &ack_router,
                         namespace_id,
                         crate::account_namespace::AccountNamespaceChange::Gained,
+                        "create_group",
                     )
                     .await;
                 }
@@ -787,8 +788,9 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        now_millis, AccountBindingRepository, AccountNamespaceSet, CapabilitiesRepository,
-        GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
+        governance_broadcast, now_millis, AccountBindingRepository, AccountNamespaceSet,
+        CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
+        MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -1146,6 +1148,60 @@ mod tests {
                 .expect("read the set"),
             None,
             "and never the account namespace itself"
+        );
+    }
+
+    /// The account namespace's id is derived from the holder's root, so it names
+    /// a namespace long before one exists. Announcing into it then would apply an
+    /// op to a DAG that is not there, which is what the participation guard stops.
+    #[actix::test]
+    async fn a_gain_before_the_account_namespace_exists_announces_nothing() {
+        let store = store();
+        // The root and no `EnsureAccountNamespaceRequest`: the id resolves, the
+        // namespace it names does not exist.
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("the holder's root");
+        let account_namespace = devices
+            .account_namespace()
+            .expect("read the account namespace")
+            .expect("the holder names one");
+
+        let mut harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            None,
+            "nothing may be recorded under a namespace this node does not take part in"
+        );
+        assert!(
+            calimero_governance_store::get_op_head(&store, &account_namespace)
+                .expect("read the op head")
+                .is_none(),
+            "and no op may be applied to the account namespace"
+        );
+        // The load-bearing one: the two above also hold when the publish is
+        // attempted and refused a layer down, so what pins the guard is that the
+        // account namespace's topic was never reached at all.
+        let topic = governance_broadcast::ns_topic(account_namespace.to_bytes().into()).to_string();
+        assert!(
+            !harness.broadcast_topics().contains(&topic),
+            "no governance broadcast may be attempted on a namespace this node \
+             does not take part in"
         );
     }
 

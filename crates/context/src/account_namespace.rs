@@ -122,15 +122,18 @@ pub(crate) enum AccountNamespaceChange {
 /// Best effort by design: a device that misses it re-reads the set from the DAG,
 /// and no creation, join or leave may fail because a publish did not. Mirrors
 /// `publish_device_certified`'s shape: `true` only once the local apply has
-/// recorded the set row, `false` on any warned failure.
+/// recorded the set row, `false` when the set does not show the change; a
+/// failure, as opposed to a skip, is warned. `site` names the caller on the
+/// delivery metric.
 pub(crate) async fn announce(
     store: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
     namespace: ContextGroupId,
     change: AccountNamespaceChange,
+    site: &'static str,
 ) -> bool {
-    match publish(store, node_client, ack_router, namespace, change).await {
+    match publish(store, node_client, ack_router, namespace, change, site).await {
         Ok(recorded) => recorded,
         Err(err) => {
             warn!(
@@ -150,6 +153,7 @@ async fn publish(
     ack_router: &AckRouter,
     namespace: ContextGroupId,
     change: AccountNamespaceChange,
+    site: &'static str,
 ) -> EyreResult<bool> {
     let Some(account_namespace) = NodeDeviceRepository::new(store).account_namespace()? else {
         return Ok(false);
@@ -189,7 +193,7 @@ async fn publish(
         op,
     )
     .await?
-    .observe("account_namespace", op_kind);
+    .observe(site, op_kind);
 
     // The op's own local apply is the only durable write, and an apply that
     // refuses the statement warns rather than failing - so the set is what says it.
