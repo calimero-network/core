@@ -1,0 +1,113 @@
+name: E2E Account - A Device Learns The Account Namespace After A Plain Pairing
+description: >
+  A device is not always told the account namespace id the first time it pairs.
+  A pairing driven from a project invite names project namespaces and nothing
+  else, and the id only reaches the device on a later pair-init that carries it.
+  This scenario pins that ordering: a device paired before it ever heard the id
+  still converges on the account namespace once a later pairing names it.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root, creates the one project
+      namespace, and is the only node that ever publishes.
+    * node-2 - Alice's phone. Paired twice against the same laptop: first the
+      plain way, then again naming the account namespace.
+
+  What each step is load-bearing for:
+
+    1. The laptop installs an application and creates namespace A from it. A
+       plain pairing has to name a namespace, so the run needs one that is not
+       the account namespace.
+    2. The first pairing names namespace A alone. The laptop still binds the
+       phone in its account namespace, because every device is bound there - but
+       the phone was never told that id, never subscribed, and so hears none of
+       it. That silent half-binding is the state the second pairing inherits.
+    3. The second pair-init is the FIRST time the phone hears the account
+       namespace id. It subscribes and records participation there on the spot.
+    4. The phone is already linked by then, so the laptop's pair-complete
+       republishes nothing into the account namespace, and nothing arrives on
+       that topic afterwards either. The phone therefore cannot learn the
+       namespace from gossip: it converges only because it takes part in a
+       namespace it holds no governance state for, which is what the
+       stranded-member beacon rescue exists to notice.
+    5. The script's last barrier is the assertion that matters. The phone must
+       resolve its own binding in the account namespace, which it can only do
+       once it holds that namespace's DAG and its group key.
+
+  What this guards against is a later change making step 4 unreachable. The
+  rescue in step 4 is disqualified for a participant that already holds
+  governance state, so anything that starts publishing into the account
+  namespace on a re-pair would land the DAG on the phone first and strand it
+  keyless. This scenario is where that turns red.
+
+  Deliberately not asserted here: anything about namespace A, the application
+  scope, or what the account records. `account-pairing-application-scope` pins
+  where a pairing lands and `account-namespace-devices-follow` pins the first
+  pairing naming the id; what is unique to this scenario is the ORDER.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: learned-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: learned-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: learned-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install the application on node-1
+    type: install_application
+    node: learned-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-1 creates namespace A
+    type: create_namespace
+    node: learned-node-1
+    application_id: '{{app}}'
+    outputs:
+      ns_a: namespaceId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: learned-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+
+  # The plain pairing. `account_pair` has no field for the account namespace id,
+  # which is exactly the shape this scenario needs the phone to start from.
+  - name: Pair node-2 the plain way, naming no account namespace
+    type: account_pair
+    node: learned-node-2
+    holder: learned-node-1
+    root_key: '{{alice_root}}'
+    namespaces:
+      - '{{ns_a}}'
+    applications:
+      - '{{app}}'
+
+  # Now with the id. The script polls node-2 until it resolves its own binding
+  # in the account namespace, which is the convergence this scenario is about.
+  - name: Pair node-2 again, this time naming the account namespace
+    type: script
+    script: scripts/account-namespace-pair.sh
+    target: local
+    args:
+      - learned-node-1
+      - learned-node-2
+
+stop_all_nodes: true
