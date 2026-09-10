@@ -23,24 +23,28 @@
 //! row has to show the account gone. An unsynced namespace answers "absent" to
 //! the last two, and dropping it on that alone would unfollow what it is still in.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use calimero_account::DeviceId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::FollowNamespaceRequest;
+use calimero_context_client::local_governance::AckRouter;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert, MembershipRepository,
-    NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
+    bind_device_everywhere, AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert,
+    MembershipRepository, NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
+
+use crate::handlers::pair_device_complete::{namespaces_in_scope, signing_identity};
 
 struct HandleState {
     abort: AbortHandle,
@@ -54,7 +58,12 @@ static HANDLE: Mutex<Option<HandleState>> = Mutex::new(None);
 /// Subscribes synchronously before spawning, for the reason `auto_follow::spawn`
 /// gives: an event fired between this returning and the task's first poll would
 /// otherwise be lost, and the DAG re-drives it only on the next restart.
-pub fn spawn(store: Store, node_client: NodeClient, context_client: ContextClient) {
+pub fn spawn(
+    store: Store,
+    node_client: NodeClient,
+    ack_router: Arc<AckRouter>,
+    context_client: ContextClient,
+) {
     let mut slot = HANDLE.lock().expect("account-follow HANDLE poisoned");
     if slot.as_ref().is_some_and(|h| !h.abort.is_finished()) {
         debug!("account-follow handler already running; skipping re-spawn");
@@ -62,7 +71,7 @@ pub fn spawn(store: Store, node_client: NodeClient, context_client: ContextClien
     }
     let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
-        run(rx, store, node_client, context_client).await;
+        run(rx, store, node_client, ack_router, context_client).await;
     })
     .abort_handle();
     *slot = Some(HandleState { abort });
@@ -85,6 +94,7 @@ async fn run(
     mut rx: broadcast::Receiver<OpEvent>,
     store: Store,
     node_client: NodeClient,
+    ack_router: Arc<AckRouter>,
     context_client: ContextClient,
 ) {
     info!("account-follow handler started");
@@ -157,6 +167,21 @@ async fn run(
                 });
             }
             OpEvent::AccountDeviceCertified { group_id, device } => {
+                // Two rules on one event, and they are exclusive by device: this
+                // node's own scope arriving is a follow, any other device's is a bind.
+                let carry_store = store.clone();
+                let carry_node_client = node_client.clone();
+                let carry_ack_router = Arc::clone(&ack_router);
+                let _ = tasks.spawn(async move {
+                    handle_sibling_certified(
+                        &carry_store,
+                        &carry_node_client,
+                        &carry_ack_router,
+                        group_id,
+                        device,
+                    )
+                    .await;
+                });
                 let store = store.clone();
                 let context_client = context_client.clone();
                 let _ = tasks.spawn(async move {
@@ -190,6 +215,27 @@ fn own_registry_scope(store: &Store) -> Option<(ContextGroupId, KnownDeviceCert)
         Ok(found) => found,
         Err(err) => {
             warn!(?err, "account-follow: failed to read this node's own scope");
+            None
+        }
+    }
+}
+
+/// This node's account namespace, when `group_id` is it.
+///
+/// Every rule in this module is about facts the ACCOUNT wrote down; the same op
+/// folded on a project's DAG is another account's business, or this node's own
+/// publish coming back.
+fn account_namespace_if_ours(store: &Store, group_id: [u8; 32]) -> Option<ContextGroupId> {
+    match NodeDeviceRepository::new(store).account_namespace() {
+        Ok(Some(account_namespace)) if account_namespace.to_bytes() == group_id => {
+            Some(account_namespace)
+        }
+        Ok(_) => None,
+        Err(err) => {
+            warn!(
+                ?err,
+                "account-follow: failed to read this node's account namespace"
+            );
             None
         }
     }
@@ -302,6 +348,50 @@ pub(crate) fn namespaces_now_covered(
     }
 }
 
+/// The certificate to publish for a newly certified device of this account, and
+/// the namespaces this node has to publish it into.
+///
+/// `None` for this node's own device - the holder that signed it published it
+/// already - and never the account namespace, whose unset target no scope could
+/// name. The registry row is read unfiltered: a device revoked in a target is
+/// stopped by that namespace's own tombstone, inside `bind_device_everywhere`.
+pub(crate) fn namespaces_to_bind_into(
+    store: &Store,
+    group_id: [u8; 32],
+    device: DeviceId,
+) -> Option<(KnownDeviceCert, Vec<ContextGroupId>)> {
+    let account_namespace = account_namespace_if_ours(store, group_id)?;
+    let devices = NodeDeviceRepository::new(store);
+    if devices
+        .get()
+        .ok()
+        .flatten()
+        .is_some_and(|held| held.device() == device)
+    {
+        return None;
+    }
+    let cert = match AccountDeviceRegistry::new(store, account_namespace).device(device) {
+        Ok(Some((cert, _epoch))) => cert,
+        Ok(None) => return None,
+        Err(err) => {
+            warn!(?err, %device, "account-follow: failed to read a sibling's certificate");
+            return None;
+        }
+    };
+    let targets = match namespaces_in_scope(store, &cert.applications) {
+        Ok(targets) => targets,
+        Err(err) => {
+            warn!(?err, %device, "account-follow: failed to resolve a sibling's scope");
+            return None;
+        }
+    };
+    let targets: Vec<_> = targets
+        .into_iter()
+        .filter(|namespace| *namespace != account_namespace)
+        .collect();
+    (!targets.is_empty()).then_some((cert, targets))
+}
+
 /// Does a leave announced in `group_id` ask this node to unfollow?
 ///
 /// Deliberately not gated on a registry row: a device unfollows what its account
@@ -312,19 +402,8 @@ pub(crate) fn unfollows_on_left(
     group_id: [u8; 32],
     namespace: ContextGroupId,
 ) -> bool {
-    match NodeDeviceRepository::new(store).account_namespace() {
-        Ok(Some(account_namespace)) => {
-            account_namespace.to_bytes() == group_id && namespace != account_namespace
-        }
-        Ok(None) => false,
-        Err(err) => {
-            warn!(
-                ?err,
-                "account-follow: failed to read this node's account namespace"
-            );
-            false
-        }
-    }
+    account_namespace_if_ours(store, group_id)
+        .is_some_and(|account_namespace| namespace != account_namespace)
 }
 
 async fn handle_namespace_gained(
@@ -348,6 +427,33 @@ async fn handle_device_certified(
     for namespace in namespaces_now_covered(store, group_id, device) {
         follow(context_client, namespace).await;
     }
+}
+
+async fn handle_sibling_certified(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    group_id: [u8; 32],
+    device: DeviceId,
+) {
+    let Some((cert, targets)) = namespaces_to_bind_into(store, group_id, device) else {
+        return;
+    };
+    let signer_sk = match signing_identity(store, &targets) {
+        Ok(secret) => PrivateKey::from(secret),
+        Err(err) => {
+            warn!(?err, %device, "account-follow: no identity to publish a sibling's link with");
+            return;
+        }
+    };
+    let outcomes =
+        bind_device_everywhere(store, node_client, ack_router, &targets, &signer_sk, &cert).await;
+    info!(
+        %device,
+        ?outcomes,
+        "account-follow: carried a newly certified device of this account into the \
+         namespaces this node takes part in"
+    );
 }
 
 async fn handle_namespace_left(
@@ -410,21 +516,26 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+    use calimero_account::{
+        AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey,
+    };
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::op_events::OpEvent;
     use calimero_governance_store::{
         op_events, AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository,
-        NamespaceRepository, NodeDeviceRepository,
+        MetaRepository, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{GroupMetaValue, GroupTarget};
     use calimero_store::Store;
     use tokio::time::sleep;
 
-    use super::{follows_on_gain, namespaces_now_covered, run, unfollows_on_left};
+    use super::{
+        follows_on_gain, namespaces_now_covered, namespaces_to_bind_into, run, unfollows_on_left,
+    };
     use crate::test_support::actor;
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
@@ -488,6 +599,63 @@ mod tests {
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// A namespace this node takes part in, targeting `application`, as a
+    /// founder leaves it: a meta row and a participation row.
+    fn a_namespace_targeting(store: &Store, namespace: ContextGroupId, application: ApplicationId) {
+        MetaRepository::new(store)
+            .save(
+                &namespace,
+                &GroupMetaValue {
+                    target: GroupTarget {
+                        application_id: application,
+                        ..GroupTarget::default()
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: AccountId::from([0x01; 32]),
+                    owner_identity: AccountId::from([0x01; 32]),
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace metadata");
+        let _identity = NamespaceRepository::new(store)
+            .participate_in(&namespace)
+            .expect("take part in the namespace");
+    }
+
+    /// A sibling of this account in the registry, scoped to `applications`.
+    ///
+    /// Takes the root key rather than reading one: this node is a device, and a
+    /// device holds no account root to sign a sibling's certificate with.
+    fn a_sibling_scoped_to(
+        store: &Store,
+        account_namespace: ContextGroupId,
+        root_sk: &PrivateKey,
+        seed: u8,
+        applications: &[ApplicationId],
+    ) -> DeviceId {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let device = DeviceId::from([seed; 32]);
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: DeviceCert::sign(
+                root_sk,
+                genesis.account_id(),
+                device,
+                &PrivateKey::from([seed; 32]).public_key(),
+                &KemPublicKey::from([seed ^ 0xFF; 32]),
+                0,
+                0,
+            )
+            .expect("the account root signs a sibling's cert"),
+        };
+        let _recorded = AccountDeviceRegistry::new(store, account_namespace)
+            .record(&proof, applications, 0)
+            .expect("record the sibling");
+        device
     }
 
     /// The scope decides. A namespace targeting an application this device may
@@ -631,6 +799,7 @@ mod tests {
             op_events::subscribe(),
             store.clone(),
             harness.node_client.clone(),
+            Arc::clone(harness.context_client.ack_router()),
             harness.context_client.clone(),
         ))
     }
@@ -815,5 +984,58 @@ mod tests {
             account_namespace.to_bytes(),
             account_namespace
         ));
+    }
+
+    /// The projection rule. A sibling reaches the namespaces this node takes
+    /// part in that its scope covers, and nothing else - not one out of scope,
+    /// not the account namespace, whose certified op is already the record
+    /// there and whose unset target no scope could name.
+    #[test]
+    fn a_certified_sibling_is_bound_where_its_scope_reaches_and_nowhere_else() {
+        let store = store();
+        let (account_namespace, own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let covered = ContextGroupId::from([0x81; 32]);
+        let elsewhere = ContextGroupId::from([0x82; 32]);
+        a_namespace_targeting(&store, covered, app(0x11));
+        a_namespace_targeting(&store, elsewhere, app(0x22));
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
+        let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x63, &[app(0x11)]);
+
+        let (cert, targets) =
+            namespaces_to_bind_into(&store, account_namespace.to_bytes(), sibling)
+                .expect("the sibling has somewhere to go");
+
+        assert_eq!(cert.device(), sibling);
+        assert_eq!(targets, vec![covered]);
+        assert!(
+            namespaces_to_bind_into(&store, account_namespace.to_bytes(), own_device).is_none(),
+            "this node never publishes its own link; the holder that signed it did"
+        );
+        assert!(
+            namespaces_to_bind_into(&store, OTHER_GROUP, sibling).is_none(),
+            "the same op folded in a project namespace is this node's own publish coming back"
+        );
+    }
+
+    /// An unscoped sibling reaches everything this node takes part in - except
+    /// the account namespace, which an empty scope would otherwise sweep up.
+    #[test]
+    fn an_unscoped_sibling_still_skips_the_account_namespace() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let project = ContextGroupId::from([0x83; 32]);
+        a_namespace_targeting(&store, project, app(0x11));
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
+        let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x64, &[]);
+
+        let (_cert, targets) =
+            namespaces_to_bind_into(&store, account_namespace.to_bytes(), sibling)
+                .expect("an unscoped sibling belongs everywhere this node is");
+
+        assert_eq!(targets, vec![project]);
     }
 }
