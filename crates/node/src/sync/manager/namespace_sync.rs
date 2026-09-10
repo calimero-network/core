@@ -2116,9 +2116,26 @@ impl SyncManager {
                 drop(store);
                 match outcome {
                     Ok(divergence) => {
+                        // `key_recovery_authorized_by` names WHICH of the two
+                        // grounds let this responder serve, because "a key was
+                        // recovered" and "the ground added by #3892 was the
+                        // reason" are not the same claim. Every scenario that
+                        // exercises this path passed before that ground existed,
+                        // so a green run is not evidence the own-account path
+                        // works -- and it shipped inert once already, for a node
+                        // that had no certificate for its own device to attach.
+                        // Emitted as a marker so the suite can report which
+                        // grounds real traffic actually uses; observe first,
+                        // assert once that distribution is known, which is how
+                        // the projection and op-store gates were built.
                         info!(
                             namespace_id = %hex::encode(namespace_id),
                             group_id = %hex::encode(group_id),
+                            key_recovery_authorized_by = if is_anchor {
+                                "anchor"
+                            } else {
+                                "own_account_device"
+                            },
                             "recovered group key via direct delivery"
                         );
                         if let Some(report) = divergence {
