@@ -547,7 +547,8 @@ jobs:
         # A node needs bytecode only to run a context, not to join a group. So
         # `image: merod:local-dht` is for the three scenarios that ARE the peer
         # route's coverage; `registry_fetch: "false"` is for the ones that never
-        # run a context at all. Everything else fetches, on http.
+        # run a context at all, and for the ones whose only context runs on nodes
+        # that installed its bundle themselves. Everything else fetches, on http.
         include:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml

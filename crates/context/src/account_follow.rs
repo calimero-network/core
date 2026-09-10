@@ -1362,8 +1362,21 @@ mod tests {
         );
     }
 
+    /// This node as a member of `namespace`, under the identity participating
+    /// minted: the apply resolves a link's endorser through its binding.
+    fn a_member_of(store: &Store, namespace: ContextGroupId) {
+        let (sign_pk, _secret) = NamespaceRepository::new(store)
+            .resolve_identity(&namespace)
+            .expect("read this node's identity here")
+            .expect("taking part in a namespace mints one");
+        let account = crate::test_support::enrol(store, &namespace, &sign_pk);
+        MembershipRepository::new(store)
+            .add_member(&namespace, &account, GroupMemberRole::Member)
+            .expect("and a member of it");
+    }
+
     /// The arm itself, driven the way the sweep tests drive it. Pinned on the
-    /// topic the publish reached rather than on the decision behind it.
+    /// binding, which the publish path applies locally before it broadcasts.
     #[actix::test]
     async fn a_sibling_certified_on_the_account_topic_is_published_into_a_namespace_here() {
         let store = store();
@@ -1373,19 +1386,21 @@ mod tests {
         let _key_id = GroupKeyring::new(&store, project)
             .store_key(&[0x42; 32])
             .expect("hold this namespace's scope key, without which nothing is published");
+        a_member_of(&store, project);
         let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x67, &[app(0x11)]);
 
-        let mut harness = actor::over(store.clone()).await;
+        let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
         op_events::notify(OpEvent::AccountDeviceCertified {
             group_id: account_namespace.to_bytes(),
             device: sibling,
         });
 
-        let mut seen = Vec::new();
+        let bindings = AccountBindingRepository::new(&store);
+        let mut bound = false;
         for _ in 0..100 {
-            seen.append(&mut harness.broadcast_topics());
-            if seen.contains(&topic(project)) {
+            bound = bindings.is_device_linked(&project, sibling).expect("read");
+            if bound {
                 break;
             }
             sleep(Duration::from_millis(50)).await;
@@ -1393,8 +1408,8 @@ mod tests {
         listener.abort();
 
         assert!(
-            seen.contains(&topic(project)),
-            "the listener never published a certified sibling into the namespace this \
+            bound,
+            "the listener never bound a certified sibling into the namespace this \
              node takes part in that its scope covers"
         );
     }
