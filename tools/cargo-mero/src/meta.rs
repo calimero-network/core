@@ -15,9 +15,11 @@ pub const CATEGORIES: &[&str] = &[
     "games",
     "productivity",
     "communication",
-    "art-design",
-    "planning",
     "social",
+    "art-design",
+    "media",
+    "planning",
+    "security",
     "utilities",
     "developer-tools",
 ];
@@ -593,6 +595,93 @@ mod tests {
         assert_eq!(meta.tags, vec!["social".to_owned(), "chat".to_owned()]);
         assert_eq!(meta.github.as_deref(), Some("https://github.com/acme/demo"));
         assert_eq!(meta.docs.as_deref(), Some("https://docs.acme.com"));
+    }
+
+    /// Pins the vocabulary. `app-registry`'s
+    /// `packages/backend/src/lib/metadata-policy.js` holds the same ten values
+    /// and its own copy of this assertion — the two cannot be checked against
+    /// each other across repos, so each side fails loudly when edited alone.
+    #[test]
+    fn the_category_vocabulary_is_exactly_the_ten_the_registry_knows() {
+        assert_eq!(
+            CATEGORIES,
+            [
+                "games",
+                "productivity",
+                "communication",
+                "social",
+                "art-design",
+                "media",
+                "planning",
+                "security",
+                "utilities",
+                "developer-tools",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_category_in_the_vocabulary_is_actually_accepted() {
+        // Guards the validator against the list: a value could be added to
+        // CATEGORIES and still be rejected if the check ever stopped consulting it.
+        for category in CATEGORIES {
+            let toml = format!(
+                r#"
+                [package.metadata.calimero]
+                package = "com.example.demo"
+                category = "{category}"
+            "#
+            );
+            let meta = parse_for_test(&toml)
+                .unwrap_or_else(|e| panic!("category `{category}` rejected: {e}"));
+            assert_eq!(meta.category.as_deref(), Some(*category));
+        }
+    }
+
+    #[test]
+    fn a_misspelt_category_key_is_still_a_hard_error() {
+        // The table is deny_unknown_fields, and adding an optional field must
+        // not have loosened that: `catagory` should fail, not be ignored.
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            catagory = "games"
+        "#;
+        let err = parse_for_test(toml).expect_err("a typo must not be silently dropped");
+        assert!(
+            err.to_string().contains("catagory") || err.to_string().contains("unknown field"),
+            "unhelpful error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_blank_category_is_rejected_rather_than_treated_as_absent() {
+        // "" is a declaration that failed, not an omission. Silently treating
+        // it as None would publish an uncategorised app that looks categorised.
+        for blank in ["", "   "] {
+            let toml = format!(
+                r#"
+                [package.metadata.calimero]
+                package = "com.example.demo"
+                category = "{blank}"
+            "#
+            );
+            assert!(
+                parse_for_test(&toml).is_err(),
+                "blank category {blank:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_category_with_surrounding_whitespace_is_trimmed() {
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            category = "  games  "
+        "#;
+        let meta = parse_for_test(toml).expect("parses");
+        assert_eq!(meta.category.as_deref(), Some("games"));
     }
 
     #[test]
