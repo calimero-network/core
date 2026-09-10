@@ -1720,38 +1720,54 @@ impl<'a> NamespaceGovernance<'a> {
         // groups from `groups_member_but_keyless`, which are keyless by
         // definition; `add_group_members` and `admit_tee_node` deliver to a
         // member that cannot yet decrypt the group; and `device_link`'s op is
-        // sealed under a key the new device does not hold. All of them seed.
-        // A bound delivery is exempt: a rotation legitimately replaces the
-        // current key, and there the hash decides instead.
+        // sealed under a key the new device does not hold.
         //
-        // Re-delivering the key already held is not a replacement and stays
-        // allowed, so a retry that re-drives the same envelope is idempotent.
-        if let Some(held) = GroupKeyring::new(self.store, gid)
-            .load_current_key()
-            .map_err(|e| eyre::eyre!("load_current_key: {e}"))?
-        {
-            let served = GroupKeyring::key_id_for(&group_key);
-            if held.0 != served {
-                tracing::warn!(
-                    group_id = %hex::encode(group_id),
-                    responder = %responder_identity,
-                    held_key_id = %hex::encode(held.0),
-                    served_key_id = %hex::encode(served),
-                    bound = !expected_key_ids.is_empty(),
-                    "refusing a delivered group key while a key for this group is already \
-                     held: a delivery may seed a key, never replace one — a replacement \
-                     comes from an admin-signed rotation, not from a delivery"
-                );
-                return Ok(None);
-            }
-        }
-
+        // **A delivered key is stamped with this op's sequence, and there is no
+        // refusal.** The rule here used to be "a delivery may seed a group's key
+        // but never replace one", which broke re-adding a kicked member and had
+        // to be reverted: `MemberRemoved` rotates the key, the removed node
+        // cannot apply that rotation because it is excluded from the wrap, so it
+        // sits on a STALE key -- and the `add_group_members` delivery that
+        // re-admits it was then refused for "already holding a key". The
+        // reasoning that shipped it said every legitimate delivery "seeds by
+        // construction" because those publishers deliver to a member that
+        // cannot yet decrypt. Cannot decrypt is not the same as holds nothing,
+        // and a re-added member is the counterexample
+        // (`group-kick-and-readd-deny-list`).
+        //
+        // The problem that refusal was reaching for is ORDERING, not
+        // authorization, and ordering is what this fixes. `store_key` writes at
+        // epoch `0`, and `key_rank` orders equal epoch-`0` keys by
+        // `insertion_seq` -- local arrival -- so a second delivered key became
+        // current merely by arriving later, and two nodes that learned the same
+        // pair in opposite orders disagreed about the group's key. Stamping the
+        // delivery with the op's sequence is exactly what `apply_key_rotation`
+        // already does for the same reason ("stamped with this op's
+        // deterministic DAG `epoch` so all nodes agree it supersedes the
+        // pre-rotation key"), and `store_key_with_epoch` is per-key-id monotone,
+        // so a re-drive of the same envelope stays idempotent.
+        //
+        // What bounds a hostile delivery is the anchor gate, not this: only a
+        // trusted anchor of the group may deliver at all (#3875). An anchor
+        // holding and handing out its group's key is what an anchor IS, and
+        // changing which key the group uses still requires an admin-signed
+        // rotation at the op's cut. Trying to do that authorization work with an
+        // ordering mechanism is what refused the legitimate re-add.
+        // The op's sequence, read the same way `apply_signed_op` reads it for a
+        // rotation. Monotone in the DAG, so it exceeds the epoch of any key this
+        // node already holds for the group and the delivered key becomes current
+        // by ORDER rather than by arrival time.
+        let epoch = self
+            .read_head_record()
+            .map_err(|e| eyre::eyre!("read head record for delivery epoch: {e}"))?
+            .next_nonce;
         let key_id = GroupKeyring::new(self.store, gid)
-            .store_key(&group_key)
+            .store_key_with_epoch(&group_key, epoch)
             .map_err(|e| eyre::eyre!("store_group_key: {e}"))?;
         tracing::info!(
             group_id = %hex::encode(group_id),
             key_id = %hex::encode(key_id),
+            epoch,
             "received group key via direct delivery"
         );
 

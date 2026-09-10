@@ -1283,6 +1283,41 @@ jobs:
           fi
           echo "no blob chunk hash mismatches — every chunk served passed its content-hash check"
 
+      - name: Report which ground authorized each group-key recovery (observe-only)
+        if: always()
+        run: |
+          # `key_server_accepted` allows exactly two grounds: the responder is a
+          # trusted anchor of the group, or it proved with a certificate chaining
+          # to this node's account root that it is a device of this node's OWN
+          # account (#3888, #3892). Every scenario that exercises the key pull
+          # passed before the second ground existed, so a green suite is not
+          # evidence that it works -- and it shipped INERT once already, because
+          # a node that provisioned its own root holds no certificate for its own
+          # device, so the proof was always empty and acceptance quietly
+          # collapsed back to anchor-only. Two red rounds and a security hole
+          # came out of that, and the suite could not have told us.
+          #
+          # So this reports the distribution rather than asserting one: nobody
+          # yet knows which ground each scenario legitimately uses, and pinning a
+          # guess is how a gate starts failing for the wrong reason. Observe
+          # first, assert once the distribution is known -- the same way the
+          # projection and op-store gates were built. INFORMATIONAL, never fails.
+          #
+          # ANSI escapes sit between a field name and its `=` in node logs, so
+          # the sed is not optional; matching the raw pattern finds nothing.
+          if grep -rl "key_recovery_authorized_by" docker-logs/ 2>/dev/null | grep -q .; then
+              echo "group-key recoveries by authorizing ground:"
+              grep -rho 'key_recovery_authorized_by.*' docker-logs/ \
+                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
+                | grep -oE 'key_recovery_authorized_by="?[a-z_]+"?' | sort | uniq -c | sort -rn
+          else
+              # Not a failure: most scenarios never need the direct pull at all,
+              # because the delivery reaches them first. Silence here and silence
+              # from a broken marker look identical, which is why the suite-wide
+              # view is what matters rather than any one scenario.
+              echo "no key_recovery_authorized_by markers - this scenario recovered no group key by direct pull"
+          fi
+
       - name: Report scope_root governance-divergence pulls (P6.S2, observe-only)
         if: always()
         run: |
