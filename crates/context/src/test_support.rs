@@ -307,7 +307,7 @@ pub(crate) mod actor {
 
     use crate::ContextManager;
 
-    /// Answers the three commands the pairing and governance paths issue, and
+    /// Answers the four commands the pairing and governance paths issue, and
     /// records the topics. Any other command is dropped, which fails the
     /// caller's `rx.await` rather than hanging it: add the variant when a path
     /// under test starts issuing one.
@@ -326,6 +326,9 @@ pub(crate) mod actor {
             match msg {
                 NetworkMessage::Subscribe { request, outcome } => {
                     let _ignored = self.subscribed.send(request.0.to_string());
+                    let _ignored = outcome.send(Ok(request.0));
+                }
+                NetworkMessage::Unsubscribe { request, outcome } => {
                     let _ignored = outcome.send(Ok(request.0));
                 }
                 NetworkMessage::MeshPeerCount { outcome, .. } => {

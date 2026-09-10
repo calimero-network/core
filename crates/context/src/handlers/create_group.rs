@@ -637,6 +637,20 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 )
                 .await;
 
+                // A root this node created is a namespace its account has gained.
+                // A subgroup is not: its namespace was announced when the account
+                // gained that.
+                if parent_group_id.is_none() {
+                    let _recorded = crate::account_namespace::announce(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        namespace_id,
+                        crate::account_namespace::AccountNamespaceChange::Gained,
+                    )
+                    .await;
+                }
+
                 info!(
                     ?group_id,
                     ?parent_group_id,
@@ -769,12 +783,12 @@ mod tests {
     use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
-    use calimero_context_client::group::CreateGroupRequest;
+    use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        now_millis, AccountBindingRepository, CapabilitiesRepository, GroupKeyring,
-        MembershipRepository, MetaRepository, MetadataRepository,
+        now_millis, AccountBindingRepository, AccountNamespaceSet, CapabilitiesRepository,
+        GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -1083,6 +1097,55 @@ mod tests {
         assert_eq!(
             rung.bytecode_id, [0x01; 32],
             "the rung names the bytecode blob the application row resolves to"
+        );
+    }
+
+    /// A namespace this node creates is one its account has gained, and every
+    /// other device of the account has to be able to find out - from the DAG,
+    /// because nothing else reaches a device that is a member of nothing.
+    #[actix::test]
+    async fn creating_a_namespace_records_it_in_the_account_namespace() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            Some(Some(ApplicationId::from(APP))),
+            "the namespace the creation gained, with the target it was created for"
+        );
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(account_namespace)
+                .expect("read the set"),
+            None,
+            "and never the account namespace itself"
         );
     }
 
