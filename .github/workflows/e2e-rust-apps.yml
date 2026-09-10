@@ -719,6 +719,12 @@ jobs:
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e
+          # Governance only - node-2 joins the namespace and nothing joins a
+          # context, so no bytecode is fetched.
+          - workflow: group-join-never-published-in-the-clear
+            file: workflows/group-join-never-published-in-the-clear.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
           # Governance only - no node ever joins a context, so nothing
           # needs bytecode and the registry is never asked.
           - workflow: group-list-subgroups-restricted-hidden
