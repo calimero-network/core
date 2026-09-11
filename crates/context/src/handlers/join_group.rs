@@ -578,10 +578,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // "do I hold the key right now", so a keyed joiner seals and an
                 // unkeyed one still joins.
                 //
-                // Cleartext is the fallback rather than a failure because the
-                // unkeyed joiner has nowhere else to go: its key arrives from a
-                // `KeyDelivery` an admin publishes on SEEING this op, so refusing
-                // to publish unsealed would be a deadlock, not a policy.
+                // The unkeyed joiner is no longer answered with a cleartext
+                // publish. Its key does arrive from a `KeyDelivery` an admin
+                // publishes on SEEING this op, so it genuinely cannot seal for
+                // itself -- but the admitter can, and since #3804 the joiner has
+                // already reached one to get the endorsement above. So the
+                // fallback is the relay below, not the disclosure (#3904).
                 // Which key seals it depends on what this joiner was actually
                 // given. A namespace-root invitation delivers the namespace key,
                 // so the namespace-key seal applies. A SUBGROUP-targeted one
@@ -607,40 +609,112 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         &join_root,
                     )
                 };
-                let member_joined_op = match seal_attempt {
-                    Ok(Some(sealed)) => sealed,
-                    Ok(None) => {
-                        info!(
-                            ?group_id,
-                            "publishing this join in the clear: no namespace key held yet, so                              it cannot be sealed and the key it needs arrives in answer to it"
-                        );
-                        NamespaceOp::Root(join_root)
-                    }
+                let sealed_op = match seal_attempt {
+                    Ok(Some(sealed)) => Some(sealed),
+                    Ok(None) => None,
                     Err(e) => {
-                        warn!(?e, ?group_id, "could not seal the join; publishing in the clear");
-                        NamespaceOp::Root(join_root)
+                        // Not a reason to publish in the clear. A seal this node
+                        // could not perform is exactly the case the relay below
+                        // handles, and the alternative is the disclosure.
+                        warn!(?e, ?group_id, "could not seal the join locally; relaying it instead");
+                        None
                     }
                 };
-                // Handed in rather than embedded: the endorsement rides the
-                // envelope, outside this node's signature, so it is attached
-                // after signing and before the local apply.
-                match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
-                    &datastore,
-                    &node_client,
-                    &ack_router,
-                    namespace_id.into(),
-                    &sk,
-                    member_joined_op,
-                    Some(admitter_endorsement),
-                )
-                .await
-                {
-                    Ok((report, signed)) if report.acked_by.is_empty() => {
-                        // Reached no peer; retry when a namespace peer next subscribes.
-                        node_client.queue_membership_republish(namespace_id, signed);
+
+                match sealed_op {
+                    // Handed in rather than embedded: the endorsement rides the
+                    // envelope, outside this node's signature, so it is attached
+                    // after signing and before the local apply.
+                    Some(member_joined_op) => {
+                        match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            namespace_id.into(),
+                            &sk,
+                            member_joined_op,
+                            Some(admitter_endorsement),
+                        )
+                        .await
+                        {
+                            Ok((report, signed)) if report.acked_by.is_empty() => {
+                                // Reached no peer; retry when a namespace peer next subscribes.
+                                node_client.queue_membership_republish(namespace_id, signed);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)")
+                            }
+                        }
                     }
-                    Ok(_) => {}
-                    Err(e) => warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)"),
+                    // No key to seal under, so this node cannot publish the join
+                    // itself without putting it on the namespace topic in the
+                    // clear — telling every peer which account joined which
+                    // group and when. Hand it to a keyholder instead, starting
+                    // with the admitter that endorsed this very join, since that
+                    // is the one peer already known reachable. The seal it
+                    // applies carries the joiner's own signature inside, which is
+                    // what peers check at apply, so relaying grants nothing
+                    // (#3904).
+                    //
+                    // Applied locally first and NOT published: governance ops are
+                    // locally authoritative, and a later `MemberJoinedOpen` needs
+                    // this op on the local DAG to parent onto.
+                    None => {
+                        info!(
+                            ?group_id,
+                            "no key to seal this join under; relaying it to the admitter to be \
+                             sealed and published"
+                        );
+                        let signed =
+                            calimero_governance_store::sign_and_apply_namespace_op_without_publish(
+                                &datastore,
+                                &node_client,
+                                namespace_id.into(),
+                                &sk,
+                                NamespaceOp::Root(join_root),
+                                Some(admitter_endorsement),
+                            )
+                            .map_err(|e| {
+                                // Fatal, unlike the publish path's warn above,
+                                // because there is nothing to relay if the op was
+                                // never signed. The reachable case is a
+                                // SUBGROUP-targeted invitation whose subgroup key
+                                // never arrived: the apply refuses that join in
+                                // the clear (#3858), and it used to surface two
+                                // steps later as a key-delivery timeout.
+                                eyre::eyre!(
+                                    "could not sign and apply this join locally, so there is \
+                                     nothing to relay: {e:#}"
+                                )
+                            })?;
+
+                        let signed_op_bytes = borsh::to_vec(&signed).map_err(|e| {
+                            eyre::eyre!("could not encode the join for relay: {e}")
+                        })?;
+
+                        // An `Err` fails the join. Falling back to a cleartext
+                        // publish is what this path removes, and a fallback that
+                        // quietly re-opens the disclosure would make "sealed" and
+                        // "leaked" the same silence.
+                        node_client
+                            .relay_sealed_join(
+                                calimero_node_primitives::client::RelaySealedJoinParams {
+                                    namespace_id,
+                                    admitter_peer: join_result.admitter_peer,
+                                    joiner_public_key: joiner_identity,
+                                    signed_op_bytes,
+                                },
+                            )
+                            .await
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "join could not be published: this node holds no key to seal \
+                                     it under and no admitter would relay it, and publishing it \
+                                     in the clear would disclose the membership: {e:#}"
+                                )
+                            })?;
+                    }
                 }
 
                 if let Some(rx) = op_event_rx.as_mut() {

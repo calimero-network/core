@@ -131,7 +131,14 @@ pub(crate) async fn test_node_client(
     let (ns_sync_tx, _r1) = mpsc::channel(8);
     let (ns_join_tx, _r2) = mpsc::channel(8);
     let (open_subgroup_join_tx, _r3) = mpsc::channel(8);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, _r4) = mpsc::channel(8);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     let node_client = NodeClient::new(
         store.clone(),

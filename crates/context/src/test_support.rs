@@ -173,13 +173,19 @@ pub fn published_root(
 }
 
 /// The wire form production publishes for a JOIN, given the group its
-/// invitation targets.
+/// invitation targets, **as a joiner that holds the covering key publishes it**.
 ///
 /// [`published_root`] is not the helper for this: `seal_root_op_for_publish`
 /// answers `Root(op)` for `MemberJoined` / `MemberJoinedAt`, because
 /// `root_op_is_sealable` says those two are not sealable under the NAMESPACE
 /// key — a namespace-root joiner holds no key, and its key arrives only in
 /// answer to the join it is publishing.
+///
+/// That cleartext answer is what a RECEIVER accepts, and it is the right fixture
+/// for an apply-path test. It is no longer what an unkeyed joiner puts on the
+/// wire: since #3904 such a joiner hands its signed op to the admitter, which
+/// publishes it as `NamespaceOp::RootRelaySealed`. A test about that route wants
+/// `relay_seal_for_test`-shaped state, not this.
 ///
 /// A **subgroup**-targeted join is different: its bundle delivers that group's
 /// key, `join_group` stores it before publishing, and the apply refuses a

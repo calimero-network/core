@@ -1134,7 +1134,7 @@ impl SyncManager {
     /// carries — plus `joiner_public_key` and this node's transport `PeerId`,
     /// so the responder can confirm the caller controls the identity it is
     /// about to pre-register. See [`InitProof`].
-    async fn build_join_init_pop(
+    pub(super) async fn build_join_init_pop(
         &self,
         namespace_id: [u8; 32],
         joiner_public_key: PublicKey,
@@ -1547,6 +1547,11 @@ impl SyncManager {
                         governance_ops,
                         default_capabilities,
                         admitter_endorsement_bytes,
+                        // Who answered. The joiner may need to come back to
+                        // this exact peer to have an unsealable join wrapped
+                        // and published, and only the requester knows which
+                        // peer that was.
+                        admitter_peer: Some(peer),
                     });
                 }
                 Ok(Some(StreamMessage::Message {

@@ -473,6 +473,44 @@ pub enum InitPayload {
         requester_device: Option<DeviceId>,
         key_id: Option<[u8; 32]>,
     },
+    /// Ask an admitter to seal and publish a join this node cannot seal itself.
+    ///
+    /// The residual of the sealing series (#3847, #3850, #3856-#3859). A joiner
+    /// that holds the covering key seals its own join; one that does not has
+    /// nowhere to go, because the key it needs arrives in a `KeyDelivery` an
+    /// admin publishes *on seeing this very op*. So refusing to publish is a
+    /// deadlock rather than a policy, and the old fallback was to publish in the
+    /// clear — telling every peer on the namespace topic which account joined
+    /// which group and when.
+    ///
+    /// This closes that without the deadlock: a namespace keyholder can wrap the
+    /// joiner's own `SignedNamespaceOp` verbatim as
+    /// [`NamespaceOp::RootRelaySealed`] and publish it under its own envelope
+    /// signature. The inner signature is what every peer checks at apply, so the
+    /// admitter cannot substitute a member, and the joiner's local apply of the
+    /// inner op converges with the peers' apply of the unwrapped one — same
+    /// bytes, same signature, same op id.
+    ///
+    /// It introduces no new availability requirement: since #3804 a join already
+    /// fails unless an admitter was reached and endorsed it, so the first peer
+    /// this request goes to is one the joiner has *already* talked to in this
+    /// join. That peer is not guaranteed to hold the key — an admitter awaiting
+    /// its own delivery endorses and serves no envelope, which is a way to end
+    /// up unkeyed in the first place — so a refusal falls through to the other
+    /// peers on the namespace topic. Any of them may seal it: the authority is
+    /// the endorsement inside the op, not the relayer.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload` so every
+    /// existing variant discriminant is unchanged. An older responder cannot
+    /// decode this variant and drops the stream; the joiner then reports the
+    /// failure rather than silently falling back to a cleartext publish, so
+    /// "sealed" and "leaked" are never the same silence.
+    RelaySealedJoinRequest {
+        namespace_id: [u8; 32],
+        /// The joiner's own `SignedNamespaceOp` carrying the join, borsh bytes.
+        /// Verbatim: the admitter wraps it, never re-authors it.
+        signed_op_bytes: Vec<u8>,
+    },
 }
 
 // =============================================================================
@@ -749,6 +787,19 @@ pub enum MessagePayload<'a> {
         /// holds no certificate for itself and is claiming nothing, so the
         /// anchor rule alone decides.
         responder_device_proof: Vec<u8>,
+    },
+    /// An admitter's answer to [`InitPayload::RelaySealedJoinRequest`].
+    ///
+    /// `accepted` is deliberately not inferable from the absence of a reason: a
+    /// refusal and a dropped stream must not look alike to the joiner, because
+    /// one means "ask someone else" and the other means "this peer is gone".
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload` so every
+    /// existing variant discriminant is unchanged.
+    RelaySealedJoinResponse {
+        accepted: bool,
+        /// Why it was refused, for the joiner's error. Empty when accepted.
+        reason: String,
     },
 }
 

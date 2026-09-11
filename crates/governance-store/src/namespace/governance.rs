@@ -802,6 +802,50 @@ impl<'a> NamespaceGovernance<'a> {
         }
     }
 
+    /// Sign `op`, apply it locally, and stop there.
+    ///
+    /// The first half of [`Self::sign_apply_and_publish_returning_op`], which
+    /// calls this and then publishes. Split out for the one publisher that must
+    /// NOT publish what it signed: a joiner whose join cannot be sealed locally
+    /// hands the signed op to an admitter to be sealed and published instead
+    /// (#3904), and broadcasting it here as well would put the cleartext form on
+    /// the namespace topic — the exact disclosure the relay exists to avoid.
+    ///
+    /// Applying locally regardless is deliberate and matches the publish path:
+    /// governance ops are locally authoritative, and a later `MemberJoinedOpen`
+    /// needs this op on the local DAG to causally parent onto.
+    pub fn sign_and_apply_without_publish(
+        &self,
+        node_client: &calimero_node_primitives::client::NodeClient,
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+        endorsement: Option<Box<calimero_governance_types::AdmitterEndorsement>>,
+    ) -> EyreResult<SignedNamespaceOp> {
+        let head = self.read_head_record()?;
+        refuse_unsealed_sealable_root(&op)?;
+        let mut signed = SignedNamespaceOp::sign(
+            signer_sk,
+            self.namespace_id,
+            head.parent_hashes,
+            head.next_nonce,
+            op,
+        )?;
+        signed.admitter_endorsement = endorsement;
+
+        self.apply_signed_op(&signed)?;
+
+        // The same two notifications the publish path makes after its own apply,
+        // and for the same reasons: without the first the readiness FSM never
+        // observes a locally-authored advance, and without the second the
+        // in-memory governance DAG and the unified-op projection do not learn
+        // about an op this node just authored. See
+        // `Self::sign_apply_and_publish_returning_op`.
+        node_client.notify_namespace_op_applied(self.namespace_id.to_bytes());
+        node_client.feed_local_namespace_op(signed.clone());
+
+        Ok(signed)
+    }
+
     pub async fn sign_apply_and_publish_returning_op(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -3782,6 +3826,25 @@ pub async fn sign_apply_and_publish_namespace_op(
     NamespaceGovernance::new(store, namespace_id)
         .sign_apply_and_publish(node_client, ack_router, signer_sk, op)
         .await
+}
+
+/// Free-function form of
+/// [`NamespaceGovernance::sign_and_apply_without_publish`], for callers that
+/// hold a `Store` rather than the governance handle.
+pub fn sign_and_apply_namespace_op_without_publish(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    namespace_id: NamespaceId,
+    signer_sk: &PrivateKey,
+    op: NamespaceOp,
+    endorsement: Option<Box<calimero_governance_types::AdmitterEndorsement>>,
+) -> EyreResult<SignedNamespaceOp> {
+    NamespaceGovernance::new(store, namespace_id).sign_and_apply_without_publish(
+        node_client,
+        signer_sk,
+        op,
+        endorsement,
+    )
 }
 
 pub async fn sign_apply_and_publish_namespace_op_returning_op(

@@ -686,7 +686,14 @@ pub(super) async fn namespace_publish_fixture() -> (
     let (ns_sync_tx, _ns_sync_rx) = tokio::sync::mpsc::channel(8);
     let (ns_join_tx, _ns_join_rx) = tokio::sync::mpsc::channel(8);
     let (open_subgroup_join_tx, _open_rx) = tokio::sync::mpsc::channel(8);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, _relay_rx) = tokio::sync::mpsc::channel(8);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     // The node-manager side is wired to a capturing actor rather than left
     // uninitialized: the publish path now enqueues the local-apply feed there,
