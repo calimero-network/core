@@ -57,7 +57,7 @@ Grouped by concern, as declared in the `wasm_imports!` block:
 - **Synchronized storage**: `storage_read`, `storage_remove`, `storage_write`
 - **Node-local secondary index** (NOT synchronized): `storage_index_set`, `storage_index_remove`, `storage_index_remove_prefix`, `storage_index_scan`, `storage_index_last`
 - **Node-local private storage** (NOT synchronized): `private_storage_read`, `private_storage_remove`, `private_storage_write`
-- **Network/misc host services**: `fetch`, `random_bytes`, `time_now`, `ed25519_verify`
+- **Misc host services**: `random_bytes`, `time_now`, `ed25519_verify`
 - **Streaming blobs**: `blob_create`, `blob_open`, `blob_read`, `blob_write`, `blob_close`
 - **Network blobs**: `blob_announce_to_context`
 

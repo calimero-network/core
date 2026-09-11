@@ -94,14 +94,13 @@ src/
 │   └── host_functions/       # Host function implementations
 │       ├── storage.rs        # storage_read/write/remove, private_storage_*
 │       ├── blobs.rs          # blob_create/write/close/open/read
-│       ├── utility.rs        # fetch, random_bytes, time_now, ed25519_verify
+│       ├── utility.rs        # random_bytes, time_now, ed25519_verify
 │       ├── system.rs         # panic, registers, input/output, emit, commit
 │       └── js_collections.rs # js_crdt_* functions for JS SDK
 └── tests/
     └── errors.rs             # Error handling tests
 examples/
 ├── demo.rs                   # Basic key-value storage demo
-├── fetch.rs                  # HTTP fetch example
 └── rps.rs                    # Requests per second benchmark
 ```
 

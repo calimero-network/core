@@ -55,11 +55,6 @@ use calimero_sys::{
 
 use crate::event::AppEvent;
 
-/// HTTP `fetch` host wrapper — WASM-only (no in-process mock equivalent).
-#[cfg(target_arch = "wasm32")]
-#[doc(hidden)]
-pub mod ext;
-
 /// Native mock host backing the in-process test harness. Off-`wasm32` the
 /// `calimero_sys` imports don't exist, so [`crate::env`] routes here instead.
 #[cfg(not(target_arch = "wasm32"))]
@@ -98,8 +93,8 @@ const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 
 
 /// Reports that a host function has no native mock equivalent.
 ///
-/// A handful of host functions (cross-context calls, networked blobs, HTTP
-/// fetch, signature verification) have no meaningful in-process behaviour. They
+/// A handful of host functions (cross-context calls, networked blobs,
+/// signature verification) have no meaningful in-process behaviour. They
 /// stay callable so app code compiles for tests, but invoking one under
 /// [`crate::testing::TestHost`] panics with a clear message rather than the
 /// opaque "only available when compiled for wasm32" `calimero_sys` stub.
