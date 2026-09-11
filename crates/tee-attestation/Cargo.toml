@@ -19,6 +19,9 @@ eyre.workspace = true
 hex.workspace = true
 tracing.workspace = true
 base64.workspace = true
+# Reads `tcbEvaluationDataNumber` out of fetched collateral so a TCB verdict
+# records which baseline produced it. See `verify::tcb_evaluation_data_number_of`.
+serde_json.workspace = true
 
 # Quote verification dependencies (cross-platform)
 dcap-qvl.workspace = true

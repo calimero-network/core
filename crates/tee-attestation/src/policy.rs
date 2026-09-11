@@ -424,6 +424,7 @@ mod tests {
             application_hash_verified: true,
             tcb_status: Some(tcb_status.to_owned()),
             advisory_ids: Vec::new(),
+            tcb_evaluation_data_number: None,
             quote,
         }
     }
