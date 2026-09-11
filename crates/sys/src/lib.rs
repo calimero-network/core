@@ -62,14 +62,6 @@ wasm_imports! {
         fn private_storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn private_storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>) -> Bool;
         // --
-        fn fetch(
-            url: Ref<Buffer<'_>>,
-            method: Ref<Buffer<'_>>,
-            headers: Ref<Buffer<'_>>,
-            body: Ref<Buffer<'_>>,
-            register_id: RegisterId
-        ) -> Bool;
-        // --
         fn random_bytes(buf: Ref<BufferMut<'_>>);
         fn time_now(buf: Ref<BufferMut<'_>>);
         // --

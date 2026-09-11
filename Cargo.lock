@@ -1535,7 +1535,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "ureq",
  "wasmer",
  "wasmer-middlewares",
  "wasmer-types",

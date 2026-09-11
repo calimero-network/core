@@ -281,14 +281,6 @@ impl VMLogic<'_> {
             // path (concurrent-writer convergence) instead of opaque LWW.
             fn register_js_sdk_root_merge();
 
-            fn fetch(
-                url_ptr: u64,
-                method_ptr: u64,
-                headers_ptr: u64,
-                body_ptr: u64,
-                register_id: u64,
-            ) -> u32;
-
             fn random_bytes(ptr: u64);
             fn time_now(ptr: u64);
 
