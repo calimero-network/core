@@ -16,8 +16,8 @@ use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
 use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
 use calimero_account::{
-    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, RootKeyHandoff,
-    SignedDeviceRevocation,
+    AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
+    RootKeyHandoff, SignedDeviceRevocation,
 };
 use eyre::Result as EyreResult;
 
@@ -125,6 +125,7 @@ pub(crate) fn apply_device_linked(
 
     match outcome {
         Ok(binding) => {
+            remember_own_link_if_ours(ctx, genesis, chain, cert);
             remember_if_this_accounts_own(ctx, genesis, chain, cert);
             tracing::info!(
                 group_id = ?group_id,
@@ -149,6 +150,25 @@ pub(crate) fn apply_device_linked(
         }
     }
     Ok(())
+}
+
+/// Keep the proof if this link is about THIS node's device. Best-effort like the
+/// sibling cache: a node-local write must never refuse an op the group accepted.
+fn remember_own_link_if_ours(
+    ctx: &GroupApplyCtx<'_>,
+    genesis: &AccountGenesis,
+    chain: &[RootKeyHandoff],
+    cert: &DeviceCert,
+) {
+    let proof = AccountProof {
+        genesis: *genesis,
+        chain: chain.to_vec(),
+        statement: *cert,
+    };
+    if let Err(err) = crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(&proof) {
+        tracing::warn!(device = %cert.device, %err,
+                       "could not keep this device's own certificate");
+    }
 }
 
 /// Cache a certificate this node's OWN account root signed, wherever it applied

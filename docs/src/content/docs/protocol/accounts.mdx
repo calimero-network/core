@@ -284,6 +284,9 @@ The device converges within a few beacon intervals - beacons fire roughly every 
 
 Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
 
+A paired device keeps the certificate its own link carried, so it can found or join a namespace as the account without an import step.
+A device paired before this change holds no such certificate, so the holder relinks it, or a certificate signed offline is imported with `merod account import-cert`.
+
 ### Pairing is repeated, not a snapshot
 
 A pairing binds the device wherever the holder takes part *at that moment*.
