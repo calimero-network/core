@@ -125,8 +125,7 @@ pub(crate) fn apply_device_linked(
 
     match outcome {
         Ok(binding) => {
-            remember_own_link_if_ours(ctx, genesis, chain, cert);
-            remember_if_this_accounts_own(ctx, genesis, chain, cert);
+            remember_link_locally(ctx, genesis, chain, cert);
             tracing::info!(
                 group_id = ?group_id,
                 account = %binding.account,
@@ -152,32 +151,13 @@ pub(crate) fn apply_device_linked(
     Ok(())
 }
 
-/// Keep the proof if this link is about THIS node's device. Best-effort like the
-/// sibling cache: a node-local write must never refuse an op the group accepted.
-fn remember_own_link_if_ours(
-    ctx: &GroupApplyCtx<'_>,
-    genesis: &AccountGenesis,
-    chain: &[RootKeyHandoff],
-    cert: &DeviceCert,
-) {
-    let proof = AccountProof {
-        genesis: *genesis,
-        chain: chain.to_vec(),
-        statement: *cert,
-    };
-    if let Err(err) = crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(&proof) {
-        tracing::warn!(device = %cert.device, %err,
-                       "could not keep this device's own certificate");
-    }
-}
-
-/// Cache a certificate this node's OWN account root signed, wherever it applied
-/// from.
+/// Cache the link's proof node-locally: as THIS device's own certificate, and as
+/// one this node's OWN account root signed, wherever it applied from.
 ///
-/// The multi-holder case: a second holder device certified a third, and this node
-/// learns of it only here. Without the cache, a namespace this node gains later
-/// would have no way to bind that device - the replicated binding row drops the
-/// root signature, so the certificate cannot be rebuilt from folded state.
+/// The multi-holder case for the second: a second holder device certified a third,
+/// and this node learns of it only here. Without the cache, a namespace this node
+/// gains later would have no way to bind that device - the replicated binding row
+/// drops the root signature, so the certificate cannot be rebuilt from folded state.
 ///
 /// Read-only on the root, never `ensure_account_root`: an apply path must not
 /// mint a key as a side effect of folding somebody else's op. A node holding no
@@ -186,13 +166,22 @@ fn remember_own_link_if_ours(
 /// Failures are logged rather than propagated. The cache is an optimisation over
 /// re-pairing; refusing an op the group accepted because a node-local row could
 /// not be written would diverge this replica from its peers.
-fn remember_if_this_accounts_own(
+fn remember_link_locally(
     ctx: &GroupApplyCtx<'_>,
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
 ) {
     let devices = crate::NodeDeviceRepository::new(ctx.store());
+    let proof = AccountProof {
+        genesis: *genesis,
+        chain: chain.to_vec(),
+        statement: *cert,
+    };
+    if let Err(err) = devices.remember_own_link(&proof) {
+        tracing::warn!(device = %cert.device, %err,
+                       "could not keep this device's own certificate");
+    }
     let own = match devices.account_root() {
         Ok(Some(root)) => root.account(),
         Ok(None) => return,
@@ -204,11 +193,6 @@ fn remember_if_this_accounts_own(
     if own != cert.account {
         return;
     }
-    let proof = calimero_account::AccountProof {
-        genesis: *genesis,
-        chain: chain.to_vec(),
-        statement: *cert,
-    };
     if let Err(err) = devices.remember_device_cert_if_new(&proof) {
         tracing::warn!(device = %cert.device, %err,
                        "could not remember a certificate this account signed");

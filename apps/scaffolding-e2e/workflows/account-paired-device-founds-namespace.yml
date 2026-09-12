@@ -16,9 +16,9 @@ description: >
 
   What each step is load-bearing for:
 
-    1. The phone converges on A and resolves its own binding there. That is the
-       proof it folded its own link, which is the op that hands it its
-       certificate and names its certifier.
+    1. The phone resolves its own binding in A. That is the proof it folded its
+       own link, which is the op that hands it its certificate and names its
+       certifier.
     2. `create_namespace` on node-2 succeeds and the phone lists C with its
        target.
     3. The phone still speaks as Alice's account and as the same device after
@@ -111,20 +111,9 @@ steps:
       - 'json_not_equal({{paired_device}}, {{alice_device}})'
       - 'json_equal({{key_delivered}}, true)'
 
-  # Polled: node-2 is a member of nothing, so no barrier can wait on it. Listing
-  # A with its target proves the phone pulled A's DAG and key and folded the
-  # encrypted ops, its own link among them.
-  - name: The phone converges on A
-    type: assert_api_response
-    node: paired-founder-node-2
-    path: /admin-api/namespaces
-    where:
-      namespaceId: '{{ns_a}}'
-    match:
-      targetApplicationId: '{{app}}'
-    retries: 45
-    interval: 2
-
+  # Polled: node-2 is a member of nothing, so no barrier can wait on it. A row
+  # naming A cannot resolve before the phone pulled A's DAG and key and folded
+  # the encrypted ops, its own link among them.
   - name: The phone resolves its own binding in A
     type: assert_api_response
     node: paired-founder-node-2
@@ -136,7 +125,7 @@ steps:
     contains:
       namespaces:
         - '{{ns_a}}'
-    retries: 30
+    retries: 45
     interval: 2
 
   # The step under test. Succeeds before the fix too - the identity check
