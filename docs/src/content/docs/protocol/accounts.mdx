@@ -326,6 +326,15 @@ That is also how a device widened after the fact reaches the projects it may now
 On a leave it pulls the namespace once more and then unsubscribes from its topic, keeping the local rows exactly as the holder's own `leave_namespace` does, so a later gain re-follows into state that is already there.
 The pull comes first because the device's own view of the namespace turns on folding that namespace's `MemberLeft`, which travels on the topic about to be dropped.
 
+**What a device writes back.**
+It does not only read the account namespace, it acts on what it reads.
+Folding a certificate for a *sibling*, it binds that device into every namespace it takes part in whose target the sibling's scope covers - which is how a device certified after a namespace was gained reaches it at all, since the holder that signed the certificate may not be there.
+Never a device revoked anywhere this node takes part, though: the `DeviceId` is spent everywhere at once while a tombstone is per namespace, so one tombstone refuses the whole projection.
+It waits a random moment first, up to two seconds, so that k online devices do not all publish the same links at once, and it re-reads that refusal after the wait, because a revocation can fold while it is waiting.
+The holder's own fan-out at `pair-complete` is this same rule, run eagerly by the node that signed.
+Folding a **proof-bearing revocation**, it publishes the same withdrawal into every namespace it takes part in where that device is still bound.
+An admin revocation carries no proof and is not carried: being an admin of one group is not authority over another.
+
 **Every start sweeps, both ways.**
 Nothing re-drives an op applied while no listener was up, so a device begins by walking the set itself: it follows every namespace the set names that its scope covers, and unfollows every namespace it takes part in that the set no longer names.
 The unfollow half acts only once this device has folded the namespace and the account's member row there is gone.
@@ -509,6 +518,12 @@ A proof names an account, and one root owns one account everywhere — so a proo
 minted while pointed at one namespace verifies against the same account reached
 from any other. Publication is still per-DAG: it takes effect in a group once it
 has been published there.
+
+It does not stop at the namespaces the publishing node can reach, either.
+Every device of the account follows the account namespace, so a proof-bearing revocation published there is folded by all of them, and each republishes it into every namespace it takes part in where the device is still bound.
+The proof names no namespace, so the same bytes verify wherever they land.
+That is the lost-laptop case in full: the holder is gone, the phone revokes it with a proof minted from the phrase, and the tablet carries the tombstone into the projects the phone was never in.
+The revoker publishes into its own account namespace **last**, after every project namespace it reaches: that apply is what drives its own carry, and by then there is nothing left for the carry to publish.
 
 ## Per-device authorization
 

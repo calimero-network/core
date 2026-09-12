@@ -10973,7 +10973,7 @@ mod account_plane_apply {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
 
-    use crate::op_events::OpEvent;
+    use crate::op_events::{self, OpEvent};
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use crate::{
         AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, AccountRoot,
@@ -11632,6 +11632,162 @@ mod account_plane_apply {
             live_for(&store, &gid, account).len(),
             1,
             "the victim's device must still be in force"
+        );
+    }
+
+    /// What a device of the account needs to carry a revocation elsewhere: the
+    /// proof itself, on the event, exactly as the op carried it.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_self_service_unlink_puts_its_proof_on_the_event() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0xD1; 32]);
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let owner_sk = key(8);
+        let genesis = AccountGenesis::new(owner_sk.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [8u8; 16]);
+        let cert = DeviceCert::sign(
+            &owner_sk,
+            account,
+            device,
+            &key(8).public_key(),
+            &KemPublicKey::from([8u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        let proof = calimero_account::SignedDeviceRevocation {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(&owner_sk, account, device, 0)
+                .unwrap(),
+        };
+
+        let mut rx = op_events::subscribe();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: Some(proof.clone()),
+            },
+        )
+        .unwrap();
+
+        let carried = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("an event within two seconds")
+                .expect("the channel stays open")
+            {
+                OpEvent::DeviceRevoked {
+                    group_id, proof, ..
+                } if group_id == gid.to_bytes() => break proof,
+                _ => continue,
+            }
+        };
+        assert_eq!(carried.map(|boxed| *boxed), Some(proof));
+    }
+
+    /// An admin revocation carries nothing to forward, and neither does one whose
+    /// proof the apply refused - the admin gate is what let that op through, and
+    /// admin authority stops at this group.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn an_unauthorising_proof_is_not_put_on_the_event() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0xD2; 32]);
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let owner_sk = key(8);
+        let genesis = AccountGenesis::new(owner_sk.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [9u8; 16]);
+        let cert = DeviceCert::sign(
+            &owner_sk,
+            account,
+            device,
+            &key(8).public_key(),
+            &KemPublicKey::from([9u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        // Signed by a root that owns a different account, so `authorises` refuses
+        // it and the admin gate is what applies the op.
+        let stranger_sk = key(12);
+        let forged = calimero_account::SignedDeviceRevocation {
+            genesis: AccountGenesis::new(stranger_sk.public_key()),
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(&stranger_sk, account, device, 0)
+                .unwrap(),
+        };
+
+        let mut rx = op_events::subscribe();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: Some(forged),
+            },
+        )
+        .unwrap();
+
+        let carried = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("an event within two seconds")
+                .expect("the channel stays open")
+            {
+                OpEvent::DeviceRevoked {
+                    group_id, proof, ..
+                } if group_id == gid.to_bytes() => break proof,
+                _ => continue,
+            }
+        };
+        assert!(carried.is_none());
+        assert!(
+            AccountBindingRepository::new(&store)
+                .is_revoked(&gid, device)
+                .unwrap(),
+            "the admin gate still applied it here"
         );
     }
 

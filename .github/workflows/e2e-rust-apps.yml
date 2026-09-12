@@ -547,7 +547,8 @@ jobs:
         # A node needs bytecode only to run a context, not to join a group. So
         # `image: merod:local-dht` is for the three scenarios that ARE the peer
         # route's coverage; `registry_fetch: "false"` is for the ones that never
-        # run a context at all. Everything else fetches, on http.
+        # run a context at all, and for the ones whose only context runs on nodes
+        # that installed its bundle themselves. Everything else fetches, on http.
         include:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml
@@ -670,6 +671,16 @@ jobs:
           - workflow: account-revoke-lost-device
             file: workflows/account-revoke-lost-device.yml
             app: scaffolding-e2e
+          # Neither turns on a registry fetch: the founder scenario joins no
+          # context, and the lost-holder one installs its bundles locally first.
+          - workflow: account-sibling-projected-by-founder
+            file: workflows/account-sibling-projected-by-founder.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
+          - workflow: account-lost-holder-revoked-everywhere
+            file: workflows/account-lost-holder-revoked-everywhere.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e

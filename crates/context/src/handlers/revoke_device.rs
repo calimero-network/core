@@ -32,13 +32,23 @@ use calimero_context_client::group::{
     RevocationOutcome, RevokeDeviceRequest, RevokeDeviceResponse,
 };
 use calimero_context_client::local_governance::GroupOp;
-use calimero_governance_store::{
-    GroupGovernancePublisher, MembershipRepository, NamespaceRepository, NodeDeviceRepository,
-};
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::identity::PrivateKey;
-use tracing::{info, warn};
+use calimero_store::Store;
+use eyre::Result as EyreResult;
+use tracing::warn;
 
 use crate::ContextManager;
+
+/// The namespaces a withdrawal is published into, this node's account namespace
+/// LAST: its apply drives this node's own carry, which must find the rest gone.
+pub(crate) fn revocation_namespaces(store: &Store) -> EyreResult<Vec<ContextGroupId>> {
+    let account_namespace = NodeDeviceRepository::new(store).account_namespace()?;
+    let mut namespaces = NamespaceRepository::new(store).participating_namespaces()?;
+    namespaces.sort_by_key(|namespace| Some(*namespace) == account_namespace);
+    Ok(namespaces)
+}
 
 impl Handler<RevokeDeviceRequest> for ContextManager {
     type Result = ActorResponse<Self, <RevokeDeviceRequest as Message>::Result>;
@@ -61,10 +71,11 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         let signer_sk = PrivateKey::from(signer_sk_bytes);
         let store = self.datastore.clone();
 
-        let self_account = match crate::member_account::require(&store, &namespace_id, &self_pk) {
-            Ok(account) => account,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+        // A node whose identity is bound to no account here can author the
+        // revocation nowhere; refusing now names the reason.
+        if let Err(err) = crate::member_account::require(&store, &namespace_id, &self_pk) {
+            return ActorResponse::reply(Err(err));
+        }
         // Whose device this is, and whether this node can prove it owns the
         // account, both come from the group's own binding. Deriving the account
         // from this node's root instead answers a different question — "which
@@ -190,7 +201,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
                 // Publication stays per-DAG. Wider validity is not wider reach: the
                 // op takes effect in a namespace when it is published there, which
                 // is what this loop does, one namespace at a time.
-                let namespaces = NamespaceRepository::new(&store).participating_namespaces()?;
+                let namespaces = revocation_namespaces(&store)?;
                 let mut revoked_in = Vec::new();
 
                 for ns in namespaces {
@@ -207,60 +218,22 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
                         }
                     }
 
-                    // Admin HERE, not where the caller started. The rotation is a
-                    // group act — peers accept one only from an admin at the cut —
-                    // so it rides along in the namespaces this node governs and is
-                    // left owed in the rest.
-                    let is_admin_here = MembershipRepository::new(&store)
-                        .is_admin(&ns, &self_account)
-                        .unwrap_or(false);
-
-                    let published = if is_admin_here {
-                        GroupGovernancePublisher::new(&store, &node_client, ns)
-                            .sign_apply_and_publish_device_revocation(
-                                &ack_router,
-                                &signer_sk,
-                                op.clone(),
-                            )
-                            .await
-                    } else {
-                        calimero_governance_store::sign_apply_and_publish(
-                            &store,
-                            &node_client,
-                            &ack_router,
-                            &ns,
-                            &signer_sk,
-                            op.clone(),
-                        )
-                        .await
-                    };
-
-                    match published {
-                        Ok(report) => {
-                            if !is_admin_here {
-                                warn!(
-                                    namespace_id = ?ns,
-                                    %device,
-                                    "revoked without a key rotation: this node is not an \
-                                     admin here, so the device loses the right to write \
-                                     immediately but keeps the key it already holds until \
-                                     an admin rotates"
-                                );
-                            }
-                            info!(
-                                namespace_id = ?ns,
-                                %account,
-                                %device,
-                                published = report.is_some(),
-                                key_rotated = is_admin_here,
-                                "device revoked"
-                            );
-                            revoked_in.push(RevocationOutcome::new(ns, is_admin_here));
-                        }
+                    match calimero_governance_store::revoke_device_in(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        &ns,
+                        &signer_sk,
+                        device,
+                        op.clone(),
+                    )
+                    .await
+                    {
+                        Ok(key_rotated) => revoked_in.push(RevocationOutcome::new(ns, key_rotated)),
                         // One namespace failing must not withhold the revocation
-                        // from the rest — a device half-withdrawn is worse than one
-                        // withdrawn everywhere it could be. The caller sees which
-                        // namespaces landed.
+                        // from the rest - a device half-withdrawn is worse than
+                        // one withdrawn everywhere it could be. The caller sees
+                        // which namespaces landed.
                         Err(err) => warn!(
                             namespace_id = ?ns, %device, %err,
                             "revocation: publishing failed for this namespace; others continue"
@@ -279,5 +252,42 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+    use calimero_store::db::InMemoryDB;
+
+    use super::{revocation_namespaces, ContextGroupId, Store};
+
+    /// Last, whatever the key-ordered scan says: the account namespace's apply
+    /// drives this node's own carry, which then finds the rest already gone.
+    #[test]
+    fn the_account_namespace_is_withdrawn_from_last() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        // Sorts FIRST in the scan, so the order cannot come out right by luck.
+        let account_namespace = ContextGroupId::from([0x01; 32]);
+        let projects = [
+            ContextGroupId::from([0x81; 32]),
+            ContextGroupId::from([0x82; 32]),
+        ];
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&account_namespace)
+            .expect("record what the pairing named");
+        let namespaces = NamespaceRepository::new(&store);
+        for namespace in [account_namespace, projects[0], projects[1]] {
+            let _identity = namespaces
+                .participate_in(&namespace)
+                .expect("take part in it");
+        }
+
+        assert_eq!(
+            revocation_namespaces(&store).expect("read the namespaces"),
+            vec![projects[0], projects[1], account_namespace],
+        );
     }
 }

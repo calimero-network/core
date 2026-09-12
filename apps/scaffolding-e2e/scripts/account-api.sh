@@ -25,6 +25,41 @@ node_url() {
     echo "http://127.0.0.1:${_hostport}"
 }
 
+# Run an offline `merod` subcommand against <node>'s home. Same split as
+# node_url, and for the same reason: in binary mode there is no container to
+# exec into, and merobox's own node_exec step refuses to run at all there.
+offline_merod() {
+    _node="$1"
+    shift
+    _bin="${MEROD_BIN:-../../target/debug/merod}"
+    if [ -x "${_bin}" ]; then
+        # Searched, as node_url searches, and for the same reason: merobox nests
+        # the home one level deeper in binary mode, and has moved it before.
+        _config=$(find "data/${_node}" -name config.toml 2>/dev/null | head -1)
+        if [ -z "${_config}" ]; then
+            echo "no node home under data/${_node}" >&2
+            return 1
+        fi
+        "${_bin}" --home "$(dirname "$(dirname "${_config}")")" \
+            --node "${_node}" "$@"
+        return
+    fi
+    docker run --rm --user root --entrypoint "" \
+        -v "$(pwd)/data/${_node}:/app/data" -e CALIMERO_HOME=/app/data \
+        "${MEROD_IMAGE:-merod:local}" \
+        merod --home /app/data --node "${_node}" "$@"
+}
+
+# Where <node>'s home is as offline_merod sees it, for an argument that names a
+# file the command has to read.
+offline_home() {
+    if [ -x "${MEROD_BIN:-../../target/debug/merod}" ]; then
+        echo "data/$1"
+    else
+        echo "/app/data"
+    fi
+}
+
 # Authenticate and echo a bearer token.
 #
 # Mirrors merobox's own login payload exactly (`auth_method`, `public_key`,

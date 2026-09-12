@@ -1,0 +1,225 @@
+name: E2E Account - The Founder Carries a Later Device Into Its Namespace
+description: >
+  The standing rule the account namespace exists for: a device certified AFTER a
+  namespace was gained is carried into it by whichever device of the account is
+  already there. Until now only the holder ever carried anybody anywhere, at the
+  moment it signed the certificate - so a device paired after the phone founded a
+  project was simply absent from it, with nothing that would ever notice.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root, installs the app, creates
+      namespace A. It is the only node that can certify a device.
+    * node-2 - Alice's phone. Paired with no application scope, so it may speak
+      for everything. It founds namespace C while the laptop is down.
+    * node-3 - Alice's tablet. Paired last, while the phone is down, scoped to
+      the application C targets.
+
+  Why only the phone can put the tablet in C: no two of these nodes are up
+  together until the tablet's certificate is already written down. The laptop is
+  stopped before C is founded, so it hears no gain for C and takes no part in it.
+  The phone is stopped before the tablet is paired, so the laptop's pair-complete
+  fan-out - which reaches the namespaces the laptop itself takes part in - names
+  A and the account namespace and nothing else. When the laptop later folds the
+  gain for C and follows it, following subscribes and notes participation and
+  binds nobody. So the tablet's link in C is the phone's publish or nobody's.
+
+  What each step is load-bearing for:
+
+    1. The laptop creates A and pairs the phone. The script returns only once the
+       phone has read its own link back out of the account namespace, which is
+       the barrier the stop below must not race.
+    2. The laptop goes down. From here it folds nothing the phone publishes.
+    3. The phone founds C as Alice's account, and carries the laptop's binding
+       into it out of the registry - the rule that has its own scenario, and the
+       reason a binding in C proves nothing about the tablet on its own.
+    4. The phone goes down and the laptop comes back, so neither can reach the
+       other's DAG while the tablet is paired.
+    5. The laptop certifies the tablet, scoped to C's application, and binds it
+       into A - asserted, because it is what the laptop's reach actually is - and
+       into the account namespace. Not into C, which it has never heard of.
+    6. The phone comes back, folds the tablet's certificate off the account
+       namespace and binds it into C, with the scope only the account root could
+       have signed. The tablet, following C off the same account namespace, folds
+       that binding and agrees.
+
+  Not asserted here: anything about revocation, which is the other half of this
+  PR and has its own scenario.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-project-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-project-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-project-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: account-project-node-3
+    username: dev
+    password: dev-password
+
+  - name: Install the app on node-1
+    type: install_application
+    node: account-project-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  # The phone founds C, and a founder resolves the target application locally.
+  - name: Install the app on node-2
+    type: install_application
+    node: account-project-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Node-1 creates namespace A
+    type: create_namespace
+    node: account-project-node-1
+    application_id: '{{app}}'
+    outputs:
+      ns_a: namespaceId
+
+  # No application scope: the phone may speak for everything, which is what makes
+  # it able to found C at all.
+  - name: Pair node-2 onto Alice's account through the account namespace
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-project-node-1
+      - account-project-node-2
+      - '-'
+      - '-'
+
+  # Down before C exists, so the laptop never folds the gain for it and never
+  # takes part in it while the tablet is being certified.
+  - name: The laptop goes down
+    type: stop_node
+    nodes: account-project-node-1
+
+  - name: Node-2 founds namespace C as Alice's account
+    type: create_namespace
+    node: account-project-node-2
+    application_id: '{{app}}'
+    outputs:
+      ns_c: namespaceId
+
+  # Down for the whole pairing below: nothing the laptop publishes reaches the
+  # phone until the phone is back, and the phone folds no certificate before then.
+  - name: The phone goes down
+    type: stop_node
+    nodes: account-project-node-2
+
+  - name: The laptop comes back
+    type: start_node
+    nodes: account-project-node-1
+
+  - name: Log back in to node-1
+    type: login
+    node: account-project-node-1
+    username: dev
+    password: dev-password
+
+  # Scoped to the application C targets, so the phone's projection rule has a
+  # namespace to name and the laptop's fan-out still does not.
+  - name: Pair node-3 onto Alice's account, scoped to the app C targets
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-project-node-1
+      - account-project-node-3
+      - '-'
+      - '{{app}}'
+
+  - name: What node-3 speaks as
+    type: node_identity
+    node: account-project-node-3
+    outputs:
+      tablet_device: deviceId
+
+  # What the laptop's reach actually is, asserted rather than assumed: A, which
+  # it takes part in, and nothing it has never heard of.
+  - name: The laptop bound the tablet into A
+    type: assert_api_response
+    node: account-project-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{tablet_device}}'
+    contains:
+      namespaces:
+        - '{{ns_a}}'
+    retries: 30
+    interval: 2
+
+  - name: The phone comes back
+    type: start_node
+    nodes: account-project-node-2
+
+  - name: Log back in to node-2
+    type: login
+    node: account-project-node-2
+    username: dev
+    password: dev-password
+
+  # The step under test. Polled, because the phone acts on folding the tablet's
+  # certified op off the account namespace's topic, which no barrier can wait on.
+  - name: The phone carried the tablet into C
+    type: assert_api_response
+    node: account-project-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{tablet_device}}'
+    contains:
+      namespaces:
+        - '{{ns_c}}'
+    retries: 45
+    interval: 2
+
+  # The tablet's chain in two halves, so the tail below is not competing with the
+  # follow and the DAG pull inside one budget. Strictly earlier than the binding.
+  - name: The tablet converges on C
+    type: assert_api_response
+    node: account-project-node-3
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_c}}'
+    match:
+      targetApplicationId: '{{app}}'
+    retries: 45
+    interval: 2
+
+  # And the tablet agrees: it followed C off the same account namespace, pulled
+  # the key its new link authorises, and folded the binding the phone published.
+  - name: The tablet reads its own binding in C
+    type: assert_api_response
+    node: account-project-node-3
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{tablet_device}}'
+    match:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{ns_c}}'
+    retries: 90
+    interval: 2
+
+stop_all_nodes: true
