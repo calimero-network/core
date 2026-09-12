@@ -26,6 +26,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
 
+mod account_migration;
 mod account_namespace;
 pub mod activation;
 pub(crate) mod apply_authorizer;
@@ -808,6 +809,16 @@ impl Actor for ContextManager {
         // rationale as the TEE-admit listener above.
         rotation_listener::shutdown();
         rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // One-shot. A holder upgraded from before the registry still keeps its
+        // device certificates node-local, where no other device of the account
+        // can read them.
+        account_migration::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+            self.context_client.clone(),
+        );
     }
 }
 

@@ -1854,7 +1854,8 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
 
-/// Device certificates of this node's own account (see [`NodeAccountDeviceCert`]).
+/// Device certificates a pre-registry holder cached, read now only by the startup
+/// migration that publishes them (see [`NodeAccountDeviceCert`]).
 /// Distinct from [`NODE_DEVICE_CERTIFICATE_PREFIX`], which holds the single
 /// certificate signed for THIS device elsewhere.
 pub const NODE_ACCOUNT_DEVICE_CERT_PREFIX: u8 = 0x4C;
@@ -2362,9 +2363,9 @@ impl Debug for GroupAccountDevice {
 /// The certificate and scope a [`GroupAccountDevice`] row carries.
 ///
 /// The whole proof rather than its fields, for the same reason
-/// [`NodeAccountDeviceCertValue`] keeps one: the replicated binding row drops
-/// the root signature, so this is the only replicated place a link can be
-/// rebuilt from.
+/// [`NodeAccountDeviceCertValue`] kept one before the migration drained it: the
+/// replicated binding row drops the root signature, so this is the only
+/// replicated place a link can be rebuilt from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDeviceValue {
@@ -2847,6 +2848,9 @@ impl Debug for NodeDeviceIdentityValue {
 /// authorized, not a claim about it. The replicated [`GroupDeviceBinding`] row
 /// cannot serve here because it drops the root signature, so a valid certificate
 /// cannot be reconstructed from it without a DAG scan.
+///
+/// No writer remains. The row survives only so the one-shot migration can read
+/// a pre-registry holder's certificates and publish them into the account namespace.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeAccountDeviceCert(Key<(GroupPrefix, GroupIdComponent)>);
@@ -2901,6 +2905,8 @@ impl Debug for NodeAccountDeviceCert {
 /// [`AccountProof`] keeps the row and the op one shape. Nothing here is secret -
 /// a certificate is public data and proves nothing without the device key it
 /// names.
+///
+/// Read only by that migration; see [`NodeAccountDeviceCert`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeAccountDeviceCertValue {

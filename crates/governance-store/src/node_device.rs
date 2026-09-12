@@ -28,9 +28,9 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
-    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
-    NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+    NodeAccountDeviceCert, NodeAccountNamespace, NodeAccountNamespaceValue, NodeAccountRoot,
+    NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
+    NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -1117,69 +1117,15 @@ impl<'a> NodeDeviceRepository<'a> {
             self_service,
         }))
     }
-    /// Remember a device certificate of this node's own account, and the scope
-    /// the pairing that minted it gave the device.
-    ///
-    /// Written where the certificate is signed, because that is the only moment
-    /// the root signature exists in full: the replicated binding row drops it, so
-    /// a link cannot be rebuilt from folded state without a DAG scan.
-    ///
-    /// # Errors
-    /// Propagates the store write failure.
-    pub fn remember_device_cert(
-        &self,
-        proof: &AccountProof<DeviceCert>,
-        applications: &[ApplicationId],
-    ) -> EyreResult<()> {
-        let key = NodeAccountDeviceCert::new(*proof.statement.device.as_bytes());
-        self.store.handle().put(
-            &key,
-            &NodeAccountDeviceCertValue {
-                proof: proof.clone(),
-                applications: applications.to_vec(),
-            },
-        )?;
-        Ok(())
-    }
 
-    /// Remember a certificate that arrived on the wire, scoped to everything.
+    /// The device certificates a pre-registry holder cached.
     ///
-    /// The multi-holder case: another device of this same account certified a
-    /// third, and this node learns of it only by applying the link. Nothing on
-    /// the wire carries the pairing's application scope, so the widest scope is
-    /// the only honest guess - and it must not overwrite a narrower one this node
-    /// already knows, which is why an existing row wins.
-    ///
-    /// # Errors
-    /// Propagates the store read or write failure.
-    pub fn remember_device_cert_if_new(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
-        if self.device_cert(proof.statement.device)?.is_some() {
-            return Ok(());
-        }
-        self.remember_device_cert(proof, &[])
-    }
-
-    /// The certificate this node holds for `device`, if it has one.
-    ///
-    /// # Errors
-    /// Propagates the store read failure.
-    pub fn device_cert(&self, device: DeviceId) -> EyreResult<Option<KnownDeviceCert>> {
-        let key = NodeAccountDeviceCert::new(*device.as_bytes());
-        Ok(self
-            .store
-            .handle()
-            .get(&key)?
-            .map(|value: NodeAccountDeviceCertValue| KnownDeviceCert {
-                proof: value.proof,
-                applications: value.applications,
-            }))
-    }
-
-    /// Every device certificate of this node's own account.
+    /// Read once, by the migration in `calimero-context`, which publishes them
+    /// into the account namespace and then calls [`Self::forget_legacy_device_certs`].
     ///
     /// # Errors
     /// Propagates the store scan or read failure.
-    pub fn device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+    pub fn legacy_device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
         let keys = collect_keys_with_prefix(
             self.store,
             NodeAccountDeviceCert::new([0u8; 32]),
@@ -1197,6 +1143,24 @@ impl<'a> NodeDeviceRepository<'a> {
             }
         }
         Ok(certs)
+    }
+
+    /// Drop every cached certificate, once the registry holds them.
+    ///
+    /// # Errors
+    /// Propagates the store scan or write failure.
+    pub fn forget_legacy_device_certs(&self) -> EyreResult<()> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NodeAccountDeviceCert::new([0u8; 32]),
+            NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+            |_k| true,
+        )?;
+        let mut handle = self.store.handle();
+        for key in keys {
+            handle.delete(&key)?;
+        }
+        Ok(())
     }
 
     /// The namespaces, among those this node takes part in, where `device` is
@@ -1328,69 +1292,6 @@ mod tests {
             chain: vec![],
             statement: cert,
         }
-    }
-
-    /// The signature is the field that made this row necessary: the replicated
-    /// binding keeps the cert's payload and drops it, so a link cannot be rebuilt
-    /// from folded state. It has to survive the round trip, and so does the scope.
-    #[test]
-    fn the_cert_store_round_trips_the_signature_and_the_scope() {
-        let store = test_store();
-        let repo = NodeDeviceRepository::new(&store);
-        let proof = certified(&PrivateKey::from([0x31; 32]), [0x41; 32], [0x51; 32]);
-        let scope = vec![ApplicationId::from([0x61; 32])];
-
-        repo.remember_device_cert(&proof, &scope).expect("remember");
-
-        let held = repo
-            .device_cert(proof.statement.device)
-            .expect("read")
-            .expect("present");
-        assert_eq!(
-            held.proof, proof,
-            "every field, the root signature included"
-        );
-        assert_eq!(held.applications, scope);
-        assert_eq!(
-            held.proof.verify(proof.statement.account).map(|_| ()),
-            Ok(()),
-            "what comes back out must still verify as a credential"
-        );
-    }
-
-    /// The wire carries no application scope, so a cert learned by applying
-    /// somebody else's link is scoped to everything - and must not overwrite a
-    /// narrower scope this node set when it did the pairing itself.
-    #[test]
-    fn a_cert_learned_from_the_wire_does_not_widen_a_scope_already_known() {
-        let store = test_store();
-        let repo = NodeDeviceRepository::new(&store);
-        let narrow = certified(&PrivateKey::from([0x32; 32]), [0x42; 32], [0x52; 32]);
-        let scope = vec![ApplicationId::from([0x62; 32])];
-        repo.remember_device_cert(&narrow, &scope)
-            .expect("remember");
-
-        repo.remember_device_cert_if_new(&narrow).expect("re-learn");
-
-        assert_eq!(
-            repo.device_cert(narrow.statement.device)
-                .expect("read")
-                .expect("present")
-                .applications,
-            scope,
-        );
-
-        let fresh = certified(&PrivateKey::from([0x33; 32]), [0x43; 32], [0x53; 32]);
-        repo.remember_device_cert_if_new(&fresh).expect("learn");
-        assert!(
-            repo.device_cert(fresh.statement.device)
-                .expect("read")
-                .expect("present")
-                .applications
-                .is_empty(),
-            "a cert nothing else is known about reaches every namespace"
-        );
-        assert_eq!(repo.device_certs().expect("scan").len(), 2);
     }
 
     /// An empty scope is every application, and a named one is only its own -

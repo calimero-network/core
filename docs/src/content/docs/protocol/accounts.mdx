@@ -308,10 +308,15 @@ A namespace created or joined afterwards is not in that set, so without a repeat
 
 The repeat is cheap because a certificate carries **no namespace and no expiry**.
 Binding a device somewhere new needs the stored certificate, a fresh endorsement any member of that namespace can sign, and one key wrap - no handshake, no confirmation code, and the device need not be online.
-So the holder keeps every certificate it signs, node-local, beside the device secret: the replicated binding row records the certificate's payload but not the account root's signature, and a link cannot be rebuilt without it.
+So every certificate the holder signs is written into the account namespace's device registry, together with the applications the root scoped that device to: the replicated binding row records the certificate's payload but not the account root's signature, and a link cannot be rebuilt without it.
+The registry replicates, so the certificate is not the holder's alone - every device of the account holds it, which is what lets a device that signed nothing carry a sibling anywhere.
+A holder upgraded from before the registry publishes its cached certificates into the account namespace once, on its first start, and then drops them.
+That publishes rows, not devices: a device paired before the registry existed does not follow the account namespace until it is `pair-init`ed once with the id and then relinked.
+A root restored on a second machine cached the widest scope for every device it merely folded, so it may publish one of them wide; the holder that certified that device narrows it again on its next start, at a higher scope epoch.
 
 Two things then use it.
 A node that **gains** a namespace - by joining one, or by creating one - extends every device of its account into it, once it holds that namespace's scope key: after the key arrives on a join, and after the genesis applies on a creation, because a link's endorser is resolved through the binding rows that genesis writes.
+Any device of the account does this, not only the holder: the phone that founds a project carries the laptop into it, with the scope only the account root could have signed.
 The carry-over is best-effort: a device it cannot extend is logged and skipped, never a reason to fail the join or the creation.
 
 And an operator can ask for the same repeat directly, which is also how a device's scope is widened after the fact:
@@ -322,7 +327,7 @@ POST /admin-api/account/devices/<DEVICE_ID>/relink
 ```
 
 It reports, per namespace, where the link landed and where it did not - `alreadyBound`, `noScopeKey`, `outOfScope` - for the same reason a revocation does: publication is per-DAG, so a partially reached device is a state an operator has to be able to see.
-Naming applications widens the **stored** scope before anything is published, since that scope is what every later namespace gain is judged against.
+Naming applications widens the device's scope and publishes the widened statement into the account namespace at the next scope epoch, since that scope is what every later namespace gain - on any device of the account - is judged against.
 
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.

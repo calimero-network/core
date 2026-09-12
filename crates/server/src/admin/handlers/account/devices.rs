@@ -29,9 +29,9 @@ struct Draft {
     namespaces: Vec<ContextGroupId>,
 }
 
-/// Every device of this node's own account, joined from three sources: the
-/// account namespace's registry, the node-local certificate cache, and the live
-/// bindings of every namespace this node takes part in.
+/// Every device of this node's own account, joined from the account namespace's
+/// device registry with the live bindings of every namespace this node takes
+/// part in.
 ///
 /// `None` when this node holds no account, mirroring `GET /admin-api/identity`,
 /// since there is nothing to report on. Reuses that route's account resolution
@@ -48,22 +48,11 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
     let bindings = AccountBindingRepository::new(store);
 
     let mut by_device: BTreeMap<DeviceId, Draft> = BTreeMap::new();
-    for cert in devices.device_certs()? {
-        by_device.insert(
-            cert.device(),
-            Draft {
-                signing_key: cert.proof.statement.sign_pk,
-                applications: cert.applications,
-                namespaces: Vec::new(),
-            },
-        );
-    }
 
-    // Replicated, so a device that is not the holder reads every sibling's scope
-    // here; the cache still answers for devices the registry drops, revoked ones
-    // included.
+    // Replicated, so a device that is not the holder sees every sibling here.
+    // Unfiltered on purpose: a revoked device is reported as revoked, not hidden.
     if let Some(namespace) = devices.account_namespace()? {
-        for cert in AccountDeviceRegistry::new(store, namespace).devices()? {
+        for cert in AccountDeviceRegistry::new(store, namespace).all_devices()? {
             let entry = by_device.entry(cert.device()).or_insert_with(|| Draft {
                 signing_key: cert.proof.statement.sign_pk,
                 applications: Vec::new(),
@@ -159,8 +148,8 @@ mod tests {
         (store, root)
     }
 
-    /// Certify `device` under `root`'s account and remember the cert with
-    /// `applications` as its stored scope.
+    /// Certify `device` under `root`'s account and record it in the account
+    /// namespace's registry with `applications` as its scope.
     fn remember_cert(
         store: &Store,
         root: &AccountRoot,
@@ -180,16 +169,21 @@ mod tests {
             0,
         )
         .expect("the account root signs its own device cert");
-        NodeDeviceRepository::new(store)
-            .remember_device_cert(
+        let namespace = NodeDeviceRepository::new(store)
+            .account_namespace()
+            .expect("read the account namespace")
+            .expect("a store with an account root names one");
+        let _recorded = AccountDeviceRegistry::new(store, namespace)
+            .record(
                 &AccountProof {
                     genesis,
                     chain: vec![],
                     statement: cert,
                 },
                 applications,
+                0,
             )
-            .expect("remember the cert");
+            .expect("record the device in the account namespace");
         device_id
     }
 
@@ -322,6 +316,49 @@ mod tests {
         assert!(entry.revoked);
     }
 
+    /// The account namespace participates like any other in production, so a
+    /// device revoked there must still be listed, with `revoked: true`.
+    #[test]
+    fn a_device_revoked_in_the_account_namespace_is_listed_as_revoked() {
+        let (store, root) = seeded_account();
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a holder names an account namespace");
+        NamespaceRepository::new(&store)
+            .note_participation(&namespace)
+            .expect("join the account namespace, as creation does");
+        let device = remember_cert(
+            &store,
+            &root,
+            [0x77; 32],
+            &PrivateKey::from([0x88; 32]).public_key(),
+            &[],
+        );
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&namespace, device)
+            .expect("tombstone the device in the account namespace");
+
+        let entries = collect(&store).expect("collect").expect("has account");
+
+        let entry = entries
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the revoked device is still reported");
+        assert!(entry.revoked);
+        let registry = AccountDeviceRegistry::new(&store, namespace);
+        assert!(!registry
+            .devices()
+            .expect("read")
+            .iter()
+            .any(|cert| cert.device() == device));
+        assert!(registry
+            .all_devices()
+            .expect("read")
+            .iter()
+            .any(|cert| cert.device() == device));
+    }
+
     #[test]
     fn a_bound_but_uncached_device_appears_with_its_namespace() {
         let (store, root) = seeded_account();
@@ -366,8 +403,7 @@ mod tests {
     }
 
     /// The registry is what a device that is not the holder has instead of a
-    /// cache, so the scope in the listing comes from there - and wins over a
-    /// cached row, which is the older statement by construction.
+    /// cache, so the scope in the listing comes from there.
     #[test]
     fn the_listing_reads_the_scope_from_the_account_namespace_registry() {
         let (store, root) = seeded_account();
@@ -378,7 +414,7 @@ mod tests {
         let narrow = ApplicationId::from([0x77; 32]);
         let wide = ApplicationId::from([0x88; 32]);
         let sign_pk = PrivateKey::from([0x22; 32]).public_key();
-        let device = remember_cert(&store, &root, [0x11; 32], &sign_pk, &[narrow]);
+        let device = DeviceId::from([0x11; 32]);
 
         let genesis = AccountGenesis::new(root.public_key());
         let cert = DeviceCert::sign(

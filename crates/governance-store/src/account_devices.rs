@@ -88,6 +88,35 @@ impl<'a> AccountDeviceRegistry<'a> {
             }))
     }
 
+    /// Every device row in this namespace's registry, revoked ones included.
+    ///
+    /// The device listing needs the revoked rows - `revoked: true` is what a
+    /// settings UI renders - while a binder must never see one; see [`Self::devices`].
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn all_devices(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+        let namespace = self.namespace.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupAccountDevice::new(namespace, [0u8; 32]),
+            GROUP_ACCOUNT_DEVICE_PREFIX,
+            |k| k.group_id() == namespace,
+        )?;
+        let handle = self.store.handle();
+        let mut certs = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(value) = handle.get::<GroupAccountDevice>(&key)? else {
+                continue;
+            };
+            certs.push(KnownDeviceCert {
+                proof: value.proof,
+                applications: value.applications,
+            });
+        }
+        Ok(certs)
+    }
+
     /// Every device of the account that this namespace has not revoked.
     ///
     /// The filter lives here rather than at each caller: a binder checks the
@@ -97,29 +126,14 @@ impl<'a> AccountDeviceRegistry<'a> {
     /// # Errors
     /// Propagates the store scan or read failure.
     pub fn devices(&self) -> EyreResult<Vec<KnownDeviceCert>> {
-        let namespace = self.namespace.to_bytes();
-        let keys = collect_keys_with_prefix(
-            self.store,
-            GroupAccountDevice::new(namespace, [0u8; 32]),
-            GROUP_ACCOUNT_DEVICE_PREFIX,
-            |k| k.group_id() == namespace,
-        )?;
-        let handle = self.store.handle();
         let bindings = AccountBindingRepository::new(self.store);
-        let mut certs = Vec::with_capacity(keys.len());
-        for key in keys {
-            let Some(value) = handle.get::<GroupAccountDevice>(&key)? else {
-                continue;
-            };
-            if bindings.is_revoked(&self.namespace, value.proof.statement.device)? {
-                continue;
+        let mut kept = Vec::new();
+        for cert in self.all_devices()? {
+            if !bindings.is_revoked(&self.namespace, cert.device())? {
+                kept.push(cert);
             }
-            certs.push(KnownDeviceCert {
-                proof: value.proof,
-                applications: value.applications,
-            });
         }
-        Ok(certs)
+        Ok(kept)
     }
 }
 

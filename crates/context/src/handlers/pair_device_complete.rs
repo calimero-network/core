@@ -411,23 +411,10 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 }
                 let key_delivered = key_delivered_everywhere(&outcomes);
 
-                // Kept only once the pairing reached somewhere, so a call that
-                // failed leaves nothing behind. From here on a namespace this
-                // account gains binds the device on its own, because the root
-                // signature - which the replicated binding row drops - is written
-                // down where it was made.
-                if let Err(err) = NodeDeviceRepository::new(&store)
-                    .remember_device_cert(&cert.proof, &cert.applications)
-                {
-                    warn!(%device, %err,
-                          "paired, but this node could not remember the certificate; \
-                           namespaces gained later will need an explicit relink");
-                }
-
                 // After the bind, so the device already holds the account key when
                 // the op reaches the topic. A failure here is not the caller's.
                 if let Some(account_namespace) = account_namespace {
-                    crate::account_namespace::publish_device_certified(
+                    let _recorded = crate::account_namespace::publish_device_certified(
                         &store,
                         &node_client,
                         &ack_router,
@@ -903,12 +890,16 @@ mod tests {
             ),
             "a revoked device has to be refused by name, not by a generic bail; got: {refused}"
         );
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("this node holds the account root, so it names its own namespace");
         assert!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read the certificate store")
+            AccountDeviceRegistry::new(&store, namespace)
+                .device(device)
+                .expect("read")
                 .is_none(),
-            "no certificate may exist for a spent device id"
+            "no registry entry may exist for a device refused before it could be certified"
         );
     }
 
