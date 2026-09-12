@@ -10975,7 +10975,9 @@ mod account_plane_apply {
 
     use crate::op_events::OpEvent;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
-    use crate::{AccountBindingRepository, AccountDeviceRegistry, AccountRoot};
+    use crate::{
+        AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, AccountRoot,
+    };
 
     fn key(seed: u8) -> PrivateKey {
         PrivateKey::from([seed; 32])
@@ -12299,6 +12301,160 @@ mod account_plane_apply {
                 .unwrap()
                 .is_none(),
             "a parked op must not write a registry row"
+        );
+    }
+
+    /// The good case, through the real pipeline: the account that owns this
+    /// namespace records a namespace it has gained, with the target it read.
+    #[test]
+    fn the_owning_account_records_a_namespace_it_gained() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let gained = ContextGroupId::from([0x81; 32]);
+        let app = ApplicationId::from([0x44; 32]);
+
+        let (handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespaceGained {
+                namespace: gained,
+                application: Some(app),
+            },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert!(handled);
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceGained {
+                group_id: gid.to_bytes(),
+                namespace: gained,
+                application: Some(app),
+            }],
+            "a recorded namespace owes the wake-up that decides who follows it"
+        );
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, gid)
+                .contains(gained)
+                .unwrap(),
+            Some(Some(app)),
+        );
+    }
+
+    /// The leave half, and its no-op case: a leave for a namespace this device
+    /// never gained still fires the event, which is what makes it unfollow.
+    #[test]
+    fn a_left_namespace_leaves_the_set() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let gained = ContextGroupId::from([0x82; 32]);
+        let never_gained = ContextGroupId::from([0x83; 32]);
+        for op in [
+            GroupOp::AccountNamespaceGained {
+                namespace: gained,
+                application: None,
+            },
+            GroupOp::AccountNamespaceLeft { namespace: gained },
+        ] {
+            sign_apply_local_group_op_borsh(&store, &gid, &owner_sk, op).unwrap();
+        }
+
+        // The one apply that differs from the certified one, so the one that
+        // has to be driven through the path events come back on.
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespaceLeft {
+                namespace: never_gained,
+            },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceLeft {
+                group_id: gid.to_bytes(),
+                namespace: never_gained,
+            }],
+            "a leave with no row behind it still owes the unfollow"
+        );
+
+        let set = AccountNamespaceSet::new(&store, gid);
+        assert_eq!(set.contains(gained).unwrap(), None);
+        assert_eq!(set.contains(never_gained).unwrap(), None);
+        assert_eq!(set.namespaces().unwrap(), vec![]);
+    }
+
+    /// An admin at the cut that this namespace can name no account for writes
+    /// nothing. The set is the account's own state, and a key bound to no
+    /// account here is nobody it may be written on behalf of.
+    ///
+    /// Admin AT THE CUT is the only way to be an admin without a binding, which
+    /// is why this one goes through `apply_group_op_mutations` with a fixed
+    /// authorizer: the live fallback resolves a key to its account through the
+    /// binding rows, so an unbound signer never reaches the second half.
+    #[test]
+    fn a_signer_bound_to_no_account_changes_no_set_row() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let planted = ContextGroupId::from([0x84; 32]);
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountNamespaceGained {
+                namespace: planted,
+                application: None,
+            },
+        )
+        .unwrap();
+
+        // Never enrolled here, so `signer_account` resolves to nothing.
+        let stranger = key(4).public_key();
+        let hijacked = ContextGroupId::from([0x85; 32]);
+        for op in [
+            GroupOp::AccountNamespaceGained {
+                namespace: hijacked,
+                application: None,
+            },
+            GroupOp::AccountNamespaceLeft { namespace: planted },
+        ] {
+            let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+                &store,
+                &gid,
+                &stranger,
+                &op,
+                &CUT,
+                &FixedAuthorizer(true),
+            )
+            .unwrap();
+            assert_eq!(events, vec![], "a refused op owes no wake-up");
+        }
+
+        let set = AccountNamespaceSet::new(&store, gid);
+        assert_eq!(
+            set.contains(hijacked).unwrap(),
+            None,
+            "an admin the namespace can name no account for records no namespace"
+        );
+        assert_eq!(
+            set.contains(planted).unwrap(),
+            Some(None),
+            "and cannot delete what the account itself wrote"
         );
     }
 }

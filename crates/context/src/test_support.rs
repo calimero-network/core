@@ -290,6 +290,20 @@ pub fn opened_root(
     )
 }
 
+/// Poll `read` until it answers true, bounded. A gain whose namespace has no
+/// target yet is announced off the caller, so a set read straight after a
+/// create or an ensure is a race the caller cannot win.
+#[cfg(test)]
+pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if read() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
 /// A live [`ContextManager`](crate::ContextManager) over a caller-supplied
 /// store, for handler logic that only an actor can reach.
 ///
@@ -313,12 +327,14 @@ pub(crate) mod actor {
 
     use crate::ContextManager;
 
-    /// Answers the three commands the pairing and governance paths issue, and
-    /// records the topics. Any other command is dropped, which fails the
-    /// caller's `rx.await` rather than hanging it: add the variant when a path
-    /// under test starts issuing one.
+    /// Answers the four commands the pairing and governance paths issue, and
+    /// records the topics. Any other command is dropped, which panics the
+    /// caller on its `rx.await` and takes the actor down with it: add the
+    /// variant when a path under test starts issuing one.
     struct StubNetwork {
         subscribed: UnboundedSender<String>,
+        unsubscribed: UnboundedSender<String>,
+        broadcast: UnboundedSender<String>,
     }
 
     impl Actor for StubNetwork {
@@ -334,10 +350,16 @@ pub(crate) mod actor {
                     let _ignored = self.subscribed.send(request.0.to_string());
                     let _ignored = outcome.send(Ok(request.0));
                 }
-                NetworkMessage::MeshPeerCount { outcome, .. } => {
+                NetworkMessage::Unsubscribe { request, outcome } => {
+                    let _ignored = self.unsubscribed.send(request.0.to_string());
+                    let _ignored = outcome.send(Ok(request.0));
+                }
+                NetworkMessage::MeshPeerCount { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.0.to_string());
                     let _ignored = outcome.send(0);
                 }
-                NetworkMessage::Publish { outcome, .. } => {
+                NetworkMessage::Publish { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
                 _ => {}
@@ -352,6 +374,8 @@ pub(crate) mod actor {
         pub node_client: NodeClient,
         pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
+        unsubscribed: UnboundedReceiver<String>,
+        broadcast: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
@@ -363,6 +387,27 @@ pub(crate) mod actor {
         pub(crate) fn subscribed(&mut self) -> Vec<String> {
             let mut topics = Vec::new();
             while let Ok(topic) = self.subscribed.try_recv() {
+                topics.push(topic);
+            }
+            topics
+        }
+
+        /// Every topic unsubscribed from so far. Drains, so a caller polling
+        /// for one has to accumulate what it takes.
+        pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
+            let mut topics = Vec::new();
+            while let Ok(topic) = self.unsubscribed.try_recv() {
+                topics.push(topic);
+            }
+            topics
+        }
+
+        /// Every topic a governance broadcast reached so far. The mesh-count
+        /// probe counts as reaching it, so an op that only got as far as trying
+        /// still shows up here.
+        pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
+            let mut topics = Vec::new();
+            while let Ok(topic) = self.broadcast.try_recv() {
                 topics.push(topic);
             }
             topics
@@ -385,12 +430,16 @@ pub(crate) mod actor {
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
+        let (unsubscribed_tx, unsubscribed) = unbounded_channel();
+        let (broadcast_tx, broadcast) = unbounded_channel();
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
         let stub = StubNetwork::create(move |ctx| {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
+                unsubscribed: unsubscribed_tx,
+                broadcast: broadcast_tx,
             }
         });
 
@@ -425,6 +474,8 @@ pub(crate) mod actor {
             node_client: harness_node_client,
             context_client: harness_context_client,
             subscribed,
+            unsubscribed,
+            broadcast,
             _dirs: (data_dir, blob_dir),
             _network: stub,
         }

@@ -176,7 +176,12 @@ id_newtype! {
 /// device-registry op. No prior ordinal moves; the bump makes a peer that
 /// predates the variant fail at the version gate rather than partway through a
 /// DAG it cannot finish folding.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 12;
+///
+/// v13: appends `GroupOp::AccountNamespaceGained` and
+/// `GroupOp::AccountNamespaceLeft`, the account namespace's set of namespaces.
+/// Appended, so no prior ordinal moves; bumped for the reason v12 was, so a peer
+/// that predates them fails at the version gate rather than mid-DAG.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 13;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -644,6 +649,29 @@ pub enum GroupOp {
         /// What that device may speak for, at which scope epoch.
         scope: Box<AccountProof<DeviceScope>>,
     },
+    /// Record that this namespace's account is a member of `namespace`.
+    ///
+    /// Published by the node that gained it, at either gain site, after the
+    /// links it publishes there - so no device follows a namespace before the
+    /// authority it needs there exists. Never published for the account
+    /// namespace itself, which no device has to be told about.
+    ///
+    /// `application` is what the gainer read from the namespace's metadata at
+    /// that moment, and it decides which devices follow. A device learns the
+    /// authoritative target by folding the namespace itself.
+    AccountNamespaceGained {
+        /// The namespace the account is now a member of.
+        namespace: ContextGroupId,
+        /// The application it targeted when the gainer read it.
+        application: Option<ApplicationId>,
+    },
+    /// Record that this namespace's account is no longer a member of `namespace`.
+    ///
+    /// Published by the node that leaves, after its `MemberLeft` lands there.
+    AccountNamespaceLeft {
+        /// The namespace the account has left.
+        namespace: ContextGroupId,
+    },
 }
 
 impl GroupOp {
@@ -685,6 +713,8 @@ impl GroupOp {
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
             GroupOp::GroupKeyRotatedForDevice { .. } => "group_key_rotated_for_device",
             GroupOp::AccountDeviceCertified { .. } => "account_device_certified",
+            GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
+            GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
         }
     }
 }

@@ -16,7 +16,7 @@ use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceR
 use calimero_context_client::local_governance::AckRouter;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountRoot, MetaRepository, NodeDeviceRepository,
+    AccountDeviceRegistry, AccountRoot, MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -156,6 +156,31 @@ impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
                             );
                         }
                     }
+
+                    // Seed the set with what this node already takes part in, so a
+                    // device paired later reads the account's whole history off one DAG.
+                    let already = match NamespaceRepository::new(&datastore)
+                        .participating_namespaces()
+                    {
+                        Ok(namespaces) => namespaces,
+                        // Skipped, never fatal: the namespace exists by now, and
+                        // failing here would skip recording the holder's own device.
+                        Err(err) => {
+                            warn!(%err, "could not read this node's namespaces to seed the set");
+                            Vec::new()
+                        }
+                    };
+                    for namespace in already {
+                        crate::account_namespace::announce(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            namespace,
+                            crate::account_namespace::AccountNamespaceChange::Gained,
+                            "ensure_account_namespace",
+                        )
+                        .await;
+                    }
                 }
 
                 record_holder_device(
@@ -182,7 +207,11 @@ mod tests {
     use calimero_account::AccountGenesis;
     use calimero_context_client::group::EnsureAccountNamespaceRequest;
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::{AccountDeviceRegistry, MetaRepository, NodeDeviceRepository};
+    use calimero_governance_store::{
+        AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository, MetaRepository,
+        NamespaceRepository, NodeDeviceRepository,
+    };
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{GroupAccountDevice, GroupTarget};
@@ -191,6 +220,8 @@ mod tests {
     use crate::test_support::actor;
 
     const NS: [u8; 32] = [0xA1; 32];
+    const NS_ONE: [u8; 32] = [0xA2; 32];
+    const NS_TWO: [u8; 32] = [0xA3; 32];
 
     fn holder_store() -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -403,5 +434,86 @@ mod tests {
             .load(&expected)
             .expect("read")
             .is_some());
+    }
+
+    /// A device paired later learns the account's EXISTING namespaces from the
+    /// DAG alone, so the creation writes down what this node already takes part
+    /// in. Without it, only namespaces gained after the first pairing are ever
+    /// announced, and a holder that paired late would carry nothing across.
+    #[actix::test]
+    async fn creation_backfills_the_namespaces_this_node_already_takes_part_in() {
+        let store = holder_store();
+        let devices = NodeDeviceRepository::new(&store);
+        let account = devices
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS_ONE)],
+                devices
+                    .require_account_root()
+                    .expect("the holder's root")
+                    .genesis(),
+            )
+            .expect("mint this node's device")
+            .account;
+        let namespaces = NamespaceRepository::new(&store);
+        let members = MembershipRepository::new(&store);
+        for id in [NS_ONE, NS_TWO] {
+            let namespace = ContextGroupId::from(id);
+            let _identity = namespaces
+                .participate_in(&namespace)
+                .expect("take part in a namespace before the account has one");
+            // Taking part means the account is a member: a deferred gain reads
+            // this row before publishing, so a bare participation row is not it.
+            members
+                .add_member(&namespace, &account, GroupMemberRole::Admin)
+                .expect("and the account is a member of it");
+        }
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+
+        // Neither has a target, so each gain is announced only once its wait for
+        // one runs out - off the ensure, which is why this polls.
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        let backfilled = || {
+            let mut listed: Vec<_> = set
+                .namespaces()
+                .expect("read the set")
+                .into_iter()
+                .map(|(namespace, _)| namespace)
+                .collect();
+            listed.sort();
+            listed
+        };
+        let mut expected = vec![ContextGroupId::from(NS_ONE), ContextGroupId::from(NS_TWO)];
+        expected.sort();
+        assert!(
+            crate::test_support::eventually(|| backfilled() == expected).await,
+            "one op per namespace already taken part in, and never the account \
+             namespace itself; got {:?}",
+            backfilled()
+        );
+
+        // The backfill rides `if !exists` only, so a second ensure must not re-run it.
+        let _second = harness
+            .manager
+            .send(EnsureAccountNamespaceRequest)
+            .await
+            .expect("the manager answers")
+            .expect("a second call is a read");
+        let after_second = AccountNamespaceSet::new(&store, account_namespace)
+            .namespaces()
+            .expect("read the set")
+            .len();
+        assert_eq!(
+            after_second,
+            expected.len(),
+            "a second ensure leaves the set unchanged"
+        );
     }
 }

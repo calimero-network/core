@@ -646,6 +646,9 @@ jobs:
             file: workflows/account-paired-device-founds-namespace.yml
             app: scaffolding-e2e
             registry_fetch: "false"
+          - workflow: account-namespace-left-unfollows
+            file: workflows/account-namespace-left-unfollows.yml
+            app: scaffolding-e2e
           - workflow: account-scope-limits-a-founders-carry
             file: workflows/account-scope-limits-a-founders-carry.yml
             app: scaffolding-e2e

@@ -1058,6 +1058,19 @@ impl Message for EnsureAccountNamespaceRequest {
     type Result = eyre::Result<Option<ContextGroupId>>;
 }
 
+/// Take part in a namespace and listen on its topic.
+///
+/// Node-local: it publishes nothing and claims no membership. What `pair-init`
+/// does per namespace, and what a device does on learning its account gained one.
+#[derive(Debug)]
+pub struct FollowNamespaceRequest {
+    pub namespace: ContextGroupId,
+}
+
+impl Message for FollowNamespaceRequest {
+    type Result = eyre::Result<()>;
+}
+
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.
 ///
 /// A leaver cannot rotate for themselves — they would have to mint the very key they

@@ -289,37 +289,56 @@ A device paired before this change holds no such certificate, so the holder reli
 
 ### The account namespace
 
-Every account has one namespace of its own, which every device of the account follows.
-Its id is derived from the account root under a fixed tag, so the holder names it on `GET /admin-api/identity` as `accountNamespaceId` before anything has created it, and a restored root recomputes it.
-The holder creates it the first time it completes a pairing, as a root group that targets no application, and binds every device it certifies into it.
+Every account has one namespace of its own, and every device of the account follows it.
+It is what makes an account a principal with replicated state rather than a set of facts that live only on one machine: what the account needs its devices to know is written there once and read by all of them.
+
+**Its id is derived, not assigned.**
+The holder computes it from the account root secret under a fixed tag, so it is deterministic, a restored root recomputes it with no change to the backup phrase, and nobody can find or squat the topic from an account id they merely know.
+`GET /admin-api/identity` reports it as `accountNamespaceId` on the holder from the first run, before anything has created it, so a pairing invite can carry it.
+The holder creates it lazily, at its first `pair-complete`, as a root group that targets no application, and binds every device it certifies into it.
 `pair-init` takes the id as `accountNamespace`, records it and follows it like any namespace, so the `namespaces` list may be left empty.
-It is not a project: `GET /admin-api/namespaces` and `GET /admin-api/account/applications` never show it, while `GET /admin-api/account/devices` lists it among a device's bindings, because the device is bound there.
-It is also where the account records its devices.
-Each one gets a row holding the certificate its account root signed, in full, and the applications that device may speak for - an empty list meaning all of them.
-The holder publishes that row for itself when it creates the namespace, for a device when it certifies one at `pair-complete`, and again at a higher scope epoch whenever a re-pairing or a `relink` restates it; only a higher epoch supersedes, so a re-delivered older statement narrows nothing.
-The scope stays here rather than on the certificate, so a project's other members never learn which other projects a device of the account reaches.
-`GET /admin-api/account/devices` reads each device's `applications` from these rows, which is how a device that is not the holder can say what its siblings, and itself, are scoped to.
-What a device does with those rows arrives with the changes that follow this one.
+It is not a project: `GET /admin-api/namespaces` and `GET /admin-api/account/applications` never show it, while `GET /admin-api/account/devices` lists it among a device's bindings, because the device is genuinely bound there.
 
-### Pairing is repeated, not a snapshot
+**What it records.**
+Two things, both encrypted under the account key that only the account's devices hold.
 
-A pairing binds the device wherever the holder takes part *at that moment*.
-A namespace created or joined afterwards is not in that set, so without a repeat the paired device would silently never see it.
+The **device registry**: one row per device the root has certified, holding the full certificate proof and the applications that device may speak for.
+The replicated binding row a link writes drops the root signature, so a link cannot be rebuilt from it - which is why the registry carries the whole proof, and why every device of the account, not only the holder, can bind a sibling anywhere.
+Scope lives here and nowhere else, so a project namespace's other members never learn which applications a device of the account is scoped to.
+A holder upgraded from before the registry publishes its cached certificates into it once, on first start, and then drops them.
 
-The repeat is cheap because a certificate carries **no namespace and no expiry**.
+The **namespace set**: one row per namespace the account is a member of, with the application it targets.
+Whichever device gains a namespace writes the line, and it is written *after* the links it publishes there, so no device follows a namespace before the authority it needs there exists.
+A gain announced before the account namespace itself exists publishes nothing at all - the holder names the id before creating it, and there is no DAG to write to yet - which is why the holder backfills instead.
+When it first creates its account namespace it backfills one line per namespace it already takes part in, so a device paired later reads the account's whole history off one DAG.
+A gain that reaches the line before its namespace's target application has folded does not write it yet: it waits, re-reading the namespace's own metadata for up to thirty seconds, because no event announces a first target and nothing would re-drive the gain.
+Once the window closes it writes the line anyway, with no application - an app-less root is legitimate, and an unscoped device follows either way.
+Either way it writes nothing if the account has left the namespace in the meantime: a waiting gain must never overtake a leave, because re-naming a namespace in the set is something no later sweep can undo.
+Recording a line never un-knows an application the set already holds.
+
+**What a device does with it.**
+On a gain whose application its own registry scope covers, it follows the namespace: it records participation, subscribes, and pulls the namespace once.
+The pull is part of following, not a rescue: gossip only carries what is published from that moment on, so without it the namespace's existing DAG would arrive only on the next beacon.
+From there the existing machinery converges it - the key pull succeeds because the gainer already bound this device, the target folds, the bytecode is acquired, and contexts join through the account's auto-follow flags.
+A device whose own scope has not arrived yet follows nothing and catches up when it does: on learning its own certificate and scope it walks the whole set and follows every namespace that scope now covers.
+That is also how a device widened after the fact reaches the projects it may now see.
+
+On a leave it pulls the namespace once more and then unsubscribes from its topic, keeping the local rows exactly as the holder's own `leave_namespace` does, so a later gain re-follows into state that is already there.
+The pull comes first because the device's own view of the namespace turns on folding that namespace's `MemberLeft`, which travels on the topic about to be dropped.
+
+**Every start sweeps, both ways.**
+Nothing re-drives an op applied while no listener was up, so a device begins by walking the set itself: it follows every namespace the set names that its scope covers, and unfollows every namespace it takes part in that the set no longer names.
+The unfollow half acts only once this device has folded the namespace and the account's member row there is gone.
+Both extra reads matter, because a namespace this device has never synced answers "absent" to each of them just as a left one does; requiring the namespace's own governance to be present locally is what tells silence from a verdict.
+
+**Repeating a bind is cheap, and that is why any of this works.**
+A certificate carries **no namespace and no expiry**.
 Binding a device somewhere new needs the stored certificate, a fresh endorsement any member of that namespace can sign, and one key wrap - no handshake, no confirmation code, and the device need not be online.
-So every certificate the holder signs is written into the account namespace's device registry, together with the applications the root scoped that device to: the replicated binding row records the certificate's payload but not the account root's signature, and a link cannot be rebuilt without it.
-The registry replicates, so the certificate is not the holder's alone - every device of the account holds it, which is what lets a device that signed nothing carry a sibling anywhere.
-A holder upgraded from before the registry publishes its cached certificates into the account namespace once, on its first start, and then drops them.
-That publishes rows, not devices: a device paired before the registry existed does not follow the account namespace until it is `pair-init`ed once with the id and then relinked.
-A root restored on a second machine cached the widest scope for every device it merely folded, so it may publish one of them wide; the holder that certified that device narrows it again on its next start, at a higher scope epoch.
-
-Two things then use it.
-A node that **gains** a namespace - by joining one, or by creating one - extends every device of its account into it, once it holds that namespace's scope key: after the key arrives on a join, and after the genesis applies on a creation, because a link's endorser is resolved through the binding rows that genesis writes.
+A node that **gains** a namespace, by creating one or by joining one, extends every in-scope device of its account into it once it holds that namespace's scope key: after the key arrives on a join, and after the genesis applies on a creation, because a link's endorser is resolved through the binding rows that genesis writes.
 Any device of the account does this, not only the holder: the phone that founds a project carries the laptop into it, with the scope only the account root could have signed.
-The carry-over is best-effort: a device it cannot extend is logged and skipped, never a reason to fail the join or the creation.
+The carry-over is best effort - a device it cannot extend is logged and skipped, never a reason to fail the join or the creation.
 
-And an operator can ask for the same repeat directly, which is also how a device's scope is widened after the fact:
+An operator can ask for the same repeat directly, which is also how a device's scope is widened after the fact:
 
 ```bash
 POST /admin-api/account/devices/<DEVICE_ID>/relink
@@ -331,6 +350,21 @@ Naming applications widens the device's scope and publishes the widened statemen
 
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
+
+**A device paired before all this has to learn the id once.**
+The desktop shows a link code carrying the root key and the account namespace id; running the idempotent `pair-init` on it mints nothing and starts the device following the account namespace.
+A relink on the holder then binds it there and publishes its certificate, and from that point the device converges like any other.
+
+**A cloud device is nothing special here.**
+A node paired as a device of the account with full scope follows the account namespace and every project namespace in its scope, beacons on their topics, serves pulls, and binds new siblings.
+A phone then converges while the laptop is offline, which is otherwise the one thing the design still needs: without such a device, convergence waits until some other device of the account is reachable.
+The DAG makes the wait harmless, but it is still a wait.
+
+**What it costs, and what it leaks.**
+One more namespace per account - a topic, beacons and a DAG - created lazily at the first pairing, so a single-device account pays nothing.
+The id is not computable from the public account id, but the namespace's genesis is cleartext and names the founder account, so anyone who *learns* the id can link it to the account and watch beacon timing for device liveness.
+Project topics leak the same class of metadata today, and the same mitigation applies to both: the id is only as private as the invite that carried it.
+Per-namespace revocation latency is unchanged - a namespace that has not folded the unlink still honours the old binding - and the `application` a gain records is only what the gainer had folded at that moment, which decides who follows, never what the namespace actually runs.
 
 ## Reading your account
 
