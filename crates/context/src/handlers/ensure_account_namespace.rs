@@ -1,75 +1,59 @@
-//! `EnsureAccountNamespaceRequest` handler - create this account's namespace
-//! the first time the holder needs to write to it, and name it.
+//! Create this account's namespace the first time the holder needs to write to
+//! it, and name it.
 //!
 //! The creation is skipped when a meta row already exists, so a crash between
 //! the row and the creation heals on the next call, and so does losing the race
 //! to a concurrent first pairing.
 
-use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::group::CreateGroupRequest;
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{MetaRepository, NodeDeviceRepository};
+use calimero_store::Store;
+use eyre::Result as EyreResult;
 use tracing::{debug, info};
 
-use crate::ContextManager;
+/// Answers `None` on a node that is not the holder of its account.
+pub(crate) async fn ensure_account_namespace(
+    store: &Store,
+    context_client: &ContextClient,
+) -> EyreResult<Option<ContextGroupId>> {
+    let devices = NodeDeviceRepository::new(store);
+    let Some(root) = devices.holder_root()? else {
+        return Ok(None);
+    };
+    let namespace_id = root.account_namespace();
 
-impl Handler<EnsureAccountNamespaceRequest> for ContextManager {
-    type Result = ActorResponse<Self, <EnsureAccountNamespaceRequest as Message>::Result>;
-
-    fn handle(
-        &mut self,
-        EnsureAccountNamespaceRequest: EnsureAccountNamespaceRequest,
-        _ctx: &mut Self::Context,
-    ) -> Self::Result {
-        let devices = NodeDeviceRepository::new(&self.datastore);
-        let root = match devices.holder_root() {
-            Ok(Some(root)) => root,
-            Ok(None) => return ActorResponse::reply(Ok(None)),
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-        let namespace_id = root.account_namespace();
-
-        if let Err(err) = devices.store_account_namespace(&namespace_id) {
-            return ActorResponse::reply(Err(err));
-        }
-        match MetaRepository::new(&self.datastore).load(&namespace_id) {
-            Ok(Some(_)) => return ActorResponse::reply(Ok(Some(namespace_id))),
-            Ok(None) => {}
-            Err(err) => return ActorResponse::reply(Err(err)),
-        }
-
-        let context_client = self.context_client.clone();
-        let store = self.datastore.clone();
-        ActorResponse::r#async(
-            async move {
-                match context_client
-                    .create_group(CreateGroupRequest {
-                        group_id: Some(namespace_id),
-                        bytecode_id: None,
-                        application_id: None,
-                        name: None,
-                        parent_group_id: None,
-                        restricted: true,
-                    })
-                    .await
-                {
-                    Ok(_created) => info!(?namespace_id, "created this account's namespace"),
-                    // Two first pairings race here; the one that loses finds the
-                    // namespace created and has nothing left to do.
-                    Err(err) => {
-                        if MetaRepository::new(&store).load(&namespace_id)?.is_none() {
-                            return Err(err);
-                        }
-                        debug!(
-                            ?namespace_id,
-                            "another call created this account's namespace"
-                        );
-                    }
-                }
-                Ok(Some(namespace_id))
-            }
-            .into_actor(self),
-        )
+    devices.store_account_namespace(&namespace_id)?;
+    if MetaRepository::new(store).load(&namespace_id)?.is_some() {
+        return Ok(Some(namespace_id));
     }
+
+    match context_client
+        .create_group(CreateGroupRequest {
+            group_id: Some(namespace_id),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        })
+        .await
+    {
+        Ok(_created) => info!(?namespace_id, "created this account's namespace"),
+        // Two first pairings race here; the one that loses finds the
+        // namespace created and has nothing left to do.
+        Err(err) => {
+            if MetaRepository::new(store).load(&namespace_id)?.is_none() {
+                return Err(err);
+            }
+            debug!(
+                ?namespace_id,
+                "another call created this account's namespace"
+            );
+        }
+    }
+    Ok(Some(namespace_id))
 }
 
 #[cfg(test)]
@@ -77,7 +61,6 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_account::AccountGenesis;
-    use calimero_context_client::group::EnsureAccountNamespaceRequest;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{MetaRepository, NodeDeviceRepository};
     use calimero_primitives::identity::PrivateKey;
@@ -85,6 +68,7 @@ mod tests {
     use calimero_store::key::GroupTarget;
     use calimero_store::Store;
 
+    use super::ensure_account_namespace;
     use crate::test_support::actor;
 
     const NS: [u8; 32] = [0xA1; 32];
@@ -110,17 +94,11 @@ mod tests {
             .account_namespace();
 
         let harness = actor::over(store.clone()).await;
-        let first = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let first = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("the holder creates its account namespace");
-        let second = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let second = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("a second call is a read");
 
         assert_eq!(first, Some(expected));
@@ -147,20 +125,12 @@ mod tests {
 
         let harness = actor::over(store.clone()).await;
         let (first, second) = tokio::join!(
-            harness.manager.send(EnsureAccountNamespaceRequest),
-            harness.manager.send(EnsureAccountNamespaceRequest)
+            ensure_account_namespace(&store, &harness.context_client),
+            ensure_account_namespace(&store, &harness.context_client)
         );
 
-        assert_eq!(
-            first.expect("the manager answers").expect("the creation"),
-            Some(expected)
-        );
-        assert_eq!(
-            second
-                .expect("the manager answers")
-                .expect("the loser heals"),
-            Some(expected)
-        );
+        assert_eq!(first.expect("the creation"), Some(expected));
+        assert_eq!(second.expect("the loser heals"), Some(expected));
         assert!(MetaRepository::new(&store)
             .load(&expected)
             .expect("read")
@@ -181,11 +151,8 @@ mod tests {
             .expect("pair into another account");
 
         let harness = actor::over(store.clone()).await;
-        let answer = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let answer = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("nothing to do is not an error");
 
         assert_eq!(answer, None);
@@ -208,11 +175,8 @@ mod tests {
             .expect("the row a crash left behind");
 
         let harness = actor::over(store.clone()).await;
-        let answer = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let answer = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("heals");
 
         assert_eq!(answer, Some(expected));

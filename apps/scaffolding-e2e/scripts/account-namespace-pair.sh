@@ -12,6 +12,7 @@ if [ "$#" -ne 2 ]; then
     exit 1
 fi
 
+# shellcheck source=apps/scaffolding-e2e/scripts/account-api.sh
 . "$(dirname "$0")/account-api.sh"
 
 holder="$1"
@@ -28,13 +29,8 @@ root_key=$(echo "${identity}" | jq -r '.data.accountRootPublicKey')
 namespace=$(echo "${identity}" | jq -r '.data.accountNamespaceId // empty')
 [ -n "${namespace}" ] || fail "the holder names no account namespace before pairing"
 
-init=$(api "${newnode}" POST "account/pair-init" \
-    "{\"accountRootPublicKey\":\"${root_key}\",\"accountNamespace\":\"${namespace}\",\"namespaces\":[]}")
-device=$(echo "${init}" | jq -r '.data.deviceId')
-kem=$(echo "${init}" | jq -r '.data.kemPublicKey')
-sign=$(echo "${init}" | jq -r '.data.signPublicKey')
-statement=$(echo "${init}" | jq -r '.data.statement')
-code=$(echo "${init}" | jq -r '.data.confirmationCode')
+pair_init "${newnode}" \
+    "{\"accountRootPublicKey\":\"${root_key}\",\"accountNamespace\":\"${namespace}\",\"namespaces\":[]}"
 
 complete=$(api "${holder}" POST "account/pair-complete" \
     "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${code}\",\"applications\":[]}")

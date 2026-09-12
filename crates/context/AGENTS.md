@@ -34,7 +34,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 
 | Group | Handlers |
 | --- | --- |
-| Account devices | `pair_device_init`, `pair_device_complete`, `ensure_account_namespace` (creates the holder's account namespace on first use and names it), `relink_device`, `revoke_device` |
+| Account devices | `pair_device_init`, `pair_device_complete`, `relink_device`, `revoke_device` |
 | Context lifecycle | `create_context`, `delete_context`, `join_context`, `leave_context`, `resync_context`, `execute` (+ `execute/{signing,storage,governance_position,upgrade_gate}`), `sync`, `get_context_metadata`, `set_context_metadata`, `acquire_context_lock` |
 | Group lifecycle | `create_group`, `delete_group`, `join_group`, `leave_group`, `add_group_members`, `remove_group_members`, `update_member_role`, `set_member_auto_follow`, `rotate_group_key`, `create_group_invitation` |
 | Group upgrades | `upgrade_group`, `retry_group_upgrade`, `get_group_upgrade_status`, `get_migration_status`, `abort_migration` |
@@ -43,6 +43,8 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | Capabilities / metadata | `get_member_capabilities`, `set_member_capabilities`, `set_default_capabilities`, `get_member_metadata`, `set_member_metadata`, `get_group_metadata`, `set_group_metadata`, `store_*` (the `store_group_meta`, `store_group_context`, `store_member_capability`, `store_member_metadata`, `store_default_capabilities`, `store_subgroup_visibility`, `store_context_metadata`, `store_group_metadata` family - local-write halves used by the apply path) |
 | Introspection / admin | `get_group_info`, `get_group_for_context`, `list_all_groups`, `list_group_members`, `list_group_contexts`, `get_cascade_status`, `issue_ownership_proof`, `admit_tee_node`, `set_tee_admission_policy` |
 | Application updates | `update_application/mod.rs` |
+
+One module there is not a handler: `ensure_account_namespace` is a plain function `pair_device_complete` calls, creating the holder's account namespace on first use and naming it.
 
 ## Background Listeners (spawned in `Actor::started`)
 

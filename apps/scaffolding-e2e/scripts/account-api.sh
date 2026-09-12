@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Shared helpers for account-pair-refusal-statuses.sh. Sourced, not executed.
+# Shared helpers for the account pairing scripts. Sourced, not executed.
 #
 # Uses curl against the admin API rather than meroctl: the merod image ships no
 # CLI, so a `target: local` script has none to call.
@@ -73,6 +73,24 @@ api() {
         return 1
     }
     echo "${_resp}"
+}
+
+# Mint a device on <node> with <body>, and set `device`, `kem`, `sign`,
+# `statement` and `code` from what `pair-init` answered.
+pair_init() {
+    _init=$(api "$1" POST "account/pair-init" "$2") || return 1
+    device=$(echo "${_init}" | jq -r '.data.deviceId')
+    kem=$(echo "${_init}" | jq -r '.data.kemPublicKey')
+    sign=$(echo "${_init}" | jq -r '.data.signPublicKey')
+    statement=$(echo "${_init}" | jq -r '.data.statement')
+    code=$(echo "${_init}" | jq -r '.data.confirmationCode')
+
+    for _value in "${device}" "${kem}" "${sign}" "${statement}" "${code}"; do
+        if [ -z "${_value}" ] || [ "${_value}" = "null" ]; then
+            echo "pair-init returned an incomplete payload: ${_init}" >&2
+            return 1
+        fi
+    done
 }
 
 # The same call, echoing the HTTP status and discarding the response.

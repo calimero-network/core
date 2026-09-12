@@ -202,9 +202,6 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::PairDeviceComplete { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::EnsureAccountNamespace { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
             ContextMessage::RevokeDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }

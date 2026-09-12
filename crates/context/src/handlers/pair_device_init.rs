@@ -18,6 +18,7 @@ use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;
 
+use crate::handlers::pair_device_complete::follow;
 use crate::ContextManager;
 
 impl Handler<PairDeviceInitRequest> for ContextManager {
@@ -26,22 +27,19 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
     fn handle(
         &mut self,
         PairDeviceInitRequest {
-            namespaces,
+            mut namespaces,
             genesis,
             account_namespace,
         }: PairDeviceInitRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let mut namespaces = namespaces;
         if let Some(account_namespace) = account_namespace {
             if let Err(err) = NodeDeviceRepository::new(&self.datastore)
                 .store_account_namespace(&account_namespace)
             {
                 return ActorResponse::reply(Err(err));
             }
-            if !namespaces.contains(&account_namespace) {
-                namespaces.push(account_namespace);
-            }
+            follow(&mut namespaces, account_namespace);
         }
 
         // Provision this node's signing identity for each namespace. Not a

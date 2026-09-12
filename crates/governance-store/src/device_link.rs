@@ -356,8 +356,8 @@ mod tests {
             .expect("store a scope key");
     }
 
-    /// The account namespace as the holder creates it: an unset target, a key,
-    /// and the node-local row that names it.
+    /// The account namespace as the holder creates it: targeting no application,
+    /// a key, and the node-local row that names it.
     fn account_namespace_serving(store: &Store) -> ContextGroupId {
         let devices = NodeDeviceRepository::new(store);
         let namespace = devices
@@ -365,22 +365,7 @@ mod tests {
             .expect("read the root")
             .expect("test_store provisions a root")
             .account_namespace();
-        MetaRepository::new(store)
-            .save(
-                &namespace,
-                &GroupMetaValue {
-                    target: calimero_store::key::GroupTarget::default(),
-                    created_at: 1_700_000_000,
-                    admin_identity: calimero_account::AccountId::from([0x01; 32]),
-                    owner_identity: calimero_account::AccountId::from([0x01; 32]),
-                    migration: None,
-                    auto_join: true,
-                },
-            )
-            .expect("save the account namespace metadata");
-        let _key_id = GroupKeyring::new(store, namespace)
-            .store_key(&[0x43; 32])
-            .expect("store the account key");
+        namespace_serving(store, &namespace, [0x00; 32]);
         devices
             .store_account_namespace(&namespace)
             .expect("record the account namespace");

@@ -30,12 +30,6 @@ use crate::cli::Environment;
 /// Name the namespaces this device should listen on, or the account namespace alone.
 /// One device is minted for the whole set - one id, one key pair and one code to
 /// read out - because the certificate covers the account rather than a scope.
-/// Either the account namespace id or the namespace set has to be given: a
-/// device that is a member of nothing can neither read its account's
-/// namespaces off a DAG nor derive them, so only the device that holds the
-/// account knows them.
-/// Naming the account namespace alone is enough - the device records it and
-/// follows it like one more namespace.
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Mint a device on this node for an existing account")]
 pub struct PairInitCommand {

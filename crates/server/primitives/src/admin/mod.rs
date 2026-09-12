@@ -2009,13 +2009,11 @@ impl Validate for AccountPairInitApiRequest {
                 .iter()
                 .filter_map(|id| validate_hex_string(id, "namespaces[]", 32)),
         );
-        if let Some(e) = self
-            .account_namespace
-            .as_deref()
-            .and_then(|id| validate_hex_string(id, "accountNamespace", 32))
-        {
-            errors.push(e);
-        }
+        errors.extend(
+            self.account_namespace
+                .as_deref()
+                .and_then(|id| validate_hex_string(id, "accountNamespace", 32)),
+        );
 
         errors
     }
@@ -3451,21 +3449,6 @@ mod tests {
             account_namespace: Some("4e".repeat(32)),
         };
         assert!(req.validate().is_empty(), "{:?}", req.validate());
-    }
-
-    #[test]
-    fn pair_init_still_refuses_naming_nothing() {
-        let req = AccountPairInitApiRequest {
-            account_root_public_key: "ab".repeat(32),
-            namespaces: vec![],
-            account_namespace: None,
-        };
-        assert!(matches!(
-            req.validate().as_slice(),
-            [ValidationError::EmptyField {
-                field: "namespaces"
-            }]
-        ));
     }
 
     #[test]

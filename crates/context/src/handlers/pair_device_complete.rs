@@ -43,8 +43,7 @@ use std::sync::Arc;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, PairingOffer};
 use calimero_context_client::group::{
-    BindOutcome, EnsureAccountNamespaceRequest, PairDeviceCompleteRequest,
-    PairDeviceCompleteResponse,
+    BindOutcome, PairDeviceCompleteRequest, PairDeviceCompleteResponse,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
@@ -57,6 +56,7 @@ use eyre::Result as EyreResult;
 use tracing::warn;
 
 use crate::error::ContextError;
+use crate::handlers::ensure_account_namespace::ensure_account_namespace;
 use crate::handlers::list_namespaces::namespace_rows_for_applications;
 use crate::ContextManager;
 
@@ -87,6 +87,13 @@ fn namespaces_in_scope(
         .into_iter()
         .filter(|namespace| scoped.contains(&namespace.to_bytes()))
         .collect())
+}
+
+/// Add `namespace` to a set this node follows, unless it is already named.
+pub(crate) fn follow(namespaces: &mut Vec<ContextGroupId>, namespace: ContextGroupId) {
+    if !namespaces.contains(&namespace) {
+        namespaces.push(namespace);
+    }
 }
 
 /// The key this node signs the endorsement, both ops and the key wrap with.
@@ -251,17 +258,13 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             async move {
                 // Created on first use, and always a target: the device receives
                 // the account key the same way it receives any scope key.
-                let account_namespace = context_client
-                    .ensure_account_namespace(EnsureAccountNamespaceRequest)
-                    .await?;
+                let account_namespace = ensure_account_namespace(&store, &context_client).await?;
 
                 // Resolved before any check, because the scope is what the checks are about:
                 // which namespaces have to hold an identity and a key for this pairing to work.
                 let mut targets = namespaces_in_scope(&store, &applications)?;
                 if let Some(account_namespace) = account_namespace {
-                    if !targets.contains(&account_namespace) {
-                        targets.push(account_namespace);
-                    }
+                    follow(&mut targets, account_namespace);
                 }
 
                 // The namespace identity signs the endorsement, both ops, and the key
