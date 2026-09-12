@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4B` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4C`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4E` is taken
+// except `0x25`, `0x2B` and `0x2C` (retired, below) and `0x4D`; the next free byte is `0x4D`.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -2535,6 +2535,49 @@ impl FromKeyParts for NodeDeviceCertificate {
     }
 }
 
+/// Prefix for [`NodeAccountNamespace`].
+pub const NODE_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x4E;
+
+/// The account namespace this node follows - a **singleton**, like the device
+/// row. The holder writes it when it creates the namespace, a paired device when
+/// `pair-init` hands it the id. Absent means none is known here.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountNamespace(Key<(GroupPrefix,)>);
+
+impl NodeAccountNamespace {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_NAMESPACE_PREFIX])))
+    }
+}
+
+impl Default for NodeAccountNamespace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeAccountNamespace {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountNamespace {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 impl Default for NodeDeviceIdentity {
     fn default() -> Self {
         Self::new()
@@ -2686,6 +2729,13 @@ pub struct NodeDeviceIdentityValue {
 pub struct NodeDeviceCertificateValue {
     /// Borsh-encoded `AccountProof<DeviceCert>`, verbatim as it arrived.
     pub proof: Vec<u8>,
+}
+
+/// The 32-byte id of the account namespace this node follows.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountNamespaceValue {
+    pub namespace_id: [u8; 32],
 }
 
 /// Redacted by hand, never derived. `kem_secret` is the only thing that can
@@ -3581,6 +3631,7 @@ mod tests {
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
             ("NODE_ACCOUNT_DEVICE_CERT", NODE_ACCOUNT_DEVICE_CERT_PREFIX),
+            ("NODE_ACCOUNT_NAMESPACE", NODE_ACCOUNT_NAMESPACE_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
             (

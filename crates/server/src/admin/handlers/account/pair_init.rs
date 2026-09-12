@@ -26,6 +26,8 @@ use crate::AdminState;
 /// over however many the caller listed. The list is the caller's to supply: this
 /// node is a member of nothing and cannot discover which namespaces the account
 /// speaks in.
+/// Naming the account namespace is enough on its own; the node records it and
+/// follows it like one more namespace.
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<AccountPairInitApiRequest>,
@@ -44,6 +46,14 @@ pub async fn handler(
         }
     }
 
+    let account_namespace = match req.account_namespace.as_deref() {
+        Some(id) => match decode32(id, "accountNamespace") {
+            Ok(bytes) => Some(bytes.into()),
+            Err(err) => return err.into_response(),
+        },
+        None => None,
+    };
+
     info!(
         namespaces = namespaces.len(),
         account = %genesis.account_id(),
@@ -55,6 +65,7 @@ pub async fn handler(
         .pair_device_init(PairDeviceInitRequest {
             namespaces,
             genesis,
+            account_namespace,
         })
         .await
         .map_err(parse_api_error);

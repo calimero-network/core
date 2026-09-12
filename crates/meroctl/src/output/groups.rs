@@ -107,6 +107,13 @@ impl Report for NodeIdentityApiResponse {
                 "no - pair-complete on the account holder certifies it"
             },
         ]);
+        let _ = table.add_row(vec![
+            "Account namespace",
+            self.data
+                .account_namespace_id
+                .as_deref()
+                .unwrap_or("none - the account holder names it"),
+        ]);
         println!("{table}");
     }
 }

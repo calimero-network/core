@@ -1,0 +1,86 @@
+name: E2E Account - Every Device Follows The Account Namespace
+description: >
+  Every account gets one namespace of its own, and every device of the account
+  follows it. Before this, a paired device took part only in the namespaces
+  named at pair-init, and nothing the account did afterwards had anywhere to be
+  written down for the other devices to read.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root. It creates no project
+      namespace at all, so the account namespace is the only one it ever has.
+    * node-2 - Alice's phone. Paired with nothing but the account namespace id.
+
+  What each step is load-bearing for:
+
+    1. The laptop names its account namespace before anything created it. The id
+       is derived from the root, so the laptop can put it in an invite first.
+    2. Pair-init on the phone takes the id alone. Pair-complete on the laptop
+       creates the namespace and binds the phone into it.
+    3. That pairing reports the account key delivered. A binding without the key
+       is a device that can read nothing in the namespace it belongs to.
+    4. Both sides name the same id, so the phone followed what the laptop
+       derived rather than recording a namespace of its own.
+    5. The laptop's namespace listing stays empty: the account namespace is not
+       a project and is never shown as one, though the laptop does list the
+       phone bound in it.
+    6. The phone resolves its own binding there, which proves it pulled the
+       account namespace's DAG and key and folded its own link.
+    7. The phone ends certified and holding no account root: it speaks as a
+       device of Alice's account rather than as an account of its own.
+
+  Not asserted here: anything written into the account namespace. What the
+  account records there, and what a device does with it, are the next PRs.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: account-ns-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-ns-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-ns-node-2
+    username: dev
+    password: dev-password
+
+  # Pairs with the account namespace id alone and asserts on both sides: the
+  # id agrees, the holder hides it, the holder shows the phone bound in it, and
+  # the phone resolves its own binding there. merobox's account_pair step has no
+  # field for the id, so a script drives the two calls.
+  - name: Pair node-2 with only the account namespace, and check both sides agree
+    type: script
+    script: scripts/account-namespace-pair.sh
+    target: local
+    args:
+      - account-ns-node-1
+      - account-ns-node-2
+
+  - name: The laptop's namespace listing stays empty
+    type: assert_api_response
+    node: account-ns-node-1
+    path: /admin-api/namespaces
+    absent:
+      - data.0
+
+  - name: The phone speaks as a device of the account
+    type: assert_api_response
+    node: account-ns-node-2
+    path: /admin-api/identity
+    match:
+      data.holdsAccountRoot: false
+      data.deviceCertified: true
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true

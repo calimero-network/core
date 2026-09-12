@@ -25,10 +25,12 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountRoot, NodeAccountRootValue,
-    NodeDeviceIdentity, NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
+    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
+    NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -44,6 +46,8 @@ use crate::{collect_keys_with_prefix, NamespaceRepository};
 /// absent row and both generate, and the second `put` would win — replacing the
 /// root that already certified this node's devices, which is unrecoverable.
 static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const ACCOUNT_NAMESPACE_TAG: &[u8] = b"calimero/account-namespace/v1"; // domain-separates the id from every other use of the root
 
 /// This node's account root — the one key that survives losing every device.
 ///
@@ -96,6 +100,18 @@ impl AccountRoot {
     #[must_use]
     pub fn account(&self) -> AccountId {
         self.genesis().account_id()
+    }
+
+    /// This account's namespace, the one every device of the account follows.
+    ///
+    /// Derived from the root secret rather than the public key, so nobody can
+    /// find or squat the topic from an account id they merely know.
+    #[must_use]
+    pub fn account_namespace(&self) -> ContextGroupId {
+        let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_TAG.len() + 32));
+        input.extend_from_slice(ACCOUNT_NAMESPACE_TAG);
+        input.extend_from_slice(self.secret.as_bytes());
+        ContextGroupId::from(*Hash::new(&input))
     }
 
     /// The root as a 24-word BIP-39 mnemonic — the backup an operator writes down.
@@ -622,6 +638,34 @@ impl<'a> NodeDeviceRepository<'a> {
             }))
     }
 
+    /// This node's root, when this node is the holder of the account its device
+    /// speaks for: a root, and either no device yet or one of that root's account.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn holder_root(&self) -> EyreResult<Option<AccountRoot>> {
+        let Some(root) = self.account_root()? else {
+            return Ok(None);
+        };
+        match self.get()? {
+            Some(held) if held.account != root.account() => Ok(None),
+            _ => Ok(Some(root)),
+        }
+    }
+
+    /// The account namespace this node follows: the holder's derivation, else
+    /// the row pair-init recorded. The row is caller-settable, so it never
+    /// overrides what the root says.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
+        if let Some(root) = self.holder_root()? {
+            return Ok(Some(root.account_namespace()));
+        }
+        self.stored_account_namespace()
+    }
+
     /// This node's device identity for `namespace`, if it has enrolled one.
     ///
     /// `None` means this node has no device in the namespace, which is not an
@@ -758,6 +802,29 @@ impl<'a> NodeDeviceRepository<'a> {
             .handle()
             .get(&key)?
             .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
+    }
+
+    /// The account namespace recorded here, at creation or at pair-init.
+    fn stored_account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NodeAccountNamespace::new())?
+            .map(|value: NodeAccountNamespaceValue| ContextGroupId::from(value.namespace_id)))
+    }
+
+    /// Record the account namespace this node follows.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn store_account_namespace(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        self.store.handle().put(
+            &NodeAccountNamespace::new(),
+            &NodeAccountNamespaceValue {
+                namespace_id: namespace_id.to_bytes(),
+            },
+        )?;
+        Ok(())
     }
 
     /// Keep the proof a link op carried for THIS device.
@@ -3063,6 +3130,94 @@ mod tests {
             repo.imported_certificate().expect("read").as_deref(),
             Some(bytes.as_slice()),
         );
+    }
+
+    /// The row a device writes at pair-init and the holder at creation; absent
+    /// means no account namespace is known here.
+    #[test]
+    fn the_account_namespace_row_round_trips() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.stored_account_namespace().expect("read"), None);
+
+        let id = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&id).expect("write");
+
+        assert_eq!(repo.stored_account_namespace().expect("read"), Some(id));
+    }
+
+    /// Derived from the root secret alone, under a tag, so a restored root
+    /// recomputes it and the public account id gives nothing away.
+    #[test]
+    fn the_account_namespace_id_follows_the_root_secret_alone() {
+        let root = AccountRoot {
+            secret: PrivateKey::from([0x31; 32]),
+        };
+        let same = AccountRoot {
+            secret: PrivateKey::from([0x31; 32]),
+        };
+        let other = AccountRoot {
+            secret: PrivateKey::from([0x32; 32]),
+        };
+
+        assert_eq!(root.account_namespace(), same.account_namespace());
+        assert_ne!(root.account_namespace(), other.account_namespace());
+        assert_ne!(
+            root.account_namespace().to_bytes(),
+            *root.public_key(),
+            "not the public key, and not derived from it"
+        );
+    }
+
+    /// A default-initialised node holds a root, but once paired it speaks for an
+    /// account rooted elsewhere, and deriving that account's namespace is not its
+    /// to do.
+    #[test]
+    fn a_node_paired_into_another_account_is_not_its_holder() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let _ = repo
+            .adopt_account(AccountGenesis::new(root(0x53)))
+            .expect("pair into another account");
+
+        assert!(repo.holder_root().expect("read").is_none());
+        assert_eq!(repo.account_namespace().expect("read"), None);
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(recorded));
+    }
+
+    /// The holder names its namespace before anything created it, so an invite
+    /// can carry the id first. The row is caller-settable, so it never displaces
+    /// what the root says.
+    #[test]
+    fn a_holder_derives_its_account_namespace_whatever_the_row_says() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let derived = repo
+            .account_root()
+            .expect("read")
+            .expect("test_store provisions a root")
+            .account_namespace();
+
+        assert_eq!(repo.account_namespace().expect("read"), Some(derived));
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(derived));
+    }
+
+    /// A root-free device knows only what pair-init told it.
+    #[test]
+    fn a_root_free_node_names_only_what_pair_init_recorded() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.account_namespace().expect("read"), None);
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(recorded));
     }
 
     /// Re-importing must replace, not refuse.

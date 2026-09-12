@@ -39,7 +39,9 @@ pub struct GroupUpgradeInfo {
 pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
     pub bytecode_id: Option<BytecodeId>,
-    pub application_id: ApplicationId,
+    /// The application a root group targets. `None` only for a root that runs no
+    /// application, the account namespace; a subgroup inherits its parent's.
+    pub application_id: Option<ApplicationId>,
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
     /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
@@ -727,6 +729,7 @@ impl Message for AdmitTeeNodeRequest {
 pub struct PairDeviceInitRequest {
     pub namespaces: Vec<ContextGroupId>, // what the device subscribes to; only the holder knows the set
     pub genesis: AccountGenesis,         // the nonce travels because the device id hashes over it
+    pub account_namespace: Option<ContextGroupId>, // recorded and followed like one more namespace
 }
 
 /// What the pairing device minted, for the account holder to certify.
@@ -1044,6 +1047,15 @@ impl Message for RevokeDeviceRequest {
 
 impl Message for PairDeviceCompleteRequest {
     type Result = eyre::Result<PairDeviceCompleteResponse>;
+}
+
+/// Create this account's namespace on the holder if it does not exist yet, and
+/// name it. Answers `None` on a node that is not the holder of its account.
+#[derive(Debug)]
+pub struct EnsureAccountNamespaceRequest;
+
+impl Message for EnsureAccountNamespaceRequest {
+    type Result = eyre::Result<Option<ContextGroupId>>;
 }
 
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.
