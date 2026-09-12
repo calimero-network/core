@@ -6,7 +6,7 @@ use axum::Extension;
 use calimero_account::DeviceId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    AccountBindingRepository, NamespaceRepository, NodeDeviceRepository,
+    AccountBindingRepository, AccountDeviceRegistry, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
@@ -20,18 +20,18 @@ use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// One device before it is known whether it is bound anywhere: the cached
-/// scope if this node holds a certificate for it, and the namespaces a scan of
-/// the live bindings has found so far.
+/// One device before it is known whether it is bound anywhere: the scope the
+/// account namespace records for it, and the namespaces a scan of the live
+/// bindings has found so far.
 struct Draft {
     signing_key: PublicKey,
     applications: Vec<ApplicationId>,
     namespaces: Vec<ContextGroupId>,
 }
 
-/// Every device of this node's own account, joined from the node-local
-/// certificate cache with the live bindings of every namespace this node takes
-/// part in.
+/// Every device of this node's own account, joined from three sources: the
+/// account namespace's registry, the node-local certificate cache, and the live
+/// bindings of every namespace this node takes part in.
 ///
 /// `None` when this node holds no account, mirroring `GET /admin-api/identity`,
 /// since there is nothing to report on. Reuses that route's account resolution
@@ -57,6 +57,20 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
                 namespaces: Vec::new(),
             },
         );
+    }
+
+    // Replicated, so a device that is not the holder reads every sibling's scope
+    // here; the cache still answers for devices the registry drops, revoked ones
+    // included.
+    if let Some(namespace) = devices.account_namespace()? {
+        for cert in AccountDeviceRegistry::new(store, namespace).devices()? {
+            let entry = by_device.entry(cert.device()).or_insert_with(|| Draft {
+                signing_key: cert.proof.statement.sign_pk,
+                applications: Vec::new(),
+                namespaces: Vec::new(),
+            });
+            entry.applications = cert.applications;
+        }
     }
 
     for namespace in NamespaceRepository::new(store).participating_namespaces()? {
@@ -118,7 +132,7 @@ mod tests {
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::AccountRoot;
+    use calimero_governance_store::{AccountDeviceRegistry, AccountRoot};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
 
@@ -349,5 +363,97 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
 
         assert!(collect(&store).expect("read").is_none());
+    }
+
+    /// The registry is what a device that is not the holder has instead of a
+    /// cache, so the scope in the listing comes from there - and wins over a
+    /// cached row, which is the older statement by construction.
+    #[test]
+    fn the_listing_reads_the_scope_from_the_account_namespace_registry() {
+        let (store, root) = seeded_account();
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a holder names an account namespace");
+        let narrow = ApplicationId::from([0x77; 32]);
+        let wide = ApplicationId::from([0x88; 32]);
+        let sign_pk = PrivateKey::from([0x22; 32]).public_key();
+        let device = remember_cert(&store, &root, [0x11; 32], &sign_pk, &[narrow]);
+
+        let genesis = AccountGenesis::new(root.public_key());
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            genesis.account_id(),
+            device,
+            &sign_pk,
+            &KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("sign");
+        assert!(AccountDeviceRegistry::new(&store, namespace)
+            .record(
+                &AccountProof {
+                    genesis,
+                    chain: vec![],
+                    statement: cert,
+                },
+                &[narrow, wide],
+                1,
+            )
+            .expect("record"));
+
+        let entries = collect(&store).expect("collect").expect("has account");
+
+        let entry = entries
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the device is reported");
+        assert_eq!(entry.applications, vec![narrow, wide]);
+    }
+
+    /// A device the registry knows and this node holds no certificate for is
+    /// still listed: that is every sibling, seen from a paired device.
+    #[test]
+    fn a_device_known_only_to_the_registry_is_listed_with_its_scope() {
+        let (store, root) = seeded_account();
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a holder names an account namespace");
+        let app = ApplicationId::from([0x77; 32]);
+        let sign_pk = PrivateKey::from([0x99; 32]).public_key();
+        let device = DeviceId::from([0xAB; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            genesis.account_id(),
+            device,
+            &sign_pk,
+            &KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("sign");
+        assert!(AccountDeviceRegistry::new(&store, namespace)
+            .record(
+                &AccountProof {
+                    genesis,
+                    chain: vec![],
+                    statement: cert,
+                },
+                &[app],
+                0,
+            )
+            .expect("record"));
+
+        let entries = collect(&store).expect("collect").expect("has account");
+
+        let entry = entries
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("a device known only to the registry is still a device of the account");
+        assert_eq!(entry.applications, vec![app]);
+        assert_eq!(entry.signing_key, sign_pk);
     }
 }

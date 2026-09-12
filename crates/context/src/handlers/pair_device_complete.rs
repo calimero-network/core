@@ -2,9 +2,11 @@
 //! link it, and hand it the scope key.
 //!
 //! The second half of pairing, run on the device holding the account. Publishes
-//! two ops: `AccountDeviceLinked` (encrypted, carries the root-signed certificate
-//! and confers authority) and `RootOp::KeyDelivery` (the current scope key wrapped
-//! to the device).
+//! three ops: `AccountDeviceLinked` (encrypted, carries the root-signed
+//! certificate and confers authority), `RootOp::KeyDelivery` (the current scope
+//! key wrapped to the device), and `AccountDeviceCertified` into the account
+//! namespace, recording the device's certificate and the applications it may
+//! speak for.
 //!
 //! The delivery is a SEALED root op, and the paired device is not expected to read
 //! it. It holds no scope key, so it could not: what it does instead is what any
@@ -422,6 +424,23 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                            namespaces gained later will need an explicit relink");
                 }
 
+                // After the bind, so the device already holds the account key when
+                // the op reaches the topic. A failure here is not the caller's.
+                if let Some(account_namespace) = account_namespace {
+                    crate::account_namespace::publish_device_certified(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        account_namespace,
+                        &signer_sk,
+                        &account_root,
+                        &cert.proof,
+                        &cert.applications,
+                        "pair_device_complete",
+                    )
+                    .await;
+                }
+
                 Ok(PairDeviceCompleteResponse::new(
                     account,
                     device,
@@ -441,9 +460,9 @@ mod tests {
 
     use calimero_account::AccountGenesis;
     use calimero_governance_store::{
-        AccountBindingRepository, MembershipRepository, MetaRepository,
+        AccountBindingRepository, AccountDeviceRegistry, MembershipRepository, MetaRepository,
     };
-    use calimero_primitives::identity::PrivateKey;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
 
@@ -766,9 +785,9 @@ mod tests {
     /// A namespace this node holds everything a pairing needs in: its own
     /// identity, an account root, a membership its endorsement is admissible
     /// under, and the scope key the delivery is wrapped from.
-    fn a_node_that_can_pair_in_one_namespace() -> Store {
+    fn a_holder_taking_part_in(ns: [u8; 32], application: [u8; 32]) -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let ns = ContextGroupId::from(NS_A);
+        let ns = ContextGroupId::from(ns);
         let (_ns, node_pk, _sk) = NamespaceRepository::new(&store)
             .participate_in(&ns)
             .expect("this node's identity here");
@@ -785,7 +804,7 @@ mod tests {
                 &ns,
                 &GroupMetaValue {
                     target: calimero_store::key::GroupTarget {
-                        application_id: app(APP_ONE),
+                        application_id: app(application),
                         bytecode_id: [0xAA; 32],
                         ..Default::default()
                     },
@@ -810,12 +829,45 @@ mod tests {
         store
     }
 
+    /// The five values a real pairing device hands `pair-complete`, minted
+    /// from `seed` the way a device mints its own keys and id.
+    struct Offer {
+        device: DeviceId,
+        kem_pk: calimero_account::KemPublicKey,
+        sign_pk: PublicKey,
+        statement: [u8; 64],
+        confirmation_code: String,
+    }
+
+    fn pairing_offer(store: &Store, seed: [u8; 16]) -> Offer {
+        let account = NodeDeviceRepository::new(store)
+            .require_account_root()
+            .expect("the holder's root")
+            .account();
+        let device = DeviceId::mint(account, seed);
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[..16].copy_from_slice(&seed);
+        let device_sk = PrivateKey::from(sk_bytes);
+        let mut kem_bytes = [0u8; 32];
+        kem_bytes[16..].copy_from_slice(&seed);
+        let kem_pk = calimero_account::KemPublicKey::from(kem_bytes);
+        let (offer, statement) = PairingOffer::signed(&device_sk, account, device, kem_pk)
+            .expect("mint the pairing offer");
+        Offer {
+            device: offer.device,
+            kem_pk: offer.kem_pk,
+            sign_pk: offer.sign_pk,
+            statement,
+            confirmation_code: offer.confirmation_code(),
+        }
+    }
+
     /// The id is spent everywhere, so pairing it again is refused before the
     /// certificate exists - not left to the fan-out, which reports `Revoked` per
     /// namespace only after this node has already certified the device.
     #[actix::test]
     async fn a_revoked_device_is_refused_before_a_certificate_is_minted() {
-        let store = a_node_that_can_pair_in_one_namespace();
+        let store = a_holder_taking_part_in(NS_A, APP_ONE);
         let account = NodeDeviceRepository::new(&store)
             .require_account_root()
             .expect("this node's root")
@@ -882,5 +934,75 @@ mod tests {
             refused.downcast_ref::<ContextError>(),
             Some(ContextError::PairingNotTheAccountHolder { .. })
         ));
+    }
+
+    /// Pairing writes the scope it was asked for into the account namespace, so
+    /// every other device of the account can read what the new one may speak for.
+    #[actix::test]
+    async fn pairing_records_the_device_and_its_scope_in_the_account_namespace() {
+        let store = a_holder_taking_part_in(NS_A, APP_ONE);
+        let harness = actor::over(store.clone()).await;
+        let offer = pairing_offer(&store, [0x71; 16]);
+
+        let response = harness
+            .manager
+            .send(PairDeviceCompleteRequest {
+                applications: vec![app(APP_ONE)],
+                device: offer.device,
+                kem_pk: offer.kem_pk,
+                sign_pk: offer.sign_pk,
+                statement: offer.statement,
+                confirmation_code: offer.confirmation_code,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the holder certifies the device");
+
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("pairing ensured the account namespace");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(response.device)
+            .expect("read")
+            .expect("the paired device is in the registry");
+        assert_eq!(recorded.applications, vec![app(APP_ONE)]);
+        assert_eq!(epoch, 0);
+    }
+
+    /// Pairing the same device again replaces the scope the first pairing
+    /// recorded, which is how a holder narrows what a device may speak for.
+    #[actix::test]
+    async fn re_pairing_a_device_supersedes_the_scope_it_recorded() {
+        let store = a_holder_taking_part_in(NS_A, APP_ONE);
+        let harness = actor::over(store.clone()).await;
+        let offer = pairing_offer(&store, [0x71; 16]);
+
+        for application in [APP_TWO, APP_ONE] {
+            let _response = harness
+                .manager
+                .send(PairDeviceCompleteRequest {
+                    applications: vec![app(application)],
+                    device: offer.device,
+                    kem_pk: offer.kem_pk,
+                    sign_pk: offer.sign_pk,
+                    statement: offer.statement,
+                    confirmation_code: offer.confirmation_code.clone(),
+                })
+                .await
+                .expect("the manager answers")
+                .expect("the holder certifies the device");
+        }
+
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("pairing ensured the account namespace");
+        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+            .device(offer.device)
+            .expect("read")
+            .expect("the paired device is in the registry");
+        assert_eq!(recorded.applications, vec![app(APP_ONE)]);
+        assert_eq!(epoch, 1);
     }
 }

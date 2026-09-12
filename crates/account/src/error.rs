@@ -98,6 +98,20 @@ pub enum AccountError {
         /// The device the caller is withdrawing.
         expected: DeviceId,
     },
+    /// The scope names a different account than the genesis.
+    #[error("device scope is for a different account than the supplied genesis")]
+    ScopeAccountMismatch,
+    /// The scope is not validly signed by the root key at its claimed epoch.
+    #[error("device scope has an invalid signature for its claimed key epoch")]
+    ScopeSignatureInvalid,
+    /// The scope names a different device than the caller is asking about.
+    #[error("device scope is for device {named}, not the {expected} being asked about")]
+    ScopeDeviceMismatch {
+        /// The device the proof actually names.
+        named: DeviceId,
+        /// The device the caller is asking about.
+        expected: DeviceId,
+    },
     /// The warrant is not validly signed by the device key it names.
     #[error("warrant has an invalid signature for the device key it names")]
     WarrantSignatureInvalid,

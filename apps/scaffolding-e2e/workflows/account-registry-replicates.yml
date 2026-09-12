@@ -1,0 +1,90 @@
+name: E2E Account - The Account Namespace Records Each Device
+description: >
+  A device of an account has to know what it may speak for, and until now only
+  the holder did. The scope lived in a node-local cache written where the
+  certificate was signed, so every other device of the account reported itself
+  as scoped to nothing and could carry no sibling anywhere.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root, installs the app, creates
+      namespace A, and certifies the phone scoped to that app.
+    * node-2 - Alice's phone. Paired with the account namespace id alone and a
+      scope of one application. A member of nothing, with no cache of its own.
+
+  What each step is load-bearing for:
+
+    1. The laptop installs the app and creates A, so there is a real application
+       id for the scope to name.
+    2. The script pairs the phone with the account namespace id and the scope,
+       then asserts the laptop still reports that scope - a registry that
+       replaced the cache must not lose it.
+    3. The phone reads its OWN scope back. It caches nothing, so the only way
+       the applications can reach it is as replicated state in the account
+       namespace. This is the assertion that is red before the change.
+    4. The phone sees the laptop's device too. Already true before the change,
+       since the namespace genesis records the founder's binding - kept because
+       it is the shape PR 5 builds on.
+    5. The phone still answers `deviceCertified` on its own identity route, so
+       recording the scope did not cost it the standing it paired for.
+
+  Not asserted here: any device acting on the registry. Binding a sibling from
+  it is the next PR.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: account-registry-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-registry-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-registry-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install the app on node-1
+    type: install_application
+    node: account-registry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-1 creates namespace A, targeting the app
+    type: create_namespace
+    node: account-registry-node-1
+    application_id: '{{app}}'
+
+  # merobox's account_pair step has no field for the account namespace id, so a
+  # script drives pair-init and pair-complete and does its own polling.
+  - name: Pair node-2 with the account namespace and a scope, and read the scope back
+    type: script
+    script: scripts/account-registry-pair.sh
+    target: local
+    args:
+      - account-registry-node-1
+      - account-registry-node-2
+      - '{{app}}'
+
+  - name: The phone still speaks as a certified device of the account
+    type: assert_api_response
+    node: account-registry-node-2
+    path: /admin-api/identity
+    match:
+      data.holdsAccountRoot: false
+      data.deviceCertified: true
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true

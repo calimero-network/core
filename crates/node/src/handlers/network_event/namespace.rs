@@ -760,6 +760,12 @@ async fn fetch_and_apply_namespace_backfill(
                 // reader can now read (verbatim replay). Same hook as the
                 // gossip-apply path.
                 crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
+
+                // A namespace whose first op arrives pending gets its whole DAG
+                // here and nowhere else, so the key has to be pulled here too.
+                sync_manager
+                    .recover_missing_group_keys(namespace_id, Some(peer))
+                    .await;
             }
         }
         _ => {

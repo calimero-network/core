@@ -2,6 +2,7 @@
 //! credential encodes to must decode back to the same value, or a peer reads a
 //! different credential than the one that was signed.
 
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{AccountId, DeviceId};
 
 use super::support::{genesis_for, key, sign_cert, sign_handoff};
@@ -9,6 +10,7 @@ use crate::account::borsh_bytes;
 use crate::account::AccountGenesis;
 use crate::device::DeviceCert;
 use crate::root_key::RootKeyHandoff;
+use crate::scope::DeviceScope;
 
 #[test]
 fn credentials_round_trip_through_borsh() {
@@ -18,6 +20,11 @@ fn credentials_round_trip_through_borsh() {
     let device = DeviceId::mint(account, [3u8; 16]);
     let handoff = sign_handoff(&root, account, 0, &r1);
     let cert = sign_cert(&root, account, device, &dev, 0, 0);
+    let applications = vec![
+        ApplicationId::from([7u8; 32]),
+        ApplicationId::from([8u8; 32]),
+    ];
+    let scope = DeviceScope::sign(&root, account, device, applications, 1, 0).expect("sign");
 
     for (label, bytes, ok) in [
         (
@@ -34,6 +41,11 @@ fn credentials_round_trip_through_borsh() {
             "cert",
             borsh_bytes(&cert),
             borsh::from_slice::<DeviceCert>(&borsh_bytes(&cert)).map(|v| v == cert),
+        ),
+        (
+            "scope",
+            borsh_bytes(&scope),
+            borsh::from_slice::<DeviceScope>(&borsh_bytes(&scope)).map(|v| v == scope),
         ),
     ] {
         assert!(!bytes.is_empty(), "{label} encodes to nothing");

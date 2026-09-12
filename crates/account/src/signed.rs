@@ -64,7 +64,8 @@ pub(crate) fn sign_payload(
 
 /// A statement an account's **root** key signs, naming the epoch that signed it.
 ///
-/// Implemented by [`crate::DeviceCert`] and [`crate::DeviceRevocation`].
+/// Implemented by [`crate::DeviceCert`], [`crate::DeviceRevocation`] and
+/// [`crate::DeviceScope`].
 /// Deliberately **not** implemented by [`crate::AccountMemberEndorsement`], which
 /// is signed by a granted *member* key rather than by the account root — that is
 /// the whole reason the endorsement exists, and leaving it outside this trait is
@@ -149,7 +150,7 @@ pub struct AccountProof<T> {
     pub statement: T,
 }
 
-impl<T: RootSigned + Copy> AccountProof<T> {
+impl<T: RootSigned + Clone> AccountProof<T> {
     /// Check this proof against the account the caller already trusts.
     ///
     /// `claimed_account` is what ties the credential to something outside it —
@@ -160,7 +161,7 @@ impl<T: RootSigned + Copy> AccountProof<T> {
     /// See [`verify_root_signed`].
     pub fn verify(&self, claimed_account: AccountId) -> Result<Verified<T>, AccountError> {
         verify_root_signed(claimed_account, &self.genesis, &self.chain, &self.statement)?;
-        Ok(Verified::new(self.statement))
+        Ok(Verified::new(self.statement.clone()))
     }
 }
 
