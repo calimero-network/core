@@ -425,7 +425,7 @@ mod tests {
     use calimero_governance_store::{
         AccountBindingRepository, AccountDeviceRegistry, MembershipRepository, MetaRepository,
     };
-    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
 
@@ -748,9 +748,9 @@ mod tests {
     /// A namespace this node holds everything a pairing needs in: its own
     /// identity, an account root, a membership its endorsement is admissible
     /// under, and the scope key the delivery is wrapped from.
-    fn a_holder_taking_part_in(ns: [u8; 32], application: [u8; 32]) -> Store {
+    fn a_node_that_can_pair_in_one_namespace() -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let ns = ContextGroupId::from(ns);
+        let ns = ContextGroupId::from(NS_A);
         let (_ns, node_pk, _sk) = NamespaceRepository::new(&store)
             .participate_in(&ns)
             .expect("this node's identity here");
@@ -767,7 +767,7 @@ mod tests {
                 &ns,
                 &GroupMetaValue {
                     target: calimero_store::key::GroupTarget {
-                        application_id: app(application),
+                        application_id: app(APP_ONE),
                         bytecode_id: [0xAA; 32],
                         ..Default::default()
                     },
@@ -792,17 +792,9 @@ mod tests {
         store
     }
 
-    /// The five values a real pairing device hands `pair-complete`, minted
-    /// from `seed` the way a device mints its own keys and id.
-    struct Offer {
-        device: DeviceId,
-        kem_pk: calimero_account::KemPublicKey,
-        sign_pk: PublicKey,
-        statement: [u8; 64],
-        confirmation_code: String,
-    }
-
-    fn pairing_offer(store: &Store, seed: [u8; 16]) -> Offer {
+    /// What a real pairing device hands `pair-complete`, minted from `seed` the
+    /// way a device mints its own keys and id.
+    fn pairing_offer(store: &Store, seed: [u8; 16]) -> (PairingOffer, [u8; 64]) {
         let account = NodeDeviceRepository::new(store)
             .require_account_root()
             .expect("the holder's root")
@@ -814,15 +806,7 @@ mod tests {
         let mut kem_bytes = [0u8; 32];
         kem_bytes[16..].copy_from_slice(&seed);
         let kem_pk = calimero_account::KemPublicKey::from(kem_bytes);
-        let (offer, statement) = PairingOffer::signed(&device_sk, account, device, kem_pk)
-            .expect("mint the pairing offer");
-        Offer {
-            device: offer.device,
-            kem_pk: offer.kem_pk,
-            sign_pk: offer.sign_pk,
-            statement,
-            confirmation_code: offer.confirmation_code(),
-        }
+        PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the pairing offer")
     }
 
     /// The id is spent everywhere, so pairing it again is refused before the
@@ -830,7 +814,7 @@ mod tests {
     /// namespace only after this node has already certified the device.
     #[actix::test]
     async fn a_revoked_device_is_refused_before_a_certificate_is_minted() {
-        let store = a_holder_taking_part_in(NS_A, APP_ONE);
+        let store = a_node_that_can_pair_in_one_namespace();
         let account = NodeDeviceRepository::new(&store)
             .require_account_root()
             .expect("this node's root")
@@ -903,9 +887,9 @@ mod tests {
     /// every other device of the account can read what the new one may speak for.
     #[actix::test]
     async fn pairing_records_the_device_and_its_scope_in_the_account_namespace() {
-        let store = a_holder_taking_part_in(NS_A, APP_ONE);
+        let store = a_node_that_can_pair_in_one_namespace();
         let harness = actor::over(store.clone()).await;
-        let offer = pairing_offer(&store, [0x71; 16]);
+        let (offer, statement) = pairing_offer(&store, [0x71; 16]);
 
         let response = harness
             .manager
@@ -914,8 +898,8 @@ mod tests {
                 device: offer.device,
                 kem_pk: offer.kem_pk,
                 sign_pk: offer.sign_pk,
-                statement: offer.statement,
-                confirmation_code: offer.confirmation_code,
+                statement,
+                confirmation_code: offer.confirmation_code(),
             })
             .await
             .expect("the manager answers")
@@ -937,9 +921,9 @@ mod tests {
     /// recorded, which is how a holder narrows what a device may speak for.
     #[actix::test]
     async fn re_pairing_a_device_supersedes_the_scope_it_recorded() {
-        let store = a_holder_taking_part_in(NS_A, APP_ONE);
+        let store = a_node_that_can_pair_in_one_namespace();
         let harness = actor::over(store.clone()).await;
-        let offer = pairing_offer(&store, [0x71; 16]);
+        let (offer, statement) = pairing_offer(&store, [0x71; 16]);
 
         for application in [APP_TWO, APP_ONE] {
             let _response = harness
@@ -949,8 +933,8 @@ mod tests {
                     device: offer.device,
                     kem_pk: offer.kem_pk,
                     sign_pk: offer.sign_pk,
-                    statement: offer.statement,
-                    confirmation_code: offer.confirmation_code.clone(),
+                    statement,
+                    confirmation_code: offer.confirmation_code(),
                 })
                 .await
                 .expect("the manager answers")

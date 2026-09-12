@@ -3,11 +3,15 @@
 # Pair <new-node> onto <holder>'s account with only the account namespace id, and
 # check both nodes agree on it and see the device bound there.
 #
-# args: [ <holder>, <new-node> ]
+# With an application csv, the pairing is scoped to those applications and the
+# new node must also read its OWN scope back out of the namespace. It holds no
+# certificate cache, so the scope can only have reached it as replicated state.
+#
+# args: [ <holder>, <new-node>, <application-csv|-> ]
 set -eu
 
-if [ "$#" -ne 2 ]; then
-    echo "usage: $0 <holder> <new-node>" >&2
+if [ "$#" -ne 3 ]; then
+    echo "usage: $0 <holder> <new-node> <application-csv|->" >&2
     exit 1
 fi
 
@@ -16,6 +20,7 @@ fi
 
 holder="$1"
 newnode="$2"
+applications="$3"
 
 fail() {
     echo "FAIL: $1" >&2
@@ -26,13 +31,20 @@ fail() {
 identity=$(api "${holder}" GET "identity")
 root_key=$(echo "${identity}" | jq -r '.data.accountRootPublicKey')
 namespace=$(echo "${identity}" | jq -r '.data.accountNamespaceId // empty')
+holder_device=$(echo "${identity}" | jq -r '.data.deviceId')
 [ -n "${namespace}" ] || fail "the holder names no account namespace before pairing"
+
+if [ "${applications}" = "-" ]; then
+    scope='[]'
+else
+    scope=$(echo "${applications}" | jq -Rc 'split(",")')
+fi
 
 pair_init "${newnode}" \
     "{\"accountRootPublicKey\":\"${root_key}\",\"accountNamespace\":\"${namespace}\",\"namespaces\":[]}"
 
 complete=$(api "${holder}" POST "account/pair-complete" \
-    "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${code}\",\"applications\":[]}")
+    "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${code}\",\"applications\":${scope}}")
 [ "$(echo "${complete}" | jq -r '.data.keyDelivered')" = "true" ] \
     || fail "pair-complete delivered no key: ${complete}"
 
@@ -58,10 +70,43 @@ while [ "${tries}" -gt 0 ]; do
     if api "${newnode}" GET "account/devices" \
         | jq -e --arg d "${device}" --arg ns "${namespace}" \
             'any(.devices[]; .deviceId == $d and .isSelf and (.namespaces | index($ns)) != null)' >/dev/null 2>&1; then
-        echo "device ${device} follows account namespace ${namespace} on both nodes"
-        exit 0
+        break
     fi
     tries=$((tries - 1))
     sleep 2
 done
-fail "the device never resolved its own binding in the account namespace"
+[ "${tries}" -gt 0 ] || fail "the device never resolved its own binding in the account namespace"
+
+if [ "${applications}" = "-" ]; then
+    echo "device ${device} follows account namespace ${namespace} on both nodes"
+    exit 0
+fi
+
+# The holder has always been able to say this, from the certificate it signed.
+# Asserted so a registry that replaced the cache cannot quietly lose the scope.
+api "${holder}" GET "account/devices" \
+    | jq -e --arg d "${device}" --argjson a "${scope}" \
+        'any(.devices[]; .deviceId == $d and ($a - .applications) == [])' >/dev/null \
+    || fail "the holder does not report the phone as scoped to ${applications}"
+
+# The assertion the scoped run exists for. The phone caches no certificate, so
+# an empty scope here is the whole gap: it knows it is a device and not what for.
+tries=45
+while [ "${tries}" -gt 0 ]; do
+    if api "${newnode}" GET "account/devices" \
+        | jq -e --arg d "${device}" --argjson a "${scope}" \
+            'any(.devices[]; .deviceId == $d and .isSelf and ($a - .applications) == [])' >/dev/null 2>&1; then
+        break
+    fi
+    tries=$((tries - 1))
+    sleep 2
+done
+[ "${tries}" -gt 0 ] || fail "the phone never learned its own scope from the account namespace"
+
+# Corroborating, and already true before the registry: the holder's own device is
+# bound in the account namespace by its genesis, so the binding scan finds it.
+api "${newnode}" GET "account/devices" \
+    | jq -e --arg d "${holder_device}" 'any(.devices[]; .deviceId == $d)' >/dev/null \
+    || fail "the phone does not see the holder's device"
+
+echo "device ${device} reads its own scope ${applications} out of account namespace ${namespace}"

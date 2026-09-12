@@ -10,7 +10,8 @@ use calimero_account::{AccountProof, DeviceCert, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_store::key::{
-    GroupAccountDevice, GroupAccountDeviceValue, GROUP_ACCOUNT_DEVICE_PREFIX,
+    GroupAccountDevice, GroupAccountDeviceValue, NodeAccountDeviceCertValue,
+    GROUP_ACCOUNT_DEVICE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -58,8 +59,10 @@ impl<'a> AccountDeviceRegistry<'a> {
         handle.put(
             &key,
             &GroupAccountDeviceValue {
-                proof: proof.clone(),
-                applications: applications.to_vec(),
+                cert: NodeAccountDeviceCertValue {
+                    proof: proof.clone(),
+                    applications: applications.to_vec(),
+                },
                 scope_epoch,
             },
         )?;
@@ -80,8 +83,8 @@ impl<'a> AccountDeviceRegistry<'a> {
             .map(|value: GroupAccountDeviceValue| {
                 (
                     KnownDeviceCert {
-                        proof: value.proof,
-                        applications: value.applications,
+                        proof: value.cert.proof,
+                        applications: value.cert.applications,
                     },
                     value.scope_epoch,
                 )
@@ -111,12 +114,12 @@ impl<'a> AccountDeviceRegistry<'a> {
             let Some(value) = handle.get::<GroupAccountDevice>(&key)? else {
                 continue;
             };
-            if bindings.is_revoked(&self.namespace, value.proof.statement.device)? {
+            if bindings.is_revoked(&self.namespace, value.cert.proof.statement.device)? {
                 continue;
             }
             certs.push(KnownDeviceCert {
-                proof: value.proof,
-                applications: value.applications,
+                proof: value.cert.proof,
+                applications: value.cert.applications,
             });
         }
         Ok(certs)
@@ -129,6 +132,7 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PrivateKey;
+    use calimero_store::key::{GroupAccountDeviceValue, NodeAccountDeviceCertValue};
     use calimero_store::Store;
 
     use crate::test_fixtures::test_store;
@@ -262,5 +266,40 @@ mod tests {
             .device(mine_proof.statement.device)
             .expect("read")
             .is_none());
+    }
+
+    /// Nesting the node-local value inside the row must not have moved a byte:
+    /// borsh writes a struct field inline, so these rows are on disk already.
+    #[test]
+    fn nesting_the_certificate_value_left_the_bytes_where_they_were() {
+        #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+        struct Flat {
+            proof: AccountProof<DeviceCert>,
+            applications: Vec<ApplicationId>,
+            scope_epoch: u32,
+        }
+
+        let store = test_store();
+        let proof = proof(&store, 0x61);
+        let nested = GroupAccountDeviceValue {
+            cert: NodeAccountDeviceCertValue {
+                proof: proof.clone(),
+                applications: vec![app(1), app(2)],
+            },
+            scope_epoch: 7,
+        };
+        let flat = Flat {
+            proof,
+            applications: vec![app(1), app(2)],
+            scope_epoch: 7,
+        };
+
+        assert_eq!(
+            borsh::to_vec(&nested).expect("encode"),
+            borsh::to_vec(&flat).expect("encode")
+        );
+        let read: GroupAccountDeviceValue =
+            borsh::from_slice(&borsh::to_vec(&flat).expect("encode")).expect("a row written flat");
+        assert_eq!(read, nested);
     }
 }

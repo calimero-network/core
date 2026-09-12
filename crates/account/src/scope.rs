@@ -26,7 +26,7 @@ use calimero_primitives::identity::{domain_hash, AccountId, DeviceId, PrivateKey
 
 use crate::domain::DEVICE_SCOPE_SIGN_DOMAIN;
 use crate::error::AccountError;
-use crate::signed::{sign_payload, AccountProof, RootSigned, Verified};
+use crate::signed::{sign_payload, AccountProof, DeviceBound, RootSigned, Verified};
 
 /// A root-signed statement of what one device may speak for.
 #[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -125,34 +125,18 @@ impl RootSigned for DeviceScope {
     }
 }
 
+impl DeviceBound for DeviceScope {
+    const DEVICE_MISMATCH: fn(DeviceId, DeviceId) -> AccountError =
+        |named, expected| AccountError::ScopeDeviceMismatch { named, expected };
+
+    fn device(&self) -> DeviceId {
+        self.device
+    }
+}
+
 /// A [`DeviceScope`] together with everything needed to verify it.
 pub type SignedDeviceScope = AccountProof<DeviceScope>;
 
 /// A [`DeviceScope`] whose anchor, chain, and signature have all been checked.
 /// See [`Verified`] for what that does, and does not, mean.
 pub type VerifiedDeviceScope = Verified<DeviceScope>;
-
-impl SignedDeviceScope {
-    /// Whether this proof states the scope of `device` under `account`.
-    ///
-    /// Checks the device the caller expects against the one the proof names
-    /// before verifying anything, so a valid scope for one device cannot be
-    /// presented as another's.
-    ///
-    /// # Errors
-    /// [`AccountError::ScopeDeviceMismatch`] when the proof names a different
-    /// device; otherwise whatever [`AccountProof::verify`] reports.
-    pub fn authorises(
-        &self,
-        account: AccountId,
-        device: DeviceId,
-    ) -> Result<VerifiedDeviceScope, AccountError> {
-        if self.statement.device != device {
-            return Err(AccountError::ScopeDeviceMismatch {
-                named: self.statement.device,
-                expected: device,
-            });
-        }
-        self.verify(account)
-    }
-}

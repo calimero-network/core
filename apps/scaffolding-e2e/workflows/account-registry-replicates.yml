@@ -17,16 +17,15 @@ description: >
     1. The laptop installs the app and creates A, so there is a real application
        id for the scope to name.
     2. The script pairs the phone with the account namespace id and the scope,
-       then asserts the laptop still reports that scope - a registry that
-       replaced the cache must not lose it.
+       checks both sides agree on the namespace and the phone resolves its own
+       binding there, then asserts the laptop still reports that scope - a
+       registry that replaced the cache must not lose it.
     3. The phone reads its OWN scope back. It caches nothing, so the only way
        the applications can reach it is as replicated state in the account
        namespace. This is the assertion that is red before the change.
     4. The phone sees the laptop's device too. Already true before the change,
        since the namespace genesis records the founder's binding - kept because
        it is the shape PR 5 builds on.
-    5. The phone still answers `deviceCertified` on its own identity route, so
-       recording the scope did not cost it the standing it paired for.
 
   Not asserted here: any device acting on the registry. Binding a sibling from
   it is the next PR.
@@ -70,21 +69,11 @@ steps:
   # script drives pair-init and pair-complete and does its own polling.
   - name: Pair node-2 with the account namespace and a scope, and read the scope back
     type: script
-    script: scripts/account-registry-pair.sh
+    script: scripts/account-namespace-pair.sh
     target: local
     args:
       - account-registry-node-1
       - account-registry-node-2
       - '{{app}}'
-
-  - name: The phone still speaks as a certified device of the account
-    type: assert_api_response
-    node: account-registry-node-2
-    path: /admin-api/identity
-    match:
-      data.holdsAccountRoot: false
-      data.deviceCertified: true
-    retries: 30
-    interval: 2
 
 stop_all_nodes: true

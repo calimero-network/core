@@ -37,7 +37,7 @@ use core::ops::Deref;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use calimero_primitives::identity::{AccountId, PrivateKey};
+use calimero_primitives::identity::{AccountId, DeviceId, PrivateKey};
 
 use crate::account::AccountGenesis;
 use crate::error::AccountError;
@@ -85,6 +85,19 @@ pub trait RootSigned {
     fn payload(&self) -> [u8; 32];
     /// The signature itself.
     fn signature(&self) -> &[u8; 64];
+}
+
+/// A [`RootSigned`] statement about one particular device.
+///
+/// What [`AccountProof::authorises`] needs on top of verification: the device the
+/// statement names, and the error to report when that is not the device the
+/// caller asked about.
+pub trait DeviceBound: RootSigned {
+    /// Builds the error reported when the proof names a different device.
+    const DEVICE_MISMATCH: fn(named: DeviceId, expected: DeviceId) -> AccountError;
+
+    /// The device this statement is about.
+    fn device(&self) -> DeviceId;
 }
 
 /// A statement whose anchor, key chain, and signature have all been checked.
@@ -162,6 +175,31 @@ impl<T: RootSigned + Clone> AccountProof<T> {
     pub fn verify(&self, claimed_account: AccountId) -> Result<Verified<T>, AccountError> {
         verify_root_signed(claimed_account, &self.genesis, &self.chain, &self.statement)?;
         Ok(Verified::new(self.statement.clone()))
+    }
+
+    /// Whether this proof speaks for `device` under `account`.
+    ///
+    /// Checks the device the caller expects against the one the proof names
+    /// before verifying anything, so a valid proof for one device can never be
+    /// presented as another's, and a proof aimed at the wrong device buys no
+    /// caller an Ed25519 verification.
+    ///
+    /// # Errors
+    /// `T::DEVICE_MISMATCH` when the proof names a different device; otherwise
+    /// whatever [`AccountProof::verify`] reports.
+    pub fn authorises(
+        &self,
+        account: AccountId,
+        device: DeviceId,
+    ) -> Result<Verified<T>, AccountError>
+    where
+        T: DeviceBound,
+    {
+        let named = self.statement.device();
+        if named != device {
+            return Err((T::DEVICE_MISMATCH)(named, device));
+        }
+        self.verify(account)
     }
 }
 

@@ -39,25 +39,20 @@ async fn record_holder_device(
 ) {
     // Read before the credential is built, so the common case where the row is
     // already there costs one lookup rather than a certificate signature.
-    let devices = NodeDeviceRepository::new(datastore);
-    match devices.get().map(|own| own.map(|own| own.device())) {
-        Ok(Some(device)) => {
-            match AccountDeviceRegistry::new(datastore, namespace_id).device(device) {
-                Ok(Some(_recorded)) => return,
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        ?namespace_id,
-                        "could not read the holder's registry row"
-                    );
-                    return;
-                }
-            }
-        }
+    let stored = NodeDeviceRepository::new(datastore).get().and_then(|own| {
+        own.map_or(Ok(None), |own| {
+            AccountDeviceRegistry::new(datastore, namespace_id).device(own.device())
+        })
+    });
+    match stored {
+        Ok(Some(_recorded)) => return,
         Ok(None) => {}
         Err(err) => {
-            warn!(?err, ?namespace_id, "could not read this node's device row");
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not read the holder's registry row"
+            );
             return;
         }
     }

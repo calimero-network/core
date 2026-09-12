@@ -137,9 +137,11 @@ and a `Verified<T>` is one that has been checked.
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
 | `ACCOUNT_GENESIS_VERSION` | const | Version written into a genesis; part of the id preimage |
 | **`RootSigned`** | trait | The shape a statement the account **root** signs shares: `account`, `key_epoch`, `payload`, `signature`, plus the two `AccountError` variants it reports. Implemented by `DeviceCert`, `DeviceRevocation` and `DeviceScope`; deliberately **not** by `AccountMemberEndorsement` |
+| **`DeviceBound`** | trait | A `RootSigned` statement about one device: the device it names, and the `AccountError` reported when that is not the device asked about. Implemented by `DeviceRevocation` and `DeviceScope`, which is what gives them one shared `authorises` |
 | **`Verified<T>`** | struct | A statement whose anchor, chain and signature all checked. Derefs to `T`; unconstructible outside this crate, so holding one *is* the proof a check happened. **Not** a statement that the credential is in force |
 | **`AccountProof<T>`** | struct | `{genesis, chain, statement}` - a credential that stands on its own. The wire form; borsh-identical to the three loose fields it replaced |
 | `AccountProof::verify(claimed_account)` | fn | Check a proof against an account the caller already trusts; yields `Verified<T>` |
+| `AccountProof::authorises(account, device)` | fn | For a `DeviceBound` statement: whether the proof speaks for *that* device; checks the device before spending an Ed25519 verification |
 | `RootKeyHandoff` | struct | Rolls the root key from `from_epoch` to `from_epoch + 1`, signed by the outgoing key |
 | `RootKeyHandoff::sign(sk, account, from_epoch, new_pk)` | fn | Mint one |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
@@ -151,13 +153,11 @@ and a `Verified<T>` is one that has been checked.
 | `DeviceRevocation` | struct | Root-signed withdrawal of a device |
 | `DeviceRevocation::sign(root_sk, account, device, key_epoch)` | fn | Mint one |
 | `SignedDeviceRevocation` | alias | `AccountProof<DeviceRevocation>` - the wire-carried proof |
-| `SignedDeviceRevocation::authorises(account, device)` | fn | Whether this proof authorises withdrawing *that* device; checks the device before spending an Ed25519 verification |
 | `verify_device_revocation(claimed, genesis, chain, revocation)` | fn | Check against a borrowed chain; yields `VerifiedDeviceRevocation` |
 | `VerifiedDeviceRevocation` | alias | `Verified<DeviceRevocation>` |
 | `DeviceScope` | struct | Root-signed statement of the applications one device may speak for; empty means all of them |
 | `DeviceScope::sign(root_sk, account, device, applications, scope_epoch, key_epoch)` | fn | Mint one; `scope_epoch` is what orders two scopes for the same device |
 | `SignedDeviceScope` | alias | `AccountProof<DeviceScope>` - the wire-carried proof |
-| `SignedDeviceScope::authorises(account, device)` | fn | Whether this proof states *that* device's scope; checks the device before spending an Ed25519 verification |
 | `VerifiedDeviceScope` | alias | `Verified<DeviceScope>` |
 | `AccountMemberEndorsement` | struct | A granted member key's signed statement that an account is theirs |
 | `AccountMemberEndorsement::sign(member_sk, account)` | fn | Mint one; the endorser is derived from the key, never named by the caller |
@@ -195,11 +195,11 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 | --- | --- |
 | `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
 | `src/account.rs` | `ACCOUNT_GENESIS_VERSION`, `AccountGenesis`, `AccountMemberEndorsement` + `sign`/`verify`, `VerifiedEndorsement`, and `borsh_bytes` (the id preimage helper, beside its only production caller) |
-| `src/signed.rs` | The shared shape: `RootSigned`, `Verified<T>`, `AccountProof<T>`, `verify_root_signed` (the one verifier), `sign_payload` (the one signing tail) |
+| `src/signed.rs` | The shared shape: `RootSigned`, `DeviceBound`, `Verified<T>`, `AccountProof<T>` (with `verify` and `authorises`), `verify_root_signed` (the one verifier), `sign_payload` (the one signing tail) |
 | `src/root_key.rs` | `MAX_ROOT_KEY_HANDOFFS`, `RootKeyHandoff` + `sign`, `root_key_at_epoch` (the chain walk) |
 | `src/device.rs` | `KemPublicKey`, `DeviceCert` + `sign`, `VerifiedDeviceCert`, `verify_device_cert` |
-| `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `authorises`, `verify_device_revocation` |
-| `src/scope.rs` | `DeviceScope` + `sign`, `SignedDeviceScope` (= `AccountProof<DeviceScope>`), `authorises`, `VerifiedDeviceScope` |
+| `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `verify_device_revocation` |
+| `src/scope.rs` | `DeviceScope` + `sign`, `SignedDeviceScope` (= `AccountProof<DeviceScope>`), `VerifiedDeviceScope` |
 | `src/pairing.rs` | `PairingOffer` - the four values a pairing is about, and every question either end asks of them |
 | `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` + `verify`, `VerifiedWarrant` - delegated authorship |
 | `src/login.rs` | `LoginStatement` + `sign`/`verify_signature`/`addressed_to`, `Audience` - the statement a device key signs to obtain a session |

@@ -65,5 +65,6 @@ steps:
     args:
       - learned-node-1
       - learned-node-2
+      - '-'
 
 stop_all_nodes: true

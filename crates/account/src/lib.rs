@@ -99,7 +99,7 @@ pub use crate::pairing::PairingOffer;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
 pub use crate::scope::{DeviceScope, SignedDeviceScope, VerifiedDeviceScope};
-pub use crate::signed::{AccountProof, RootSigned, Verified};
+pub use crate::signed::{AccountProof, DeviceBound, RootSigned, Verified};
 pub use crate::warrant::{Delegation, VerifiedWarrant, Warrant};
 
 // The two end-to-end verifiers keep free-function form: each takes an anchor and a

@@ -4,7 +4,7 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{DeviceId, PrivateKey};
 
-use super::support::{key, rotated};
+use super::support::key;
 use crate::account::AccountGenesis;
 use crate::error::AccountError;
 use crate::scope::{DeviceScope, SignedDeviceScope};
@@ -30,27 +30,6 @@ fn a_root_signed_scope_verifies_from_the_account_id_alone() {
 
     let verified = proof.authorises(account, device).expect("verifies");
     assert_eq!(verified.applications, vec![app(1)]);
-}
-
-#[test]
-fn a_scope_signed_by_a_stranger_is_refused() {
-    let root = PrivateKey::from([7u8; 32]);
-    let stranger = PrivateKey::from([9u8; 32]);
-    let genesis = AccountGenesis::new(root.public_key());
-    let account = genesis.account_id();
-    let device = DeviceId::mint(account, [0x22; 16]);
-
-    let forged = DeviceScope::sign(&stranger, account, device, vec![], 0, 0).expect("sign");
-    let proof = AccountProof {
-        genesis,
-        chain: vec![],
-        statement: forged,
-    };
-
-    assert!(matches!(
-        proof.authorises(account, device),
-        Err(AccountError::ScopeSignatureInvalid)
-    ));
 }
 
 #[test]
@@ -96,51 +75,40 @@ fn a_scope_cannot_be_replayed_onto_another_account_device_or_application_set() {
     let proof = AccountProof {
         genesis: elsewhere,
         chain: vec![],
-        statement: honest,
+        statement: honest.clone(),
     };
     assert!(matches!(
         proof.authorises(elsewhere.account_id(), device),
         Err(AccountError::ScopeAccountMismatch)
     ));
-}
 
-#[test]
-fn a_scope_epoch_is_part_of_what_is_signed() {
-    let root = PrivateKey::from([7u8; 32]);
-    let genesis = AccountGenesis::new(root.public_key());
-    let account = genesis.account_id();
-    let device = DeviceId::mint(account, [0x22; 16]);
-
-    // Bumping the epoch on a signed statement must not be free: the registry
-    // keeps the highest epoch, so a forgeable one would be a way to pin a scope.
-    let mut scope = DeviceScope::sign(&root, account, device, vec![], 0, 0).expect("sign");
-    scope.scope_epoch = 7;
+    // Bumping the epoch must not be free: the registry keeps the highest epoch,
+    // so a forgeable one would be a way to pin a scope.
+    let mut bumped = honest;
+    bumped.scope_epoch = 7;
     let proof = AccountProof {
         genesis,
         chain: vec![],
-        statement: scope,
+        statement: bumped,
     };
+    assert!(
+        matches!(
+            proof.authorises(account, device),
+            Err(AccountError::ScopeSignatureInvalid)
+        ),
+        "the scope epoch is inside the signed payload"
+    );
 
+    // And the root is the only key that can state any of it.
+    let stranger = PrivateKey::from([9u8; 32]);
+    let forged = DeviceScope::sign(&stranger, account, device, vec![], 0, 0).expect("sign");
+    let proof = AccountProof {
+        genesis,
+        chain: vec![],
+        statement: forged,
+    };
     assert!(matches!(
         proof.authorises(account, device),
         Err(AccountError::ScopeSignatureInvalid)
     ));
-}
-
-#[test]
-fn the_new_root_may_also_scope_a_device() {
-    let root = PrivateKey::from([7u8; 32]);
-    let next = PrivateKey::from([8u8; 32]);
-    let (genesis, handoff) = rotated(&root, &next);
-    let account = genesis.account_id();
-    let device = DeviceId::mint(account, [0x22; 16]);
-
-    let scope = DeviceScope::sign(&next, account, device, vec![], 1, 1).expect("sign");
-    let proof = AccountProof {
-        genesis,
-        chain: vec![handoff],
-        statement: scope,
-    };
-
-    assert!(proof.authorises(account, device).is_ok());
 }

@@ -2361,18 +2361,14 @@ impl Debug for GroupAccountDevice {
 
 /// The certificate and scope a [`GroupAccountDevice`] row carries.
 ///
-/// The whole proof rather than its fields, for the same reason
-/// [`NodeAccountDeviceCertValue`] keeps one: the replicated binding row drops
-/// the root signature, so this is the only replicated place a link can be
-/// rebuilt from.
+/// The node-local row plus the epoch that ordered it: same certificate, same
+/// applications, so the two are one declaration. Borsh writes a nested struct
+/// inline, so the bytes are the three fields in this order either way.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDeviceValue {
-    /// The root-signed certificate with the genesis and handoff chain that reach
-    /// the epoch which signed it.
-    pub proof: AccountProof<DeviceCert>,
-    /// Applications this device may speak for. **Empty means all of them.**
-    pub applications: Vec<ApplicationId>,
+    /// The root-signed certificate and the applications it is scoped to.
+    pub cert: NodeAccountDeviceCertValue,
     /// Which scope statement wrote this row. Only a higher one supersedes.
     pub scope_epoch: u32,
 }

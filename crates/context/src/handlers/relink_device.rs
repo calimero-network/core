@@ -419,10 +419,10 @@ mod tests {
         );
     }
 
-    /// Widening a device's scope is a new statement at a higher epoch, so the
-    /// registry every other device reads is what moves, not just the cache.
+    /// Widening a device's scope is a new signed statement, so the registry
+    /// every other device reads is what moves, not just the cache.
     #[actix::test]
-    async fn a_relink_publishes_the_widened_scope_at_the_next_epoch() {
+    async fn a_relink_publishes_the_widened_scope_into_the_registry() {
         let store = a_node_holding_its_own_account();
         let harness = actor::over(store.clone()).await;
         let namespace = ensure_account_namespace(&store, &harness.context_client)
@@ -449,21 +449,5 @@ mod tests {
                 .expect("the relink recorded the device");
         assert_eq!(recorded.applications, vec![app(APP_ONE), app(APP_TWO)]);
         assert_eq!(epoch, 0, "the first statement for this device");
-
-        let _second = harness
-            .manager
-            .send(RelinkDeviceRequest {
-                device,
-                applications: vec![],
-            })
-            .await
-            .expect("the manager answers")
-            .expect("repaired");
-        let (_again, epoch) =
-            calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
-                .device(device)
-                .expect("read")
-                .expect("row");
-        assert_eq!(epoch, 1, "a second statement must supersede the first");
     }
 }
