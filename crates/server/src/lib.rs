@@ -25,6 +25,7 @@ pub mod admin;
 mod auth;
 mod caller_account;
 pub mod config;
+mod device_sessions;
 mod ephemeral_replay;
 mod execute;
 pub mod jsonrpc;
@@ -203,6 +204,7 @@ pub async fn start(
     let mut app = Router::new();
 
     let mut embedded_auth = if config.use_embedded_auth() {
+        device_sessions::install();
         Some(auth::initialise(&config).await?)
     } else {
         None

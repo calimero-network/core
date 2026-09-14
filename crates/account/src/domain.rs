@@ -56,6 +56,13 @@ pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
 /// something signs.
 pub(crate) const WARRANT_INTENT_DOMAIN: &[u8] = b"calimero.warrant.intent.v1";
 
+/// Domain for the bytes a device signs to log in to a node.
+///
+/// The one signature in this crate over bytes the other side chooses: the node
+/// issues the challenge. Without a domain of its own a hostile node could hand
+/// out a warrant preimage as a "challenge" and receive a valid warrant back.
+pub(crate) const DEVICE_LOGIN_SIGN_DOMAIN: &[u8] = b"calimero.auth.pop.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -71,4 +78,5 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_CONFIRMATION_DOMAIN,
     WARRANT_SIGN_DOMAIN,
     WARRANT_INTENT_DOMAIN,
+    DEVICE_LOGIN_SIGN_DOMAIN,
 ];

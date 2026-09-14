@@ -11,6 +11,7 @@ mod support;
 mod account;
 mod device;
 mod domain;
+mod login;
 mod pairing;
 mod revocation;
 mod root_key;

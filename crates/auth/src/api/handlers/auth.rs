@@ -136,6 +136,15 @@ pub struct BaseTokenRequest {
 /// Token request that includes provider-specific data
 pub type TokenRequest = BaseTokenRequest;
 
+/// Issue a single-use challenge for `device_key` login. (PoC)
+pub async fn challenge_handler() -> impl IntoResponse {
+    let challenge = crate::providers::impls::device_key::issue_challenge();
+    Json(serde_json::json!({
+        "challenge": hex::encode(challenge),
+        "expiresInSecs": crate::providers::impls::device_key::CHALLENGE_TTL.as_secs(),
+    }))
+}
+
 /// Token response
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {

@@ -83,6 +83,7 @@ mod tests;
 // crate depends on that one, so the types cannot originate here. Re-exported so
 // every `calimero_account::AccountId` import keeps working — this crate is
 // still where the account MODEL lives, just not where the id type is declared.
+mod login;
 pub use calimero_primitives::identity::{
     domain_hash, AccountId, DeviceId, IdParseError, DEVICE_ID_DOMAIN,
 };
@@ -92,6 +93,7 @@ pub use crate::account::{
 };
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
+pub use crate::login::device_login_payload;
 pub use crate::pairing::PairingOffer;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};

@@ -43,16 +43,36 @@ pub(crate) fn for_context(
             );
             None
         })?;
-    calimero_governance_store::member_account_in_namespace(store, &group_id, key).unwrap_or_else(
-        |err| {
+    let bound = calimero_governance_store::member_account_in_namespace(store, &group_id, key)
+        .unwrap_or_else(|err| {
             warn!(
                 %err, %context_id, %key,
                 "resolving the caller's account: could not read the account binding; \
                  treating the caller as unresolved"
             );
             None
-        },
-    )
+        });
+    bound.or_else(|| certified_device_account(store, &group_id, key))
+}
+
+/// PoC: the account a logged-in device's certificate named, unless the device
+/// has been revoked in this group or its namespace.
+fn certified_device_account(
+    store: &calimero_store::Store,
+    group_id: &ContextGroupId,
+    key: &PublicKey,
+) -> Option<AccountId> {
+    let (account, device) = crate::device_sessions::lookup(key)?;
+    let namespace = calimero_governance_store::NamespaceRepository::new(store)
+        .resolve(group_id)
+        .ok()?;
+    let bindings = calimero_governance_store::AccountBindingRepository::new(store);
+    for group in [*group_id, namespace] {
+        if !matches!(bindings.is_revoked(&group, device), Ok(false)) {
+            return None;
+        }
+    }
+    Some(account)
 }
 
 /// The account `key` acts as in `group_id`, if any.
