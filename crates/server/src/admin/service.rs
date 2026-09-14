@@ -273,6 +273,10 @@ pub(crate) fn setup(
             get(groups::list_member_devices::handler),
         )
         .route(
+            "/groups/{group_id}/accounts/{account}/seal",
+            post(groups::seal_to_account::handler),
+        )
+        .route(
             "/groups/{group_id}/leave",
             post(groups::leave_group::handler),
         )

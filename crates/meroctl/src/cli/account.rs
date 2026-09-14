@@ -8,6 +8,7 @@ mod device_init;
 mod pair_complete;
 mod pair_init;
 mod revoke;
+mod seal_to;
 mod show;
 
 /// Account and device management.
@@ -29,6 +30,7 @@ pub enum AccountSubCommands {
     PairInit(pair_init::PairInitCommand),
     PairComplete(pair_complete::PairCompleteCommand),
     Revoke(revoke::RevokeCommand),
+    SealTo(seal_to::SealToCommand),
     Show(show::ShowCommand),
     Alias(alias::DeviceAliasCommand),
 }
@@ -41,6 +43,7 @@ impl AccountCommand {
             AccountSubCommands::PairInit(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairComplete(cmd) => cmd.run(environment).await,
             AccountSubCommands::Revoke(cmd) => cmd.run(environment).await,
+            AccountSubCommands::SealTo(cmd) => cmd.run(environment).await,
             AccountSubCommands::Alias(cmd) => cmd.run(environment).await,
         }
     }

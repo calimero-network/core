@@ -29,6 +29,8 @@ use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use calimero_server_primitives::admin::ReparentGroupApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
+use calimero_server_primitives::admin::SealToAccountApiRequest;
+use calimero_server_primitives::admin::SealToAccountApiResponse;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
 use calimero_server_primitives::admin::SetMemberAutoFollowApiRequest;
@@ -121,6 +123,27 @@ where
             .connection
             .put_json(
                 &format!("admin-api/groups/{group_id}/members/{identity_hex}/role"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Seal a payload so that only `account_hex`'s account **root** key opens it.
+    ///
+    /// The node resolves the root; the caller never names a key. Sealing to a
+    /// device key instead is the mistake this shape exists to make unavailable
+    /// — a device is what is gone in the case an envelope is written for.
+    pub async fn seal_to_account(
+        &self,
+        group_id: &str,
+        account_hex: &str,
+        request: SealToAccountApiRequest,
+    ) -> Result<SealToAccountApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/groups/{group_id}/accounts/{account_hex}/seal"),
                 request,
             )
             .await?;

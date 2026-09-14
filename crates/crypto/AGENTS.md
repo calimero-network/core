@@ -36,6 +36,10 @@ cargo test -p calimero-crypto test_kdf_derivation_is_deterministic_and_interoper
 | `SharedKey::decrypt(cipher_text, nonce)` | fn | AES-256-GCM open; returns `None` on any authentication failure |
 | `SharedKeyError` | enum (`#[non_exhaustive]`) | `InvalidPublicKey` (bad Edwards Y / small-order point) and the X25519 identity-point case |
 | `NONCE_LEN` | const | `12` (AES-GCM standard nonce size) |
+| `seal_to_root(csprng, root_pk, plaintext)` | fn | Seals to an account **root** key with a one-shot sender keypair; returns a `SealedEnvelope` |
+| `open_sealed(root_sk, envelope)` | fn | Opens one with the root private key alone |
+| `SealedEnvelope` | struct | `ephemeral_public_key`, `nonce`, `ciphertext` - everything an opener needs but the root |
+| `SealError` | enum (`#[non_exhaustive]`) | `Agreement` (bad recipient/ephemeral point) and `Aead` (wrong key or tampered - deliberately the same answer) |
 | `Nonce` | type alias | `[u8; NONCE_LEN]` |
 
 All fallible AEAD operations return `Option`, not `Result` - there is no distinction exposed between "bad key," "bad nonce," and "tampered ciphertext"; all collapse to `None`.
@@ -49,6 +53,8 @@ All fallible AEAD operations return `Option`, not `Result` - there is no distinc
 Before doing any of that, `new` rejects public keys that decompress to a small-order (torsion) point via `is_small_order()`. A small-order peer key would collapse the ECDH output into a tiny subgroup independent of the caller's own scalar, defeating the "shared" part of the secret - this is the standard X25519/Ed25519 small-subgroup attack guard.
 
 `SharedKey::from_sk` is a separate, non-ECDH path: it just wraps the private key's own bytes as the AES key. It is used where the "shared key" is really a single party's own symmetric secret rather than a peer-derived one - check callers before assuming ECDH semantics apply.
+
+`seal_to_root` / `open_sealed` exist because `SharedKey::new` alone is the wrong shape for a payload written now and opened much later by someone who has only their own key. The secret it derives is *shared*, so the opener must know the sender's public key - but the sender is a node that may since have rotated, been reprovisioned, or left the fleet, and the opener is recovering from a lost device with nothing but their account root and an opaque blob. So the sender is a fresh keypair per envelope and its public half travels with the ciphertext. Two things this does NOT give you: the recipient is an **account root**, never a device key (a device is exactly what is gone in the case worth sealing for), and the result proves **confidentiality, not authorship** - anyone who knows a root public key can produce an envelope for it, so whatever decides an envelope is legitimate belongs in the service that accepts the write.
 
 Nonce handling is asymmetric by design: `encrypt` generates its own random nonce (avoiding caller-side nonce reuse, which is catastrophic for AES-GCM), while `encrypt_with_nonce` exists for protocols that need to control the nonce themselves (e.g. a per-message ratchet), pushing the single-use guarantee onto the caller.
 
@@ -67,6 +73,8 @@ There is no module split - the whole crate is ~400 lines in one file, about half
 - **HKDF info string is versioned**: `AEAD_KDF_INFO` ends in `.v2`. If the derivation ever changes (salt, info, hash), bump the suffix so old and new derivations can never silently collide.
 - **Small-order rejection is required, not defensive fluff**: skipping `is_small_order()` reintroduces a known subgroup-confinement attack against Curve25519-based ECDH.
 - **Nonce reuse is caller-checked, not library-checked**: `encrypt_with_nonce` trusts the caller. Only use it where single-use is already guaranteed elsewhere (e.g. a monotonic ratchet), otherwise use `encrypt`.
+- **Never seal to a device key**: `seal_to_root` takes a root public key, and the type system cannot tell the two apart - both are `PublicKey`. An envelope sealed to a device key is valid, opaque, passes every other check, and is unopenable in precisely the case an envelope is written for. `a_device_key_of_the_same_account_does_not_open_it` pins this.
+- **The ephemeral secret must not outlive one envelope**: `seal_to_root` drops it before returning and nothing stores it. Persisting it would make every envelope that node ever wrote openable by whoever recovered it, which is the whole property the ephemerality buys.
 - **`AES_256_GCM` key construction can fail** (`aead::UnboundKey::new(...).ok()?`) only if the key length is wrong, which cannot happen given the fixed `[u8; 32]` - the `Option` plumbing exists mainly for decrypt-time authentication failures, not key-setup failures.
 
 Part of [crates/](../AGENTS.md).
