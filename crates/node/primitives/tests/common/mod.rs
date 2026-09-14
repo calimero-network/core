@@ -213,6 +213,7 @@ pub fn create_test_bundle(
         min_runtime_version: "0.1.0".to_owned(),
         metadata: None,
         handlers: None,
+        build_info: None,
         interfaces: None,
         wasm: Some(BundleArtifact {
             path: "app.wasm".to_owned(),
@@ -295,6 +296,7 @@ pub fn signed_bundle_bytes(
         min_runtime_version: "0.1.0".to_owned(),
         metadata: None,
         handlers: None,
+        build_info: None,
         interfaces: None,
         wasm: services.is_empty().then(|| artifact(&wasm[0])),
         abi: None,
