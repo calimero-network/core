@@ -22,6 +22,7 @@ pub mod list_subgroups;
 pub mod remove_group_members;
 pub mod reparent_group;
 pub mod retry_group_upgrade;
+pub mod seal_to_account;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
 pub mod set_group_metadata;

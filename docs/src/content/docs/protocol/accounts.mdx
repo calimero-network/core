@@ -52,10 +52,10 @@ Because the id is a hash rather than a key, the keys underneath can rotate witho
 ## Three keys, one job each
 
 ```
-  ACCOUNT ROOT ──── signs device certificates and root-key handoffs.
-   (offline)        Nothing else. Never signs an operation, never
-                    receives data. One per node. Survives losing
-                    every device.
+  ACCOUNT ROOT ──── signs device certificates and root-key handoffs,
+   (offline)        and opens payloads sealed to it (see below).
+                    Never signs an operation. One per node. Survives
+                    losing every device.
 
   SIGN KEY ──────── signs operations. This is the node's namespace
                     identity — the "member identity" of the previous
@@ -78,6 +78,36 @@ Two properties matter beyond the mechanics:
 - **The ephemeral is discarded after wrapping**, so compromising a sender's long-term key later does not decrypt past envelopes.
 
 The envelope format, both ECDH variants, and the AEAD details are specified in [Encryption](/protocol/encryption/); this page only covers who gets addressed and why.
+
+### The one thing addressed to the account root
+
+Everything above addresses a *device*, which is right for anything a running
+node needs. It is exactly wrong for one case: recovery after every device is
+gone. There the only thing the holder still has is the account root, restored
+from its mnemonic — so recovery data has to be addressed to the root itself.
+
+`POST /admin-api/groups/{group_id}/accounts/{account}/seal` (and
+`meroctl account seal-to`) does that, over a fresh ephemeral sender key whose
+public half rides with the ciphertext. That last part is not decoration: the
+node that sealed it may have rotated, been reprovisioned, or left the fleet long
+before anyone opens the envelope, and a recovering holder knows nothing except
+their own root key.
+
+Two properties to keep in mind:
+
+- **It proves confidentiality, not authorship.** The ephemeral sender is
+  unauthenticated, so anyone knowing a root public key can produce an envelope
+  for it. Whatever decides an envelope is genuine belongs in the service that
+  accepted the write, not in the envelope.
+- **The root is doing double duty here**, as a signing key and as an ECDH
+  recipient. That is a deliberate trade, not an oversight: this page separates
+  the sign key from the KEM key precisely to avoid such dual use, and the clean
+  version of this would be a recovery KEM key of its own. It cannot be that
+  today because the sealer holds only the root *public* key, and no X25519 key
+  derivable from the private root is derivable from the public one — publishing
+  a separate recovery KEM key means changing the account genesis, which every
+  existing account already carries. Revisit this if the genesis format ever
+  moves.
 
 ## What is derived, and what is not
 

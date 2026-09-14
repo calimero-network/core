@@ -272,11 +272,245 @@ impl SharedKey {
     }
 }
 
+/// A payload sealed so that ONE account root, and nothing else, can open it.
+///
+/// [`SharedKey::new`] derives a *shared* secret: the recipient re-derives it
+/// from their own private key **and the sender's public key**. That is fine
+/// between two parties who know each other, and wrong for the case this exists
+/// for — a payload written now, by a node that may since have rotated its key,
+/// reprovisioned, or left the fleet, and opened later by someone holding only
+/// their account root and an opaque blob. So the sender here is a fresh
+/// keypair per envelope, and its public half travels with the ciphertext.
+///
+/// # This proves confidentiality, NOT authorship
+///
+/// Anyone who knows a root public key can produce an envelope for it, because
+/// the ephemeral sender is unauthenticated by construction. A recipient
+/// learns only that *someone* sealed this to them. Whatever decides that an
+/// envelope is legitimate has to live outside it — in the service that accepts
+/// the write. Do not treat opened contents as attested.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedEnvelope {
+    /// The one-shot sender key. Public by construction and useless alone: it
+    /// opens nothing without the matching root private key.
+    pub ephemeral_public_key: PublicKey,
+    /// AEAD nonce. Fresh per envelope, like the key it is used with.
+    pub nonce: Nonce,
+    /// AES-256-GCM ciphertext with the tag appended ([`AEAD_TAG_LEN`] bytes).
+    pub ciphertext: Vec<u8>,
+}
+
+/// Why a seal or an open failed.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SealError {
+    /// The recipient's (or ephemeral) public key is not a usable curve point.
+    #[error("could not agree with the named key: {0}")]
+    Agreement(#[from] SharedKeyError),
+    /// AES-GCM refused. On open this is the ordinary answer for a wrong key, a
+    /// wrong ephemeral key, or a tampered ciphertext — the three are
+    /// deliberately indistinguishable.
+    #[error("AEAD operation failed")]
+    Aead,
+}
+
+/// Seal `plaintext` to `root_pk`, which is an account's **root signing key**.
+///
+/// The root, not a device key. Devices are exactly what is gone in the case
+/// that makes an envelope worth writing, so an envelope sealed to one is
+/// unopenable precisely when it is needed — and looks correct in every other
+/// respect until then.
+///
+/// # Errors
+/// [`SealError::Agreement`] if `root_pk` is not a valid, non-small-order
+/// Edwards point; [`SealError::Aead`] if AES-GCM refuses the payload.
+pub fn seal_to_root<R: rand::CryptoRng + rand::Rng>(
+    csprng: &mut R,
+    root_pk: &PublicKey,
+    plaintext: Vec<u8>,
+) -> Result<SealedEnvelope, SealError> {
+    // Dropped at the end of this function and never stored: an ephemeral secret
+    // that outlived one envelope would let whoever recovered it open that
+    // envelope forever, which is the property the ephemerality buys.
+    let ephemeral = PrivateKey::random(csprng);
+    let shared = SharedKey::new(&ephemeral, root_pk)?;
+    let (nonce, ciphertext) = shared.encrypt(plaintext).ok_or(SealError::Aead)?;
+    Ok(SealedEnvelope {
+        ephemeral_public_key: ephemeral.public_key(),
+        nonce,
+        ciphertext,
+    })
+}
+
+/// Open an envelope with the account root private key it was sealed to.
+///
+/// # Errors
+/// [`SealError::Agreement`] if the carried ephemeral key is not a usable curve
+/// point; [`SealError::Aead`] if the AEAD refuses — which is equally what a
+/// wrong root key and a tampered ciphertext produce.
+pub fn open_sealed(root_sk: &PrivateKey, envelope: &SealedEnvelope) -> Result<Vec<u8>, SealError> {
+    let shared = SharedKey::new(root_sk, &envelope.ephemeral_public_key)?;
+    shared
+        .decrypt(envelope.ciphertext.clone(), envelope.nonce)
+        .ok_or(SealError::Aead)
+}
+
 #[cfg(test)]
 mod tests {
     use eyre::OptionExt;
 
     use super::*;
+
+    // --- sealed envelopes -------------------------------------------------
+
+    #[test]
+    fn a_sealed_envelope_opens_with_the_root_it_was_sealed_to() {
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+
+        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"ns-a,ns-b".to_vec())
+            .expect("sealing to a valid root must succeed");
+
+        assert_eq!(
+            open_sealed(&root, &envelope).expect("the root must open its own envelope"),
+            b"ns-a,ns-b",
+        );
+    }
+
+    #[test]
+    fn a_device_key_of_the_same_account_does_not_open_it() {
+        // THE property. Devices are what is gone in the case an envelope exists
+        // for, so sealing to one — or opening with one — is the failure that
+        // looks correct right up until it matters.
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let device = PrivateKey::random(&mut csprng);
+
+        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"secret".to_vec())
+            .expect("sealing must succeed");
+
+        assert!(
+            open_sealed(&device, &envelope).is_err(),
+            "a device key must not open an envelope sealed to the account root",
+        );
+    }
+
+    #[test]
+    fn the_envelope_carries_everything_needed_to_open_it_but_the_root() {
+        // The recovery case in full: the opener has their root key and a blob
+        // that reached them through an untrusted service. They do not know
+        // which node sealed it, and that node may be long gone. Nothing else
+        // may be required.
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let sealed = seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec())
+            .expect("sealing must succeed");
+
+        // Reconstructed from its parts alone, as a transport would carry them.
+        let relayed = SealedEnvelope {
+            ephemeral_public_key: sealed.ephemeral_public_key,
+            nonce: sealed.nonce,
+            ciphertext: sealed.ciphertext.clone(),
+        };
+
+        assert_eq!(
+            open_sealed(&root, &relayed).expect("the parts alone must suffice"),
+            b"namespaces",
+        );
+    }
+
+    #[test]
+    fn every_envelope_uses_a_fresh_sender_key() {
+        // If the sender key were reused, recovering one ephemeral secret would
+        // open every envelope that node ever wrote.
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+
+        let first = seal_to_root(&mut csprng, &root.public_key(), b"same".to_vec()).unwrap();
+        let second = seal_to_root(&mut csprng, &root.public_key(), b"same".to_vec()).unwrap();
+
+        assert_ne!(
+            first.ephemeral_public_key, second.ephemeral_public_key,
+            "the ephemeral sender key must not repeat across envelopes",
+        );
+        assert_ne!(
+            first.ciphertext, second.ciphertext,
+            "identical plaintext must not seal to identical ciphertext",
+        );
+    }
+
+    #[test]
+    fn a_tampered_ciphertext_is_refused_rather_than_returning_garbage() {
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let mut envelope =
+            seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec()).unwrap();
+
+        envelope.ciphertext[0] ^= 0x01;
+
+        assert!(
+            open_sealed(&root, &envelope).is_err(),
+            "AES-GCM must reject a modified ciphertext, not return plaintext",
+        );
+    }
+
+    #[test]
+    fn a_substituted_ephemeral_key_is_refused() {
+        // The ephemeral key is unauthenticated, so it is the obvious thing for
+        // a transport to swap. It must fail the AEAD rather than open.
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let mut envelope =
+            seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec()).unwrap();
+
+        envelope.ephemeral_public_key = PrivateKey::random(&mut csprng).public_key();
+
+        assert!(
+            open_sealed(&root, &envelope).is_err(),
+            "an envelope whose ephemeral key was swapped must not open",
+        );
+    }
+
+    #[test]
+    fn no_private_key_material_reaches_the_envelope() {
+        // The envelope is handed to an untrusted service and stored there, so a
+        // field added later that happened to carry a secret would be a silent
+        // key disclosure. This looks for the actual bytes rather than reasoning
+        // about the struct, so it keeps biting if the shape changes.
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec())
+            .expect("sealing must succeed");
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(AsRef::<[u8; 32]>::as_ref(&envelope.ephemeral_public_key));
+        wire.extend_from_slice(&envelope.nonce);
+        wire.extend_from_slice(&envelope.ciphertext);
+
+        assert!(
+            !wire
+                .windows(32)
+                .any(|window| window == root.as_bytes().as_slice()),
+            "the account root private key must not appear anywhere in the envelope",
+        );
+    }
+
+    #[test]
+    fn sealing_to_a_small_order_key_is_refused() {
+        // Inherited from SharedKey::new, and worth pinning at this layer too: a
+        // small-order recipient key collapses the agreement into a tiny
+        // subgroup, so the "secret" stops depending on the ephemeral scalar.
+        let mut csprng = rand::rng();
+        let identity = PublicKey::from([0u8; 32]);
+
+        assert!(
+            matches!(
+                seal_to_root(&mut csprng, &identity, b"x".to_vec()),
+                Err(SealError::Agreement(_)),
+            ),
+            "a degenerate recipient key must be refused, not sealed to",
+        );
+    }
 
     #[test]
     fn aead_tag_len_matches_ring() {

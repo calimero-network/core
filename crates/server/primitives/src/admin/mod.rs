@@ -1534,6 +1534,93 @@ pub struct ListMemberDevicesApiResponse {
     pub members: Vec<MemberDevicesApiEntry>,
 }
 
+/// The largest plaintext this route will seal, in bytes before hex-encoding.
+///
+/// What the route exists for is a list of namespace ids — 32 bytes each, plus
+/// framing — so 64 KiB is generous by orders of magnitude. It is here so that a
+/// caller cannot make a node allocate arbitrarily by POSTing a large body, not
+/// to express a protocol limit.
+pub const MAX_SEALABLE_PLAINTEXT_BYTES: usize = 64 * 1024;
+
+/// Seal a payload so that one account's **root key** can open it.
+///
+/// The root, never a device key: a device is exactly what is gone in the case
+/// worth sealing for, and an envelope addressed to one looks correct in every
+/// respect until the moment it is needed. The route resolves the root itself so
+/// a caller cannot get that wrong.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SealToAccountApiRequest {
+    /// Hex-encoded plaintext. Hex rather than base64 to match every other
+    /// bytes-on-the-wire field in this API; payloads here are small enough that
+    /// the 2x is not worth a second encoding for a reader to get wrong.
+    pub plaintext: String,
+}
+
+impl Validate for SealToAccountApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // Sealing nothing produces a valid envelope carrying no information,
+        // which downstream is indistinguishable from a real one. Refuse it here
+        // rather than let a half-configured caller write it.
+        if self.plaintext.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "plaintext" });
+            return errors;
+        }
+        if self.plaintext.len() > MAX_SEALABLE_PLAINTEXT_BYTES * 2 {
+            errors.push(ValidationError::StringTooLong {
+                field: "plaintext",
+                max: MAX_SEALABLE_PLAINTEXT_BYTES * 2,
+                actual: self.plaintext.len(),
+            });
+        }
+        if !self.plaintext.len().is_multiple_of(2) {
+            errors.push(ValidationError::InvalidFormat {
+                field: "plaintext",
+                reason: "hex string has an odd number of characters".to_owned(),
+            });
+        } else if !self.plaintext.chars().all(|c| c.is_ascii_hexdigit()) {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "plaintext",
+                reason: "contains non-hexadecimal characters".to_owned(),
+            });
+        }
+
+        errors
+    }
+}
+
+/// An envelope that only the named account's root key opens.
+///
+/// Confidentiality, **not authorship**: the sender key is ephemeral and
+/// unauthenticated, so a recipient learns that *someone* sealed this to them
+/// and nothing more. Whatever decides an envelope is legitimate belongs in the
+/// service that accepts it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SealedEnvelopeApiData {
+    /// The root-key epoch this was sealed under. An account that rotates its
+    /// root moves to the next epoch, and an envelope sealed under the old one
+    /// still opens with the old root — so a recipient holding several needs to
+    /// know which. Carried rather than assumed to be current.
+    pub account_root_epoch: u32,
+    /// Hex-encoded one-shot sender public key (32 bytes). Useless alone; it is
+    /// what makes the envelope openable by the root without knowing which node
+    /// sealed it.
+    pub ephemeral_public_key: String,
+    /// Hex-encoded AES-256-GCM nonce (12 bytes).
+    pub nonce: String,
+    /// Hex-encoded ciphertext with the 16-byte tag appended.
+    pub ciphertext: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SealToAccountApiResponse {
+    pub data: SealedEnvelopeApiData,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ListMemberDevicesQuery {
     pub offset: Option<usize>,
