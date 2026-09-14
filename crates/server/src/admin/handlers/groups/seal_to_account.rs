@@ -3,13 +3,14 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_account::AccountId;
+use calimero_account::{AccountId, RootPublicKey};
 use calimero_context::error::ContextError;
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::{seal_to_root, SealedEnvelope};
 use calimero_governance_store::{
     AccountBindingRepository, MembershipRepository, NamespaceRepository,
 };
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     SealToAccountApiRequest, SealToAccountApiResponse, SealedEnvelopeApiData,
 };
@@ -38,6 +39,30 @@ fn caller_account(store: &Store, group_id: &ContextGroupId) -> EyreResult<Accoun
     };
     account.ok_or_else(|| not_a_group_member(group_id))
 }
+
+/// The target's current root is not a key an envelope can be sealed to.
+///
+/// An envelope is sealed to the root's X25519 form, and only an Ed25519 key has
+/// one. A root rotated onto a secure element or a PIV slot is P-256, so this is a
+/// state of that account — answered as such, not as an agreement failure the
+/// caller could only read as a bug.
+#[derive(Debug)]
+struct RootNotSealable {
+    algorithm: &'static str,
+}
+
+impl std::fmt::Display for RootNotSealable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this account's root key is {}, and sealing needs an Ed25519 root: an \
+             envelope is sealed to the root's X25519 form, which only an Ed25519 key has",
+            self.algorithm
+        )
+    }
+}
+
+impl std::error::Error for RootNotSealable {}
 
 fn not_a_group_member(group_id: &ContextGroupId) -> eyre::Report {
     // Typed so the admin API surfaces this precondition as a 403 rather than a
@@ -94,6 +119,16 @@ fn seal(
         AccountBindingRepository::new(store).account_key(&namespace, target)?
     else {
         return Ok(None);
+    };
+
+    let root_pk = match root_pk {
+        RootPublicKey::Ed25519(key) => PublicKey::from(key),
+        other => {
+            return Err(RootNotSealable {
+                algorithm: other.algorithm(),
+            }
+            .into())
+        }
     };
 
     let envelope = seal_to_root(&mut rand::rng(), &root_pk, plaintext)?;
@@ -166,6 +201,13 @@ pub async fn handler(
             message: format!(
                 "group {group_id_str} knows no account {account_str} with a root key on record"
             ),
+        }
+        .into_response(),
+        // Only reachable for a target both membership gates already let through,
+        // so naming the root's algorithm reveals nothing the member list does not.
+        Err(err) if err.downcast_ref::<RootNotSealable>().is_some() => ApiError {
+            status_code: StatusCode::UNPROCESSABLE_ENTITY,
+            message: err.to_string(),
         }
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),
@@ -255,6 +297,33 @@ mod tests {
         assert!(
             rendered.contains("not a member of group"),
             "expected the membership refusal, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_member_whose_root_is_p256_is_refused_rather_than_sealed_to() {
+        // A root rotated onto a secure element or a PIV slot is P-256, and sealing
+        // needs an Ed25519 root. The row is written directly: the seal reads only
+        // the stored current root, so how it got there is not what is under test.
+        let store = test_store();
+        let _ = bootstrap_namespace_with_admin_account(&store, NS);
+        let target = member_of(&store);
+        store
+            .handle()
+            .put(
+                &calimero_store::key::GroupAccountKey::new(NS, *target.as_bytes()),
+                &calimero_store::key::GroupAccountKeyValue {
+                    epoch: 1,
+                    root_pk: RootPublicKey::P256([0x02; 33]),
+                },
+            )
+            .expect("store a P-256 root");
+
+        let err = seal(&store, &namespace(), target, b"recovery".to_vec())
+            .expect_err("a P-256 root cannot be sealed to");
+        assert!(
+            err.downcast_ref::<RootNotSealable>().is_some(),
+            "expected the typed refusal, got: {err}"
         );
     }
 

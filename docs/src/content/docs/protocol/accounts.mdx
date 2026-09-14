@@ -108,6 +108,11 @@ Two properties to keep in mind:
   a separate recovery KEM key means changing the account genesis, which every
   existing account already carries. Revisit this if the genesis format ever
   moves.
+- **Only an Ed25519 root can be sealed to.** The envelope is sealed to the root's
+  X25519 form, which only an Ed25519 key has. An account whose root has rotated
+  onto a secure element or a PIV slot holds a P-256 root, and the route answers
+  422 for it rather than failing as a server error. Sealing to such a root would
+  take P-256 ECIES, which this route does not implement.
 
 ## What is derived, and what is not
 
