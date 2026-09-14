@@ -1575,7 +1575,7 @@ impl Validate for SealToAccountApiRequest {
                 actual: self.plaintext.len(),
             });
         }
-        if self.plaintext.len() % 2 != 0 {
+        if !self.plaintext.len().is_multiple_of(2) {
             errors.push(ValidationError::InvalidFormat {
                 field: "plaintext",
                 reason: "hex string has an odd number of characters".to_owned(),
