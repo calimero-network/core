@@ -1250,6 +1250,7 @@ dependencies = [
  "eyre",
  "hex",
  "libp2p",
+ "p256",
  "prometheus-client",
  "rand 0.10.2",
  "serde_json",

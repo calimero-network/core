@@ -254,13 +254,13 @@ impl<'a> AccountBindingRepository<'a> {
         &self,
         group: &ContextGroupId,
         account: AccountId,
-    ) -> EyreResult<Option<(u32, PublicKey)>> {
+    ) -> EyreResult<Option<(u32, RootPublicKey)>> {
         let key = GroupAccountKey::new(group.to_bytes(), *account.as_bytes());
         Ok(self
             .store
             .handle()
             .get(&key)?
-            .map(|value| (value.epoch, PublicKey::from(value.root_pk))))
+            .map(|value| (value.epoch, value.root_pk)))
     }
 
     /// Is this device's id spent?
@@ -626,7 +626,7 @@ impl<'a> AccountBindingRepository<'a> {
             &key,
             &GroupAccountKeyValue {
                 epoch: 0,
-                root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
+                root_pk: RootPublicKey::from(genesis.root_sign_pk),
             },
         )?;
         Ok(())
@@ -648,10 +648,7 @@ impl<'a> AccountBindingRepository<'a> {
                 account: handoff.account,
             }));
         };
-        // A stored 32-byte row is an Ed25519 key by construction: the row predates
-        // the tagged type, and nothing can have written a P-256 key into it (see
-        // the refusal below).
-        let (epoch, root_pk) = (current.epoch, RootPublicKey::Ed25519(current.root_pk));
+        let (epoch, root_pk) = (current.epoch, current.root_pk);
         if handoff.from_epoch != epoch {
             return Ok(Err(BindingRejected::RotationNotContinuous {
                 expected: epoch,
@@ -665,27 +662,15 @@ impl<'a> AccountBindingRepository<'a> {
             return Ok(Err(BindingRejected::RotationSignatureInvalid));
         }
 
-        // POC LIMIT (design risk R2): `GroupAccountKeyValue.root_pk` is a fixed
-        // `[u8; 32]` and a compressed P-256 key is 33. Widening it changes a
-        // persisted borsh row, and there is NO store-row schema version anywhere
-        // in the tree — `PERSIST_SCHEMA_VERSION` governs only the peer cache. So
-        // this refuses loudly rather than silently truncating or quietly storing
-        // an unverifiable key. Resolving R2 (widen the row, or store `H(key)` as a
-        // content address) is a prerequisite for rotating onto hardware on the
-        // live path.
-        let RootPublicKey::Ed25519(new_root) = handoff.new_root_sign_pk else {
-            eyre::bail!(
-                "cannot persist a {} root key: the account-key row is a fixed 32 bytes and \
-                 has no schema version (design risk R2)",
-                handoff.new_root_sign_pk.algorithm(),
-            );
-        };
-
+        // Whatever algorithm the incoming key uses, the row stores it tagged: the
+        // next handoff is verified against exactly this key. (The row's encoding
+        // changed with the tag and there is no store-row schema version, so this
+        // assumes fresh nodes, not an upgraded database.)
         self.store.handle().put(
             &key,
             &GroupAccountKeyValue {
                 epoch: epoch.saturating_add(1),
-                root_pk: new_root,
+                root_pk: handoff.new_root_sign_pk,
             },
         )?;
         Ok(Ok(()))
@@ -1343,6 +1328,64 @@ mod tests {
 
         // Idempotent.
         repo.clear_all_for_group(&gid).expect("clear again");
+    }
+
+    /// A root rotated onto hardware. The account is born Ed25519 from its phrase and
+    /// hands off to a P-256 root — the only key type a secure element or a PIV slot
+    /// holds; software here — which certifies an ordinary Ed25519 device.
+    ///
+    /// The credential stands on its own, so a group must be able to admit the
+    /// device: persisting the rotation is bookkeeping, and must not be what
+    /// refuses a credential `verify_device_cert` accepts.
+    #[test]
+    fn a_device_certified_by_a_p256_root_is_admitted() {
+        use p256::ecdsa::signature::hazmat::PrehashSigner as _;
+        use p256::ecdsa::{Signature, SigningKey};
+
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let account = g.account_id();
+
+        let hardware_root = SigningKey::from_slice(&[9; 32]).expect("p256 key");
+        let compressed: [u8; 33] = hardware_root
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .try_into()
+            .expect("33 bytes");
+        let handoff = RootKeyHandoff::sign(&key(1), account, 0, &RootPublicKey::P256(compressed))
+            .expect("sign handoff");
+
+        // `DeviceCert::sign` only takes an Ed25519 signer, so mint the certificate
+        // and set the P-256 root's signature over the same payload — which is
+        // exactly what the enclave and PIV flows produce.
+        let device = DeviceId::mint(account, [6; 16]);
+        let device_key = key(6).public_key();
+        let kem = KemPublicKey::from([6; 32]);
+        let mut cert =
+            DeviceCert::sign(&key(99), account, device, &device_key, &kem, 1, 0).expect("mint");
+        let payload = DeviceCert::signing_payload(account, device, &device_key, &kem, 1, 0);
+        let sig: Signature = hardware_root.sign_prehash(&payload).expect("sign cert");
+        cert.signature = sig.normalize_s().unwrap_or(sig).to_bytes().into();
+
+        assert!(
+            calimero_account::verify_device_cert(account, &g, &[handoff], &cert).is_ok(),
+            "the credential must verify on its own, or this test proves nothing"
+        );
+
+        let bound = repo
+            .apply_link(&gid, &g, &[handoff], &cert)
+            .expect("store")
+            .expect("admitted");
+        assert_eq!(bound.device, device);
+        assert_eq!(repo.live_bindings(&gid).expect("read").len(), 1);
+        assert_eq!(
+            repo.account_key(&gid, account).expect("read").map(|r| r.0),
+            Some(1),
+            "the group must now hold the P-256 root as current"
+        );
     }
 
     #[test]

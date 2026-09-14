@@ -59,6 +59,9 @@ serial_test.workspace = true
 # (unused by the publish path itself, but a required constructor field).
 calimero-blobstore.workspace = true
 tempfile.workspace = true
+# Signs as a P-256 account root in the hardware-root tests — the key type a secure
+# element or PIV slot holds. Same version and features `calimero-account` uses.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [features]
 default = []
