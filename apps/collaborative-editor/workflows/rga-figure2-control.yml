@@ -1,0 +1,406 @@
+description: >
+  The paper's Figure 2, multi-replica, end to end — and the first version of
+  this scenario that RGA can actually fail.
+
+  Interleaving needs the writers' operations interleaved IN TIME, not merely
+  concurrent. RGA orders same-origin siblings by id, so if each writer types
+  its passage and its heading back-to-back the ids run P1<H1<P2<H2 and each
+  heading still lands beside its own passage — which is why the earlier
+  round-per-writer version passed on RGA and proved nothing. The in-process
+  conformance test forces the real shape with pinned clocks
+  (`pinned(10+tick)` for every passage, `pinned(20+tick)` for every heading),
+  putting ALL passages before ALL headings.
+
+  This reproduces that ordering with real HLCs by going round-robin: every
+  writer appends its passage, and only then does every writer go back and type
+  its heading. Isolation is enforced by stopping the other nodes and is
+  ASSERTED at each step — a writer that can see a peer's text is not isolated
+  and the scenario has stopped posing the question.
+
+  Expected: FugueText keeps every heading against its own passage. The RGA
+  control beside this file is expected to FAIL exactly there.
+name: RGA Figure 2 Multi-Replica Control
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rga-node
+  base_port: 2600
+  base_rpc_port: 2700
+
+steps:
+  - name: Install collaborative-editor on Node 1
+    type: install_application
+    node: rga-node-1
+    path: ../../dist/com.calimero.collaborative-editor-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
+  # that has never held the blob cannot execute — and this scenario stops every
+  # other node while one writes, leaving nobody to fetch it from. Each node must
+  # therefore own the bytecode before isolation begins.
+  - name: Install collaborative-editor on Node 2
+    type: install_application
+    node: rga-node-2
+    path: ../../dist/com.calimero.collaborative-editor-0.0.0.mpk
+    dev: true
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
+  # that has never held the blob cannot execute — and this scenario stops every
+  # other node while one writes, leaving nobody to fetch it from. Each node must
+  # therefore own the bytecode before isolation begins.
+  - name: Install collaborative-editor on Node 3
+    type: install_application
+    node: rga-node-3
+    path: ../../dist/com.calimero.collaborative-editor-0.0.0.mpk
+    dev: true
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: rga-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - rga-node-2
+      - rga-node-3
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Seed the document from Node 1
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "existing text. "
+
+  - name: Wait for the seed to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rga-node-1, rga-node-2, rga-node-3]
+    timeout: 60
+    trigger_sync: true
+
+  # ---- Round 1: every writer appends its passage, alone ----
+
+  - name: Stop Node 2
+    type: stop_node
+    nodes: [rga-node-2]
+
+  - name: Let the stop on Node 2 take effect
+    type: wait
+    seconds: 6
+
+  - name: Stop Node 3
+    type: stop_node
+    nodes: [rga-node-3]
+
+  - name: Let the stop on Node 3 take effect
+    type: wait
+    seconds: 6
+
+  - name: Read Node 1's isolated view (p1)
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      view_p1: result
+
+  - name: Node 1 must be isolated (p1)
+    type: json_assert
+    statements:
+      - 'json_equal({{view_p1}}, {"output": "existing text. "})'
+
+  - name: Node 1 inserts PASSAGE1
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE1"
+
+  - name: Stop Node 1
+    type: stop_node
+    nodes: [rga-node-1]
+
+  - name: Let the stop on Node 1 take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 2
+    type: start_node
+    nodes: [rga-node-2]
+
+  - name: Let Node 2 finish starting
+    type: wait
+    seconds: 6
+
+  - name: Read Node 2's isolated view (p2)
+    type: call
+    node: rga-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      view_p2: result
+
+  - name: Node 2 must be isolated (p2)
+    type: json_assert
+    statements:
+      - 'json_equal({{view_p2}}, {"output": "existing text. "})'
+
+  - name: Node 2 inserts PASSAGE2
+    type: call
+    node: rga-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE2"
+
+  - name: Stop Node 2
+    type: stop_node
+    nodes: [rga-node-2]
+
+  - name: Let the stop on Node 2 take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 3
+    type: start_node
+    nodes: [rga-node-3]
+
+  - name: Let Node 3 finish starting
+    type: wait
+    seconds: 6
+
+  - name: Read Node 3's isolated view (p3)
+    type: call
+    node: rga-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      view_p3: result
+
+  - name: Node 3 must be isolated (p3)
+    type: json_assert
+    statements:
+      - 'json_equal({{view_p3}}, {"output": "existing text. "})'
+
+  - name: Node 3 inserts PASSAGE3
+    type: call
+    node: rga-node-3
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE3"
+
+  # ---- Round 2: only now does each writer go back for its heading ----
+
+  - name: Stop Node 3
+    type: stop_node
+    nodes: [rga-node-3]
+
+  - name: Let the stop on Node 3 take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 1
+    type: start_node
+    nodes: [rga-node-1]
+
+  - name: Let Node 1 finish starting
+    type: wait
+    seconds: 6
+
+  - name: Read Node 1's isolated view (h1)
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      view_h1: result
+
+  - name: Node 1 must be isolated (h1)
+    type: json_assert
+    statements:
+      - 'json_equal({{view_h1}}, {"output": "existing text. PASSAGE1"})'
+
+  - name: Node 1 inserts HEAD1
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD1"
+
+  - name: Stop Node 1
+    type: stop_node
+    nodes: [rga-node-1]
+
+  - name: Let the stop on Node 1 take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 2
+    type: start_node
+    nodes: [rga-node-2]
+
+  - name: Let Node 2 finish starting
+    type: wait
+    seconds: 6
+
+  - name: Read Node 2's isolated view (h2)
+    type: call
+    node: rga-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      view_h2: result
+
+  - name: Node 2 must be isolated (h2)
+    type: json_assert
+    statements:
+      - 'json_equal({{view_h2}}, {"output": "existing text. PASSAGE2"})'
+
+  - name: Node 2 inserts HEAD2
+    type: call
+    node: rga-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD2"
+
+  - name: Stop Node 2
+    type: stop_node
+    nodes: [rga-node-2]
+
+  - name: Let the stop on Node 2 take effect
+    type: wait
+    seconds: 6
+
+  - name: Start Node 3
+    type: start_node
+    nodes: [rga-node-3]
+
+  - name: Let Node 3 finish starting
+    type: wait
+    seconds: 6
+
+  - name: Read Node 3's isolated view (h3)
+    type: call
+    node: rga-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      view_h3: result
+
+  - name: Node 3 must be isolated (h3)
+    type: json_assert
+    statements:
+      - 'json_equal({{view_h3}}, {"output": "existing text. PASSAGE3"})'
+
+  - name: Node 3 inserts HEAD3
+    type: call
+    node: rga-node-3
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD3"
+
+  # ---- Heal ----
+
+  - name: Start Node 1
+    type: start_node
+    nodes: [rga-node-1]
+
+  - name: Start Node 2
+    type: start_node
+    nodes: [rga-node-2]
+
+  - name: Let the mesh re-form
+    type: wait
+    seconds: 20
+
+  - name: Wait for the three histories to converge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rga-node-1, rga-node-2, rga-node-3]
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read the merged document on Node 1
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node1: result
+
+  - name: Read the merged document on Node 2
+    type: call
+    node: rga-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node2: result
+
+  - name: Read the merged document on Node 3
+    type: call
+    node: rga-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node3: result
+
+  - name: Assert all three replicas converged
+    type: json_assert
+    statements:
+      - 'json_equal({{merged_node1}}, {{merged_node2}})'
+      - 'json_equal({{merged_node2}}, {{merged_node3}})'
+
+  - name: Read the merged length
+    type: call
+    node: rga-node-1
+    context_id: "{{context_id}}"
+    method: get_length
+    outputs:
+      len_node1: result
+
+  - name: Assert nothing was lost or duplicated
+    type: json_assert
+    statements:
+      - 'json_equal({{len_node1}}, {"output": 54})'
+
+  - name: Assert every writer's block is contiguous on Node 1
+    type: assert
+    statements:
+      - "contains({{merged_node1}}, 'HEAD1PASSAGE1')"
+      - "contains({{merged_node1}}, 'HEAD2PASSAGE2')"
+      - "contains({{merged_node1}}, 'HEAD3PASSAGE3')"
+
+  - name: Assert every writer's block is contiguous on Node 2
+    type: assert
+    statements:
+      - "contains({{merged_node2}}, 'HEAD1PASSAGE1')"
+      - "contains({{merged_node2}}, 'HEAD2PASSAGE2')"
+      - "contains({{merged_node2}}, 'HEAD3PASSAGE3')"
+
+  - name: Assert every writer's block is contiguous on Node 3
+    type: assert
+    statements:
+      - "contains({{merged_node3}}, 'HEAD1PASSAGE1')"
+      - "contains({{merged_node3}}, 'HEAD2PASSAGE2')"
+      - "contains({{merged_node3}}, 'HEAD3PASSAGE3')"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

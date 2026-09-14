@@ -32,6 +32,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
 | `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
+| `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
+| `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -39,6 +41,15 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `FrozenStorage`            | Immutable data           | First-write-wins                  | Blob       |
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
+
+`FugueTextSimple` is deliberately absent from that table: it has **no `CrdtType`** of its
+own. It is a **measurement control, not a product collection**, behind the
+off-by-default `fugue-simple` cargo feature and enabled only by `tools/storage-cost`. It is
+the paper's "Tree-Fugue Simple" shape — one storage entity per node — and exists so the
+`FugueText` vs `ReplicatedGrowableArray` win can be split into "Fugue's ordering" and
+"run-length blocks". Do not build on it, do not give it a `CrdtType`, do not grow it. See
+the module doc in `src/collections/fugue_text_simple.rs` and the matrix in
+`.superpowers/sdd/2026-09-02-rga-fugue-rework/variant-matrix-report.md`.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
@@ -132,6 +143,8 @@ function is registered, it returns an error rather than silently falling back to
 | `GCounter`     | `merge_g_counter()`   | Counter::merge() - max per executor   |
 | `PnCounter`    | `merge_pn_counter()`  | Counter::merge() - max per executor   |
 | `Rga`          | `merge_rga()`         | RGA::merge() - union characters       |
+| `FugueText`    | `merge_fugue_text()`  | FugueText::merge() - union blocks     |
+| `FugueTextBlock`| `merge_fugue_text_block()` | Per-block join; the arm the SYNC path reaches* |
 | `LwwRegister`  | Returns incoming      | Timestamp comparison done by caller   |
 | `UnorderedMap` | Returns incoming      | Entries are separate entities*        |
 | `UnorderedSet` | Returns incoming      | Entries are separate entities*        |
@@ -141,6 +154,15 @@ function is registered, it returns an error rather than silently falling back to
 | `Custom`       | `WasmRequired` error  | Variant-only dispatch cannot resolve it — the caller must, using the entry's `CustomTypeId`. See above. |
 
 *These types use "Structured" storage - container metadata only; entries sync separately.
+
+*`FugueTextBlock` is why `FugueText` entries carry their OWN `crdt_type`. An entry element
+is created untagged (`Element::new`), and an untagged entity merges by LWW. That is safe for
+`Rga` (an `RgaChar` is immutable once written, so two replicas never hold different values
+for one key) and UNSAFE for `FugueText`, whose blocks are mutated in place - a run grows when
+an append coalesces into it and shrinks when a mid-run insert splits it. LWW on such a
+collision drops every node only the loser defines. The tag is stamped by
+`FugueText::put_block` and dispatched on the APPLIED path only: a local write is not a merge,
+and joining it against the stored bytes would make a run un-shrinkable.
 
 ### is_builtin_crdt() Definition
 
@@ -183,6 +205,9 @@ src/
 │   ├── unordered_set.rs      # Unordered set
 │   ├── vector.rs             # Vector CRDT
 │   ├── rga.rs                # RGA (replicated growable array)
+│   ├── fugue.rs              # Pure Tree-Fugue algorithm (no storage)
+│   ├── fugue_text.rs         # Storage-backed Fugue text, run-length blocks
+│   ├── fugue_text_simple.rs  # Cost control: one entity per node (feature `fugue-simple`)
 │   ├── root.rs               # Root collection
 │   ├── nested.rs             # Nested CRDTs
 │   ├── nested_map.rs         # Nested map

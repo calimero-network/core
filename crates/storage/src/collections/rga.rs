@@ -377,7 +377,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// # Precondition: timestamp uniqueness per RGA
     ///
     /// Each character's `CharId` is `(timestamp, seq)` where `seq` is the
-    /// byte offset within the inserted string (always starting at 0). If a
+    /// character index within the inserted string (always starting at 0). If a
     /// caller invokes this method twice on the same `ReplicatedGrowableArray`
     /// with the same `timestamp`, the second call's characters will collide
     /// with the first's on `(timestamp, 0..)` and silently overwrite them in
@@ -649,6 +649,16 @@ mod merge_mode_tests {
                                 // re-linearized visible length that get_text() reflects.
         assert_eq!(rga.len().unwrap(), 1);
         assert_eq!(rga.len().unwrap(), rga.get_text().unwrap().chars().count());
+    }
+
+    #[test]
+    fn positions_are_char_indices_not_byte_offsets() {
+        env::reset_for_testing();
+        let mut rga = Root::new(ReplicatedGrowableArray::new);
+        rga.insert_str(0, "héllo wörld").unwrap();
+        // 'é' is two bytes; if positions were byte offsets this would split it.
+        rga.insert(5, '!').unwrap();
+        assert_eq!(rga.get_text().unwrap(), "héllo! wörld");
     }
 }
 
