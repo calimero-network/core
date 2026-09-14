@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
 
-use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
+use calimero_account::{
+    AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff, RootPublicKey,
+};
 use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
@@ -72,7 +74,7 @@ struct SubgroupSlot {
 /// Candidate handoffs at one `(account, epoch)` slot, keyed by
 /// `(new_root_sign_pk, signature)` so no candidate can ever displace another —
 /// see `absorb_handoff` for why displacement was exploitable.
-type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
+type HandoffCandidates = BTreeMap<([u8; 34], [u8; 64]), RootKeyHandoff>;
 
 /// How many candidate handoffs one `(account, epoch)` slot may retain.
 ///
@@ -678,18 +680,31 @@ impl ScopeState {
     /// the incoming key's bytes, which is arbitrary but identical everywhere.
     fn absorb_handoff(&mut self, handoff: RootKeyHandoff) {
         let key = (handoff.account, handoff.from_epoch);
-        // Keyed by new-root key AND signature, so a candidate can never DISPLACE
-        // another. Keying on the new-root key alone was not enough: that key is
-        // broadcast in the clear, so an attacker could author a handoff reusing it
-        // with a garbage signature, land on the identical map key, overwrite the
-        // legitimate correctly-signed entry, and put the rollback straight back.
-        // Nothing is overwritten now, so the walk always still has the real one to
-        // find. New-root key first in the tuple keeps the ascending tie-break
-        // between two rotations an account genuinely signed itself.
-        let candidate = (
-            *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
-            handoff.signature,
-        );
+        // Keyed by new-root key AND the signed PAYLOAD, so a candidate can never
+        // DISPLACE another. Keying on the new-root key alone was not enough: that
+        // key is broadcast in the clear, so an attacker could author a handoff
+        // reusing it with a garbage signature, land on the identical map key,
+        // overwrite the legitimate correctly-signed entry, and put the rollback
+        // straight back. Nothing is overwritten now, so the walk always still has
+        // the real one to find. New-root key first in the tuple keeps the
+        // ascending tie-break between two rotations an account genuinely signed
+        // itself.
+        //
+        // UNRESOLVED (design risk R3): keying on the signature assumes DETERMINISTIC
+        // signatures. Ed25519 is; ECDSA in a secure element is not, and none offers
+        // RFC 6979 — so a P-256 root re-signing the SAME handoff mints a fresh entry
+        // every time and can evict the legitimate one past MAX_HANDOFF_CANDIDATES.
+        //
+        // Keying on the payload digest instead was tried and is WRONG: a forged
+        // handoff reusing the real new key has the SAME payload, so it displaces the
+        // real entry — which is precisely the attack the signature is here to stop.
+        // Three tests catch it: `a_forged_handoff_reusing_the_real_new_key_cannot_
+        // displace_it`, `a_padded_candidate_slot_stays_bounded_and_order_independent`,
+        // and `the_adversarial_account_workload_converges`.
+        //
+        // The two requirements genuinely conflict and resolving them needs the
+        // owners of this convergence argument, not a drive-by fix. Left as-is.
+        let candidate = (handoff.new_root_sign_pk.to_wire(), handoff.signature);
         let slot = self.handoffs.entry(key).or_default();
         let _ = slot.insert(candidate, handoff);
 
@@ -775,7 +790,7 @@ impl ScopeState {
             .iter()
             .map(|(account, genesis)| {
                 let mut epoch = 0u32;
-                let mut root_pk = genesis.root_sign_pk;
+                let mut root_pk = RootPublicKey::from(genesis.root_sign_pk);
                 while let Some(candidates) = self.handoffs.get(&(*account, epoch)) {
                     // The first candidate that VERIFIES wins, in ascending
                     // new-root-key order. Keeping every candidate and choosing
@@ -794,7 +809,7 @@ impl ScopeState {
                     // genuinely concurrent rotations the account signed itself.
                     let Some(handoff) = candidates.values().find(|candidate| {
                         root_pk
-                            .verify_raw_signature(&candidate.payload(), &candidate.signature)
+                            .verify(&candidate.payload(), &candidate.signature)
                             .is_ok()
                     }) else {
                         break;
@@ -1147,7 +1162,9 @@ impl ScopeState {
         for (account, binding) in &accounts {
             hasher.update(account.as_bytes());
             hasher.update(binding.epoch.to_le_bytes());
-            hasher.update(AsRef::<[u8; 32]>::as_ref(&binding.root_pk));
+            // Tagged, fixed-width: this folds into `governance_hash`, so the
+            // encoding is consensus-visible and must distinguish algorithms.
+            hasher.update(binding.root_pk.to_wire());
         }
         for (device, binding) in &self.live_devices(&accounts) {
             hasher.update(device.as_bytes());

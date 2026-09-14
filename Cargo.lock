@@ -969,6 +969,7 @@ dependencies = [
  "borsh",
  "calimero-primitives",
  "hex",
+ "p256",
  "thiserror 2.0.20",
 ]
 

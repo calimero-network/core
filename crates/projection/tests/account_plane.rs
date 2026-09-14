@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use calimero_account::{
-    AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+    AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff, RootPublicKey,
 };
 use calimero_authz::{authorize, Rejected};
 use calimero_context_config::types::ContextGroupId;
@@ -83,7 +83,7 @@ impl Account {
             &self.root,
             self.id,
             self.epoch,
-            &new_root.public_key(),
+            &RootPublicKey::from(new_root.public_key()),
         )
         .expect("sign handoff");
         self.chain.push(handoff);
@@ -459,7 +459,7 @@ fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
     fx.push(mallory.link_op(&mallory_device, 70, fx.head.clone()));
 
     let mut forged = real;
-    forged.new_root_sign_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+    forged.new_root_sign_pk = RootPublicKey::Ed25519([0u8; 32]);
     let poison = mallory_device.sign_op(
         80,
         fx.head.clone(),
@@ -1426,7 +1426,7 @@ fn no_unauthorized_op_writes_another_accounts_plane_state() {
     // capped and evicts by key order, so a ground key crowds the real rotation
     // out and the chain walk stops before reaching it.
     let mut forged = genuine_handoff;
-    forged.new_root_sign_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+    forged.new_root_sign_pk = RootPublicKey::Ed25519([0u8; 32]);
 
     // Grouped, because the sharpest shape needs more than one op: a single forged
     // candidate is absorbed harmlessly (the walk skips what does not verify), so
@@ -1498,8 +1498,7 @@ fn no_unauthorized_op_writes_another_accounts_plane_state() {
                     // Low bytes, so every one of these sorts below a real key and
                     // the eviction keeps them over the victim's rotation.
                     key_bytes[31] = i;
-                    pad.new_root_sign_pk =
-                        calimero_primitives::identity::PublicKey::from(key_bytes);
+                    pad.new_root_sign_pk = RootPublicKey::Ed25519(key_bytes);
                     mallory_device.sign_op(
                         120 + u64::from(i),
                         fx.head.clone(),
@@ -1877,7 +1876,7 @@ fn a_stranger_cannot_freeze_an_account_by_padding_its_epoch_slot() {
     // Comfortably past MAX_HANDOFF_CANDIDATES (8).
     for i in 0..12u8 {
         let mut forged = real;
-        forged.new_root_sign_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+        forged.new_root_sign_pk = RootPublicKey::Ed25519([0u8; 32]);
         forged.signature = [i; 64];
         fx.push(mallory_device.sign_op(
             100 + u64::from(i),
@@ -1899,7 +1898,7 @@ fn a_stranger_cannot_freeze_an_account_by_padding_its_epoch_slot() {
     );
     assert_eq!(
         resolved.root_pk,
-        key(12).public_key(),
+        RootPublicKey::from(key(12).public_key()),
         "the victim must resolve to the key it actually rotated onto"
     );
 }

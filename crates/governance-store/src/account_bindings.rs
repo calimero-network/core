@@ -30,6 +30,7 @@
 
 use calimero_account::{
     verify_device_cert, AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff,
+    RootPublicKey,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
@@ -647,7 +648,10 @@ impl<'a> AccountBindingRepository<'a> {
                 account: handoff.account,
             }));
         };
-        let (epoch, root_pk) = (current.epoch, PublicKey::from(current.root_pk));
+        // A stored 32-byte row is an Ed25519 key by construction: the row predates
+        // the tagged type, and nothing can have written a P-256 key into it (see
+        // the refusal below).
+        let (epoch, root_pk) = (current.epoch, RootPublicKey::Ed25519(current.root_pk));
         if handoff.from_epoch != epoch {
             return Ok(Err(BindingRejected::RotationNotContinuous {
                 expected: epoch,
@@ -655,17 +659,33 @@ impl<'a> AccountBindingRepository<'a> {
             }));
         }
         if root_pk
-            .verify_raw_signature(&handoff.payload(), &handoff.signature)
+            .verify(&handoff.payload(), &handoff.signature)
             .is_err()
         {
             return Ok(Err(BindingRejected::RotationSignatureInvalid));
         }
 
+        // POC LIMIT (design risk R2): `GroupAccountKeyValue.root_pk` is a fixed
+        // `[u8; 32]` and a compressed P-256 key is 33. Widening it changes a
+        // persisted borsh row, and there is NO store-row schema version anywhere
+        // in the tree — `PERSIST_SCHEMA_VERSION` governs only the peer cache. So
+        // this refuses loudly rather than silently truncating or quietly storing
+        // an unverifiable key. Resolving R2 (widen the row, or store `H(key)` as a
+        // content address) is a prerequisite for rotating onto hardware on the
+        // live path.
+        let RootPublicKey::Ed25519(new_root) = handoff.new_root_sign_pk else {
+            eyre::bail!(
+                "cannot persist a {} root key: the account-key row is a fixed 32 bytes and \
+                 has no schema version (design risk R2)",
+                handoff.new_root_sign_pk.algorithm(),
+            );
+        };
+
         self.store.handle().put(
             &key,
             &GroupAccountKeyValue {
                 epoch: epoch.saturating_add(1),
-                root_pk: *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
+                root_pk: new_root,
             },
         )?;
         Ok(Ok(()))
@@ -1139,8 +1159,13 @@ mod tests {
             )
             .expect("sign")
         };
-        let handoff =
-            RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
+        let handoff = RootKeyHandoff::sign(
+            &key(1),
+            account,
+            0,
+            &RootPublicKey::from(key(2).public_key()),
+        )
+        .expect("sign");
 
         // Certified at epoch 1 so the rotation does not supersede them and mask
         // the collision property.
@@ -1246,8 +1271,13 @@ mod tests {
             .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0))
             .expect("store")
             .expect("admitted");
-        let handoff =
-            RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
+        let handoff = RootKeyHandoff::sign(
+            &key(1),
+            account,
+            0,
+            &RootPublicKey::from(key(2).public_key()),
+        )
+        .expect("sign");
         repo.apply_rotation(&gid, &handoff)
             .expect("store")
             .expect("rotated");
@@ -1321,8 +1351,13 @@ mod tests {
         let gid = test_group_id();
         let repo = AccountBindingRepository::new(&store);
         let g = genesis_for(1);
-        let handoff =
-            RootKeyHandoff::sign(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
+        let handoff = RootKeyHandoff::sign(
+            &key(1),
+            g.account_id(),
+            0,
+            &RootPublicKey::from(key(2).public_key()),
+        )
+        .expect("sign");
         assert_eq!(
             repo.apply_rotation(&gid, &handoff).expect("store"),
             Err(BindingRejected::RotationAccountUnknown {
@@ -1350,7 +1385,13 @@ mod tests {
             .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0))
             .expect("store")
             .expect("admitted");
-        let first = RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
+        let first = RootKeyHandoff::sign(
+            &key(1),
+            account,
+            0,
+            &RootPublicKey::from(key(2).public_key()),
+        )
+        .expect("sign");
         repo.apply_rotation(&gid, &first)
             .expect("store")
             .expect("rotated");
@@ -1367,8 +1408,13 @@ mod tests {
         );
 
         // ...and so is a handoff that skips ahead.
-        let skipped =
-            RootKeyHandoff::sign(&key(2), account, 3, &key(4).public_key()).expect("sign");
+        let skipped = RootKeyHandoff::sign(
+            &key(2),
+            account,
+            3,
+            &RootPublicKey::from(key(4).public_key()),
+        )
+        .expect("sign");
         assert_eq!(
             repo.apply_rotation(&gid, &skipped).expect("store"),
             Err(BindingRejected::RotationNotContinuous {
@@ -1552,8 +1598,13 @@ mod tests {
             .apply_link(&gid, &c, &[], &cert_for(&c, &key(3), 8, 0, 0))
             .expect("store")
             .expect("admitted");
-        let handoff = RootKeyHandoff::sign(&key(3), c.account_id(), 0, &key(4).public_key())
-            .expect("sign handoff");
+        let handoff = RootKeyHandoff::sign(
+            &key(3),
+            c.account_id(),
+            0,
+            &RootPublicKey::from(key(4).public_key()),
+        )
+        .expect("sign handoff");
         repo.apply_rotation(&gid, &handoff)
             .expect("store")
             .expect("rotated");

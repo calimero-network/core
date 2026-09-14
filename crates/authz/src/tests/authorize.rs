@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use calimero_account::{AccountId, DeviceId, KemPublicKey, RootKeyHandoff};
+use calimero_account::{AccountId, DeviceId, KemPublicKey, RootKeyHandoff, RootPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
@@ -158,7 +158,9 @@ fn a_rotation_authored_by_another_account_is_refused_with_the_roles_named() {
     let handoff = RootKeyHandoff {
         account: owner,
         from_epoch: 0,
-        new_root_sign_pk: calimero_primitives::identity::PrivateKey::from([0x33; 32]).public_key(),
+        new_root_sign_pk: RootPublicKey::from(
+            calimero_primitives::identity::PrivateKey::from([0x33; 32]).public_key(),
+        ),
         signature: [0u8; 64],
     };
     let op = op_with(stranger, OpPayload::AccountKeysRotated { handoff });
@@ -442,7 +444,7 @@ fn the_two_rotation_refusals_are_told_apart() {
     let handoff_from_epoch = |from_epoch: u32| RootKeyHandoff {
         account: owner,
         from_epoch,
-        new_root_sign_pk: new_key.public_key(),
+        new_root_sign_pk: RootPublicKey::from(new_key.public_key()),
         signature: [0u8; 64],
     };
 
@@ -467,7 +469,7 @@ fn the_two_rotation_refusals_are_told_apart() {
         owner,
         AccountBinding {
             epoch: 1,
-            root_pk: root_sk.public_key(),
+            root_pk: RootPublicKey::from(root_sk.public_key()),
         },
     );
     assert_eq!(

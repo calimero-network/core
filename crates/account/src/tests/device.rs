@@ -1,5 +1,6 @@
 //! The device id's stability, and every field a certificate has to commit to.
 
+use crate::root_pk::RootPublicKey;
 use std::collections::HashSet;
 
 use calimero_primitives::identity::DeviceId;
@@ -298,7 +299,9 @@ fn a_cert_minted_under_a_rotated_key_verifies_against_the_chain() {
     let (r0, r1, dev) = (key(1), key(2), key(5));
     let g = genesis_for(&r0);
     let account = g.account_id();
-    let chain = [RootKeyHandoff::sign(&r0, account, 0, &r1.public_key()).expect("sign")];
+    let chain = [
+        RootKeyHandoff::sign(&r0, account, 0, &RootPublicKey::from(r1.public_key())).expect("sign"),
+    ];
 
     let cert = DeviceCert::sign(
         &r1,
@@ -323,7 +326,9 @@ fn minting_with_the_wrong_key_for_the_claimed_epoch_fails_verification() {
     let (r0, r1, dev) = (key(1), key(2), key(5));
     let g = genesis_for(&r0);
     let account = g.account_id();
-    let chain = [RootKeyHandoff::sign(&r0, account, 0, &r1.public_key()).expect("sign")];
+    let chain = [
+        RootKeyHandoff::sign(&r0, account, 0, &RootPublicKey::from(r1.public_key())).expect("sign"),
+    ];
 
     let cert = DeviceCert::sign(
         &r0, // superseded key...

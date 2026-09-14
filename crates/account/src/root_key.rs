@@ -39,7 +39,9 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
+use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey};
+
+use crate::root_pk::RootPublicKey;
 
 use crate::account::{AccountGenesis, ACCOUNT_GENESIS_VERSION};
 use crate::domain::HANDOFF_SIGN_DOMAIN;
@@ -63,7 +65,10 @@ pub struct RootKeyHandoff {
     /// Epoch of the key that signs this handoff.
     pub from_epoch: u32,
     /// The incoming key, which becomes epoch `from_epoch + 1`.
-    pub new_root_sign_pk: PublicKey,
+    ///
+    /// Algorithm-tagged, because this is the one place a root key may be
+    /// something other than Ed25519 — see [`RootPublicKey`].
+    pub new_root_sign_pk: RootPublicKey,
     /// Signature by the epoch-`from_epoch` root key over
     /// [`RootKeyHandoff::signing_payload`].
     pub signature: [u8; 64],
@@ -76,15 +81,14 @@ impl RootKeyHandoff {
     pub fn signing_payload(
         account: AccountId,
         from_epoch: u32,
-        new_root_sign_pk: &PublicKey,
+        new_root_sign_pk: &RootPublicKey,
     ) -> [u8; 32] {
+        // The key is hashed in its TAGGED form, so a P-256 key and an Ed25519 key
+        // that happened to share 32 bytes could never produce the same preimage.
+        let tagged = new_root_sign_pk.to_wire();
         domain_hash(
             HANDOFF_SIGN_DOMAIN,
-            &[
-                account.as_bytes(),
-                &from_epoch.to_le_bytes(),
-                new_root_sign_pk.as_ref(),
-            ],
+            &[account.as_bytes(), &from_epoch.to_le_bytes(), &tagged],
         )
     }
 
@@ -105,7 +109,7 @@ impl RootKeyHandoff {
         current_root_sk: &PrivateKey,
         account: AccountId,
         from_epoch: u32,
-        new_root_sign_pk: &PublicKey,
+        new_root_sign_pk: &RootPublicKey,
     ) -> Result<Self, AccountError> {
         let payload = Self::signing_payload(account, from_epoch, new_root_sign_pk);
         Ok(Self {
@@ -136,7 +140,7 @@ pub fn root_key_at_epoch(
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
     epoch: u32,
-) -> Result<PublicKey, AccountError> {
+) -> Result<RootPublicKey, AccountError> {
     if genesis.version != ACCOUNT_GENESIS_VERSION {
         return Err(AccountError::UnsupportedVersion {
             found: genesis.version,
@@ -166,7 +170,10 @@ pub fn root_key_at_epoch(
     }
 
     let account = genesis.account_id();
-    let mut current = genesis.root_sign_pk;
+    // Epoch 0 is always Ed25519: the genesis is the preimage of the account id
+    // and is deliberately untagged, so an account is born Ed25519 and rotates onto
+    // anything else.
+    let mut current = RootPublicKey::from(genesis.root_sign_pk);
 
     for (index, handoff) in chain.iter().take(needed).enumerate() {
         // `index` is bounded by the chain length, as above.
@@ -184,7 +191,7 @@ pub fn root_key_at_epoch(
         // position — which is what makes the chain an authorization chain
         // rather than a list of assertions.
         if current
-            .verify_raw_signature(&handoff.payload(), &handoff.signature)
+            .verify(&handoff.payload(), &handoff.signature)
             .is_err()
         {
             return Err(AccountError::HandoffSignatureInvalid { epoch: expected });
