@@ -40,6 +40,7 @@ fn every_request_body_is_a_closed_set() {
         admin::GroupMemberApiInput,
         admin::RemoveGroupMembersApiRequest,
         admin::UpdateMemberRoleApiRequest,
+        admin::SealToAccountApiRequest,
         admin::SetMetadataApiRequest,
         admin::DetachContextFromGroupApiRequest,
         admin::UpgradeGroupApiRequest,

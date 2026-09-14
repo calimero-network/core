@@ -10,9 +10,9 @@ use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, ListSubgroupsApiResponse, NamespaceApiResponse,
     NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
     RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
-    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
-    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateMemberRoleApiResponse,
-    UpgradeGroupApiResponse,
+    SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
+    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -700,5 +700,37 @@ impl Report for GetMetadataApiResponse {
 impl Report for SetMetadataApiResponse {
     fn report(&self) {
         println!("{}", "Metadata updated successfully".green());
+    }
+}
+
+impl Report for SealToAccountApiResponse {
+    fn report(&self) {
+        // Every field, because all of them are needed to open the envelope and
+        // the holder cannot re-derive any of them. Printed rather than
+        // summarised for the same reason: a human copying this out has to get
+        // the whole thing, and `--output-format json` is the path a script
+        // should take.
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Field").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec![
+            "Account root epoch".to_owned(),
+            self.data.account_root_epoch.to_string(),
+        ]);
+        let _ = table.add_row(vec![
+            "Ephemeral public key".to_owned(),
+            self.data.ephemeral_public_key.clone(),
+        ]);
+        let _ = table.add_row(vec!["Nonce".to_owned(), self.data.nonce.clone()]);
+        let _ = table.add_row(vec!["Ciphertext".to_owned(), self.data.ciphertext.clone()]);
+        println!("{table}");
+        println!(
+            "{}",
+            "Sealed to the account root. This proves confidentiality, not authorship: \
+             anyone knowing the root public key could have produced it."
+                .yellow()
+        );
     }
 }

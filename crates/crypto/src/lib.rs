@@ -472,6 +472,30 @@ mod tests {
     }
 
     #[test]
+    fn no_private_key_material_reaches_the_envelope() {
+        // The envelope is handed to an untrusted service and stored there, so a
+        // field added later that happened to carry a secret would be a silent
+        // key disclosure. This looks for the actual bytes rather than reasoning
+        // about the struct, so it keeps biting if the shape changes.
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec())
+            .expect("sealing must succeed");
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(AsRef::<[u8; 32]>::as_ref(&envelope.ephemeral_public_key));
+        wire.extend_from_slice(&envelope.nonce);
+        wire.extend_from_slice(&envelope.ciphertext);
+
+        assert!(
+            !wire
+                .windows(32)
+                .any(|window| window == root.as_bytes().as_slice()),
+            "the account root private key must not appear anywhere in the envelope",
+        );
+    }
+
+    #[test]
     fn sealing_to_a_small_order_key_is_refused() {
         // Inherited from SharedKey::new, and worth pinning at this layer too: a
         // small-order recipient key collapses the agreement into a tiny
