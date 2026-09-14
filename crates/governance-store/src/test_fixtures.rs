@@ -25,7 +25,7 @@ use rand::rngs::SysRng;
 /// Returned as a pair so a test can mint SEVERAL credentials under one account —
 /// a rejoin, or a person's second device — which is the whole distinction the
 /// account plane exists to draw.
-pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
+pub fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
     let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     (root_sk, genesis)
@@ -41,12 +41,12 @@ pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenes
 /// for the wrong reason, since no device in the crate could decrypt anything.
 /// Deriving both halves from the seed keeps the fixture faithful and lets a test
 /// assert the positive direction too.
-pub(super) fn device_kem_secret(device: [u8; 32]) -> calimero_crypto::X25519SecretKey {
+pub fn device_kem_secret(device: [u8; 32]) -> calimero_crypto::X25519SecretKey {
     calimero_crypto::X25519SecretKey::from(device)
 }
 
 /// Certify `sign_pk` as `device` under an existing account root.
-pub(super) fn join_account_for(
+pub fn join_account_for(
     root_sk: &PrivateKey,
     genesis: calimero_account::AccountGenesis,
     sign_pk: &PublicKey,
@@ -79,7 +79,7 @@ pub(super) fn join_account_for(
 /// credential can no longer reach the code a test would be aiming at, because
 /// naming a member means naming the account its credential certifies and the
 /// signer/member check refuses the pair first.
-pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredential> {
+pub fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredential> {
     // The account root is derived from the signing key, NOT random, so the same
     // key always yields the same account. Tests name a member once and then use
     // it across several ops — a rejoin, a removal, a later assertion — and a
@@ -96,7 +96,7 @@ pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredentia
 }
 
 /// The account [`real_join_account`] certifies for this signing key.
-pub(super) fn account_for(sign_pk: &PublicKey) -> AccountId {
+pub fn account_for(sign_pk: &PublicKey) -> AccountId {
     real_join_account(sign_pk).statement.account
 }
 
@@ -110,7 +110,7 @@ pub(super) fn account_for(sign_pk: &PublicKey) -> AccountId {
 ///
 /// Use [`test_store_without_account_root`] to model the root-free node
 /// deliberately.
-pub(super) fn test_store() -> Store {
+pub fn test_store() -> Store {
     let store = test_store_without_account_root();
     crate::NodeDeviceRepository::new(&store)
         .provision_account_root()
@@ -123,11 +123,11 @@ pub(super) fn test_store() -> Store {
 /// It holds no signing root, so anything that must certify a device — its own or
 /// anyone's — fails. That is the point: such a node's device is enabled by a
 /// certificate its account root signed elsewhere.
-pub(super) fn test_store_without_account_root() -> Store {
+pub fn test_store_without_account_root() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
 
-pub(super) fn test_group_id() -> ContextGroupId {
+pub fn test_group_id() -> ContextGroupId {
     ContextGroupId::from([0xAA; 32])
 }
 
@@ -137,7 +137,7 @@ pub(super) fn test_group_id() -> ContextGroupId {
 /// against actual post-apply state will see a mismatch — tests that
 /// hit the apply path either ignore the mismatch (it's a warn-log,
 /// not a hard reject) or use the real `compute_*` helpers.
-pub(super) fn dummy_member_removed_op(member: AccountId) -> GroupOp {
+pub fn dummy_member_removed_op(member: AccountId) -> GroupOp {
     GroupOp::MemberRemoved {
         member,
         expected_group_state_hash: [0u8; 32],
@@ -145,7 +145,7 @@ pub(super) fn dummy_member_removed_op(member: AccountId) -> GroupOp {
     }
 }
 
-pub(super) fn test_meta() -> GroupMetaValue {
+pub fn test_meta() -> GroupMetaValue {
     GroupMetaValue {
         target: GroupTarget {
             application_id: ApplicationId::from([0xCC; 32]),
@@ -163,7 +163,7 @@ pub(super) fn test_meta() -> GroupMetaValue {
 
 /// Variant of [`test_meta`] that wires both the admin and owner pin to the
 /// supplied account. Used by tests that want a specific admin.
-pub(super) fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
+pub fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
     GroupMetaValue {
         target: GroupTarget {
             application_id: ApplicationId::from([0xCC; 32]),
@@ -185,10 +185,7 @@ pub(super) fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
 /// caller can sign ops and seed subgroup metas. Collapses the
 /// meta-save + add_member + store_identity setup duplicated across the
 /// namespace apply tests.
-pub(super) fn bootstrap_namespace_with_admin(
-    store: &Store,
-    ns_id: [u8; 32],
-) -> (PrivateKey, PublicKey) {
+pub fn bootstrap_namespace_with_admin(store: &Store, ns_id: [u8; 32]) -> (PrivateKey, PublicKey) {
     bootstrap_namespace_with_admin_account(store, ns_id).0
 }
 
@@ -199,7 +196,7 @@ pub(super) fn bootstrap_namespace_with_admin(
 /// fixture that wrote the row without the binding would produce an admin whose
 /// own ops are refused, and every apply test built on it would fail for a reason
 /// that has nothing to do with what it is testing.
-pub(super) fn bootstrap_namespace_with_admin_account(
+pub fn bootstrap_namespace_with_admin_account(
     store: &Store,
     ns_id: [u8; 32],
 ) -> ((PrivateKey, PublicKey), AccountId) {
@@ -227,7 +224,7 @@ pub(super) fn bootstrap_namespace_with_admin_account(
 /// and the apply verifies the credential certifies the key that signed the op.
 /// A test that hand-built the op without one would be rejected before it
 /// reached whatever it meant to exercise.
-pub(super) fn namespace_genesis_for(
+pub fn namespace_genesis_for(
     founder_sk: &PrivateKey,
 ) -> (
     calimero_context_client::local_governance::NamespaceOp,
@@ -259,7 +256,7 @@ fn founder_credential(founder_sk: &PrivateKey) -> Box<JoinAccountCredential> {
 }
 
 /// The account [`namespace_genesis_for`] will establish for this founder.
-pub(super) fn founder_account_for(founder_sk: &PrivateKey) -> AccountId {
+pub fn founder_account_for(founder_sk: &PrivateKey) -> AccountId {
     founder_credential(founder_sk).statement.account
 }
 
@@ -269,7 +266,7 @@ pub(super) fn founder_account_for(founder_sk: &PrivateKey) -> AccountId {
 /// When the two disagree the apply refuses, which is the point: naming somebody
 /// else as founder no longer needs a separate `signer == founder` check,
 /// because the credential cannot certify a key it was not issued for.
-pub(super) fn namespace_genesis_naming(
+pub fn namespace_genesis_naming(
     founder: AccountId,
     signer_sk: &PrivateKey,
 ) -> calimero_context_client::local_governance::NamespaceOp {
@@ -289,11 +286,7 @@ pub(super) fn namespace_genesis_naming(
 ///
 /// The key is derived from `seed` so a test that wants two distinct
 /// participants gets them, and a test that re-derives one gets the same key.
-pub(super) fn enrolled(
-    store: &Store,
-    namespace: &ContextGroupId,
-    seed: u8,
-) -> (PublicKey, AccountId) {
+pub fn enrolled(store: &Store, namespace: &ContextGroupId, seed: u8) -> (PublicKey, AccountId) {
     let sign_pk = PublicKey::from([seed; 32]);
     let account = enrol_member(store, namespace, &sign_pk);
     (sign_pk, account)
@@ -307,11 +300,7 @@ pub(super) fn enrolled(
 ///
 /// Self-endorsing is fine here for the same reason genesis self-endorses: the
 /// caller writes the member row alongside, so the endorser IS a member.
-pub(super) fn enrol_member(
-    store: &Store,
-    namespace: &ContextGroupId,
-    sign_pk: &PublicKey,
-) -> AccountId {
+pub fn enrol_member(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> AccountId {
     let credential = real_join_account(sign_pk);
     let account = credential.statement.account;
     let bindings = crate::AccountBindingRepository::new(store);
@@ -335,7 +324,7 @@ pub(super) fn enrol_member(
 /// [`device_kem_secret`] derives the agreement secret from that same device id, so
 /// this reconstructs what the member's own node would hold — which is what lets a
 /// test open an envelope addressed to that device, and prove the leaver's cannot.
-pub(super) fn device_secret_for(sign_pk: &PublicKey) -> crate::DeviceSecret {
+pub fn device_secret_for(sign_pk: &PublicKey) -> crate::DeviceSecret {
     let device: [u8; 32] = *sign_pk.as_ref();
     crate::DeviceSecret {
         device: calimero_account::DeviceId::from(device),
@@ -346,7 +335,7 @@ pub(super) fn device_secret_for(sign_pk: &PublicKey) -> crate::DeviceSecret {
 /// Shortcut for nesting one group under another inside tests, unwrapping
 /// the result. Used by membership-path tests across both `tests.rs` and
 /// `membership/tests.rs`.
-pub(super) fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
+pub fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
     NamespaceRepository::new(store).nest(parent, child).unwrap();
 }
 
@@ -364,11 +353,7 @@ pub(super) fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &Cont
 /// any downward walk will not see these synthetic edges. Use this
 /// helper only for tests that walk upward (resolve, check_path,
 /// is_open_chain_to_namespace, enumerate_inherited).
-pub(super) fn nest_for_test_unchecked(
-    store: &Store,
-    parent: &ContextGroupId,
-    child: &ContextGroupId,
-) {
+pub fn nest_for_test_unchecked(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
     let mut handle = store.handle();
     handle
         .put(&GroupParentRef::new(child.to_bytes()), &parent.to_bytes())
@@ -388,7 +373,7 @@ pub(super) fn nest_for_test_unchecked(
 /// Tests must pass a NON-EMPTY `parents`: the empty-cut contract requires real
 /// authorizers to abstain (`None`) on an empty cut, and a test that passed `&[]`
 /// would silently be exercising the live path it means to rule out.
-pub(super) struct FixedAuthorizer(pub(super) bool);
+pub struct FixedAuthorizer(pub bool);
 
 impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
     fn is_admin_at_cut(
@@ -440,7 +425,7 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
 
 /// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
 /// non-emptiness matters (see [`FixedAuthorizer`]).
-pub(super) const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
+pub const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
 
 /// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) standing in for a
 /// projection that has NOT folded the ancestry the op's cut cites — the
@@ -451,7 +436,7 @@ pub(super) const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
 /// from "no apply-auth context", so the gate quietly answered from the live rows —
 /// a different cut — and two replicas decided the same op differently. A gate that
 /// honors `can_resolve_cut` refuses to answer instead.
-pub(super) struct UnresolvableAuthorizer;
+pub struct UnresolvableAuthorizer;
 
 impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
     fn is_admin_at_cut(
@@ -520,7 +505,7 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
 /// Returns the account, the device it minted, and the credential that proves the
 /// pair — the credential so a SECOND store can record the same binding, which is
 /// what a cross-store test needs to have both ends agree on one device.
-pub(super) fn enrol_local_device(
+pub fn enrol_local_device(
     store: &Store,
     namespace: &ContextGroupId,
     sign_pk: &PublicKey,
@@ -558,7 +543,7 @@ pub(super) fn enrol_local_device(
 /// Split out so a cross-store test can put the SAME device in both ends: the
 /// responder has to resolve the requester's device to decide it is live, and the
 /// requester has to hold the secret to open what comes back.
-pub(super) fn record_credential(
+pub fn record_credential(
     store: &Store,
     namespace: &ContextGroupId,
     credential: &JoinAccountCredential,
@@ -646,7 +631,7 @@ impl actix::Handler<calimero_node_primitives::messages::NodeMessage> for Capturi
 /// publish step resolves without a swarm. The `TempDir` keeps the stub
 /// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
 /// never touches it, but `NodeClient::new` requires a real `BlobManager`).
-pub(super) async fn namespace_publish_fixture() -> (
+pub async fn namespace_publish_fixture() -> (
     Store,
     calimero_node_primitives::client::NodeClient,
     calimero_context_client::local_governance::AckRouter,
@@ -749,7 +734,7 @@ pub(super) async fn namespace_publish_fixture() -> (
 /// Mirrors what `relay_signed_join` does in production: seal the joiner's op
 /// under the namespace key and hand back the envelope contents for the caller to
 /// sign as the admitter.
-pub(super) fn relay_seal_for_test(
+pub fn relay_seal_for_test(
     store: &Store,
     ns_gid: ContextGroupId,
     inner: &calimero_context_client::local_governance::SignedNamespaceOp,
@@ -775,7 +760,7 @@ pub(super) fn relay_seal_for_test(
     }
 }
 
-pub(super) fn seal_for_test(
+pub fn seal_for_test(
     store: &Store,
     ns_gid: ContextGroupId,
     op: calimero_context_client::local_governance::RootOp,

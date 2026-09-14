@@ -1639,8 +1639,13 @@ pub fn get_context_service_name(
     Ok(handle.get(&key)?.map(|v| v.service_name.to_string()))
 }
 
-#[cfg(test)]
-mod test_fixtures;
+// Gated `any(test, feature = "testing")` rather than plain `test`, matching
+// `calimero-storage`: a dependent crate's tests cannot see another crate's
+// `cfg(test)` items, and `calimero-server`'s authorization tests for
+// `seal_to_account` need the same enrolled-member setup rather than a second,
+// subtly different copy of it. Off by default, so a normal build is unchanged.
+#[cfg(any(test, feature = "testing"))]
+pub mod test_fixtures;
 
 #[cfg(test)]
 mod tests;

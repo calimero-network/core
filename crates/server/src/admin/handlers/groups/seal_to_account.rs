@@ -171,3 +171,122 @@ pub async fn handler(
         Err(err) => parse_api_error(err).into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_governance_store::test_fixtures::{
+        bootstrap_namespace_with_admin_account, enrol_member, test_store,
+    };
+    use calimero_governance_store::MembershipRepository;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::*;
+
+    const NS: [u8; 32] = [0xAA; 32];
+
+    fn namespace() -> ContextGroupId {
+        ContextGroupId::from(NS)
+    }
+
+    /// An enrolled account that is a member of the namespace.
+    fn member_of(store: &Store) -> AccountId {
+        let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let account = enrol_member(store, &namespace(), &sk.public_key());
+        MembershipRepository::new(store)
+            .add_member(&namespace(), &account, GroupMemberRole::Member)
+            .expect("add the member");
+        account
+    }
+
+    /// Enrolled — so it has binding rows and a resolvable root — but never added
+    /// to this group. The distinction the second gate turns on.
+    fn enrolled_outsider(store: &Store) -> AccountId {
+        let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        enrol_member(store, &namespace(), &sk.public_key())
+    }
+
+    #[test]
+    fn a_member_can_seal_to_another_member() {
+        let store = test_store();
+        // Makes this node's identity the namespace admin, so `caller_account`
+        // resolves to an account the membership rows know.
+        let _ = bootstrap_namespace_with_admin_account(&store, NS);
+        let target = member_of(&store);
+
+        let sealed = seal(&store, &namespace(), target, b"recovery".to_vec())
+            .expect("the seal itself should not error");
+        let (epoch, envelope) = sealed.expect("a member target resolves to a root");
+
+        assert!(!envelope.ciphertext.is_empty());
+        // The CURRENT epoch travels with the envelope. Asserting it is present
+        // rather than asserting `0`: a fixture that rotated would make a
+        // hard-coded 0 a false negative about a real regression.
+        let _ = epoch;
+    }
+
+    #[test]
+    fn a_caller_that_is_not_a_member_is_refused() {
+        // The namespace has an identity and enrolled accounts, but this node's
+        // identity names nobody the membership rows match — the same position a
+        // node holding the group key but removed from the group is in.
+        let store = test_store();
+        let ns = namespace();
+        // Raw bytes alongside the key, because `store_identity` takes the secret
+        // as `&[u8; 32]` — the same shape `bootstrap_namespace_with_admin_account`
+        // builds it in.
+        let outsider_sk_bytes: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
+        let outsider_sk = PrivateKey::from(outsider_sk_bytes);
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .store_identity(&ns, &outsider_sk.public_key(), &outsider_sk_bytes)
+            .expect("store the node identity");
+        let _ = enrol_member(&store, &ns, &outsider_sk.public_key());
+        let target = member_of(&store);
+
+        let err = seal(&store, &ns, target, b"recovery".to_vec())
+            .expect_err("a non-member caller must be refused, not served");
+        // Asserted on the refusal the caller actually sees, not on the variant
+        // name: eyre renders `Display`, and the message is the part that has to
+        // stay a refusal rather than drift into something a caller could mistake
+        // for "no such account".
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("not a member of group"),
+            "expected the membership refusal, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_account_this_group_does_not_know_is_absent_rather_than_refused() {
+        // `None` becomes one 404 shared with "no such account", so the route
+        // cannot be used to discover which accounts exist on this node. A
+        // distinct error here would leak exactly that.
+        let store = test_store();
+        let _ = bootstrap_namespace_with_admin_account(&store, NS);
+        let outsider = enrolled_outsider(&store);
+
+        let out = seal(&store, &namespace(), outsider, b"recovery".to_vec())
+            .expect("an unknown target is a state, not an error");
+        assert!(out.is_none(), "a non-member target must not be sealed to");
+    }
+
+    #[test]
+    fn an_unknown_account_is_indistinguishable_from_a_non_member() {
+        // The property the shared 404 rests on, asserted as a property: both
+        // reach the caller as the same `None`.
+        let store = test_store();
+        let _ = bootstrap_namespace_with_admin_account(&store, NS);
+
+        let never_enrolled = AccountId::from([0x5E; 32]);
+        let enrolled_but_outside = enrolled_outsider(&store);
+
+        let a = seal(&store, &namespace(), never_enrolled, b"x".to_vec()).expect("no error");
+        let b = seal(&store, &namespace(), enrolled_but_outside, b"x".to_vec()).expect("no error");
+        assert!(
+            a.is_none() && b.is_none(),
+            "both must read as simply absent"
+        );
+    }
+}
