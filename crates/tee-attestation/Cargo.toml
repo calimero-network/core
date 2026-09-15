@@ -13,6 +13,11 @@ publish = true
 # generation/detection/verification). Default OFF so production builds contain
 # no mock-attestation code. See crate docs.
 mock-attestation = []
+# Builds `calimero-tee-verify`, a thin JSON-in/JSON-out wrapper over
+# `verify_attestation` for callers that are not Rust — mdma's manager is Python
+# and has to verify a quote a fleet node submits (calimero-network/mdma#225).
+# Off by default so an ordinary build of this library pulls no async runtime.
+cli = ["dep:tokio"]
 
 [dependencies]
 eyre.workspace = true
@@ -29,6 +34,15 @@ tdx-quote.workspace = true
 
 # Server primitives for Quote type
 calimero-server-primitives.workspace = true
+
+# Only for the `cli` feature's binary: `verify_attestation` is async and the
+# library itself needs no runtime.
+tokio = { workspace = true, features = ["rt", "macros"], optional = true }
+
+[[bin]]
+name = "calimero-tee-verify"
+path = "src/bin/verify_cli.rs"
+required-features = ["cli"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 configfs-tsm.workspace = true
