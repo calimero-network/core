@@ -71,7 +71,7 @@ use crate::error::AccountError;
 use crate::signed::{sign_payload, AccountProof, Verified};
 
 /// An author's authorization for one executor to perform one intent, once.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct Warrant {
     /// The context the intent runs in. A warrant is scoped, or it authorises the
     /// same request everywhere.
@@ -97,28 +97,24 @@ pub struct Warrant {
     /// signed against the narrower one. A semver would not do: two builds can
     /// share a version and differ in exactly the way that matters.
     pub app_version: ApplicationId,
-    /// `H(method)` alone, under its own domain.
+    /// The method this warrant authorizes, in the clear.
     ///
-    /// Carried so a peer can select a **per-method write-set** without learning
-    /// what was called: it hashes the method names it already has from the app's
-    /// embedded ABI and looks for this one. Plaintext here would have broadcast
-    /// application-level intent to every non-member subscribed to the topic,
-    /// which is the property the module header exists to protect, and would have
-    /// made this struct variable-width — see [`Self::signing_payload`].
-    pub method_hash: [u8; 32],
+    /// Carried so a peer can select a **per-method write-set** directly, without
+    /// having to reverse a hash against the app's ABI. The arguments are still
+    /// committed to rather than carried — see [`Self::intent_hash`].
+    pub method: String,
     /// `H(method ‖ args)`. Never the plaintext; see the module header.
     pub intent_hash: [u8; 32],
-    /// Commitment to the account state the author saw when signing.
+    /// The account-log heads the author saw when signing.
     ///
-    /// A hash rather than the heads themselves, for the same two reasons as
-    /// [`Self::method_hash`]: the heads are a variable-length set, and they are
-    /// already carried by the change this warrant rides with, so repeating them
-    /// here would be a second spelling that could disagree with the first.
-    pub account_heads: [u8; 32],
-    /// Commitment to the governance heads the author's view descended from.
+    /// Bounded on decode by [`MAX_WARRANT_CITED_HEADS`]: this arrives from
+    /// untrusted bytes, and an unbounded set would be an allocation primitive
+    /// handed to exactly the party a warrant protects against.
+    pub account_heads: Vec<[u8; 32]>,
+    /// The governance heads the author's view descended from.
     ///
-    /// Checked against the delta's own `governance_position`, which carries the
-    /// heads in full.
+    /// Bounded on decode by [`MAX_WARRANT_CITED_HEADS`], for the same reason as
+    /// [`Self::account_heads`].
     ///
     /// **Its provenance is only as good as its source, and that is an accepted
     /// risk rather than a guarantee.** A floor the relay supplied is a floor the
@@ -127,7 +123,7 @@ pub struct Warrant {
     /// to come from the account's own devices or a co-signing peer outside the
     /// relay's operator. Until it does, this detects an honest relay's staleness
     /// and does not constrain a dishonest one.
-    pub governance_floor: [u8; 32],
+    pub governance_floor: Vec<[u8; 32]>,
     /// Monotonic per author **device**.
     ///
     /// Per device rather than per account because two devices of one account are
@@ -140,34 +136,89 @@ pub struct Warrant {
     pub signature: [u8; 64],
 }
 
+/// Most cited heads a warrant may carry, per field.
+///
+/// Applied before any signature work, for the reason
+/// [`MAX_ROOT_KEY_HANDOFFS`](crate::MAX_ROOT_KEY_HANDOFFS) is: a warrant arrives
+/// from untrusted bytes, and an unbounded `Vec` there is an allocation primitive
+/// handed to exactly the party the warrant protects against.
+pub const MAX_WARRANT_CITED_HEADS: usize = 64;
+
+/// The values a warrant is minted from, minus the ones derived for you.
+///
+/// A struct rather than eleven arguments to [`Warrant::sign`]: four of them
+/// are `[u8; 32]` and two are `Vec<[u8; 32]>`, so positionally they are
+/// interchangeable to the compiler and not to the verifier. Named fields
+/// make a swap a compile error instead of a signature that verifies against
+/// the wrong thing.
+///
+/// `author_device_key` is absent on purpose — it is derived from the secret,
+/// so a caller cannot name a key it does not hold.
+#[derive(Clone, Debug)]
+pub struct WarrantTerms {
+    /// The context the intent runs in.
+    pub context: ContextId,
+    /// The account the change is authorized for and attributed to.
+    pub author_account: AccountId,
+    /// The operator authorized to act.
+    pub executor: AccountId,
+    /// The exact application, as the content address of its bytecode.
+    pub app_version: ApplicationId,
+    /// The method, in the clear.
+    pub method: String,
+    /// `H(method ‖ args)` — see [`Warrant::intent_hash`].
+    pub intent_hash: [u8; 32],
+    /// Account-log heads the author saw.
+    pub account_heads: Vec<[u8; 32]>,
+    /// Governance heads the author's view descended from.
+    pub governance_floor: Vec<[u8; 32]>,
+    /// Monotonic per author device.
+    pub nonce: u64,
+    /// Wall-clock bound, in seconds.
+    pub not_after: u64,
+}
+
 impl Warrant {
     /// The canonical bytes an author signs.
     ///
-    /// Assembled in one place so the client that mints a warrant, the executor
-    /// that spends it and every peer that checks it cannot drift. Covers every
-    /// field except the signature itself.
+    /// Takes `&self` rather than a parameter per field: with the v2 field set
+    /// that list runs to eleven, and eleven positional arguments of which four
+    /// are `[u8; 32]` is a swap waiting to happen. The struct already names them.
+    ///
+    /// Covers every field except the signature itself.
     #[must_use]
-    pub fn signing_payload(
-        context: ContextId,
-        author_account: AccountId,
-        author_device_key: &PublicKey,
-        executor: AccountId,
-        intent_hash: &[u8; 32],
-        nonce: u64,
-        not_after: u64,
-    ) -> [u8; 32] {
-        domain_hash(
-            WARRANT_SIGN_DOMAIN,
-            &[
-                context.digest(),
-                author_account.as_bytes(),
-                AsRef::<[u8; 32]>::as_ref(author_device_key),
-                executor.as_bytes(),
-                intent_hash,
-                &nonce.to_le_bytes(),
-                &not_after.to_le_bytes(),
-            ],
-        )
+    pub fn signing_payload(&self) -> [u8; 32] {
+        // Each cited-head list is preceded by its own length. `domain_hash`
+        // length-prefixes every part, so the heads are individually unambiguous
+        // -- but the two lists are adjacent, and without the counts
+        // `account_heads = [a, b], governance_floor = []` would hash identically
+        // to `[a], [b]`.
+        let account_len = (self.account_heads.len() as u64).to_le_bytes();
+        let governance_len = (self.governance_floor.len() as u64).to_le_bytes();
+
+        let mut parts: Vec<&[u8]> =
+            Vec::with_capacity(10 + self.account_heads.len() + self.governance_floor.len());
+        parts.push(self.context.digest());
+        parts.push(self.author_account.as_bytes());
+        parts.push(AsRef::<[u8; 32]>::as_ref(&self.author_device_key));
+        parts.push(self.executor.as_bytes());
+        parts.push(AsRef::<[u8; 32]>::as_ref(&self.app_version));
+        parts.push(self.method.as_bytes());
+        parts.push(&self.intent_hash);
+        parts.push(&account_len);
+        for head in &self.account_heads {
+            parts.push(head);
+        }
+        parts.push(&governance_len);
+        for head in &self.governance_floor {
+            parts.push(head);
+        }
+        let nonce = self.nonce.to_le_bytes();
+        let not_after = self.not_after.to_le_bytes();
+        parts.push(&nonce);
+        parts.push(&not_after);
+
+        domain_hash(WARRANT_SIGN_DOMAIN, &parts)
     }
 
     /// The commitment a warrant carries in place of the intent itself.
@@ -203,50 +254,49 @@ impl Warrant {
     /// cannot sign, and the field would stop meaning "who authorized this".
     ///
     /// # Errors
-    /// [`AccountError::SigningFailed`] if the key refuses to sign.
-    pub fn sign(
-        author_device_sk: &PrivateKey,
-        context: ContextId,
-        author_account: AccountId,
-        executor: AccountId,
-        intent_hash: [u8; 32],
-        nonce: u64,
-        not_after: u64,
-    ) -> Result<Self, AccountError> {
-        let author_device_key = author_device_sk.public_key();
-        let payload = Self::signing_payload(
-            context,
-            author_account,
-            &author_device_key,
-            executor,
-            &intent_hash,
-            nonce,
-            not_after,
-        );
-        Ok(Self {
-            context,
-            author_account,
-            author_device_key,
-            executor,
-            intent_hash,
-            nonce,
-            not_after,
-            signature: sign_payload(author_device_sk, &payload)?,
-        })
+    /// [`AccountError::SigningFailed`] if the key refuses to sign, or
+    /// [`AccountError::WarrantTooManyCitedHeads`] if either cited-head list is
+    /// over [`MAX_WARRANT_CITED_HEADS`] — refused at mint so a warrant that
+    /// could never be verified is never produced.
+    pub fn sign(author_device_sk: &PrivateKey, terms: WarrantTerms) -> Result<Self, AccountError> {
+        let mut warrant = Self {
+            context: terms.context,
+            author_account: terms.author_account,
+            author_device_key: author_device_sk.public_key(),
+            executor: terms.executor,
+            app_version: terms.app_version,
+            method: terms.method,
+            intent_hash: terms.intent_hash,
+            account_heads: terms.account_heads,
+            governance_floor: terms.governance_floor,
+            nonce: terms.nonce,
+            not_after: terms.not_after,
+            // Placeholder: `signing_payload` covers every field but this one, so
+            // its value cannot affect what is signed.
+            signature: [0u8; 64],
+        };
+        warrant.check_cited_head_bounds()?;
+
+        let payload = warrant.signing_payload();
+        warrant.signature = sign_payload(author_device_sk, &payload)?;
+        Ok(warrant)
     }
 
-    /// The payload this warrant's own fields address.
-    #[must_use]
-    fn payload(&self) -> [u8; 32] {
-        Self::signing_payload(
-            self.context,
-            self.author_account,
-            &self.author_device_key,
-            self.executor,
-            &self.intent_hash,
-            self.nonce,
-            self.not_after,
-        )
+    /// Refuse cited-head lists larger than [`MAX_WARRANT_CITED_HEADS`].
+    ///
+    /// Checked before any Ed25519 work, not after: the point is to bound what an
+    /// untrusted warrant can make this node allocate and hash, and a check that
+    /// runs after the expensive part bounds nothing.
+    fn check_cited_head_bounds(&self) -> Result<(), AccountError> {
+        for len in [self.account_heads.len(), self.governance_floor.len()] {
+            if len > MAX_WARRANT_CITED_HEADS {
+                return Err(AccountError::WarrantTooManyCitedHeads {
+                    len,
+                    max: MAX_WARRANT_CITED_HEADS,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Check the signature against the device key the warrant names.
@@ -258,8 +308,9 @@ impl Warrant {
     /// # Errors
     /// [`AccountError::WarrantSignatureInvalid`] if the signature does not verify.
     pub fn verify_signature(&self) -> Result<(), AccountError> {
+        self.check_cited_head_bounds()?;
         self.author_device_key
-            .verify_raw_signature(&self.payload(), &self.signature)
+            .verify_raw_signature(&self.signing_payload(), &self.signature)
             .map_err(|_ignored| AccountError::WarrantSignatureInvalid)
     }
 
@@ -359,7 +410,10 @@ impl Delegation {
             return Err(AccountError::WarrantProofKeyMismatch);
         }
 
-        Ok(Verified::new(*self.warrant))
+        // Cloned rather than moved: the v2 field set owns a `String` and two
+        // `Vec`s, so `Warrant` is no longer `Copy`. The clone is one per
+        // verified delegation, against the Ed25519 verifications just done.
+        Ok(Verified::new((*self.warrant).clone()))
     }
 }
 
