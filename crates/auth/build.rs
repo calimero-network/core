@@ -24,7 +24,7 @@ const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 /// itself was a live GitHub round-trip on every build - outside the download cache
 /// below, so a warm cache did not spare it. Bumping is a deliberate edit here.
 /// `CALIMERO_AUTH_FRONTEND_VERSION=latest` still opts back in per build.
-const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.3";
+const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.4";
 const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "master";
 const CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL: &str = "https://github.com/{repo}/releases/latest";
 
