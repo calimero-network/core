@@ -71,7 +71,7 @@ use crate::ContextManager;
 ///
 /// An empty list is every namespace, which is what a caller who names no
 /// application asks for and what the fan-out did unconditionally before.
-fn namespaces_in_scope(
+pub(crate) fn namespaces_in_scope(
     store: &Store,
     applications: &[ApplicationId],
 ) -> EyreResult<Vec<ContextGroupId>> {

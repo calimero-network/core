@@ -99,7 +99,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices};
+pub use self::device_link::{bind_device_everywhere, bind_known_devices, revoke_device_in};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
