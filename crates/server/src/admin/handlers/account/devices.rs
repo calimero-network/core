@@ -53,12 +53,14 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
     // Unfiltered on purpose: a revoked device is reported as revoked, not hidden.
     if let Some(namespace) = devices.account_namespace()? {
         for cert in AccountDeviceRegistry::new(store, namespace).all_devices()? {
-            let entry = by_device.entry(cert.device()).or_insert_with(|| Draft {
-                signing_key: cert.proof.statement.sign_pk,
-                applications: Vec::new(),
-                namespaces: Vec::new(),
-            });
-            entry.applications = cert.applications;
+            let _replaced = by_device.insert(
+                cert.device(),
+                Draft {
+                    signing_key: cert.proof.statement.sign_pk,
+                    applications: cert.applications,
+                    namespaces: Vec::new(),
+                },
+            );
         }
     }
 

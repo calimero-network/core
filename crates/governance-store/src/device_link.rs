@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     AccountBindingRepository, AccountDeviceRegistry, GroupKeyring, KnownDeviceCert, MetaRepository,
@@ -219,16 +219,6 @@ async fn ensure_bound(
     }
 }
 
-/// Every device of this account the registry serves, or none when this node
-/// follows no account namespace and so has no registry to read.
-fn known_devices(store: &Store) -> EyreResult<Vec<KnownDeviceCert>> {
-    let Some(account_namespace) = NodeDeviceRepository::new(store).account_namespace()? else {
-        debug!("no account namespace here, so this node knows no devices to bind");
-        return Ok(Vec::new());
-    };
-    AccountDeviceRegistry::new(store, account_namespace).devices()
-}
-
 /// Extend every device the account's registry names into `namespace`.
 ///
 /// Runs when this node gains a namespace and holds its scope key, on every node
@@ -243,7 +233,15 @@ pub async fn bind_known_devices(
     namespace: &ContextGroupId,
     signer_sk: &PrivateKey,
 ) -> Vec<(DeviceId, BindOutcome)> {
-    let certs = match known_devices(store) {
+    // A node following no account namespace has no registry, and so no siblings.
+    let read = NodeDeviceRepository::new(store)
+        .account_namespace()
+        .and_then(|found| {
+            found.map_or(Ok(Vec::new()), |ns| {
+                AccountDeviceRegistry::new(store, ns).devices()
+            })
+        });
+    let certs = match read {
         Ok(certs) => certs,
         Err(err) => {
             warn!(namespace_id = ?namespace, %err,
