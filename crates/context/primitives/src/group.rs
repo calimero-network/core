@@ -39,7 +39,7 @@ pub struct GroupUpgradeInfo {
 pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
     pub bytecode_id: Option<BytecodeId>,
-    pub application_id: ApplicationId,
+    pub application_id: Option<ApplicationId>, // `None` only for the app-less account namespace
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
     /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
@@ -727,6 +727,7 @@ impl Message for AdmitTeeNodeRequest {
 pub struct PairDeviceInitRequest {
     pub namespaces: Vec<ContextGroupId>, // what the device subscribes to; only the holder knows the set
     pub genesis: AccountGenesis,         // the nonce travels because the device id hashes over it
+    pub account_namespace: Option<ContextGroupId>, // recorded and followed like one more namespace
 }
 
 /// What the pairing device minted, for the account holder to certify.

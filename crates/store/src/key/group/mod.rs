@@ -2708,6 +2708,48 @@ impl FromKeyParts for NodeDeviceCertificate {
     }
 }
 
+/// Prefix for [`NodeAccountNamespace`].
+pub const NODE_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x4E;
+
+/// The account namespace this node follows, a singleton: written by the holder at
+/// creation and by a paired device at `pair-init`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountNamespace(Key<(GroupPrefix,)>);
+
+impl NodeAccountNamespace {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_NAMESPACE_PREFIX])))
+    }
+}
+
+impl Default for NodeAccountNamespace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeAccountNamespace {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountNamespace {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 impl Default for NodeDeviceIdentity {
     fn default() -> Self {
         Self::new()
@@ -2859,6 +2901,13 @@ pub struct NodeDeviceIdentityValue {
 pub struct NodeDeviceCertificateValue {
     /// Borsh-encoded `AccountProof<DeviceCert>`, verbatim as it arrived.
     pub proof: Vec<u8>,
+}
+
+/// The 32-byte id of the account namespace this node follows.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountNamespaceValue {
+    pub namespace_id: [u8; 32],
 }
 
 /// Redacted by hand, never derived. `kem_secret` is the only thing that can
@@ -3754,6 +3803,7 @@ mod tests {
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
             ("NODE_ACCOUNT_DEVICE_CERT", NODE_ACCOUNT_DEVICE_CERT_PREFIX),
+            ("NODE_ACCOUNT_NAMESPACE", NODE_ACCOUNT_NAMESPACE_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
             (
