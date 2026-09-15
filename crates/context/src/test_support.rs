@@ -94,8 +94,8 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
 }
 
 /// A second device of this node's account, certified by its root exactly as
-/// `pair_device_complete` would, and scoped to `applications` (empty is every
-/// application).
+/// `pair_device_complete` would, recorded in the account namespace's registry
+/// and scoped to `applications` (empty is every application).
 ///
 /// The id is `seed` repeated rather than minted, so the store's key-ordered scan
 /// visits these devices in a known order.
@@ -128,9 +128,15 @@ pub fn certify_device(
         )
         .expect("the account root signs its own device cert"),
     };
-    devices
-        .remember_device_cert(&proof, applications)
-        .expect("remember the device");
+    // The registry lives in the account namespace, which a node holding a root
+    // names from that root before anything has created it.
+    let namespace = devices
+        .account_namespace()
+        .expect("read the account namespace")
+        .expect("a store with an account root names one");
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
+        .record(&proof, applications, 0)
+        .expect("record the device in the account namespace");
     device
 }
 
@@ -298,6 +304,7 @@ pub(crate) mod actor {
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_node_primitives::client::NodeClient;
     use calimero_node_primitives::test_fixtures::node_client_over;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -343,6 +350,7 @@ pub(crate) mod actor {
     /// rows it wrote.
     pub(crate) struct Harness {
         pub manager: Addr<ContextManager>,
+        pub node_client: NodeClient,
         pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
@@ -405,7 +413,7 @@ pub(crate) mod actor {
         let context = LazyRecipient::new();
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
-        let manager = ContextManager::new(store, node_client, context_client.clone(), None);
+        let manager = ContextManager::new(store, node_client.clone(), context_client.clone(), None);
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager
@@ -413,6 +421,7 @@ pub(crate) mod actor {
 
         Harness {
             manager,
+            node_client,
             context_client,
             subscribed,
             _dirs: (data_dir, blob_dir),

@@ -169,14 +169,10 @@ pub enum ContextError {
 
     /// This node holds no certificate for the device a relink names.
     ///
-    /// A `404`: the thing being addressed does not exist here. Only a device this
-    /// node paired, or learned of by folding another holder's link, can be
-    /// extended - the certificate is what a link carries, and it cannot be
-    /// rebuilt from folded state.
+    /// A `404`: only a device this account's registry names can be relinked.
     #[error(
         "this node holds no certificate for device {device}, so it cannot extend it \
-         anywhere. Only a device of this account that was paired from here, or whose \
-         link this node has folded, can be relinked"
+         anywhere. Only a device this account's registry names can be relinked"
     )]
     PairingUnknownDevice {
         /// The device the caller named (for the message only).

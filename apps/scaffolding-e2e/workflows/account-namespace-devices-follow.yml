@@ -28,11 +28,12 @@ steps:
   # A script, because merobox's account_pair step has no field for the account namespace id.
   - name: Pair node-2 with only the account namespace, and check both sides agree
     type: script
-    script: scripts/account-namespace-pair.sh
+    script: scripts/account-namespace-pair-into.sh
     target: local
     args:
       - account-ns-node-1
       - account-ns-node-2
+      - '-'
       - '-'
 
   - name: The laptop's namespace listing stays empty
