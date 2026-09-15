@@ -98,6 +98,30 @@ pub struct ExecuteRequest {
     /// run observes is derived from this bundle after it verifies, not read from
     /// a field a caller could set.
     pub delegation: Option<Box<calimero_account::Delegation>>,
+    /// The authenticated caller's account, when this is a **read** performed on
+    /// behalf of somebody who runs no node.
+    ///
+    /// `None` is every other call, self-authored or delegated.
+    ///
+    /// This is the one principal input that arrives as a plain account with no
+    /// signature over it, so why it does not break
+    /// [`principal::Principal`](../../../context/src/handlers/execute/principal.rs)'s
+    /// "never deserialized from a request" invariant is worth stating:
+    ///
+    /// * It is set by the server from the **authenticated session** (the JWT's
+    ///   subject, surfaced as `X-Auth-User`), never read from a request body. A
+    ///   caller can choose which account it authenticates as and nothing more.
+    /// * It is refused unless the method's ABI intent is
+    ///   [`MethodIntent::ReadOnly`](calimero_wasm_abi::schema::MethodIntent),
+    ///   failing closed on `Unspecified`. So it cannot reach a path that writes.
+    /// * Membership of the target context's owning group is re-checked against
+    ///   it on every call, never cached from the session — a relay serves
+    ///   several tenants.
+    ///
+    /// A write still needs a warrant, and that is not an oversight: a warrant
+    /// proves to peers who never saw the HTTP request that the author consented.
+    /// A read has no peer to convince, because it publishes nothing.
+    pub read_as: Option<calimero_account::AccountId>,
 }
 
 #[derive(Debug)]

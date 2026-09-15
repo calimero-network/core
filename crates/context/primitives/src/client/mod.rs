@@ -1628,6 +1628,7 @@ impl ContextClient {
                     xcall_origin,
                     xcall_depth,
                     delegation,
+                    read_as: None,
                 },
                 outcome: sender,
             })
@@ -1641,6 +1642,66 @@ impl ContextClient {
 
         receiver.await.map_err(|err| {
             tracing::error!(%err, "context manager dropped the execute response channel");
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Ipc,
+            }
+        })?
+    }
+
+    /// Run a **read** as `account`, an authenticated caller that runs no node.
+    ///
+    /// Deliberately a separate entry point rather than another parameter on
+    /// [`Self::execute_with_origin`]. That signature already carries eight
+    /// arguments, four of which only a write uses — atomics, xcall origin and
+    /// depth, and the delegation bundle. A read needs none of them, and every
+    /// one it had to pass as `None` would be a place to later pass something
+    /// else by mistake. Here the write-only knobs are unreachable rather than
+    /// merely unset.
+    ///
+    /// `executor` is this node's own key: it identifies the replica, and a read
+    /// writes nothing for a replica to own. The account is what the run observes
+    /// and what membership is checked against — see
+    /// [`ExecuteRequest::read_as`] for why supplying it here is not a caller
+    /// asserting its own identity.
+    ///
+    /// # Errors
+    /// [`ExecuteError`] for a method that is not read-only, a caller that is not
+    /// a member, or any ordinary execution failure.
+    pub async fn query_as(
+        &self,
+        context_id: &ContextId,
+        account: calimero_account::AccountId,
+        executor: &PublicKey,
+        method: String,
+        payload: Vec<u8>,
+    ) -> Result<ExecuteResponse, ExecuteError> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::Execute {
+                request: ExecuteRequest {
+                    context: *context_id,
+                    executor: *executor,
+                    method,
+                    payload,
+                    atomic: None,
+                    xcall_origin: None,
+                    xcall_depth: 0,
+                    delegation: None,
+                    read_as: Some(account),
+                },
+                outcome: sender,
+            })
+            .await
+            .map_err(|err| {
+                tracing::error!(%err, "context manager mailbox closed during query");
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Ipc,
+                }
+            })?;
+
+        receiver.await.map_err(|err| {
+            tracing::error!(%err, "context manager dropped the query response channel");
             ExecuteError::InternalError {
                 kind: InternalErrorKind::Ipc,
             }
