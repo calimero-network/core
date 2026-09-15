@@ -5,6 +5,9 @@
 # Uses curl against the admin API rather than meroctl: the merod image ships no
 # CLI, so a `target: local` script has none to call.
 
+# The merod merobox runs in binary mode. Not executable means a Docker run.
+MEROD_BIN="${MEROD_BIN:-../../target/debug/merod}"
+
 # Abandon the run, naming what did not hold.
 fail() {
     echo "FAIL: $1" >&2
@@ -38,8 +41,7 @@ node_url() {
 offline_merod() {
     _node="$1"
     shift
-    _bin="${MEROD_BIN:-../../target/debug/merod}"
-    if [ -x "${_bin}" ]; then
+    if [ -x "${MEROD_BIN}" ]; then
         # Searched, as node_url searches, and for the same reason: merobox nests
         # the home one level deeper in binary mode, and has moved it before.
         _config=$(find "data/${_node}" -name config.toml 2>/dev/null | head -1)
@@ -47,7 +49,7 @@ offline_merod() {
             echo "no node home under data/${_node}" >&2
             return 1
         fi
-        "${_bin}" --home "$(dirname "$(dirname "${_config}")")" \
+        "${MEROD_BIN}" --home "$(dirname "$(dirname "${_config}")")" \
             --node "${_node}" "$@"
         return
     fi
@@ -55,16 +57,6 @@ offline_merod() {
         -v "$(pwd)/data/${_node}:/app/data" -e CALIMERO_HOME=/app/data \
         "${MEROD_IMAGE:-merod:local}" \
         merod --home /app/data --node "${_node}" "$@"
-}
-
-# Where <node>'s home is as offline_merod sees it, for an argument that names a
-# file the command has to read.
-offline_home() {
-    if [ -x "${MEROD_BIN:-../../target/debug/merod}" ]; then
-        echo "data/$1"
-    else
-        echo "/app/data"
-    fi
 }
 
 # Authenticate and echo a bearer token.
