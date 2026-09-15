@@ -461,7 +461,34 @@ mod tests {
 
     use calimero_account::{
         AccountGenesis, AccountProof, Delegation, DeviceCert, DeviceId, KemPublicKey, Warrant,
+        WarrantTerms,
     };
+    use calimero_primitives::application::ApplicationId;
+
+    /// The v2 terms these fixtures start from: the delta-auth path reads the
+    /// context, the parties and the intent hash, and none of the fields added in
+    /// #3933, so they are held fixed rather than varied.
+    fn terms(
+        context: ContextId,
+        author_account: calimero_account::AccountId,
+        executor: calimero_account::AccountId,
+        intent_hash: [u8; 32],
+        nonce: u64,
+        not_after: u64,
+    ) -> WarrantTerms {
+        WarrantTerms {
+            context,
+            author_account,
+            executor,
+            app_version: ApplicationId::from([0u8; 32]),
+            method: "send_message".to_owned(),
+            intent_hash,
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce,
+            not_after,
+        }
+    }
 
     /// One party: a root key, the account it addresses, one device under it, and
     /// a root-signed certificate for that device.
@@ -505,12 +532,14 @@ mod tests {
         let executor = party(3, 4, 0x02);
         let warrant = Warrant::sign(
             &author.device_sk,
-            context_id,
-            author.account,
-            executor.account,
-            [0xab; 32],
-            7,
-            1_755_903_600,
+            terms(
+                context_id,
+                author.account,
+                executor.account,
+                [0xab; 32],
+                7,
+                1_755_903_600,
+            ),
         )
         .expect("warrant must sign");
         let delegation = Delegation {
@@ -638,12 +667,14 @@ mod tests {
         // different intent.
         let other_warrant = Warrant::sign(
             &author.device_sk,
-            ctx,
-            author.account,
-            executor.account,
-            [0xcd; 32],
-            8,
-            d.warrant.not_after,
+            terms(
+                ctx,
+                author.account,
+                executor.account,
+                [0xcd; 32],
+                8,
+                d.warrant.not_after,
+            ),
         )
         .unwrap();
         let swapped = Delegation {

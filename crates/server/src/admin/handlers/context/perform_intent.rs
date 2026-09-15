@@ -335,7 +335,13 @@ mod tests {
                 PrivateKey::from([9u8; 32]).public_key(),
             )
             .account_id(),
+            app_version: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            method: METHOD.to_owned(),
             intent_hash: Warrant::intent_hash(METHOD, ARGS),
+            // Cited nothing: this fixture exercises the context/expiry/intent
+            // gate, which does not read the heads.
+            account_heads: vec![],
+            governance_floor: vec![],
             nonce: 1,
             not_after,
             signature: [0u8; 64],

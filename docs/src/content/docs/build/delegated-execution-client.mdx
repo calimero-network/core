@@ -16,16 +16,17 @@ guess. Every field here is quoted from the code that implements it, and anything
 still due to change says so where it appears.
 
 <Aside type="caution" title="Read the status markers">
-**Live** means implemented and callable on a node today. Every exchange on this
-page is now live; the one thing still moving is the warrant's field set, and it is
-marked where it appears rather than left for you to discover from a verification
-failure.
+**Live** means implemented and callable on a node today. Every exchange on this page
+is live, and so is the warrant's field set: #3933 landed it, so the bytes below are
+the bytes to build against. What is *not* yet live is enforcement of three of those
+fields — said where they appear rather than left for you to discover from a
+verification failure.
 </Aside>
 
 | Contract | Status | Tracking |
 |---|---|---|
 | Discovery — where to write and as whom | **Live** | — |
-| Warrant and delegated write | **Live** (field set changes) | [#3933](https://github.com/calimero-network/core/issues/3933) |
+| Warrant and delegated write | **Live**; `app_version` and cited heads signed but not enforced | [#3933](https://github.com/calimero-network/core/issues/3933) |
 | Session — challenge and `LoginStatement` | **Live** | [#3930](https://github.com/calimero-network/core/issues/3930) |
 | Read — an authenticated account reads a context | **Live** | [#3931](https://github.com/calimero-network/core/issues/3931) |
 
@@ -128,14 +129,20 @@ pub struct Warrant {
     pub author_account: AccountId,
     pub author_device_key: PublicKey,
     pub executor: AccountId,
-    pub intent_hash: [u8; 32],
+    pub app_version: ApplicationId,        // the exact build, not a version string
+    pub method: String,                    // in the clear
+    pub intent_hash: [u8; 32],             // H(method ‖ args)
+    pub account_heads: Vec<[u8; 32]>,      // at most 64
+    pub governance_floor: Vec<[u8; 32]>,   // at most 64
     pub nonce: u64,
     pub not_after: u64,
     pub signature: [u8; 64],
 }
 ```
 
-The intent is committed to as a hash, not carried in the clear:
+The *arguments* are committed to as a hash rather than carried; the method itself
+travels openly, so a peer can select a per-method write-set without reversing a hash
+against the app's ABI:
 
 ```rust
 intent_hash = domain_hash(b"calimero.warrant.intent.v1", &[method.as_bytes(), args])
@@ -144,26 +151,49 @@ intent_hash = domain_hash(b"calimero.warrant.intent.v1", &[method.as_bytes(), ar
 And the signature covers, in this order:
 
 ```rust
-signature = sign(domain_hash(b"calimero.warrant.v1", &[
+signature = sign(domain_hash(b"calimero.warrant.v2", &[
     context.digest(),
     author_account.as_bytes(),
-    author_device_key,              // 32 bytes
+    author_device_key,                      // 32 bytes
     executor.as_bytes(),
-    intent_hash,                    // 32 bytes
+    app_version,                            // 32 bytes
+    method.as_bytes(),                      // variable length
+    intent_hash,                            // 32 bytes
+    &(account_heads.len() as u64).to_le_bytes(),
+    ..account_heads,                        // 32 bytes each, in order
+    &(governance_floor.len() as u64).to_le_bytes(),
+    ..governance_floor,                     // 32 bytes each, in order
     &nonce.to_le_bytes(),
     &not_after.to_le_bytes(),
 ]))
 ```
 
-### The field set is changing
+Each head list is preceded by **its own count**, and that is not decoration.
+`domain_hash` length-prefixes every part it is given, so the heads are individually
+unambiguous — but the two lists are adjacent, so without the counts
+`account_heads = [a, b], governance_floor = []` would hash identically to
+`[a], [b]`, and a relay could relabel which plane a head was cited from.
 
-[#3933](https://github.com/calimero-network/core/issues/3933) adds `method` in the clear
-(so peers can select a per-method write-set), `app_version`, and cited `account_heads` /
-`governance_floor`, and may replace `not_after` with a governance height. **Every one of
-those changes the signed bytes**, and the signing domain bumps to `calimero.warrant.v2`.
+<Aside type="caution" title="v1 warrants no longer verify">
+The field set landed in [#3933](https://github.com/calimero-network/core/issues/3933)
+and the signing domain moved from `calimero.warrant.v1` to `calimero.warrant.v2`.
+There is no backwards compatibility and none is planned: a warrant signed under `v1`
+is refused outright rather than left to borsh to reject by accident. Keep the field
+list and the domain constant in one place in your builder.
 
-There is no backwards compatibility: warrants signed under `v1` will stop verifying.
-Build the builder so the field list and the domain constant are in one place.
+Not everything is enforced yet. `app_version` and the two head lists are signed but
+not checked: pinning the build at the cut and selecting write-sets by `method` are
+follow-on work. They are in the signed bytes *now* so a client builds against the
+final encoding once, rather than rewriting its signer when enforcement lands.
+</Aside>
+
+<Aside type="note" title="Where governance_floor comes from matters">
+A floor the relay supplied is a floor the relay chose. A relay that withholds a
+governance op can hand you a stale view and collect a warrant citing it. Take the
+value from the account's own devices or a co-signing peer outside the relay's
+operator; sourcing it from the relay detects an honest relay's staleness and does not
+constrain a dishonest one. This is an accepted risk today, not a guarantee.
+</Aside>
 
 <Aside type="note" title="Why not_after is not checked at apply">
 `not_after` is a wall clock, and a wall clock must never gate an apply. Peers apply at
@@ -459,19 +489,18 @@ The last two rows are the whole reason the prefixes exist: both hash the letters
 `crates/account/src/tests/warrant_wire_fixture.rs`
 
 Inputs: `context` = `0x11`×32, `author_account` = `0x22`×32, `executor` =
-`0x33`×32, `method` = `"set"`, `args` = `{"key":"k","value":"v"}` (exactly those
-bytes, no whitespace), `nonce` = 42, `not_after` = 1700000000, author device
-secret = `0x07` seeded.
+`0x33`×32, `app_version` = `0x44`×32, `method` = `"set"`, `args` =
+`{"key":"k","value":"v"}` (exactly those bytes, no whitespace), `account_heads` =
+`[0x55`×32`]`, `governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` =
+1700000000, author device secret = `0x07` seeded.
 
 ```text
 intent_hash       dc066cc8524c74dc21714174009df536376e3151f5b92f0a676defde599dbae5
-signing preimage  a5d5f7aa368f8d79edd0667f60c41239a7dedaf8765e4e72ef3031bbacd15f35
+signing preimage  cd03cfaad8fb5f5aa143c76f35f39363b6608b820ab318a53ed01be901c7c6c7
 author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
 ```
 
-The full 240-byte encoding, field by field — pure concatenation, every field
-fixed-width, no borsh length prefixes or tags, which is what makes a non-borsh
-implementation viable:
+The full 351-byte encoding, field by field:
 
 ```text
 offset  field              bytes  value
@@ -479,15 +508,32 @@ offset  field              bytes  value
     32  author_account        32  2222…22
     64  author_device_key     32  ea4a6c63…
     96  executor              32  3333…33
-   128  intent_hash           32  dc066cc8…
-   160  nonce                  8  2a00000000000000   (42, little-endian)
-   168  not_after              8  00f1536500000000   (1700000000, little-endian)
-   176  signature             64  a3ddd529…
+   128  app_version           32  4444…44
+   160  method len             4  03000000           (3, little-endian)
+   164  method                 3  736574             ("set")
+   167  intent_hash           32  dc066cc8…
+   199  account_heads len      4  01000000           (1, little-endian)
+   203  account_heads[0]      32  5555…55
+   235  governance_floor len   4  01000000           (1, little-endian)
+   239  governance_floor[0]   32  6666…66
+   271  nonce                  8  2a00000000000000   (42, little-endian)
+   279  not_after              8  00f1536500000000   (1700000000, little-endian)
+   287  signature             64  4007d416…
 ```
 
-Both `u64`s are **little-endian**, here and in `domain_hash`. That is the second
-most common cross-language mistake after the missing length prefix, and it
-produces a warrant that is well-formed and verifies nowhere.
+v1 was pure fixed-width concatenation — no length prefixes, no tags — and v2 gives
+that up on purpose: `method` is a `String` and the two head lists are `Vec`s, so
+three `u32` little-endian counts now sit inside the encoding. The offsets above hold
+only for these inputs; a `method` of another length moves everything after it.
+
+Note the two widths. The counts **inside the borsh encoding** are `u32`; the counts
+the **signing preimage** hashes (above) are `u64`. They are different serializations
+of the same numbers and a builder that reuses one for the other produces a warrant
+that is well-formed and verifies nowhere.
+
+Every integer here is **little-endian**, in the encoding and in `domain_hash` alike.
+That is the second most common cross-language mistake after the missing length
+prefix.
 
 <Aside type="note" title="No stub to run">
 There is no mock server for sections 3 and 4. A stub that verifies shapes but not
