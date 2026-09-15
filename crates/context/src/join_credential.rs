@@ -103,6 +103,23 @@ pub fn build(
     let root = devices
         .require_account_root()
         .wrap_err("join credential: could not resolve this node's account root")?;
+
+    // `ensure_enrolled` would re-mint a row adopted under another account,
+    // destroying the pairing. Refuse until the device's own link has been folded.
+    if let Some(existing) = &existing {
+        eyre::ensure!(
+            existing.account == root.account(),
+            "join credential: this node's device belongs to account {} but its root owns {}; \
+             it is paired into another account and holds no certificate yet, so it cannot \
+             found or join until its link has been folded. Have the account holder republish \
+             the link with `POST /admin-api/account/devices/{}/relink`, or import a \
+             certificate signed offline with `merod account import-cert`",
+            existing.account,
+            root.account(),
+            existing.device(),
+        );
+    }
+
     let enrolled = devices
         .ensure_enrolled(namespace_id)
         .wrap_err("join credential: could not mint this node's device")?;
@@ -318,5 +335,60 @@ mod tests {
             .expect_err("undecodable bytes cannot be presented");
         let msg = format!("{err:#}");
         assert!(msg.contains("import-cert"), "{msg}");
+    }
+
+    /// A paired device that has not yet folded its own link holds no certificate.
+    /// Re-minting it under this node's root would found as a stranger and destroy
+    /// the pairing, so the build refuses instead.
+    #[test]
+    fn a_paired_device_without_its_certificate_is_refused_not_re_minted() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let repo = NodeDeviceRepository::new(&store);
+        let _own_root = repo.provision_account_root().expect("this node's root");
+        let alice_root = PrivateKey::from([0x31; 32]);
+        let paired = repo
+            .adopt_account(AccountGenesis::new(alice_root.public_key()))
+            .expect("pair into Alice's account");
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+
+        let err = build(&store, &ContextGroupId::from([0xAA; 32]), &signing_pk)
+            .expect_err("no certificate yet, so no credential");
+        assert!(
+            err.to_string().contains("paired into another account"),
+            "{err}"
+        );
+
+        let still = repo.get().expect("read").expect("row kept");
+        assert_eq!(
+            still.device(),
+            paired.device(),
+            "the paired device was not re-minted"
+        );
+        assert_eq!(still.account, paired.account);
+        let msg = err.to_string();
+        assert!(msg.contains("/relink"), "{msg}");
+        assert!(msg.contains("import-cert"), "{msg}");
+    }
+
+    /// The guard must not catch the ordinary node: its row is its own account's,
+    /// so it still self-signs rather than being refused.
+    #[test]
+    fn a_rooted_node_whose_device_is_its_own_still_self_signs() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let repo = NodeDeviceRepository::new(&store);
+        let root = repo.provision_account_root().expect("this node's root");
+        let ns = ContextGroupId::from([0xAA; 32]);
+        let mine = repo.ensure_enrolled(&ns).expect("enrol");
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+
+        let credential = build(&store, &ns, &signing_pk).expect("self-sign");
+
+        assert_eq!(credential.statement.account, root.account());
+        assert_eq!(credential.statement.device, mine.device());
+        assert_eq!(
+            credential.verify(root.account()).map(|_| ()),
+            Ok(()),
+            "the account root must be what signed it"
+        );
     }
 }
