@@ -25,10 +25,12 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountRoot, NodeAccountRootValue,
-    NodeDeviceIdentity, NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
+    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
+    NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -44,6 +46,8 @@ use crate::{collect_keys_with_prefix, NamespaceRepository};
 /// absent row and both generate, and the second `put` would win — replacing the
 /// root that already certified this node's devices, which is unrecoverable.
 static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const ACCOUNT_NAMESPACE_TAG: &[u8] = b"calimero/account-namespace/v1"; // domain separator
 
 /// This node's account root — the one key that survives losing every device.
 ///
@@ -96,6 +100,16 @@ impl AccountRoot {
     #[must_use]
     pub fn account(&self) -> AccountId {
         self.genesis().account_id()
+    }
+
+    /// The namespace every device of this account follows. Hashed from the secret, not
+    /// the public key, so an account id alone cannot find it.
+    #[must_use]
+    pub fn account_namespace(&self) -> ContextGroupId {
+        let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_TAG.len() + 32));
+        input.extend_from_slice(ACCOUNT_NAMESPACE_TAG);
+        input.extend_from_slice(self.secret.as_bytes());
+        ContextGroupId::from(*Hash::new(&input))
     }
 
     /// The root as a 24-word BIP-39 mnemonic — the backup an operator writes down.
@@ -622,6 +636,32 @@ impl<'a> NodeDeviceRepository<'a> {
             }))
     }
 
+    /// This node's root, if it holds the account its device speaks for.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn holder_root(&self) -> EyreResult<Option<AccountRoot>> {
+        let Some(root) = self.account_root()? else {
+            return Ok(None);
+        };
+        match self.get()? {
+            Some(held) if held.account != root.account() => Ok(None),
+            _ => Ok(Some(root)),
+        }
+    }
+
+    /// The account namespace this node follows: derived on the holder, else the row
+    /// pair-init recorded, which a caller sets and so never overrides the root.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
+        if let Some(root) = self.holder_root()? {
+            return Ok(Some(root.account_namespace()));
+        }
+        self.stored_account_namespace()
+    }
+
     /// This node's device identity for `namespace`, if it has enrolled one.
     ///
     /// `None` means this node has no device in the namespace, which is not an
@@ -760,44 +800,64 @@ impl<'a> NodeDeviceRepository<'a> {
             .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
     }
 
+    /// The account namespace recorded here, at creation or at pair-init.
+    fn stored_account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NodeAccountNamespace::new())?
+            .map(|value: NodeAccountNamespaceValue| ContextGroupId::from(value.namespace_id)))
+    }
+
+    /// Record the account namespace this node follows.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn store_account_namespace(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        self.store.handle().put(
+            &NodeAccountNamespace::new(),
+            &NodeAccountNamespaceValue {
+                namespace_id: namespace_id.to_bytes(),
+            },
+        )?;
+        Ok(())
+    }
+
     /// Keep the proof a link op carried for THIS device.
     ///
-    /// Returns whether the proof was ours. The write is skipped for a node that
-    /// holds the account's own root, which can self-sign and would lose that
-    /// fallback to a stored import, and for a link whose `device_epoch` does not
-    /// advance on what is already stored: a link op re-runs on every re-gossip and
-    /// every DAG replay, so an equal-or-older epoch overwriting a deliberate
-    /// re-certification would undo it again after each replay.
+    /// The write is skipped for a node that holds the account's own root, which
+    /// can self-sign and would lose that fallback to a stored import, and for a
+    /// link whose `device_epoch` does not advance on what is already stored: a
+    /// link op re-runs on every re-gossip and every DAG replay, so an
+    /// equal-or-older epoch overwriting a deliberate re-certification would undo
+    /// it again after each replay.
     ///
     /// # Errors
     /// Propagates the encoding or store failure.
-    pub fn remember_own_link(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<bool> {
+    pub fn remember_own_link(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
         let Some(held) = self.get()? else {
-            return Ok(false);
+            return Ok(());
         };
         let cert = &proof.statement;
         if held.device() != cert.device || held.account != cert.account {
-            return Ok(false);
+            return Ok(());
         }
         if self
             .account_root()?
             .is_some_and(|root| root.account() == held.account)
         {
-            return Ok(false);
+            return Ok(());
         }
-        let supersedes = match self.imported_certificate()? {
-            // Bytes that decode as nothing carry no epoch to lose to, so an
-            // operator's garbage is replaced rather than pinned forever.
-            Some(stored) => match borsh::from_slice::<AccountProof<DeviceCert>>(&stored) {
-                Ok(kept) => cert.device_epoch > kept.statement.device_epoch,
-                Err(_) => true,
-            },
-            None => true,
-        };
-        if supersedes {
+        // Bytes that decode as nothing carry no epoch to lose to, so an operator's
+        // garbage is replaced rather than pinned forever.
+        if self
+            .imported_certificate()?
+            .and_then(|stored| borsh::from_slice::<AccountProof<DeviceCert>>(&stored).ok())
+            .is_none_or(|kept| cert.device_epoch > kept.statement.device_epoch)
+        {
             self.store_imported_certificate(&borsh::to_vec(proof)?)?;
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Just what the unwrap paths need: this node's device id and agreement
@@ -3065,6 +3125,94 @@ mod tests {
         );
     }
 
+    /// The row a device writes at pair-init and the holder at creation; absent
+    /// means no account namespace is known here.
+    #[test]
+    fn the_account_namespace_row_round_trips() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.stored_account_namespace().expect("read"), None);
+
+        let id = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&id).expect("write");
+
+        assert_eq!(repo.stored_account_namespace().expect("read"), Some(id));
+    }
+
+    /// Derived from the root secret alone, under a tag, so a restored root
+    /// recomputes it and the public account id gives nothing away.
+    #[test]
+    fn the_account_namespace_id_follows_the_root_secret_alone() {
+        let root = AccountRoot {
+            secret: PrivateKey::from([0x31; 32]),
+        };
+        let same = AccountRoot {
+            secret: PrivateKey::from([0x31; 32]),
+        };
+        let other = AccountRoot {
+            secret: PrivateKey::from([0x32; 32]),
+        };
+
+        assert_eq!(root.account_namespace(), same.account_namespace());
+        assert_ne!(root.account_namespace(), other.account_namespace());
+        assert_ne!(
+            root.account_namespace().to_bytes(),
+            *root.public_key(),
+            "not the public key, and not derived from it"
+        );
+    }
+
+    /// A default-initialised node holds a root, but once paired it speaks for an
+    /// account rooted elsewhere, and deriving that account's namespace is not its
+    /// to do.
+    #[test]
+    fn a_node_paired_into_another_account_is_not_its_holder() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let _ = repo
+            .adopt_account(AccountGenesis::new(root(0x53)))
+            .expect("pair into another account");
+
+        assert!(repo.holder_root().expect("read").is_none());
+        assert_eq!(repo.account_namespace().expect("read"), None);
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(recorded));
+    }
+
+    /// The holder names its namespace before anything created it, so an invite
+    /// can carry the id first. The row is caller-settable, so it never displaces
+    /// what the root says.
+    #[test]
+    fn a_holder_derives_its_account_namespace_whatever_the_row_says() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let derived = repo
+            .account_root()
+            .expect("read")
+            .expect("test_store provisions a root")
+            .account_namespace();
+
+        assert_eq!(repo.account_namespace().expect("read"), Some(derived));
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(derived));
+    }
+
+    /// A root-free device knows only what pair-init told it.
+    #[test]
+    fn a_root_free_node_names_only_what_pair_init_recorded() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.account_namespace().expect("read"), None);
+
+        let recorded = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&recorded).expect("write");
+        assert_eq!(repo.account_namespace().expect("read"), Some(recorded));
+    }
+
     /// Re-importing must replace, not refuse.
     ///
     /// Re-certifying a device at a higher epoch is how its keys rotate, and a
@@ -3117,29 +3265,19 @@ mod tests {
         let held = repo
             .adopt_account(AccountGenesis::new(root_sk.public_key()))
             .expect("adopt");
-        let cert = DeviceCert::sign(
-            &root_sk,
-            held.account,
-            held.device(),
-            &root(0x77),
-            &held.kem_public_key(),
-            0,
-            0,
-        )
-        .expect("sign");
-        let proof = AccountProof {
-            genesis: held.genesis,
-            chain: vec![],
-            statement: cert,
-        };
+        let proof = paired_link(&held, &root_sk, 0);
 
-        assert!(repo.remember_own_link(&proof).expect("keep"));
+        repo.remember_own_link(&proof).expect("keep");
 
-        let stored: AccountProof<DeviceCert> =
-            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
-                .expect("decode");
+        let stored = stored_cert(&repo);
         assert_eq!(stored, proof, "byte-exact, root signature included");
         assert_eq!(stored.verify(held.account).map(|_| ()), Ok(()));
+    }
+
+    /// The certificate this node kept, decoded.
+    fn stored_cert(repo: &NodeDeviceRepository<'_>) -> AccountProof<DeviceCert> {
+        borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
+            .expect("decode")
     }
 
     /// A link for the held device, at `device_epoch`.
@@ -3186,15 +3324,12 @@ mod tests {
         let (store, root_sk, held) = paired_node_holding(1);
         let repo = NodeDeviceRepository::new(&store);
 
-        assert!(repo
-            .remember_own_link(&paired_link(&held, &root_sk, 0))
-            .expect("fold"));
+        repo.remember_own_link(&paired_link(&held, &root_sk, 0))
+            .expect("fold");
 
-        let stored: AccountProof<DeviceCert> =
-            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
-                .expect("decode");
         assert_eq!(
-            stored.statement.device_epoch, 1,
+            stored_cert(&repo).statement.device_epoch,
+            1,
             "the epoch-1 certificate must survive the replay"
         );
     }
@@ -3205,35 +3340,24 @@ mod tests {
         let (store, root_sk, held) = paired_node_holding(0);
         let repo = NodeDeviceRepository::new(&store);
 
-        assert!(repo
-            .remember_own_link(&paired_link(&held, &root_sk, 1))
-            .expect("fold"));
+        repo.remember_own_link(&paired_link(&held, &root_sk, 1))
+            .expect("fold");
 
-        let stored: AccountProof<DeviceCert> =
-            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
-                .expect("decode");
-        assert_eq!(stored.statement.device_epoch, 1);
+        assert_eq!(stored_cert(&repo).statement.device_epoch, 1);
     }
 
     /// Bytes that decode as nothing have no epoch to compare, so they cannot win.
     #[test]
     fn undecodable_stored_bytes_are_replaced_by_a_link() {
-        let store = test_store();
+        let (store, root_sk, held) = paired_node_holding(0);
         let repo = NodeDeviceRepository::new(&store);
-        let root_sk = PrivateKey::from([0x31; 32]);
-        let held = repo
-            .adopt_account(AccountGenesis::new(root_sk.public_key()))
-            .expect("adopt");
         repo.store_imported_certificate(&[0xFF; 8])
             .expect("store garbage");
 
         let proof = paired_link(&held, &root_sk, 0);
-        assert!(repo.remember_own_link(&proof).expect("fold"));
+        repo.remember_own_link(&proof).expect("fold");
 
-        let stored: AccountProof<DeviceCert> =
-            borsh::from_slice(&repo.imported_certificate().expect("read").expect("stored"))
-                .expect("decode");
-        assert_eq!(stored, proof);
+        assert_eq!(stored_cert(&repo), proof);
     }
 
     /// A node holding the account root can always self-sign, and an import for its
@@ -3245,9 +3369,9 @@ mod tests {
         let held = repo.ensure_enrolled(&test_group_id()).expect("enrol");
         let own = repo.account_root().expect("read").expect("provisioned");
 
-        assert!(!repo
-            .remember_own_link(&paired_link(&held, own.signing_key(), 0))
-            .expect("fold"));
+        repo.remember_own_link(&paired_link(&held, own.signing_key(), 0))
+            .expect("fold");
+
         assert!(repo.imported_certificate().expect("read").is_none());
     }
 
@@ -3263,7 +3387,8 @@ mod tests {
             .expect("adopt");
         let sibling = certified(&root_sk, [0x42; 32], [0x52; 32]);
 
-        assert!(!repo.remember_own_link(&sibling).expect("ignore"));
+        repo.remember_own_link(&sibling).expect("ignore");
+
         assert!(repo.imported_certificate().expect("read").is_none());
     }
 

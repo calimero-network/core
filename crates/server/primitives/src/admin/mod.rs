@@ -1978,10 +1978,14 @@ pub struct AccountPairInitApiRequest {
     /// carries: private and public are both 32 hex bytes, and the private root
     /// leaves the node only via `merod account export`.
     pub account_root_public_key: String,
-    /// Hex-encoded namespace ids to enroll into (32 bytes each). The caller must
-    /// name them: this node is a member of nothing, so it can neither read the
-    /// account's namespace set off a DAG nor derive it.
+    /// Hex-encoded namespace ids to enroll into (32 bytes each). May be empty
+    /// when `accountNamespace` is set.
+    #[serde(default)]
     pub namespaces: Vec<String>,
+    /// Hex-encoded id of the account namespace, as the holder's identity reports
+    /// it. Recorded and followed like one more namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_namespace: Option<String>,
 }
 
 impl Validate for AccountPairInitApiRequest {
@@ -1995,7 +1999,7 @@ impl Validate for AccountPairInitApiRequest {
         }
         // Refused here rather than deeper, where "enroll into nothing" is a
         // device that is certified and then listens on no topic at all.
-        if self.namespaces.is_empty() {
+        if self.namespaces.is_empty() && self.account_namespace.is_none() {
             errors.push(ValidationError::EmptyField {
                 field: "namespaces",
             });
@@ -2004,6 +2008,11 @@ impl Validate for AccountPairInitApiRequest {
             self.namespaces
                 .iter()
                 .filter_map(|id| validate_hex_string(id, "namespaces[]", 32)),
+        );
+        errors.extend(
+            self.account_namespace
+                .as_deref()
+                .and_then(|id| validate_hex_string(id, "accountNamespace", 32)),
         );
 
         errors
@@ -3340,6 +3349,7 @@ mod tests {
         AccountPairInitApiRequest {
             account_root_public_key: hex::encode([0x11; 32]),
             namespaces,
+            account_namespace: None,
         }
     }
 
@@ -3414,6 +3424,7 @@ mod tests {
         let errors = AccountPairInitApiRequest {
             account_root_public_key: hex::encode([0x11; 31]),
             namespaces: vec![hex::encode([0x22; 32])],
+            account_namespace: None,
         }
         .validate();
 
@@ -3428,6 +3439,26 @@ mod tests {
             )),
             "a 31-byte root key must be refused, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn pair_init_accepts_the_account_namespace_alone() {
+        let req = AccountPairInitApiRequest {
+            account_root_public_key: "ab".repeat(32),
+            namespaces: vec![],
+            account_namespace: Some("4e".repeat(32)),
+        };
+        assert!(req.validate().is_empty(), "{:?}", req.validate());
+    }
+
+    #[test]
+    fn pair_init_checks_the_account_namespace_is_an_id() {
+        let req = AccountPairInitApiRequest {
+            account_root_public_key: "ab".repeat(32),
+            namespaces: vec![],
+            account_namespace: Some("not-hex".to_owned()),
+        };
+        assert_eq!(req.validate().len(), 1);
     }
 
     #[test]
@@ -3624,6 +3655,11 @@ pub struct NodeIdentityApiResponseData {
     /// Defaulted, so a response from a node predating the field still deserializes.
     #[serde(default)]
     pub device_certified: bool,
+
+    /// Hex-encoded id of the account namespace this node follows: derived on the
+    /// holder before it exists, so an invite can carry it; recorded at pair-init.
+    #[serde(default)]
+    pub account_namespace_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

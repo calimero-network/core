@@ -338,10 +338,12 @@ pub(crate) mod actor {
         }
     }
 
-    /// A started `ContextManager` and the store it reads. Seed the store, send
-    /// the request, then assert on the rows the handler wrote.
+    /// A started `ContextManager`, and a client routed to it for the paths that
+    /// are plain functions. Seed the store, drive the path, then assert on the
+    /// rows it wrote.
     pub(crate) struct Harness {
         pub manager: Addr<ContextManager>,
+        pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
@@ -403,7 +405,7 @@ pub(crate) mod actor {
         let context = LazyRecipient::new();
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
-        let manager = ContextManager::new(store, node_client, context_client, None);
+        let manager = ContextManager::new(store, node_client, context_client.clone(), None);
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager
@@ -411,6 +413,7 @@ pub(crate) mod actor {
 
         Harness {
             manager,
+            context_client,
             subscribed,
             _dirs: (data_dir, blob_dir),
             _network: stub,
