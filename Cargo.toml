@@ -195,7 +195,6 @@ members = [
     "./tools/merodb",
     "./tools/mero-sign",
     "./tools/cargo-mero",
-    "./tools/client-stub",
 ]
 
 [workspace.dependencies]

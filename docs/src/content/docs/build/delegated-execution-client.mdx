@@ -18,7 +18,7 @@ marked as specified-not-yet-built, and the two are never mixed silently.
 <Aside type="caution" title="Read the status markers">
 **Live** means implemented and callable on a node today. **Specified** means this
 page fixes the shape, and the node side is tracked but unbuilt — build against it,
-expect it to be served by the stub until the issue closes.
+but expect the endpoint to 404 until the issue closes.
 </Aside>
 
 | Contract | Status | Tracking |
@@ -346,20 +346,70 @@ for how that declaration is derived from the method's receiver.
            POST /admin-api/contexts/{ctx}/intents  (token + warrant + authorProof)
 ```
 
-Steps 1, 5 and 7 work today. Steps 2–4 and 6 are served by the stub until their
-issues close.
+Steps 1, 5 and 7 work today. Steps 2–4 and 6 are refused until their issues close.
 
-## Running the stub
+## Test vectors
 
-The stub serves every exchange on this page so a client can be built and tested
-before the node side lands.
+Check your implementation against these before pointing it at a node. They are
+asserted by the Rust tests named beside each block, so they cannot drift from the
+code without CI going red.
 
-```bash
-cargo run -p calimero-client-stub -- --port 8080
+### `domain_hash`
+
+`crates/account/src/tests/domain.rs::domain_hash_has_known_answers`
+
+| domain | parts | digest |
+|---|---|---|
+| `""` | — | `af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc` |
+| `"ab"` | `["c"]` | `43ee655579de01ca739b3f95c1c2d3f46d353b2c0df818064ea594506cdb2617` |
+| `"a"` | `["bc"]` | `9a8acca1b6c6c0befd3fbc756aed625da998c998f7252e738c4ef061906b9b21` |
+
+Start with the first row. It is SHA-256 of **eight zero bytes** — the `u64le`
+length of an empty domain — not SHA-256 of the empty string. If you get
+`e3b0c442…`, you are omitting the length prefixes, and nothing below will match.
+
+The last two rows are the whole reason the prefixes exist: both hash the letters
+`abc`, and they must differ.
+
+### Warrant
+
+`crates/account/src/tests/warrant_wire_fixture.rs`
+
+Inputs: `context` = `0x11`×32, `author_account` = `0x22`×32, `executor` =
+`0x33`×32, `method` = `"set"`, `args` = `{"key":"k","value":"v"}` (exactly those
+bytes, no whitespace), `nonce` = 42, `not_after` = 1700000000, author device
+secret = `0x07` seeded.
+
+```text
+intent_hash       dc066cc8524c74dc21714174009df536376e3151f5b92f0a676defde599dbae5
+signing preimage  a5d5f7aa368f8d79edd0667f60c41239a7dedaf8765e4e72ef3031bbacd15f35
+author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
 ```
 
-It is deliberately **not** a security boundary: it verifies shapes and encodings,
-not signatures, and it accepts any well-formed proof. Its job is to fail your client
-in the same places a real node will — a malformed `domain_hash`, a missing length
-prefix, a warrant whose `intent_hash` does not match the method and args it was sent
-with — and nothing more.
+The full 240-byte encoding, field by field — pure concatenation, every field
+fixed-width, no borsh length prefixes or tags, which is what makes a non-borsh
+implementation viable:
+
+```text
+offset  field              bytes  value
+     0  context               32  1111…11
+    32  author_account        32  2222…22
+    64  author_device_key     32  ea4a6c63…
+    96  executor              32  3333…33
+   128  intent_hash           32  dc066cc8…
+   160  nonce                  8  2a00000000000000   (42, little-endian)
+   168  not_after              8  00f1536500000000   (1700000000, little-endian)
+   176  signature             64  a3ddd529…
+```
+
+Both `u64`s are **little-endian**, here and in `domain_hash`. That is the second
+most common cross-language mistake after the missing length prefix, and it
+produces a warrant that is well-formed and verifies nowhere.
+
+<Aside type="note" title="No stub to run">
+There is no mock server for sections 3 and 4. A stub that verifies shapes but not
+signatures teaches a client that a wrong signature is acceptable — exactly the
+error a real node exists to catch, and the one that is most expensive to discover
+late. The vectors above pin the half of the contract a client can get wrong on its
+own; the rest is worth testing against a real node.
+</Aside>
