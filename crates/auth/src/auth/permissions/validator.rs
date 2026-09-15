@@ -74,6 +74,8 @@ static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
 
 static CONTEXT_INTENTS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/intents$").unwrap());
+static CONTEXT_QUERY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/query$").unwrap());
 
 static CONTEXT_SYNC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/sync/([^/]+)$").unwrap());
@@ -378,6 +380,27 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                 HttpMethod::POST => {
                     vec![Permission::Context(ContextPermission::PerformIntent(scope))]
                 }
+                _ => vec![],
+            };
+        }
+    }
+
+    // Delegated reads: an account-authenticated caller reads a context.
+    //
+    // Mapped for the same reason `/intents` is, and the omission would have
+    // failed the same way: unmapped, an `/admin-api/*` path falls to the
+    // default-deny below and needs `admin`, so the only way to let somebody read
+    // their own context would be handing them node credentials — which is what
+    // this whole path exists to avoid.
+    //
+    // Scoped to the context and its own verb, not `Execute` (which also covers
+    // join/leave/resync) and not `PerformIntent` (which submits writes). A token
+    // minted so a client can render should carry neither.
+    if let Some(captures) = CONTEXT_QUERY_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Query(scope))],
                 _ => vec![],
             };
         }
@@ -1259,6 +1282,103 @@ mod tests {
         // first one.
         assert!(validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required));
         assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+    }
+
+    /// The read route must not fall to the admin default-deny.
+    ///
+    /// This is the failure the mapping exists to prevent, and it is silent: an
+    /// unmapped `/admin-api/*` path requires `admin`, so a delegated client
+    /// holding exactly the right session gets a 403 that looks like a
+    /// permissions bug in its own code rather than a missing table entry here.
+    #[test]
+    fn the_query_route_requires_its_own_scoped_permission() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/query")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+
+        assert!(
+            matches!(
+                required.as_slice(),
+                [Permission::Context(ContextPermission::Query(_))]
+            ),
+            "expected a scoped query permission, got {required:?}",
+        );
+
+        assert!(validator.validate_permissions(&["context:query[ctx-1]".to_owned()], &required));
+    }
+
+    /// Reading and writing are different authorities, in both directions.
+    ///
+    /// A client minted a token so it could render must not be able to submit
+    /// writes with it, and an intent submitter must not silently gain the
+    /// ability to read every method it can name.
+    #[test]
+    fn query_and_intent_tokens_do_not_substitute_for_each_other() {
+        let validator = PermissionValidator::new();
+
+        let query = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/query")
+            .body(Body::empty())
+            .unwrap();
+        let query_required = validator.determine_required_permissions(&query);
+
+        let intent = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/intents")
+            .body(Body::empty())
+            .unwrap();
+        let intent_required = validator.determine_required_permissions(&intent);
+
+        assert!(
+            !validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &query_required),
+            "an intent token must not authorize a read"
+        );
+        assert!(
+            !validator.validate_permissions(&["context:query[ctx-1]".to_owned()], &intent_required),
+            "a query token must not authorize a write"
+        );
+    }
+
+    /// `Execute` was the tempting variant to reuse for reads and would have been
+    /// wrong the same way it was wrong for intents: it also covers join, leave
+    /// and resync, so a token minted for rendering would have carried membership
+    /// operations.
+    #[test]
+    fn a_query_token_does_not_grant_execute() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/join")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+
+        assert!(!validator.validate_permissions(&["context:query[ctx-1]".to_owned()], &required));
+    }
+
+    /// The scope is load-bearing: a token for one context must not reach
+    /// another. Otherwise "a token for this author's context" would in fact be
+    /// "a token for every context on the node".
+    #[test]
+    fn a_query_token_is_confined_to_its_context() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-2/query")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+
+        assert!(!validator.validate_permissions(&["context:query[ctx-1]".to_owned()], &required));
+        assert!(validator.validate_permissions(&["context:query[ctx-2]".to_owned()], &required));
     }
 
     /// The scope is load-bearing: a token for one context must not reach

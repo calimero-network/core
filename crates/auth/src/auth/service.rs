@@ -84,6 +84,27 @@ impl AuthService {
         self.token_manager.get_public_key_for_key_id(key_id).await
     }
 
+    /// Whether a stored key row exists for `key_id` at all.
+    ///
+    /// [`Self::get_key_public_key`] cannot answer this: it ends in
+    /// `key.and_then(|k| k.public_key)`, which collapses "no row" and "a row
+    /// whose `public_key` is `None`" into the same `Ok(None)`. Those are
+    /// different callers and must be told apart:
+    ///
+    /// * **a row with no public key** is a client key, minted by the node owner
+    ///   for their own applications, so treating it as the node owner is right;
+    /// * **no row at all** is a session anchored somewhere other than this
+    ///   store — an `account_proof` login, whose account is its own anchor and
+    ///   which deliberately persists nothing here. Such a caller is emphatically
+    ///   not the node owner.
+    ///
+    /// # Errors
+    /// [`AuthError::StorageError`] if the lookup fails. Callers must fail closed
+    /// on an error rather than assume either answer.
+    pub async fn key_row_exists(&self, key_id: &str) -> Result<bool, AuthError> {
+        self.token_manager.key_row_exists(key_id).await
+    }
+
     /// Authenticate a token request
     ///
     /// This method authenticates the user using the provided token request

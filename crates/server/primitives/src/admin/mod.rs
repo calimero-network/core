@@ -1319,6 +1319,46 @@ impl Validate for PerformIntentApiRequest {
     }
 }
 
+/// An authenticated account's request to read a context it is a member of.
+///
+/// Deliberately not a `PerformIntentApiRequest` with the warrant fields made
+/// optional. A warrant is what proves to peers who never saw this request that
+/// the author consented to an operation; a read has no peer to convince, because
+/// it publishes nothing. Sharing a type would put an optional warrant on a
+/// surface where supplying one means nothing, and a caller reasonably reads an
+/// optional field as "sometimes required" rather than "never used here".
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryContextApiRequest {
+    /// The method to call. Must be declared read-only in the application's ABI;
+    /// one that declares nothing is refused rather than guessed at.
+    pub method: String,
+    /// Its arguments, as the JSON the guest will receive.
+    pub args_json: serde_json::Value,
+}
+
+impl Validate for QueryContextApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.method.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "method" });
+        }
+        errors
+    }
+}
+
+/// What a read returned.
+///
+/// No `rootHash`, unlike the intent response. That field answers "did this
+/// change anything?", and for a read the answer is structurally no — offering it
+/// would invite a caller to watch it for changes that can never come.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryContextApiResponseData {
+    /// The method's own return value.
+    pub returns: Option<serde_json::Value>,
+}
+
 /// Where the accepted intent landed, so a client can wait for it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1350,6 +1390,12 @@ pub struct PerformIntentApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct PerformIntentApiResponse {
     pub data: PerformIntentApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryContextApiResponse {
+    pub data: QueryContextApiResponseData,
 }
 
 /// What a keyholder needs to know before it mints a warrant for this node.

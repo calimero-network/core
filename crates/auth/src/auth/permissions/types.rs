@@ -168,6 +168,18 @@ pub enum ContextPermission {
     /// that: this token only decides who may *ask*, and a request without a
     /// warrant the author signed is refused regardless.
     PerformIntent(ResourceScope),
+    /// Read a context's state through `POST /contexts/:id/query`.
+    ///
+    /// Separate from both [`Self::Execute`] and [`Self::PerformIntent`], for the
+    /// same reason those are separate from each other: they are different
+    /// authorities and a holder of one should not get the others. `Execute`
+    /// carries join/leave/resync; `PerformIntent` submits writes. A token minted
+    /// so a client can *render* should carry neither.
+    ///
+    /// Like `PerformIntent`, it decides who may ASK. Whether this caller may see
+    /// this context is re-checked per call against the group that owns it, and a
+    /// token cannot substitute for membership.
+    Query(ResourceScope),
     Capabilities(CapabilityPermission),
     Application(ContextApplicationPermission),
     Alias(AliasPermission),
@@ -454,6 +466,7 @@ impl FromStr for Permission {
                         scope, user_scope, method,
                     ))),
                     "intent" => Ok(Permission::Context(ContextPermission::PerformIntent(scope))),
+                    "query" => Ok(Permission::Context(ContextPermission::Query(scope))),
                     "capabilities" => match *subaction {
                         "grant" => Ok(Permission::Context(ContextPermission::Capabilities(
                             CapabilityPermission::Grant(scope),
@@ -683,6 +696,10 @@ impl fmt::Display for Permission {
                     let params = format_simple_params(scope);
                     write!(f, "context:intent{params}")
                 }
+                ContextPermission::Query(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "context:query{params}")
+                }
                 ContextPermission::Alias(alias_perm) => match alias_perm {
                     AliasPermission::All(scope) => {
                         let params = format_simple_params(scope);
@@ -862,6 +879,9 @@ impl Permission {
                     ContextPermission::PerformIntent(h_scope),
                     ContextPermission::PerformIntent(r_scope),
                 ) => matches_scope(h_scope, r_scope),
+                (ContextPermission::Query(h_scope), ContextPermission::Query(r_scope)) => {
+                    matches_scope(h_scope, r_scope)
+                }
                 (ContextPermission::Alias(held), ContextPermission::Alias(required)) => {
                     matches_alias(held, required)
                 }

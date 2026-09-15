@@ -102,6 +102,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             xcall_origin,
             delegation,
             xcall_depth,
+            read_as,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -868,6 +869,42 @@ impl Handler<ExecuteRequest> for ContextManager {
                         })
                 });
 
+            // The authorization gate for a delegated read, resolved HERE rather
+            // than from the `is_read_only_call` computed for lock selection.
+            //
+            // Those two look like the same question and are not. Lock selection
+            // may answer conservatively: a cold cache yields `false`, it takes
+            // the write lock, and the only cost is contention. As an
+            // authorization gate that same `false` would refuse a perfectly
+            // read-only method whenever its module had not been loaded yet —
+            // intermittent 409s that depend on cache warmth. By this point the
+            // module has loaded and `read_only_methods` is populated for this
+            // blob, so the set is the real declared one.
+            //
+            // `None` here means the module carries no ABI at all; that refuses
+            // the read, which is the fail-closed direction.
+            let read_refusal = read_as.and_then(|_account| {
+                let blob = act
+                    .executing_bytecode_for_context(&context.id)
+                    .or_else(|| {
+                        act.applications
+                            .get(&context.application_id)
+                            .map(|app| app.blob.bytecode)
+                    })?;
+                let declared_read_only = act
+                    .read_only_methods
+                    .get(&(blob, context.service_name.clone()))
+                    .is_some_and(|set| set.contains(method.as_str()));
+
+                // The set holds only `ReadOnly` names, so absence covers both
+                // `Mutating` and `Unspecified`. They are not distinguishable
+                // from the set alone, and a client acts identically on both
+                // (mint a warrant), so they share one refusal.
+                (!declared_read_only).then_some(ExecuteError::NotReadOnly {
+                    context_id: context.id,
+                })
+            });
+
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
             // node-local authored_remaining count (6f.8 drop-after-convert).
@@ -881,6 +918,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                         "xcall denied: not an #[app::xcall] entry point, or caller not permitted by its policy"
                     );
                     bail!(ExecuteError::XCallNotPermitted { context_id });
+                }
+
+                // Refused before any execution: a session authorizes reads, and
+                // this method is not one.
+                if let Some(refusal) = read_refusal {
+                    warn!(
+                        %context_id,
+                        function = %method,
+                        "delegated read refused: method is not declared read-only"
+                    );
+                    bail!(refusal);
                 }
 
                 let old_root_hash = context.root_hash;
@@ -904,6 +952,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         &private_key,
                         xcall_origin,
                         delegation.as_deref(),
+                        read_as,
                     )
                     .await?;
 
@@ -2014,6 +2063,10 @@ async fn internal_execute(
     // The author's consent, when this run is on someone else's behalf. Its
     // presence is what makes the principal differ from the signer.
     delegation: Option<&calimero_account::Delegation>,
+    // The authenticated caller's account, when this run is a delegated READ.
+    // Mutually exclusive with `delegation` by construction: a read carries no
+    // warrant and a warranted write sets no `read_as`.
+    read_as: Option<calimero_account::AccountId>,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -2076,6 +2129,43 @@ async fn internal_execute(
     // is the whole reason the principal can differ from the signer without a
     // caller being able to choose it.
     let principal = match delegation {
+        // A delegated READ: the account comes from the authenticated session,
+        // the device from this node. Those halves may differ here, where they
+        // may not for a write, because the rule they would break —
+        // `user_leaf_author_is_its_owner` on the receive path — is about a leaf,
+        // and a read writes none. Nothing this run produces is persisted,
+        // signed, or gossiped.
+        //
+        // Membership is re-checked HERE, on every call, rather than trusted from
+        // the session. A relay serves several tenants, so a session that carried
+        // a standing right to read would keep serving a member after they were
+        // removed from the group — the removal is a governance op this node has
+        // already applied, and the only way it reaches the decision is by asking
+        // at the moment of the read.
+        None if read_as.is_some() => {
+            // SAFETY: guarded by `read_as.is_some()` in the arm's condition.
+            let account = read_as.expect("read_as is Some in this arm");
+
+            let is_member =
+                match calimero_governance_store::get_group_for_context(&datastore, &context.id)? {
+                    Some(group_id) => {
+                        calimero_governance_store::MembershipRepository::new(&datastore)
+                            .is_member(&group_id, &account)?
+                    }
+                    // A context owned by no group has no membership to check
+                    // against, so there is nothing that would authorize a stranger.
+                    // Refuse rather than fall through to "no rule, so allowed".
+                    None => false,
+                };
+
+            if !is_member {
+                bail!(ExecuteError::NotAMember {
+                    context_id: context.id
+                });
+            }
+
+            Principal::new(account, executor)
+        }
         None => Principal::new(
             calimero_governance_store::account_for_context(&datastore, &context.id)?,
             executor,

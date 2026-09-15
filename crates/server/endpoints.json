@@ -60,6 +60,7 @@
   "POST /admin-api/contexts/{context_id}/intents",
   "POST /admin-api/contexts/{context_id}/join",
   "POST /admin-api/contexts/{context_id}/leave",
+  "POST /admin-api/contexts/{context_id}/query",
   "POST /admin-api/contexts/{context_id}/resync",
   "POST /admin-api/groups",
   "POST /admin-api/groups/join",

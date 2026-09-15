@@ -374,14 +374,26 @@ pub struct AccountProofConfig {
 
     /// Permissions granted to a session minted by this provider.
     ///
-    /// Defaults to `context:intent` alone, and deliberately not to reads or
-    /// listing. A delegated write is already gated twice past this point — the
-    /// warrant proves the author consented, and `CAN_AUTHOR_ON_BEHALF` proves
-    /// the relay may act for them — so a session carrying only this grants no
-    /// authority the warrant did not already carry. Reads have no such gate
-    /// yet: nothing on the admin API evaluates the caller's membership, so a
-    /// broader default here would let any account with a device key read every
-    /// context on a shared relay. Widen this when that check exists.
+    /// Defaults to `context:intent` and `context:query` — both halves of the
+    /// delegated surface, and deliberately nothing above them.
+    ///
+    /// Each half is gated again past this point, so a session carrying them
+    /// grants no authority of its own. A write: the warrant proves the author
+    /// consented and `CAN_AUTHOR_ON_BEHALF` proves the relay may act for them.
+    /// A read: the node re-checks the caller's membership on **every call**
+    /// rather than trusting the session, so a removed member stops being served
+    /// when the governance op lands, not when their token expires.
+    ///
+    /// That per-request check is why reads are here at all. This used to be
+    /// `context:intent` alone with a note to widen it once such a check existed
+    /// — a session-scoped read right on a multi-tenant relay would have kept
+    /// serving a member after they were removed. The check exists now
+    /// (`query_context`, through `MembershipRepository::is_member`), so the
+    /// note is satisfied rather than overruled.
+    ///
+    /// Do not add anything else. `admin`, `context:execute` or an alias scope
+    /// would be authority this token confers by itself, which neither of these
+    /// two is.
     #[serde(default = "default_account_proof_permissions")]
     pub session_permissions: Vec<String>,
 }
@@ -391,7 +403,7 @@ fn default_challenge_ttl_secs() -> u64 {
 }
 
 fn default_account_proof_permissions() -> Vec<String> {
-    vec!["context:intent".to_owned()]
+    vec!["context:intent".to_owned(), "context:query".to_owned()]
 }
 
 impl Default for AccountProofConfig {

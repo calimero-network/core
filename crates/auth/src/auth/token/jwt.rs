@@ -661,6 +661,24 @@ impl TokenManager {
         Ok(key.and_then(|k| k.public_key))
     }
 
+    /// Whether a key row exists for `key_id`, regardless of its `public_key`.
+    ///
+    /// Uses `get_key_including_invalid` rather than `get_key`: the question is
+    /// "was this id ever provisioned here", and a revoked row still answers yes.
+    /// A revoked key is refused earlier, during token verification, so reaching
+    /// this with one is not a live session.
+    ///
+    /// # Errors
+    /// [`AuthError::StorageError`] if the lookup fails.
+    pub async fn key_row_exists(&self, key_id: &str) -> Result<bool, AuthError> {
+        let key = self
+            .key_manager
+            .get_key_including_invalid(key_id)
+            .await
+            .map_err(|e| AuthError::StorageError(e.into()))?;
+        Ok(key.is_some())
+    }
+
     /// Storage key for a consumed-refresh-token denylist entry.
     fn consumed_refresh_key(jti: &str) -> String {
         format!("{CONSUMED_REFRESH_PREFIX}{jti}")
