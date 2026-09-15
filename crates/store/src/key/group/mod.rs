@@ -17,8 +17,15 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4B` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4C`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4E` is taken
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4F`**.
+//
+// This pointer was stale when `GroupMemberByAccount` (0x4D) claimed its byte: it
+// still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
+// without moving it. Nothing catches that — the two key types would have been
+// byte-identical in length and only the prefix distinguishes them — so re-derive
+// the list with `grep 'u8 = 0x'` before claiming a byte, as the note below says,
+// and move this pointer in the same commit.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -29,6 +36,12 @@ use zeroize::ZeroizeOnDrop;
 // re-derive this list before claiming a byte.
 pub const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
+/// Reverse of [`GROUP_MEMBER_PREFIX`]: `[account][group_id]`, so an account's
+/// groups are one contiguous range. See [`GroupMemberByAccount`].
+pub const GROUP_MEMBER_BY_ACCOUNT_PREFIX: u8 = 0x4D;
+/// Singleton marker: the reverse index above has been built from the membership
+/// rows that predate it. See [`GroupMemberIndexBackfilled`].
+pub const GROUP_MEMBER_INDEX_BACKFILL_PREFIX: u8 = 0x4E;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
@@ -174,6 +187,150 @@ impl Debug for GroupMember {
         f.debug_struct("GroupMember")
             .field("group_id", &self.group_id())
             .field("account", &self.account())
+            .finish()
+    }
+}
+
+/// Singleton marker recording that [`GroupMemberByAccount`] has been built from
+/// the membership rows written before it existed.
+///
+/// Without it the index is silently incomplete on any node that already holds
+/// data: rows written by an older build have no reverse entry, so a scan comes
+/// back empty and the caller is told they are in no groups. On a list endpoint
+/// that reads as "my contexts disappeared" — and it is exactly the class
+/// `CLAUDE.md` warns merobox cannot catch, because every node in a merobox run
+/// is the same build against fresh state.
+///
+/// Absent means "not yet built", which is the safe default: a fresh node has
+/// nothing to backfill and writes the marker on its first read having scanned an
+/// empty range.
+///
+/// Shaped like [`GroupMeta`] (prefix plus 32 bytes) rather than a bare prefix
+/// byte, with the id fixed at zero, so it reuses a key layout the column already
+/// has instead of introducing a length no other key in `Column::Group` uses.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberIndexBackfilled(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupMemberIndexBackfilled {
+    /// There is one of these per node, so it takes no arguments.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_MEMBER_INDEX_BACKFILL_PREFIX,
+        ])
+        .concat(GenericArray::from([0u8; 32]))))
+    }
+}
+
+impl Default for GroupMemberIndexBackfilled {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for GroupMemberIndexBackfilled {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupMemberIndexBackfilled {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupMemberIndexBackfilled {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("GroupMemberIndexBackfilled")
+    }
+}
+
+/// The account → group reverse index: which groups an account is a member of.
+///
+/// [`GroupMember`] is keyed `[group_id][account]`, so the column is ordered by
+/// group and answers "who is in this group" with one prefix scan. The opposite
+/// question — "which groups is this account in" — had no answer but a full scan
+/// of every membership row on the node, which is why the node-wide list
+/// endpoints returned the node's entire inventory instead of the caller's own
+/// (#3941): the filter they needed was not affordable.
+///
+/// This key inverts the components so an account's groups are one contiguous
+/// range. It holds no value of its own — the row's existence *is* the fact, and
+/// the authoritative role and capabilities stay on [`GroupMember`], so there is
+/// nothing here to disagree with them.
+///
+/// **It indexes DIRECT rows only.** Inherited membership is computed by walking
+/// ancestors ([`MembershipRepository::check_path`]), and materializing it here
+/// would mean touching every descendant's index on any ancestor change. A reader
+/// that needs the effective set expands each direct group through the same walk;
+/// what this buys is a starting set that is O(the caller's groups) rather than
+/// O(the node's).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberByAccount(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupMemberByAccount {
+    /// Note the argument order: **account first**, which is the whole point of
+    /// the type. Both ids are 32 bytes, so swapping them still compiles and
+    /// still writes a well-formed key — it just indexes the wrong direction and
+    /// every scan comes back empty.
+    #[must_use]
+    pub fn new(account: AccountId, group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_MEMBER_BY_ACCOUNT_PREFIX])
+            .concat(GenericArray::from(*account.as_bytes()))
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        AccountId::from(id)
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupMemberByAccount {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupMemberByAccount {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupMemberByAccount {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupMemberByAccount")
+            .field("account", &self.account())
+            .field("group_id", &self.group_id())
             .finish()
     }
 }

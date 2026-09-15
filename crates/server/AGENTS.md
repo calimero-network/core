@@ -100,12 +100,24 @@ primitives/                   # calimero-server-primitives
 
 ### Admin API
 
+Two of the three node-wide list endpoints are **caller-scoped** (#3941):
+`GET /admin-api/contexts` and `GET /admin-api/namespaces` return only what the
+caller's groups reach, resolved
+per request through `admin/caller_scope.rs`. A node-owner session, and a node
+running without the auth guard at all (`AuthMode::Proxy`, the default), keep the
+node-wide view — narrowing there would empty the endpoint on every
+default-configured node without closing anything, since the proxy is what decides
+who gets through. `GET /admin-api/blobs` is **not** scoped: `BlobMeta` carries no
+owner and blobs are deduplicated by content hash with a `refs` count, so
+ownership is many-to-many and needs a model rather than an index.
+
 ```
-GET  /admin-api/contexts              # List contexts
+GET  /admin-api/contexts              # List contexts (caller-scoped)
 POST /admin-api/contexts              # Create context
 GET  /admin-api/contexts/{id}          # Get context
 DELETE /admin-api/contexts/{id}        # Delete context
 
+GET  /admin-api/namespaces            # List namespaces (caller-scoped)
 GET  /admin-api/applications          # List apps
 POST /admin-api/install-application   # Install app by package@version
 GET  /admin-api/applications/{id}      # Get app
