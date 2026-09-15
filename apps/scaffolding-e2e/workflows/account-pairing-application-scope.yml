@@ -94,11 +94,6 @@ description: >
       holder - the only node whose lookup gets far enough to reach the
       tombstone.
 
-  A scope this node speaks nowhere in used to be the fifth refusal, a `409`
-  asked while app B still had no namespace. It is a success now, asserted where
-  it happens: the account namespace is always a fan-out target and always holds
-  a key, so the device is certified and bound there and nowhere else.
-
   Two refusals are deliberately not driven here. `PairingNoScopeKey` (409) is
   unreachable from this node's state - it holds a scope key in every namespace
   it takes part in, and one it does not take part in fails the identity check
@@ -263,8 +258,7 @@ steps:
       - '{{ns_a1}}'
       - '{{alice_root}}'
 
-  # No refusal left to make: the account namespace is always a fan-out target and
-  # always holds a key, so an app with no namespace yet still binds the device.
+  # The account namespace is always a target, so an app with no namespace still binds.
   - name: Pair-complete accepts a scope this node speaks nowhere in yet
     type: account_pair
     node: account-scope-node-2
@@ -288,10 +282,7 @@ steps:
     absent:
       - namespaces.1
 
-  # Puts the scope back before B1 exists to be carried into. A pair-complete
-  # replaces the stored scope, and the step above left this device certified for
-  # app B - the one application the run below must prove the pairing never
-  # reaches.
+  # A pair-complete replaces the stored scope; narrow it back to app A before B1 exists.
   - name: Re-pair node-2, narrowing the scope back to app A
     type: account_pair
     node: account-scope-node-2

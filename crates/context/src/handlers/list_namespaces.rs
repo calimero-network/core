@@ -21,19 +21,15 @@ pub(crate) fn namespace_rows_for_applications(
     store: &Store,
     applications: &[ApplicationId],
 ) -> eyre::Result<Vec<([u8; 32], GroupMetaValue)>> {
-    // The account namespace is not a project, and it targets no application.
-    let account_namespace = NodeDeviceRepository::new(store)
-        .account_namespace()?
-        .map(|namespace| namespace.to_bytes());
-    let entries = MetaRepository::new(store)
+    // The account namespace is not a project.
+    let account_namespace = NodeDeviceRepository::new(store).account_namespace()?;
+    Ok(MetaRepository::new(store)
         .enumerate_all(0, usize::MAX)?
         .into_iter()
-        .filter(|(group_id, _)| Some(*group_id) != account_namespace);
-    if applications.is_empty() {
-        return Ok(entries.collect());
-    }
-    Ok(entries
-        .filter(|(_, meta)| applications.contains(&meta.target.application_id))
+        .filter(|(group_id, meta)| {
+            account_namespace != Some(ContextGroupId::from(*group_id))
+                && (applications.is_empty() || applications.contains(&meta.target.application_id))
+        })
         .collect())
 }
 

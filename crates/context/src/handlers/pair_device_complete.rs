@@ -256,54 +256,31 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // Created on first use, and always a target: the device receives
-                // the account key the same way it receives any scope key.
+                // Created on first use, and always a target like any namespace in scope.
                 let account_namespace = ensure_account_namespace(&store, &context_client).await?;
 
-                // Resolved before any check, because the scope is what the checks are about:
-                // which namespaces have to hold an identity and a key for this pairing to work.
+                // Resolved first: the checks below are about what these namespaces hold.
                 let mut targets = namespaces_in_scope(&store, &applications)?;
                 if let Some(account_namespace) = account_namespace {
                     follow(&mut targets, account_namespace);
                 }
 
-                // The namespace identity signs the endorsement, both ops, and the key
-                // wrap. It must be a granted member: the endorsement is what carries the
-                // link past the apply gate, and an endorsement from a non-member is
-                // refused.
+                // Signs the endorsement, both ops and the key wrap; it must be a granted member.
                 let signer_sk_bytes = signing_identity(&store, &targets)?;
                 let signer_sk = PrivateKey::from(signer_sk_bytes);
 
                 let device_repo = NodeDeviceRepository::new(&store);
 
-                // The account root is what certifies the device, and it is also what
-                // decides *which* account this node can pair into: the genesis is the
-                // content address of this node's root key, so it can only ever certify
-                // devices for the one account that root owns.
+                // The root certifies the device, and only for the one account it owns.
                 let account_root = device_repo.require_account_root()?;
                 let genesis = account_root.genesis();
                 let account = genesis.account_id();
 
-                // Check the key material before anything is signed over it. The
-                // certificate minted below is what makes these keys a trusted device of
-                // this account, and until this point they are three values a caller
-                // supplied: an attacker who can alter the pairing payload substitutes its
-                // own keys under a captured `DeviceId` and receives the scope-key
-                // fan-out. The statement is the pairing device's own signature over
-                // exactly what is being certified, so it can only be produced by
-                // whoever holds the signing key it names.
-                //
-                // It does not cover a substitution that replaces both keys and re-signs
-                // — nothing here has a prior commitment to the genuine ones, and binding
-                // them into the `DeviceId` is ruled out because the id must survive key
-                // rotation. The confirmation code returned below is what closes that,
-                // out of band and by a person.
+                // Check the key material before signing over it: the statement proves the
+                // offering device holds these keys, and the code below catches a swap of both.
                 let offer = PairingOffer::new(account, device, kem_pk, sign_pk);
                 if let Err(err) = check_statement(&offer, &statement) {
-                    // Logged, not just returned: this is the security-relevant event the
-                    // check exists for, and the error otherwise reaches only whoever made
-                    // the request — possibly the attacker rather than an operator reading
-                    // logs. Ids only; no key material.
+                    // Logged: the error alone may reach only the attacker. Ids, no key material.
                     warn!(
                         namespaces = targets.len(),
                         %account,
@@ -314,14 +291,10 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                     return Err(err);
                 }
 
-                // The statement proves the keys and the signature agree with each other,
-                // which an attacker holding both can arrange. The code is the value it
-                // cannot produce: the account holder was read it from the pairing
-                // device's own output, so it describes the keys that device minted, and
-                // here it is checked against the keys that actually arrived.
+                // A swap of both keys can carry a valid statement, but not the code the holder
+                // read off the genuine device.
                 if let Err(err) = check_confirmation_code(&offer, &confirmation_code) {
-                    // The warn carries no `err`, for the same reason the refusal carries
-                    // no expected code.
+                    // No `err`: the refusal must not echo the expected code.
                     warn!(
                         namespaces = targets.len(),
                         %account,
@@ -334,24 +307,13 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
                 require_this_node_holds(&store, account)?;
 
-                // Before the certificate is signed, not per namespace: the tombstone is
-                // per namespace but the id is spent everywhere, so the fan-out reporting
-                // `Revoked` in each one would already have minted a certificate for it.
+                // Before signing: a revoked id is spent everywhere, not just where it was revoked.
                 require_not_revoked(&store, device)?;
 
-                // One precondition covers both ops: the link is an encrypted group op so
-                // publishing it needs the current key, and the delivery is that same key
-                // wrapped for the new device. Checking it here, before anything is
-                // signed, beats failing deep inside the publisher.
-                //
-                // One key anywhere in the scope is enough: the fan-out skips the
-                // namespaces it cannot publish into, and refusing the whole pairing for
-                // one of those would withhold the device from the rest.
+                // Both ops need a current key; one anywhere is enough, the fan-out skips the rest.
                 require_a_scope_key(&store, &targets)?;
 
-                // Epoch 0 on both counts: the account root has not rotated (rotation is
-                // not implemented yet), so there are no handoffs to carry and the
-                // certifying key is the genesis key itself.
+                // Epoch 0 for both: the root does not rotate yet, so there are no handoffs.
                 let device_cert = match DeviceCert::sign(
                     account_root.signing_key(),
                     account,
@@ -365,10 +327,8 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                     Err(err) => eyre::bail!("failed to sign the device certificate: {err}"),
                 };
 
-                // One certificate for all three uses: the fan-out publishes it, the cert
-                // store keeps it so a namespace gained later can bind the device with no
-                // second ceremony, and the response hands it back to the device - which
-                // cannot read it off a DAG it is a member of nowhere.
+                // One certificate for three uses: the fan-out publishes it, the store keeps it for
+                // namespaces gained later, and the response hands it to the device.
                 let cert = KnownDeviceCert {
                     proof: AccountProof {
                         genesis,

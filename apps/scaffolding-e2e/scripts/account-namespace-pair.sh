@@ -1,8 +1,7 @@
 #!/bin/sh
 #
-# Pair <new-node> onto <holder>'s account with nothing but the account namespace
-# id, then prove the two nodes agree on it, the holder keeps it out of its
-# namespace listing, and each side sees the new device bound in it.
+# Pair <new-node> onto <holder>'s account with only the account namespace id, and
+# check both nodes agree on it and see the device bound there.
 #
 # args: [ <holder>, <new-node> ]
 set -eu

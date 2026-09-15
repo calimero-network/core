@@ -47,7 +47,7 @@ use crate::{collect_keys_with_prefix, NamespaceRepository};
 /// root that already certified this node's devices, which is unrecoverable.
 static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-const ACCOUNT_NAMESPACE_TAG: &[u8] = b"calimero/account-namespace/v1"; // domain-separates the id from every other use of the root
+const ACCOUNT_NAMESPACE_TAG: &[u8] = b"calimero/account-namespace/v1"; // domain separator
 
 /// This node's account root — the one key that survives losing every device.
 ///
@@ -102,10 +102,8 @@ impl AccountRoot {
         self.genesis().account_id()
     }
 
-    /// This account's namespace, the one every device of the account follows.
-    ///
-    /// Derived from the root secret rather than the public key, so nobody can
-    /// find or squat the topic from an account id they merely know.
+    /// The namespace every device of this account follows. Hashed from the secret, not
+    /// the public key, so an account id alone cannot find it.
     #[must_use]
     pub fn account_namespace(&self) -> ContextGroupId {
         let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_TAG.len() + 32));
@@ -638,8 +636,7 @@ impl<'a> NodeDeviceRepository<'a> {
             }))
     }
 
-    /// This node's root, when this node is the holder of the account its device
-    /// speaks for: a root, and either no device yet or one of that root's account.
+    /// This node's root, if it holds the account its device speaks for.
     ///
     /// # Errors
     /// Propagates the store read failure.
@@ -653,9 +650,8 @@ impl<'a> NodeDeviceRepository<'a> {
         }
     }
 
-    /// The account namespace this node follows: the holder's derivation, else
-    /// the row pair-init recorded. The row is caller-settable, so it never
-    /// overrides what the root says.
+    /// The account namespace this node follows: derived on the holder, else the row
+    /// pair-init recorded, which a caller sets and so never overrides the root.
     ///
     /// # Errors
     /// Propagates the store read failure.

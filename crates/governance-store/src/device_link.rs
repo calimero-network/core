@@ -38,8 +38,7 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     }
     // The namespace's target application, read the way the pairing fan-out reads
     // it. A namespace whose metadata has not synced names none, and is reachable
-    // only by a scope that names none either. The account namespace targets
-    // nothing by design and every device of the account belongs in it.
+    // only by a scope that names none either. The account namespace is exempt.
     let application = MetaRepository::new(store)
         .load(namespace)?
         .map(|meta| meta.target.application_id);

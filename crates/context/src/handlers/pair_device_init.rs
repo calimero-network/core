@@ -4,8 +4,7 @@
 //! The first half of pairing, run on the *new* device. Mints the `DeviceId`, KEM
 //! key and signing key the holder needs in order to certify it, and publishes no
 //! op. One device across every namespace named, because the certificate covers
-//! the account rather than a scope. The account namespace, when named, is one
-//! more of them, and is recorded so the node can name it back.
+//! the account rather than a scope. The account namespace, when named, is one more, and recorded.
 //!
 //! This node is deliberately not a member: membership stays with the account, so
 //! this uses `get_or_create_namespace_identity` and `subscribe_namespace` rather

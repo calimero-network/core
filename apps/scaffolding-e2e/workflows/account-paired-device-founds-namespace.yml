@@ -111,9 +111,7 @@ steps:
       - 'json_not_equal({{paired_device}}, {{alice_device}})'
       - 'json_equal({{key_delivered}}, true)'
 
-  # Polled: node-2 is a member of nothing, so no barrier can wait on it. A row
-  # naming A cannot resolve before the phone pulled A's DAG and key and folded
-  # the encrypted ops, its own link among them.
+  # Polled: node-2 is a member of nothing, so no barrier can wait on it.
   - name: The phone resolves its own binding in A
     type: assert_api_response
     node: paired-founder-node-2

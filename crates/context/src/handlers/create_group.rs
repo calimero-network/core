@@ -150,8 +150,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // it is verified inside the async block below (blob present locally
         // + manifest package matches the row's package).
         //
-        // A root that targets nothing keeps the unset target a cold-start seed
-        // writes, and has no row to pin a bytecode against.
+        // A root that targets nothing, the account namespace, keeps the unset target.
         let target = match effective_application_id {
             Some(application_id) => match load_app_meta(&self.datastore, &application_id) {
                 Ok(app_meta) => GroupTarget {
@@ -162,11 +161,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 },
                 Err(err) => return ActorResponse::reply(Err(err)),
             },
-            None if bytecode_id.is_some() => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "a bytecode pin needs an application to pin; this group targets none"
-                )))
-            }
             None => GroupTarget::default(),
         };
         let requested_bytecode_id = bytecode_id;
@@ -590,9 +584,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // Put the target on the DAG so a node that only backfills
                     // (a paired device) learns it too. Best effort: it is applied
                     // locally before the publish.
-                    //
-                    // A group that targets nothing has no target to put on the DAG,
-                    // and the op's validator refuses empty coordinates anyway.
                     if let Some(target_application_id) = effective_application_id {
                         match calimero_governance_store::sign_apply_and_publish(
                             &datastore,
@@ -1083,9 +1074,8 @@ mod tests {
         );
     }
 
-    /// The account namespace runs no application. Its target stays the unset one
-    /// a cold-start seed writes, and no target op is put on its DAG: the ladder
-    /// rung is written only by that op, so an empty ladder proves it never went.
+    /// An app-less root keeps the unset target and publishes no target op, the only
+    /// writer of a ladder rung.
     #[actix::test]
     async fn an_app_less_root_group_writes_an_unset_target_and_publishes_no_target_op() {
         let store = store();
@@ -1119,43 +1109,6 @@ mod tests {
                 .expect("read the ladder")
                 .is_empty(),
             "no target op may be published for a group that targets nothing"
-        );
-    }
-
-    /// A pin names a build of an application; with no application there is
-    /// nothing for it to name, and it is refused rather than silently dropped.
-    #[actix::test]
-    async fn a_bytecode_pin_without_an_application_is_refused() {
-        let store = store();
-        calimero_governance_store::NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("root");
-
-        let harness = actor::over(store.clone()).await;
-        let refused = harness
-            .manager
-            .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
-                bytecode_id: Some([0x01; 32].into()),
-                application_id: None,
-                name: None,
-                parent_group_id: None,
-                restricted: true,
-            })
-            .await
-            .expect("the manager answers")
-            .expect_err("a pin with nothing to pin");
-
-        assert!(
-            refused.to_string().contains("needs an application"),
-            "got: {refused}"
-        );
-        assert!(
-            MetaRepository::new(&store)
-                .load(&GROUP.into())
-                .expect("read")
-                .is_none(),
-            "a refused creation leaves no meta row behind"
         );
     }
 }

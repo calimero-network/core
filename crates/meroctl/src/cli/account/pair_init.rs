@@ -51,7 +51,7 @@ pub struct PairInitCommand {
     #[clap(
         long,
         value_name = "HEX",
-        help = "The account namespace id the holder reports on `account show`; enough on its own"
+        help = "The account namespace id `account show` reports on the holder"
     )]
     pub account_namespace: Option<String>,
 }
@@ -70,5 +70,27 @@ impl PairInitCommand {
         environment.output.write(&response);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn the_account_namespace_alone_is_enough_to_pair() {
+        let key = "ab".repeat(32);
+        let args = [
+            "pair-init",
+            "--root-key",
+            key.as_str(),
+            "--account-namespace",
+            key.as_str(),
+        ];
+
+        assert!(PairInitCommand::try_parse_from(&args[..3]).is_err());
+        assert!(PairInitCommand::try_parse_from(args).is_ok());
     }
 }

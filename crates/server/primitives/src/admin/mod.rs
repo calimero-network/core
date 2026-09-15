@@ -1978,8 +1978,8 @@ pub struct AccountPairInitApiRequest {
     /// carries: private and public are both 32 hex bytes, and the private root
     /// leaves the node only via `merod account export`.
     pub account_root_public_key: String,
-    /// Hex-encoded namespace ids to enroll into (32 bytes each). Optional once
-    /// the account namespace is named: the device learns the rest from there.
+    /// Hex-encoded namespace ids to enroll into (32 bytes each). May be empty
+    /// when `accountNamespace` is set.
     #[serde(default)]
     pub namespaces: Vec<String>,
     /// Hex-encoded id of the account namespace, as the holder's identity reports
@@ -3656,9 +3656,8 @@ pub struct NodeIdentityApiResponseData {
     #[serde(default)]
     pub device_certified: bool,
 
-    /// Hex-encoded id of the account namespace this node follows. On the holder
-    /// it is derived from the root and reported before the namespace exists, so
-    /// an invite can carry it; on a paired device it is what pair-init recorded.
+    /// Hex-encoded id of the account namespace this node follows: derived on the
+    /// holder before it exists, so an invite can carry it; recorded at pair-init.
     #[serde(default)]
     pub account_namespace_id: Option<String>,
 }

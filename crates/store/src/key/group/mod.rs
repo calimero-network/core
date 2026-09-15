@@ -2538,9 +2538,8 @@ impl FromKeyParts for NodeDeviceCertificate {
 /// Prefix for [`NodeAccountNamespace`].
 pub const NODE_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x4E;
 
-/// The account namespace this node follows - a **singleton**, like the device
-/// row. The holder writes it when it creates the namespace, a paired device when
-/// `pair-init` hands it the id. Absent means none is known here.
+/// The account namespace this node follows, a singleton: written by the holder at
+/// creation and by a paired device at `pair-init`.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeAccountNamespace(Key<(GroupPrefix,)>);
