@@ -205,6 +205,7 @@ pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8P
         min_runtime_version: "0.1.0".to_owned(),
         metadata: None,
         handlers: None,
+        build_info: None,
         interfaces: None,
         wasm: Some(BundleArtifact {
             path: "app.wasm".to_owned(),

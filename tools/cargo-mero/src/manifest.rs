@@ -2,7 +2,8 @@
 //! `BundleManifest` type directly, so a new node-side field is a compile error here.
 
 use calimero_bundle::{
-    BundleArtifact, BundleHandlers, BundleLinks, BundleManifest, BundleMetadata, BundleService,
+    BundleArtifact, BundleBuildInfo, BundleHandlers, BundleLinks, BundleManifest, BundleMetadata,
+    BundleService,
 };
 use eyre::Result;
 use sha2::{Digest, Sha256};
@@ -20,6 +21,19 @@ pub struct StagedArtifact {
     pub service_name: Option<String>,
     pub wasm: BundleArtifact,
     pub abi: Option<BundleArtifact>,
+}
+
+/// How `calimero-sdk` resolved for this build, as `sdk::resolve` reads it off
+/// the cargo resolve graph. Rendered into the manifest's `buildInfo` block.
+///
+/// `version` is `None` whenever the resolution names no release — a git
+/// `branch=`/`rev=` dependency, or a local path checkout. See `sdk.rs` for why
+/// the crate's own version is never a usable fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SdkResolution {
+    pub source: String,
+    pub version: Option<String>,
+    pub rev: Option<String>,
 }
 
 /// Hashes `bytes` into the manifest's `{path, hash, size}` shape; the node
@@ -44,9 +58,17 @@ fn hex_lower(bytes: &[u8]) -> String {
 /// else emits `services[]`, matching how the node reads them. Signing adds
 /// `signerId`/`signature` afterwards.
 ///
+/// `sdk` is rendered as `buildInfo`, and is `None` only when the app does not
+/// depend on `calimero-sdk` at all. It is written here, before signing, so the
+/// stamp is inside the signature like every other manifest field.
+///
 /// No `..` in `BundleManifest::artifacts()`: a node-side field addition must
 /// break this build until handled.
-pub fn render(meta: &BundleMeta, artifacts: &[StagedArtifact]) -> Result<serde_json::Value> {
+pub fn render(
+    meta: &BundleMeta,
+    artifacts: &[StagedArtifact],
+    sdk: Option<&SdkResolution>,
+) -> Result<serde_json::Value> {
     let single = match artifacts {
         [only] if only.service_name.is_none() => Some(only),
         _ => None,
@@ -85,6 +107,13 @@ pub fn render(meta: &BundleMeta, artifacts: &[StagedArtifact]) -> Result<serde_j
         // to the package, which is what the deep-link resolver matches on.
         handlers: Some(BundleHandlers {
             slug: Some(meta.slug.clone().unwrap_or_else(|| meta.package.clone())),
+        }),
+        // Also a sibling of `metadata`, and for the same reason: nesting this
+        // inside it would move the application id of every app that rebuilds.
+        build_info: sdk.map(|sdk| BundleBuildInfo {
+            sdk_source: Some(sdk.source.clone()),
+            sdk_version: sdk.version.clone(),
+            sdk_rev: sdk.rev.clone(),
         }),
         interfaces: None,
         wasm,
@@ -137,7 +166,7 @@ mod tests {
             abi: Some(artifact_from_bytes("abi.json", b"abi-bytes")),
         }];
 
-        let manifest = render(&meta, &artifacts).unwrap();
+        let manifest = render(&meta, &artifacts, None).unwrap();
 
         assert_eq!(
             manifest,
@@ -165,6 +194,61 @@ mod tests {
                 },
                 "links": {}
             })
+        );
+    }
+
+    /// `buildInfo` rides in the rendered manifest, as a sibling of `metadata`
+    /// rather than nested inside it — nesting would move every app's id.
+    #[test]
+    fn sdk_resolution_renders_as_build_info() {
+        let meta = single_meta();
+        let artifacts = vec![StagedArtifact {
+            service_name: None,
+            wasm: artifact_from_bytes("app.wasm", b"wasm-bytes"),
+            abi: None,
+        }];
+        let sdk = SdkResolution {
+            source: "git".into(),
+            version: Some("0.11.0-rc.34".into()),
+            rev: Some("6c6fb4ab4fe02500ab1262c643f52dcc6d6278bf".into()),
+        };
+
+        let manifest = render(&meta, &artifacts, Some(&sdk)).unwrap();
+
+        assert_eq!(
+            manifest["buildInfo"],
+            json!({
+                "sdkSource": "git",
+                "sdkVersion": "0.11.0-rc.34",
+                "sdkRev": "6c6fb4ab4fe02500ab1262c643f52dcc6d6278bf"
+            })
+        );
+        assert!(
+            manifest["metadata"].get("buildInfo").is_none(),
+            "buildInfo must not be nested inside metadata"
+        );
+    }
+
+    /// A resolution that names no release emits the keys it has and omits the
+    /// rest — never `"sdkVersion": null`, which a consumer would render.
+    #[test]
+    fn sdk_resolution_without_a_version_omits_the_key() {
+        let artifacts = vec![StagedArtifact {
+            service_name: None,
+            wasm: artifact_from_bytes("app.wasm", b"wasm-bytes"),
+            abi: None,
+        }];
+        let sdk = SdkResolution {
+            source: "git".into(),
+            version: None,
+            rev: Some("abc123".into()),
+        };
+
+        let manifest = render(&single_meta(), &artifacts, Some(&sdk)).unwrap();
+
+        assert_eq!(
+            manifest["buildInfo"],
+            json!({ "sdkSource": "git", "sdkRev": "abc123" })
         );
     }
 
@@ -207,7 +291,7 @@ mod tests {
             },
         ];
 
-        let manifest = render(&meta, &artifacts).unwrap();
+        let manifest = render(&meta, &artifacts, None).unwrap();
 
         assert_eq!(
             manifest,

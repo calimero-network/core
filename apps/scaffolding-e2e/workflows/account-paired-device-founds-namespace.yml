@@ -1,0 +1,176 @@
+name: E2E Account - A Paired Device Founds A Namespace
+description: >
+  A paired device is a device of the account, so it must be able to start a
+  project as the account and put the device that certified it on that project's
+  guest list. A node with no root of its own failed `create_namespace` at the
+  credential build, while a node initialised normally, which is what the
+  desktop ships, re-minted its device under its own root, founded the
+  namespace as a stranger account, and destroyed its pairing without a word.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root, creates the first
+      namespace, certifies the phone.
+    * node-2 - Alice's phone. Paired into namespace A, a member of nothing.
+      It then founds namespace C as Alice's account.
+
+  What each step is load-bearing for:
+
+    1. The phone converges on A and resolves its own binding there. That is the
+       proof it folded its own link, which is the op that hands it its
+       certificate and names its certifier.
+    2. `create_namespace` on node-2 succeeds and the phone lists C with its
+       target.
+    3. The phone still speaks as Alice's account and as the same device after
+       founding C. This is the assertion that goes red before the fix: the
+       creation succeeds, but as a fresh device of node-2's own account.
+
+  node-2 is initialised the default way, root and all, because that is the
+  posture the desktop ships and the one where the failure is silent.
+
+  Not asserted here: node-1 listing C, which is the account namespace's job and
+  is pinned by its own scenario; and the laptop's device being bound in C,
+  which is the next PR's scenario step.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: paired-founder-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: paired-founder-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: paired-founder-node-2
+    username: dev
+    password: dev-password
+
+  # Installed on both: a creation resolves the application locally to derive
+  # the namespace's bytecode id, so the phone needs it before it can found.
+  - name: Install the app on node-1
+    type: install_application
+    node: paired-founder-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Install the app on node-2
+    type: install_application
+    node: paired-founder-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Node-1 creates namespace A
+    type: create_namespace
+    node: paired-founder-node-1
+    application_id: '{{app}}'
+    outputs:
+      ns_a: namespaceId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: paired-founder-node-1
+    outputs:
+      alice_account: accountId
+      alice_device: deviceId
+      alice_root: accountRootPublicKey
+
+  # No application scope: the phone may speak for every app, which is what a
+  # holder-only world already assumed of it.
+  - name: Pair node-2 onto Alice's account, listening on A
+    type: account_pair
+    node: paired-founder-node-2
+    holder: paired-founder-node-1
+    root_key: '{{alice_root}}'
+    namespaces:
+      - '{{ns_a}}'
+    outputs:
+      key_delivered: keyDelivered
+
+  - name: What node-2 speaks as
+    type: node_identity
+    node: paired-founder-node-2
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+
+  - name: The phone is a device of Alice's account
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+      - 'json_not_equal({{paired_device}}, {{alice_device}})'
+      - 'json_equal({{key_delivered}}, true)'
+
+  # Polled: node-2 is a member of nothing, so no barrier can wait on it. Listing
+  # A with its target proves the phone pulled A's DAG and key and folded the
+  # encrypted ops, its own link among them.
+  - name: The phone converges on A
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_a}}'
+    match:
+      targetApplicationId: '{{app}}'
+    retries: 45
+    interval: 2
+
+  - name: The phone resolves its own binding in A
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{ns_a}}'
+    retries: 30
+    interval: 2
+
+  # The step under test. Succeeds before the fix too - the identity check
+  # below is what catches the silent re-mint.
+  - name: Node-2 founds namespace C as Alice's account
+    type: create_namespace
+    node: paired-founder-node-2
+    application_id: '{{app}}'
+    outputs:
+      ns_c: namespaceId
+
+  - name: The phone lists C with its target
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_c}}'
+    match:
+      targetApplicationId: '{{app}}'
+
+  # The assertion that catches the silent failure. Before the fix a node holding
+  # its own root re-minted its device under that root to sign the founder
+  # credential, so C was founded by a stranger and the pairing was gone.
+  - name: What node-2 speaks as after founding C
+    type: node_identity
+    node: paired-founder-node-2
+    outputs:
+      founder_account: accountId
+      founder_device: deviceId
+
+  - name: Founding C did not change what the phone speaks as
+    type: json_assert
+    statements:
+      - 'json_equal({{founder_account}}, {{alice_account}})'
+      - 'json_equal({{founder_device}}, {{paired_device}})'
+
+stop_all_nodes: true

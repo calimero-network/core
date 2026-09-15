@@ -16,6 +16,7 @@ pub mod manifest;
 pub mod meta;
 mod new;
 mod registry;
+pub mod sdk;
 mod templates;
 mod test_cmd;
 mod workspace;
