@@ -61,6 +61,7 @@
 //! checked authenticity and not authority.
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
 
@@ -88,8 +89,45 @@ pub struct Warrant {
     /// The operator authorized to act — an account, so that one of its processes
     /// re-keying does not void warrants already issued to it.
     pub executor: AccountId,
+    /// The exact application this warrant authorizes, as the content address of
+    /// its bytecode.
+    ///
+    /// Pins the code, not a version string, so a relay cannot wait for an
+    /// upgrade that widens what the named method does and then spend a warrant
+    /// signed against the narrower one. A semver would not do: two builds can
+    /// share a version and differ in exactly the way that matters.
+    pub app_version: ApplicationId,
+    /// `H(method)` alone, under its own domain.
+    ///
+    /// Carried so a peer can select a **per-method write-set** without learning
+    /// what was called: it hashes the method names it already has from the app's
+    /// embedded ABI and looks for this one. Plaintext here would have broadcast
+    /// application-level intent to every non-member subscribed to the topic,
+    /// which is the property the module header exists to protect, and would have
+    /// made this struct variable-width — see [`Self::signing_payload`].
+    pub method_hash: [u8; 32],
     /// `H(method ‖ args)`. Never the plaintext; see the module header.
     pub intent_hash: [u8; 32],
+    /// Commitment to the account state the author saw when signing.
+    ///
+    /// A hash rather than the heads themselves, for the same two reasons as
+    /// [`Self::method_hash`]: the heads are a variable-length set, and they are
+    /// already carried by the change this warrant rides with, so repeating them
+    /// here would be a second spelling that could disagree with the first.
+    pub account_heads: [u8; 32],
+    /// Commitment to the governance heads the author's view descended from.
+    ///
+    /// Checked against the delta's own `governance_position`, which carries the
+    /// heads in full.
+    ///
+    /// **Its provenance is only as good as its source, and that is an accepted
+    /// risk rather than a guarantee.** A floor the relay supplied is a floor the
+    /// relay chose: a relay that withholds a governance op can hand the author a
+    /// stale view and collect a warrant citing it. Closing that needs the value
+    /// to come from the account's own devices or a co-signing peer outside the
+    /// relay's operator. Until it does, this detects an honest relay's staleness
+    /// and does not constrain a dishonest one.
+    pub governance_floor: [u8; 32],
     /// Monotonic per author **device**.
     ///
     /// Per device rather than per account because two devices of one account are

@@ -42,11 +42,21 @@ pub(crate) const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.
 /// [`DEVICE_CERT_SIGN_DOMAIN`] for a sharper one: a warrant is signed by a
 /// DEVICE key while a certificate is signed by a ROOT key, so a shared domain
 /// would let a device that holds neither role sign bytes the other would accept.
-pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v1";
+pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v2";
 
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.
 pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
+
+/// Domain for the hash a warrant carries instead of the method name.
+///
+/// Separate from [`WARRANT_INTENT_DOMAIN`] because the two commit to different
+/// things and are checked by different parties: the intent hash covers the
+/// method AND its arguments and is checked by whoever holds the plaintext, while
+/// this covers the method alone so a peer can select a per-method write-set
+/// without ever learning what was called. A shared domain would let one be
+/// presented as the other.
+pub(crate) const WARRANT_METHOD_DOMAIN: &[u8] = b"calimero.warrant.method.v1";
 
 /// Domain for the hash a warrant commits to instead of the intent itself.
 ///
@@ -80,5 +90,6 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_CONFIRMATION_DOMAIN,
     WARRANT_SIGN_DOMAIN,
     WARRANT_INTENT_DOMAIN,
+    WARRANT_METHOD_DOMAIN,
     AUTH_LOGIN_SIGN_DOMAIN,
 ];
