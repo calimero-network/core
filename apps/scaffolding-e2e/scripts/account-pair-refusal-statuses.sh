@@ -20,6 +20,7 @@ if [ "$#" -ne 4 ]; then
     exit 1
 fi
 
+# shellcheck source=apps/scaffolding-e2e/scripts/account-api.sh
 . "$(dirname "$0")/account-api.sh"
 
 holder="$1"
@@ -27,21 +28,8 @@ newnode="$2"
 namespace="$3"
 root_key="$4"
 
-init=$(api "${newnode}" POST "account/pair-init" \
-    "{\"accountRootPublicKey\":\"${root_key}\",\"namespaces\":[\"${namespace}\"]}")
-
-device=$(echo "${init}" | jq -r '.data.deviceId')
-kem=$(echo "${init}" | jq -r '.data.kemPublicKey')
-sign=$(echo "${init}" | jq -r '.data.signPublicKey')
-statement=$(echo "${init}" | jq -r '.data.statement')
-code=$(echo "${init}" | jq -r '.data.confirmationCode')
-
-for value in "${device}" "${kem}" "${sign}" "${statement}" "${code}"; do
-    if [ -z "${value}" ] || [ "${value}" = "null" ]; then
-        echo "pair-init returned an incomplete payload: ${init}" >&2
-        exit 1
-    fi
-done
+pair_init "${newnode}" \
+    "{\"accountRootPublicKey\":\"${root_key}\",\"namespaces\":[\"${namespace}\"]}"
 
 # A `pair-complete` body over the minted material, with one thing substituted.
 offer() {

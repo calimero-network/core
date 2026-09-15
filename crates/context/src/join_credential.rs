@@ -353,10 +353,8 @@ mod tests {
 
         let err = build(&store, &ContextGroupId::from([0xAA; 32]), &signing_pk)
             .expect_err("no certificate yet, so no credential");
-        assert!(
-            err.to_string().contains("paired into another account"),
-            "{err}"
-        );
+        let msg = err.to_string();
+        assert!(msg.contains("paired into another account"), "{msg}");
 
         let still = repo.get().expect("read").expect("row kept");
         assert_eq!(
@@ -365,7 +363,6 @@ mod tests {
             "the paired device was not re-minted"
         );
         assert_eq!(still.account, paired.account);
-        let msg = err.to_string();
         assert!(msg.contains("/relink"), "{msg}");
         assert!(msg.contains("import-cert"), "{msg}");
     }
