@@ -40,7 +40,6 @@ scope=$(json_array "${applications}")
 identity=$(api "${holder}" GET "identity")
 root_key=$(echo "${identity}" | jq -r '.data.accountRootPublicKey')
 account_namespace=$(echo "${identity}" | jq -r '.data.accountNamespaceId // empty')
-holder_device=$(echo "${identity}" | jq -r '.data.deviceId')
 [ -n "${account_namespace}" ] || fail "the holder names no account namespace before pairing"
 
 pair_init "${newnode}" \
@@ -98,7 +97,11 @@ done
 # bound in the account namespace by its genesis, so the binding scan finds it.
 # Only behind a scope: that barrier proves the fold reached the holder's own
 # statement, while the unscoped one proves no more than this device's own link.
+# Read after the pairing: a holder that took part in nothing has no device to
+# name until pair-complete enrols one and records it.
 if [ "${applications}" != "-" ]; then
+    holder_device=$(api "${holder}" GET "identity" | jq -r '.data.deviceId // empty')
+    [ -n "${holder_device}" ] || fail "the holder names no device of its own"
     api "${newnode}" GET "account/devices" \
         | jq -e --arg d "${holder_device}" 'any(.devices[]; .deviceId == $d)' >/dev/null \
         || fail "the phone does not see the holder's device"
