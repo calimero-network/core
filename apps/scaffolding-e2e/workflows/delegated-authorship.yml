@@ -163,21 +163,62 @@ steps:
 
   # Minted once, presented three times below (refused, accepted, refused) — same
   # bytes each time, so only the grant can explain the different verdicts.
+  #
+  # Minted through `merod account warrant` rather than merobox's own
+  # `sign_warrant` step, and that is the point rather than a detail. That step
+  # reaches the encoding via `from calimero_client_py import sign_warrant`, which
+  # pins `calimero-account` to core's `master` — so the signer this scenario used
+  # to exercise was whatever was bundled into the pinned merobox release binary,
+  # not the code in the tree under test. Warrant v2 (#3933) made that visible the
+  # only way it could: the scenario minted 240-byte v1 bytes against a node that
+  # had just learned to refuse them, and the failure read as a broken refusal
+  # path. A scenario for delegated authorship should mint the way the product
+  # mints.
   - name: The author mints one warrant
-    type: sign_warrant
-    context_id: '{{context_id}}'
-    executor: '{{relay_account}}'
-    method: set
+    type: node_exec
+    node: delegated-node-2
+    # Safe here where it is not for `sign-cert` above: `warrant` is
+    # deliberately offline — its `run(self)` takes no root args and opens no
+    # datastore — so it never contends for RocksDB's exclusive lock and the node
+    # can stay up. Stopping node-2 again here would cost two sync waits.
+    allow_running: true
     args:
-      key: delegated
-      value: from-a-member-with-no-node
-    device_secret: '{{author_secret}}'
-    credential: '{{author_credential}}'
-    nonce: 1
+      - account
+      - warrant
+      - --context
+      - '{{context_id}}'
+      - --executor
+      - '{{relay_account}}'
+      - --method
+      - set
+      # One argv element, and the exact JSON the intent below sends. The warrant
+      # commits to a hash of these bytes, so re-indenting them here would mint a
+      # warrant that verifies as a signature and is refused as authorisation.
+      - --args
+      - '{"key":"delegated","value":"from-a-member-with-no-node"}'
+      - --nonce
+      - '1'
+      # merod's own default, spelled out: the three presentations below must all
+      # fall inside it, and the expiry case is a separate warrant on purpose.
+      - --valid-for
+      - '300'
+      - --device-secret
+      - '{{author_secret}}'
+      - --credential
+      - '{{author_credential}}'
+    capture:
+      # The command prints the hex and nothing else. `{200,}` rather than an
+      # exact width because v2's encoding is variable — `method` is a string and
+      # each cited-head list a vector — so a pinned length would fail on a method
+      # of another name rather than on a real change.
+      warrant: '^([0-9a-f]{200,})$'
     outputs:
       warrant: warrant
-      author_account: authorAccount
 
+  # `author_account` comes from the `sign-cert` step above rather than from this
+  # minting, which is the same provenance it always had: `warrant` reads the
+  # account off the credential (`credential.statement.account`) rather than
+  # taking it separately, precisely so the two cannot disagree.
   - name: The warrant speaks for the member that was added
     type: assert
     statements:
@@ -250,21 +291,37 @@ steps:
   # at apply - wall-clock there is node-dependent and would stop authorization
   # converging. Isolated so `not_after` is the only thing that can refuse this.
   - name: The author mints a warrant that expires almost immediately
-    type: sign_warrant
-    context_id: '{{context_id}}'
-    executor: '{{relay_account}}'
-    method: set
+    type: node_exec
+    node: delegated-node-2
+    allow_running: true
     args:
-      key: delegated
-      value: this-one-should-never-land
-    device_secret: '{{author_secret}}'
-    credential: '{{author_credential}}'
-    nonce: 2
-    valid_for: 1
+      - account
+      - warrant
+      - --context
+      - '{{context_id}}'
+      - --executor
+      - '{{relay_account}}'
+      - --method
+      - set
+      - --args
+      - '{"key":"delegated","value":"this-one-should-never-land"}'
+      # Nonce 2 because the ledger is per device and warrant 1 above is spent by
+      # the time this is presented. A reused nonce would be refused for replay,
+      # which is a different refusal than the one this step is isolating.
+      - --nonce
+      - '2'
+      - --valid-for
+      - '1'
+      - --device-secret
+      - '{{author_secret}}'
+      - --credential
+      - '{{author_credential}}'
+    capture:
+      expiring_warrant: '^([0-9a-f]{200,})$'
     outputs:
       # `<exported name>: <field on the response>` - the opposite of how it
       # reads; backwards fails at capture, not at use.
-      expiring_warrant: warrant
+      expiring_warrant: expiring_warrant
 
   - name: Let it go stale
     type: wait

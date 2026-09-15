@@ -461,7 +461,34 @@ mod tests {
 
     use calimero_account::{
         AccountGenesis, AccountProof, Delegation, DeviceCert, DeviceId, KemPublicKey, Warrant,
+        WarrantTerms,
     };
+    use calimero_primitives::application::ApplicationId;
+
+    /// The v2 terms these fixtures start from: the delta-auth path reads the
+    /// context, the parties and the intent hash, and none of the fields added in
+    /// #3933, so they are held fixed rather than varied.
+    fn terms(
+        context: ContextId,
+        author_account: calimero_account::AccountId,
+        executor: calimero_account::AccountId,
+        intent_hash: [u8; 32],
+        nonce: u64,
+        not_after: u64,
+    ) -> WarrantTerms {
+        WarrantTerms {
+            context,
+            author_account,
+            executor,
+            app_version: ApplicationId::from([0u8; 32]),
+            method: "send_message".to_owned(),
+            intent_hash,
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce,
+            not_after,
+        }
+    }
 
     /// One party: a root key, the account it addresses, one device under it, and
     /// a root-signed certificate for that device.
@@ -505,12 +532,14 @@ mod tests {
         let executor = party(3, 4, 0x02);
         let warrant = Warrant::sign(
             &author.device_sk,
-            context_id,
-            author.account,
-            executor.account,
-            [0xab; 32],
-            7,
-            1_755_903_600,
+            terms(
+                context_id,
+                author.account,
+                executor.account,
+                [0xab; 32],
+                7,
+                1_755_903_600,
+            ),
         )
         .expect("warrant must sign");
         let delegation = Delegation {
@@ -638,12 +667,14 @@ mod tests {
         // different intent.
         let other_warrant = Warrant::sign(
             &author.device_sk,
-            ctx,
-            author.account,
-            executor.account,
-            [0xcd; 32],
-            8,
-            d.warrant.not_after,
+            terms(
+                ctx,
+                author.account,
+                executor.account,
+                [0xcd; 32],
+                8,
+                d.warrant.not_after,
+            ),
         )
         .unwrap();
         let swapped = Delegation {
@@ -728,6 +759,19 @@ mod tests {
     /// now: the moment a release ships, the same edit stops being free, and a
     /// constant that was already here makes the cost visible in the diff
     /// instead of discovered in the field.
+    ///
+    /// **Re-frozen for warrant v2 (#3933).** The block above says a failure
+    /// here is never answered with a new constant unless already-signed deltas
+    /// can still be verified — so, explicitly: they cannot, and that is the
+    /// intended effect rather than a casualty. The warrant is embedded whole
+    /// (see [`the_warrant_is_embedded_verbatim_in_the_preimage`]), so its
+    /// encoding gaining `app_version`, a plaintext `method` and two cited-head
+    /// counts moves these bytes by construction. What the block asks for in
+    /// that case is a domain bump, and one happened — on the *warrant*,
+    /// `calimero.warrant.v1` → `v2`. [`DOMAIN_SEPARATOR_DELEGATED`] itself does
+    /// not need one: a v1 warrant no longer verifies at all, so no old
+    /// delegated preimage survives to be confused with a new one, which is the
+    /// only thing a second domain here would be separating.
     #[test]
     fn the_delegated_preimage_is_byte_frozen() {
         let context_id = ContextId::from([7u8; 32]);
@@ -744,7 +788,7 @@ mod tests {
         )
         .expect("the payload must encode");
 
-        assert_eq!(hex::encode(&payload), "63616c696d65726f2f64656c65672f31070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a4abababababababababababababababababababababababababababababababab070000000000000070f6a868000000004ca33da48ad0fafff1071a4172d3f250bd885972b52335ea52f8572e7139855b8ff81110c6b4f6091de694e73e61497bf838ed477a1085486c4589aa7ce03d0300000000000000000001000000000000000000000000000000");
+        assert_eq!(hex::encode(&payload), "63616c696d65726f2f64656c65672f31070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a400000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a868000000009ed5be9e0252f5e8c67b4fb325ffc76b6316f0917fcdeba47b3d11f46f23a11f4fdd56e870e63911c40da917585efd7f29f10f7501e3b6c65d292b493211b50c00000000000000000001000000000000000000000000000000");
 
         assert_eq!(&payload[..16], DOMAIN_SEPARATOR_DELEGATED.as_slice());
 

@@ -100,7 +100,9 @@ pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDe
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
 pub use crate::scope::{DeviceScope, SignedDeviceScope, VerifiedDeviceScope};
 pub use crate::signed::{AccountProof, DeviceBound, RootSigned, Verified};
-pub use crate::warrant::{Delegation, VerifiedWarrant, Warrant};
+pub use crate::warrant::{
+    Delegation, VerifiedWarrant, Warrant, WarrantTerms, MAX_WARRANT_CITED_HEADS,
+};
 
 // The two end-to-end verifiers keep free-function form: each takes an anchor and a
 // BORROWED chain, which is what the apply paths hold, and a method would force them

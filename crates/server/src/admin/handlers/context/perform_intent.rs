@@ -95,6 +95,34 @@ impl IntentRefusal {
     }
 }
 
+/// Decode the hex-borsh warrant a client sent, as a 400 on failure.
+///
+/// Its own function so the refusal is testable without a `ContextClient`. Both
+/// arms are [`IntentRefusal::Malformed`], like the `authorProof` pair beside the
+/// call site — they used to be bare `eyre!` strings, which fell through to a 500.
+/// That was invisible while no real client sent an undecodable warrant, and it
+/// is the single most common refusal the moment one does: warrant v2 (#3933)
+/// changed the layout, so a signer still emitting v1 sends 240 bytes where 351+
+/// are expected, and "Internal server error" points it at the node rather than
+/// at its own encoder.
+fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> {
+    let bytes = hex::decode(hex_warrant.trim()).map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "warrant is not hex: {err}"
+        )))
+    })?;
+
+    borsh::from_slice(&bytes).map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "warrant is not a valid statement ({} bytes): {err}. A warrant signed \
+             under the v1 layout no longer decodes — the signing domain is now \
+             calimero.warrant.v2 and the encoding carries app_version, a plaintext \
+             method and two cited-head lists",
+            bytes.len()
+        )))
+    })
+}
+
 pub async fn handler(
     Path(context_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -139,10 +167,7 @@ async fn perform(
     context_id: ContextId,
     req: PerformIntentApiRequest,
 ) -> eyre::Result<PerformIntentApiResponse> {
-    let warrant_bytes =
-        hex::decode(req.warrant.trim()).map_err(|err| eyre::eyre!("warrant is not hex: {err}"))?;
-    let warrant: calimero_account::Warrant = borsh::from_slice(&warrant_bytes)
-        .map_err(|err| eyre::eyre!("warrant is not a valid statement: {err}"))?;
+    let warrant = decode_warrant(&req.warrant)?;
 
     let proof_bytes = hex::decode(req.author_proof.trim()).map_err(|err| {
         eyre::eyre!(IntentRefusal::Malformed(format!(
@@ -312,7 +337,7 @@ mod tests {
     use calimero_account::Warrant;
     use calimero_primitives::identity::PrivateKey;
 
-    use super::{warrant_authorises_intent, ContextId, IntentRefusal};
+    use super::{decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal};
 
     const METHOD: &str = "set";
     const ARGS: &[u8] = br#"{"key":"k","value":"v"}"#;
@@ -335,7 +360,13 @@ mod tests {
                 PrivateKey::from([9u8; 32]).public_key(),
             )
             .account_id(),
+            app_version: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            method: METHOD.to_owned(),
             intent_hash: Warrant::intent_hash(METHOD, ARGS),
+            // Cited nothing: this fixture exercises the context/expiry/intent
+            // gate, which does not read the heads.
+            account_heads: vec![],
+            governance_floor: vec![],
             nonce: 1,
             not_after,
             signature: [0u8; 64],
@@ -426,5 +457,37 @@ mod tests {
             "{}",
             refusal(&err)
         );
+    }
+
+    /// A v1 warrant is the refusal every un-updated client now gets, and it has
+    /// to read as a client error. It used to be a bare `eyre!` and so a 500,
+    /// which sends whoever is debugging their signer to the wrong side of the
+    /// wire.
+    #[test]
+    fn an_undecodable_warrant_is_a_client_error_naming_the_layout() {
+        // 240 bytes of zeros: the v1 wire length, which v2 cannot parse.
+        let v1_length = hex::encode(vec![0u8; 240]);
+
+        let err = decode_warrant(&v1_length).expect_err("240 bytes cannot be a v2 warrant");
+        let refusal = err
+            .downcast_ref::<IntentRefusal>()
+            .expect("a short warrant is Malformed, not an internal error");
+        assert_eq!(refusal.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        let msg = refusal.to_string();
+        // The byte count and the domain, so the message localizes the bug in the
+        // caller's encoder rather than just saying no.
+        assert!(msg.contains("240 bytes"), "{msg}");
+        assert!(msg.contains("calimero.warrant.v2"), "{msg}");
+    }
+
+    #[test]
+    fn a_non_hex_warrant_is_also_a_client_error() {
+        let err = decode_warrant("not hex at all").expect_err("non-hex must be refused");
+        let refusal = err
+            .downcast_ref::<IntentRefusal>()
+            .expect("non-hex is Malformed, not an internal error");
+        assert_eq!(refusal.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(refusal.to_string().contains("not hex"), "{refusal}");
     }
 }

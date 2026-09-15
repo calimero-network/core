@@ -45,7 +45,7 @@ pub(crate) const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.
 /// [`DEVICE_CERT_SIGN_DOMAIN`] for a sharper one: a warrant is signed by a
 /// DEVICE key while a certificate is signed by a ROOT key, so a shared domain
 /// would let a device that holds neither role sign bytes the other would accept.
-pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v1";
+pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v2";
 
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.

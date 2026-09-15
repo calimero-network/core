@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use calimero_account::{
     AccountGenesis, AccountId, AccountProof, Delegation, DeviceCert, DeviceId, KemPublicKey,
-    Warrant,
+    Warrant, WarrantTerms,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -36,6 +36,7 @@ use calimero_governance_store::{
 use calimero_node_primitives::sync::delta_auth::{
     delegated_delta_signature_payload, verify_delta_envelope, VerifiedEnvelope,
 };
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -169,12 +170,18 @@ fn world(nonce: u64) -> World {
 
     let warrant = Warrant::sign(
         &author.device_sk,
-        context,
-        author.account,
-        relay.account,
-        Warrant::intent_hash("send_message", br#"{"text":"on my way"}"#),
-        nonce,
-        u64::MAX,
+        WarrantTerms {
+            context,
+            author_account: author.account,
+            executor: relay.account,
+            app_version: ApplicationId::from([0u8; 32]),
+            method: "send_message".to_owned(),
+            intent_hash: Warrant::intent_hash("send_message", br#"{"text":"on my way"}"#),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce,
+            not_after: u64::MAX,
+        },
     )
     .expect("the warrant must sign");
 
