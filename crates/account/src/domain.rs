@@ -56,6 +56,15 @@ pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
 /// something signs.
 pub(crate) const WARRANT_INTENT_DOMAIN: &[u8] = b"calimero.warrant.intent.v1";
 
+/// Domain for a device key's request for a session on a node.
+///
+/// Distinct from [`WARRANT_SIGN_DOMAIN`] for the sharpest reason in this file:
+/// both are signed by the same DEVICE key, so a shared domain would let a
+/// statement minted to log in be presented as a warrant authorizing a write, or
+/// the reverse. The two are the only device-signed domains here, which is
+/// exactly why they must not collide.
+pub(crate) const AUTH_LOGIN_SIGN_DOMAIN: &[u8] = b"calimero.auth.login.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -71,4 +80,5 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_CONFIRMATION_DOMAIN,
     WARRANT_SIGN_DOMAIN,
     WARRANT_INTENT_DOMAIN,
+    AUTH_LOGIN_SIGN_DOMAIN,
 ];

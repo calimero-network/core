@@ -67,6 +67,7 @@ mod account;
 mod device;
 mod domain;
 mod error;
+mod login;
 mod pairing;
 mod revocation;
 mod root_key;
@@ -91,6 +92,7 @@ pub use crate::account::{
 };
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
+pub use crate::login::{Audience, LoginStatement};
 pub use crate::pairing::PairingOffer;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};

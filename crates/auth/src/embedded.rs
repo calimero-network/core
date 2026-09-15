@@ -8,8 +8,8 @@ use tracing::info;
 use crate::api::routes::create_router;
 use crate::auth::token::TokenManager;
 use crate::config::{
-    AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig, SecurityConfig,
-    SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
+    AccountProofConfig, AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig,
+    SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
 };
 use crate::providers;
 use crate::secrets::SecretManager;
@@ -158,6 +158,12 @@ pub fn default_config() -> AuthConfig {
         },
         providers,
         user_password: UserPasswordConfig::default(),
+        // Off by default, and it has to be: the provider needs this node's own
+        // identity to tell a login statement minted for it from one minted
+        // elsewhere, and `default_config` has no way to know that. An embedder
+        // that wants device-key login sets `account_proof.node_key` and flips
+        // the `account_proof` entry in `providers`.
+        account_proof: AccountProofConfig::default(),
         development: DevelopmentConfig::default(),
     }
 }

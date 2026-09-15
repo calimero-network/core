@@ -13,6 +13,9 @@ aes-gcm = "0.11.1"
 async-trait.workspace = true
 axum = { workspace = true, features = ["macros"] }
 base64.workspace = true
+borsh.workspace = true
+calimero-account.workspace = true
+calimero-primitives.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
 config = { version = "0.15", default-features = false, features = ["json", "toml"] }

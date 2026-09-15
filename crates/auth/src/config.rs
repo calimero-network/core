@@ -33,6 +33,10 @@ pub struct AuthConfig {
     #[serde(default)]
     pub user_password: UserPasswordConfig,
 
+    /// Account-proof (device-key login) configuration
+    #[serde(default)]
+    pub account_proof: AccountProofConfig,
+
     /// Development/testing configuration
     #[serde(default)]
     pub development: DevelopmentConfig,
@@ -330,6 +334,75 @@ fn default_min_password_length() -> usize {
 
 fn default_max_password_length() -> usize {
     128
+}
+
+/// Account-proof provider configuration.
+///
+/// Only [`Self::node_key`] has no usable default: it is this node's identity,
+/// and a wrong value is not a misconfiguration that fails loudly but one that
+/// accepts login statements minted for somebody else's node. The provider
+/// refuses to start without it rather than guess.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountProofConfig {
+    /// Seconds an issued challenge stays valid.
+    ///
+    /// Short on purpose: it bounds both the replay window and the size of the
+    /// spent set, which is swept by expiry. Long enough for a human-confirmed
+    /// signature on a slow device, not long enough to be worth harvesting.
+    #[serde(default = "default_challenge_ttl_secs")]
+    pub challenge_ttl_secs: u64,
+
+    /// Hex of this node's namespace public key, as a client pins it.
+    ///
+    /// Required when the provider is enabled. Without it a malicious relay could
+    /// fetch a challenge from this node, serve it to a user as its own, and
+    /// replay the resulting statement here — the `node` field in the statement
+    /// is what refuses that, and it can only be checked against a value this
+    /// service already knows.
+    #[serde(default)]
+    pub node_key: Option<String>,
+
+    /// Client surfaces a session may be minted for.
+    ///
+    /// Each entry is an audience in its config spelling: a bare origin
+    /// (`https://app.example`), `codesign:<id>`, or `cli`. An **empty list
+    /// accepts any audience** and is logged as a warning at startup — that is
+    /// the right default for a single-tenant node and the wrong one for a relay,
+    /// and saying so at startup is cheaper than a silent policy nobody set.
+    #[serde(default)]
+    pub allowed_audiences: Vec<String>,
+
+    /// Permissions granted to a session minted by this provider.
+    ///
+    /// Defaults to `context:intent` alone, and deliberately not to reads or
+    /// listing. A delegated write is already gated twice past this point — the
+    /// warrant proves the author consented, and `CAN_AUTHOR_ON_BEHALF` proves
+    /// the relay may act for them — so a session carrying only this grants no
+    /// authority the warrant did not already carry. Reads have no such gate
+    /// yet: nothing on the admin API evaluates the caller's membership, so a
+    /// broader default here would let any account with a device key read every
+    /// context on a shared relay. Widen this when that check exists.
+    #[serde(default = "default_account_proof_permissions")]
+    pub session_permissions: Vec<String>,
+}
+
+fn default_challenge_ttl_secs() -> u64 {
+    60
+}
+
+fn default_account_proof_permissions() -> Vec<String> {
+    vec!["context:intent".to_owned()]
+}
+
+impl Default for AccountProofConfig {
+    fn default() -> Self {
+        Self {
+            challenge_ttl_secs: default_challenge_ttl_secs(),
+            node_key: None,
+            allowed_audiences: Vec::new(),
+            session_permissions: default_account_proof_permissions(),
+        }
+    }
 }
 
 /// Development and testing configuration
