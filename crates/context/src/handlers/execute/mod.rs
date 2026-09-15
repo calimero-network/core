@@ -102,6 +102,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             xcall_origin,
             delegation,
             xcall_depth,
+            read_as,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -868,6 +869,47 @@ impl Handler<ExecuteRequest> for ContextManager {
                         })
                 });
 
+            // The authorization gate for a delegated read, resolved HERE rather
+            // than from the `is_read_only_call` computed for lock selection.
+            //
+            // Those two look like the same question and are not. Lock selection
+            // may answer conservatively: a cold cache yields `false`, it takes
+            // the write lock, and the only cost is contention. As an
+            // authorization gate that same `false` would refuse a perfectly
+            // read-only method whenever its module had not been loaded yet —
+            // intermittent 409s that depend on cache warmth. By this point the
+            // module has loaded and `read_only_methods` is populated for this
+            // blob, so the set is the real declared one.
+            //
+            // `None` here means the module carries no ABI at all; that refuses
+            // the read, which is the fail-closed direction.
+            let read_refusal = read_as.and_then(|_account| {
+                let blob = act
+                    .executing_bytecode_for_context(&context.id)
+                    .or_else(|| {
+                        act.applications
+                            .get(&context.application_id)
+                            .map(|app| app.blob.bytecode)
+                    })?;
+                let declared_read_only = act
+                    .read_only_methods
+                    .get(&(blob, context.service_name.clone()))
+                    .is_some_and(|set| set.contains(method.as_str()));
+
+                (!declared_read_only).then(|| ExecuteError::NotReadOnly {
+                    context_id: context.id,
+                    method: method.clone(),
+                    // The set holds only `ReadOnly` names, so everything absent
+                    // from it is either `Mutating` or `Unspecified` and the two
+                    // are not distinguishable from the set alone. Report the
+                    // conservative one: a client acts identically on both (mint
+                    // a warrant), and claiming "mutating" about a method that
+                    // merely declares nothing would be a stronger statement than
+                    // the evidence supports.
+                    declared: "not read-only",
+                })
+            });
+
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
             // node-local authored_remaining count (6f.8 drop-after-convert).
@@ -881,6 +923,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                         "xcall denied: not an #[app::xcall] entry point, or caller not permitted by its policy"
                     );
                     bail!(ExecuteError::XCallNotPermitted { context_id });
+                }
+
+                // Refused before any execution: a session authorizes reads, and
+                // this method is not one.
+                if let Some(refusal) = read_refusal {
+                    warn!(
+                        %context_id,
+                        function = %method,
+                        "delegated read refused: method is not declared read-only"
+                    );
+                    bail!(refusal);
                 }
 
                 let old_root_hash = context.root_hash;

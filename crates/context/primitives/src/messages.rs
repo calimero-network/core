@@ -251,6 +251,41 @@ pub enum ExecuteError {
         "xcall on context '{context_id}' denied: target method is not an #[app::xcall] entry point"
     )]
     XCallNotPermitted { context_id: ContextId },
+    /// A delegated **read** named a method the ABI does not declare read-only.
+    ///
+    /// Two separate causes, kept in one variant with a `declared` field rather
+    /// than split, because a client acts on both the same way — this call needs
+    /// a warrant, not a session — while an operator debugging an app needs to
+    /// know which it was:
+    ///
+    /// * `Mutating` — the method takes `&mut self`. The client picked a write.
+    /// * `Unspecified` — the method declares nothing (no receiver, or an
+    ///   `#[app::init]`). **Refused rather than guessed at**: the gate fails
+    ///   closed, because a wrong guess here runs an unreviewed method under a
+    ///   caller's identity with no warrant behind it.
+    #[error(
+        "method '{method}' on context '{context_id}' is not read-only (declared: {declared}); \
+         a session authorizes reads only, so this call needs a warrant"
+    )]
+    NotReadOnly {
+        context_id: ContextId,
+        method: String,
+        /// The ABI intent as declared: `mutating`, or `unspecified` when the
+        /// method declares none.
+        declared: &'static str,
+    },
+    /// A delegated read named a context whose owning group the caller's account
+    /// is not a member of.
+    ///
+    /// Evaluated **per call**, never cached from the session: one relay serves
+    /// several tenants, so a session that carried a standing right to read would
+    /// keep serving a member after they were removed.
+    ///
+    /// Deliberately distinct from [`Self::Unauthorized`], which names a
+    /// `PublicKey` — this is about an account, and the two are not the same
+    /// question.
+    #[error("account is not a member of the group owning context '{context_id}'")]
+    NotAMember { context_id: ContextId },
 }
 
 #[derive(Copy, Clone, Debug)]
