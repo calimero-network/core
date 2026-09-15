@@ -11,6 +11,7 @@ use calimero_primitives::identity::{AccountId, DeviceId, PrivateKey};
 use crate::account::AccountGenesis;
 use crate::device::{DeviceCert, KemPublicKey};
 use crate::root_key::RootKeyHandoff;
+use crate::root_pk::RootPublicKey;
 
 /// Deterministic keypair, so failures reproduce exactly.
 pub(crate) fn key(seed: u8) -> PrivateKey {
@@ -25,11 +26,12 @@ pub(crate) fn genesis_for(root: &PrivateKey) -> AccountGenesis {
 pub(crate) fn rotated(root: &PrivateKey, next: &PrivateKey) -> (AccountGenesis, RootKeyHandoff) {
     let genesis = AccountGenesis::new(root.public_key());
     let account = genesis.account_id();
-    let payload = RootKeyHandoff::signing_payload(account, 0, &next.public_key());
+    let next_pk = RootPublicKey::from(next.public_key());
+    let payload = RootKeyHandoff::signing_payload(account, 0, &next_pk);
     let handoff = RootKeyHandoff {
         account,
         from_epoch: 0,
-        new_root_sign_pk: next.public_key(),
+        new_root_sign_pk: next_pk,
         signature: root.sign(&payload).expect("sign").to_bytes(),
     };
     (genesis, handoff)
@@ -54,7 +56,7 @@ pub(crate) fn sign_handoff(
     from_epoch: u32,
     new_root: &PrivateKey,
 ) -> RootKeyHandoff {
-    let new_root_sign_pk = new_root.public_key();
+    let new_root_sign_pk = RootPublicKey::from(new_root.public_key());
     let payload = RootKeyHandoff::signing_payload(account, from_epoch, &new_root_sign_pk);
     RootKeyHandoff {
         account,

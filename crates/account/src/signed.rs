@@ -200,7 +200,7 @@ pub(crate) fn verify_root_signed<T: RootSigned>(
     let signer = root_key_at_epoch(genesis, chain, statement.key_epoch())?;
 
     if signer
-        .verify_raw_signature(&statement.payload(), statement.signature())
+        .verify(&statement.payload(), statement.signature())
         .is_err()
     {
         return Err(T::SIGNATURE_INVALID);

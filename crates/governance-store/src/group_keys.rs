@@ -1421,7 +1421,7 @@ mod recipient_tests {
             &member_sk,
             genesis.account_id(),
             0,
-            &offline_root.public_key(),
+            &calimero_account::RootPublicKey::from(offline_root.public_key()),
         )
         .expect("sign handoff");
         AccountBindingRepository::new(&store)

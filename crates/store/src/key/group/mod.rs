@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, RootPublicKey};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -2369,7 +2369,10 @@ pub struct GroupAccountKeyValue {
     /// account was rooted at its owner's namespace identity — once the root became
     /// a dedicated offline key, which is a member nowhere, nothing could read it
     /// and it stopped being carried.
-    pub root_pk: [u8; 32],
+    ///
+    /// Tagged with its algorithm: a root rotated onto a secure element or a PIV slot
+    /// is P-256, and verifying the next handoff needs the key itself, not a hash.
+    pub root_pk: RootPublicKey,
 }
 
 /// A member key that vouched for an account in a group. Key layout

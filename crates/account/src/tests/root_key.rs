@@ -6,6 +6,7 @@ use super::support::{genesis_for, key, sign_handoff};
 use crate::account::{AccountGenesis, ACCOUNT_GENESIS_VERSION};
 use crate::error::AccountError;
 use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
+use crate::root_pk::RootPublicKey;
 
 #[test]
 fn empty_chain_resolves_to_the_genesis_key() {
@@ -13,7 +14,7 @@ fn empty_chain_resolves_to_the_genesis_key() {
     let g = genesis_for(&root);
     assert_eq!(
         root_key_at_epoch(&g, &[], 0).expect("valid"),
-        root.public_key()
+        RootPublicKey::from(root.public_key())
     );
 }
 
@@ -29,7 +30,7 @@ fn chain_resolves_each_epoch_in_order() {
     for (epoch, expected) in [&r0, &r1, &r2].into_iter().enumerate() {
         assert_eq!(
             root_key_at_epoch(&g, &chain, epoch as u32).expect("valid"),
-            expected.public_key(),
+            RootPublicKey::from(expected.public_key()),
             "epoch {epoch}"
         );
     }
@@ -129,8 +130,13 @@ fn an_overlong_handoff_chain_is_refused_before_any_verification() {
     // untrusted bytes, so the cap has to be checked before the walk rather
     // than relying on every caller to bound the field first.
     let g = genesis_for(&key(1));
-    let bogus =
-        RootKeyHandoff::sign(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
+    let bogus = RootKeyHandoff::sign(
+        &key(1),
+        g.account_id(),
+        0,
+        &RootPublicKey::from(key(2).public_key()),
+    )
+    .expect("sign");
     let chain = vec![bogus; MAX_ROOT_KEY_HANDOFFS + 1];
     assert_eq!(
         root_key_at_epoch(&g, &chain, 0),
@@ -157,14 +163,14 @@ fn a_minted_handoff_chain_verifies() {
     let account = g.account_id();
 
     let chain = [
-        RootKeyHandoff::sign(&r0, account, 0, &r1.public_key()).expect("sign"),
-        RootKeyHandoff::sign(&r1, account, 1, &r2.public_key()).expect("sign"),
+        RootKeyHandoff::sign(&r0, account, 0, &RootPublicKey::from(r1.public_key())).expect("sign"),
+        RootKeyHandoff::sign(&r1, account, 1, &RootPublicKey::from(r2.public_key())).expect("sign"),
     ];
 
     for (epoch, expected) in [&r0, &r1, &r2].into_iter().enumerate() {
         assert_eq!(
             root_key_at_epoch(&g, &chain, epoch as u32).expect("resolve"),
-            expected.public_key(),
+            RootPublicKey::from(expected.public_key()),
             "epoch {epoch}"
         );
     }

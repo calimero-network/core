@@ -34,7 +34,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_account::{AccountId, DeviceId, KemPublicKey};
+use calimero_account::{AccountId, DeviceId, KemPublicKey, RootPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::ScopeId;
 use calimero_primitives::context::GroupMemberRole;
@@ -95,7 +95,10 @@ pub struct AccountBinding {
     pub epoch: u32,
     /// The root key at [`epoch`](Self::epoch) — the only key that may sign a
     /// device certificate this scope will still accept.
-    pub root_pk: PublicKey,
+    ///
+    /// Algorithm-tagged: epoch 0 is always Ed25519 (it is the genesis key), but a
+    /// rotation can establish a P-256 key held in a secure element.
+    pub root_pk: RootPublicKey,
 }
 
 /// A device's binding to an account at a cut.

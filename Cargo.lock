@@ -971,6 +971,7 @@ dependencies = [
  "borsh",
  "calimero-primitives",
  "hex",
+ "p256",
  "thiserror 2.0.20",
 ]
 
@@ -1251,6 +1252,7 @@ dependencies = [
  "eyre",
  "hex",
  "libp2p",
+ "p256",
  "prometheus-client",
  "rand 0.10.2",
  "serde_json",

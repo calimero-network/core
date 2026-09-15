@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
+use calimero_account::{
+    AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff, RootPublicKey,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
@@ -30,7 +32,7 @@ fn op_payload_discriminants_are_pinned() {
     let handoff = RootKeyHandoff {
         account,
         from_epoch: 0,
-        new_root_sign_pk: key(2).public_key(),
+        new_root_sign_pk: RootPublicKey::from(key(2).public_key()),
         signature: [0u8; 64],
     };
     let cert = DeviceCert {

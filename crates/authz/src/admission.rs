@@ -113,7 +113,7 @@ impl AclView {
         }
         if binding
             .root_pk
-            .verify_raw_signature(&handoff.payload(), &handoff.signature)
+            .verify(&handoff.payload(), &handoff.signature)
             .is_err()
         {
             return Err(Rejected::RotationSignatureInvalid);

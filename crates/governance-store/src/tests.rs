@@ -10965,7 +10965,9 @@ mod parked_op_retries_to_success {
 /// idempotent under replay shows up.
 mod account_plane_apply {
     use super::*;
-    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff};
+    use calimero_account::{
+        AccountGenesis, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff, RootPublicKey,
+    };
     use calimero_context_client::local_governance::GroupOp;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
@@ -11935,7 +11937,13 @@ mod account_plane_apply {
         let repo = AccountBindingRepository::new(&store);
         repo.absorb_genesis(&gid, &genesis).unwrap();
 
-        let handoff = RootKeyHandoff::sign(&key(9), account, 0, &key(10).public_key()).unwrap();
+        let handoff = RootKeyHandoff::sign(
+            &key(9),
+            account,
+            0,
+            &RootPublicKey::from(key(10).public_key()),
+        )
+        .unwrap();
 
         // Applied twice: the second is a no-op because `from_epoch` no longer
         // matches, which is exactly the idempotence replay depends on.

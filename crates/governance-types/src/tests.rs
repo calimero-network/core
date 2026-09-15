@@ -305,6 +305,9 @@ const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // handoff.account
     0, 0, 0, 0, // handoff.from_epoch
+    // `RootPublicKey` is tagged with its algorithm: variant 0 is Ed25519, whose
+    // 32 bytes follow. A P-256 root would be variant 1 and 33 bytes.
+    0, // handoff.new_root_sign_pk: Ed25519
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // handoff.new_root_sign_pk
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -342,8 +345,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 11,
-        "the ordinals frozen below are the v11 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 12,
+        "the ordinals frozen below are the v12 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -2153,10 +2156,14 @@ fn context_registered_round_trips_registry_coordinates() {
 }
 
 #[test]
-fn schema_version_is_bumped_for_the_coordinate_fields() {
+fn schema_versions_are_bumped_for_the_tagged_root_key() {
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 11,
-        "adding fields to existing GroupOp variants must bump the strictly-checked schema version"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 12,
+        "changing the layout of existing GroupOp variants must bump the strictly-checked schema version"
+    );
+    assert_eq!(
+        SIGNED_NAMESPACE_OP_SCHEMA_VERSION, 9,
+        "changing the layout of a join's account credential must bump the strictly-checked schema version"
     );
 }
 

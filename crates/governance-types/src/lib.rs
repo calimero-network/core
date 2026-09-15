@@ -171,7 +171,13 @@ id_newtype! {
 /// non-initiator's upgrade record can carry the target ABI state version the
 /// rollup compares against. v11 added mandatory coordinates to three variants,
 /// changing their content hash, so a v10 peer must reject rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 11;
+///
+/// v12: `RootKeyHandoff::new_root_sign_pk` became an algorithm-tagged
+/// `RootPublicKey`, so an account root can be a P-256 hardware key. Every
+/// handoff grows a tag byte, which changes the layout of `AccountKeysRotated`
+/// and of any `AccountDeviceLinked` carrying a chain; a v11 peer must reject
+/// those rather than mis-decode the key.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 12;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -1562,7 +1568,10 @@ pub struct SignedNamespaceOp {
 /// move is what makes a keyholder join possible: the endorsement is no longer
 /// covered by the joiner's signature, so an admitter can attach its consent to
 /// an op it did not author and cannot alter.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 8;
+/// v9: every join carries an `AccountProof` whose handoff chain now names each
+/// incoming root as an algorithm-tagged `RootPublicKey`, so a join from an
+/// account whose root was handed off changes layout. Another re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 9;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

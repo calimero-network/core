@@ -1511,7 +1511,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
         &root_sk,
         account,
         0,
-        &PrivateKey::from([0x65u8; 32]).public_key(),
+        &calimero_account::RootPublicKey::from(PrivateKey::from([0x65u8; 32]).public_key()),
     )
     .expect("sign handoff");
     let rot_env = ns_group_envelope(ns.to_bytes(), device_key, group);

@@ -15,3 +15,4 @@ thiserror.workspace = true
 
 calimero-primitives = { workspace = true, features = ["borsh"] }
 
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
