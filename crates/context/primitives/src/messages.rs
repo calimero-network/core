@@ -253,27 +253,21 @@ pub enum ExecuteError {
     XCallNotPermitted { context_id: ContextId },
     /// A delegated **read** named a method the ABI does not declare read-only.
     ///
-    /// Two separate causes, kept in one variant with a `declared` field rather
-    /// than split, because a client acts on both the same way — this call needs
-    /// a warrant, not a session — while an operator debugging an app needs to
-    /// know which it was:
+    /// Covers both causes — a `Mutating` method, and one that declares nothing
+    /// (`Unspecified`, e.g. no receiver or an `#[app::init]`). The second is
+    /// **refused rather than guessed at**: the gate fails closed, because a
+    /// wrong guess runs an unreviewed method under a caller's identity with no
+    /// warrant behind it.
     ///
-    /// * `Mutating` — the method takes `&mut self`. The client picked a write.
-    /// * `Unspecified` — the method declares nothing (no receiver, or an
-    ///   `#[app::init]`). **Refused rather than guessed at**: the gate fails
-    ///   closed, because a wrong guess here runs an unreviewed method under a
-    ///   caller's identity with no warrant behind it.
+    /// Carries no method name because [`ExecuteError`] is `Copy` and a `String`
+    /// would cost that for every caller of a widely-used type. The name is not
+    /// lost: the HTTP layer names the method it was asked for, and the handler
+    /// logs it alongside the context.
     #[error(
-        "method '{method}' on context '{context_id}' is not read-only (declared: {declared}); \
-         a session authorizes reads only, so this call needs a warrant"
+        "method is not declared read-only on context '{context_id}'; a session \
+         authorizes reads only, so this call needs a warrant"
     )]
-    NotReadOnly {
-        context_id: ContextId,
-        method: String,
-        /// The ABI intent as declared: `mutating`, or `unspecified` when the
-        /// method declares none.
-        declared: &'static str,
-    },
+    NotReadOnly { context_id: ContextId },
     /// A delegated read named a context whose owning group the caller's account
     /// is not a member of.
     ///
