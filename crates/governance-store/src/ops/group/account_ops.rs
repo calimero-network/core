@@ -17,7 +17,7 @@ use crate::membership::MembershipPath;
 use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    RootKeyHandoff, SignedDeviceRevocation,
+    DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
 use eyre::Result as EyreResult;
 
@@ -213,6 +213,90 @@ fn remember_if_this_accounts_own(
         tracing::warn!(device = %cert.device, %err,
                        "could not remember a certificate this account signed");
     }
+}
+
+/// `GroupOp::AccountDeviceCertified` - record a device of this namespace's own
+/// account in its registry.
+///
+/// A narrower gate than the link's, and deliberately: a link is admissible from
+/// any member endorsing any account, because it grants nothing the account did
+/// not already hold. The registry is different - it is what other devices bind
+/// FROM - so the signer must be an admin at the cut and speak for the account the
+/// statements name, and both statements must verify against that account.
+///
+/// Authority is read at the cut and never from the group's meta row, whose
+/// `admin_identity` moves under `TransferOwnership`: deciding from live meta
+/// would let two replicas at different fold depths settle one op differently,
+/// with no later op able to reconcile them.
+///
+/// A scope at or below the stored epoch is accepted as a no-op, the way a
+/// re-stated link is: the op still occupies its place in the DAG.
+pub(crate) fn apply_device_certified(
+    ctx: &mut GroupApplyCtx<'_>,
+    certificate: &AccountProof<DeviceCert>,
+    scope: &AccountProof<DeviceScope>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    let account = certificate.statement.account;
+
+    // `?` rather than a swallowed `false`, as the unlink gate does: an
+    // unresolvable cut must park the op for retry, not read as "not an admin".
+    if !ctx.permissions().is_admin(ctx.signer())? {
+        tracing::warn!(
+            group_id = ?group_id,
+            signer = %ctx.signer(),
+            %account,
+            "account device certified: the signer is not an admin at this op's cut"
+        );
+        return Ok(());
+    }
+    let signer_account = ctx.signer_account()?;
+    if signer_account != Some(account) {
+        tracing::warn!(
+            group_id = ?group_id,
+            signer = %ctx.signer(),
+            ?signer_account,
+            %account,
+            "account device certified: the signer does not speak for the account the \
+             statements name"
+        );
+        return Ok(());
+    }
+
+    if let Err(err) = certificate.verify(account) {
+        tracing::warn!(group_id = ?group_id, %account, %err,
+                       "account device certified: the certificate did not verify");
+        return Ok(());
+    }
+    // Narrowed to the certificate's device before verifying, so a valid scope for
+    // one device can never be presented as another's.
+    let device = certificate.statement.device;
+    if let Err(err) = scope.authorises(account, device) {
+        tracing::warn!(group_id = ?group_id, %device, %err,
+                       "account device certified: the scope did not authorise this device");
+        return Ok(());
+    }
+
+    let recorded = crate::AccountDeviceRegistry::new(ctx.store(), group_id).record(
+        certificate,
+        &scope.statement.applications,
+        scope.statement.scope_epoch,
+    )?;
+    if !recorded {
+        return Ok(());
+    }
+    ctx.queue_event(crate::op_events::OpEvent::AccountDeviceCertified {
+        group_id: group_id.to_bytes(),
+        device,
+    });
+    tracing::info!(
+        group_id = ?group_id,
+        %device,
+        scope_epoch = scope.statement.scope_epoch,
+        applications = scope.statement.applications.len(),
+        "account device certified"
+    );
+    Ok(())
 }
 
 /// `GroupOp::AccountDeviceUnlinked` — withdraw a device.

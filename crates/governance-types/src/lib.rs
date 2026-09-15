@@ -26,7 +26,7 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
+    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -171,7 +171,10 @@ id_newtype! {
 /// non-initiator's upgrade record can carry the target ABI state version the
 /// rollup compares against. v11 added mandatory coordinates to three variants,
 /// changing their content hash, so a v10 peer must reject rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 11;
+///
+/// v12: appends `GroupOp::AccountDeviceCertified`; no prior ordinal moves, so a
+/// v11 peer fails at the version gate rather than partway through a DAG.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 12;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -617,6 +620,20 @@ pub enum GroupOp {
         /// an exclusion: the device is already gone from the recipient list.
         device: DeviceId,
     },
+    /// Record a device of this namespace's account in its registry. The apply
+    /// admits only an admin writing about its own account's devices.
+    ///
+    /// Both statements are root-signed and self-contained, so a receiver checks
+    /// them without having folded anything about the account, and the full
+    /// certificate is here because a binding row drops the root signature.
+    /// Boxed like [`JoinAccountCredential`]: two proofs inline make the variant
+    /// too large.
+    AccountDeviceCertified {
+        /// The device's certificate, exactly as a link op carries it.
+        certificate: Box<AccountProof<DeviceCert>>,
+        /// What that device may speak for, at which scope epoch.
+        scope: Box<AccountProof<DeviceScope>>,
+    },
 }
 
 impl GroupOp {
@@ -657,6 +674,7 @@ impl GroupOp {
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
             GroupOp::GroupKeyRotatedForDevice { .. } => "group_key_rotated_for_device",
+            GroupOp::AccountDeviceCertified { .. } => "account_device_certified",
         }
     }
 }
@@ -1869,6 +1887,9 @@ pub mod bounds {
     /// against real use: an account rotating its root key once a day would take
     /// well over two years to reach it.
     pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
+    /// Max applications one device scope may name: a cap on what a hostile op
+    /// may claim, not on what a real one needs.
+    pub const MAX_DEVICE_SCOPE_APPLICATIONS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
     /// Admitters named in an invitation, and addresses offered for them.
     ///
@@ -2042,6 +2063,23 @@ impl GroupOp {
                 chain.len(),
                 bounds::MAX_ROOT_KEY_HANDOFFS,
             ),
+            Self::AccountDeviceCertified { certificate, scope } => {
+                check_bound(
+                    "group_op.account_device_certified.certificate.chain",
+                    certificate.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_certified.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_certified.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
             Self::GroupMetadataSet { name, data } => {
                 check_metadata("group_op.group_metadata", name.as_ref(), data)
             }

@@ -44,7 +44,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | Introspection / admin | `get_group_info`, `get_group_for_context`, `list_all_groups`, `list_group_members`, `list_group_contexts`, `get_cascade_status`, `issue_ownership_proof`, `admit_tee_node`, `set_tee_admission_policy` |
 | Application updates | `update_application/mod.rs` |
 
-One module there is not a handler: `ensure_account_namespace` is a plain function `pair_device_complete` calls, creating the holder's account namespace on first use and naming it.
+One module there is not a handler: `ensure_account_namespace` is a plain function `pair_device_complete` calls, creating the holder's account namespace on first use, naming it, and recording the holder's own device in it.
 
 ## Background Listeners (spawned in `Actor::started`)
 

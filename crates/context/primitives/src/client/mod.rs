@@ -1260,7 +1260,8 @@ impl ContextClient {
         self.registry.datastore()
     }
 
-    pub(crate) const fn node_client(&self) -> &NodeClient {
+    /// The node client, for governance publishes made from a plain function.
+    pub const fn node_client(&self) -> &NodeClient {
         &self.node_client
     }
 

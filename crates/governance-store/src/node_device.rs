@@ -823,6 +823,13 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(())
     }
 
+    /// Forget the recorded account namespace, for a device that has stopped
+    /// speaking for the account that named it.
+    fn clear_account_namespace(&self) -> EyreResult<()> {
+        self.store.handle().delete(&NodeAccountNamespace::new())?;
+        Ok(())
+    }
+
     /// Keep the proof a link op carried for THIS device.
     ///
     /// The write is skipped for a node that holds the account's own root, which
@@ -1026,6 +1033,13 @@ impl<'a> NodeDeviceRepository<'a> {
             }
             if serves {
                 return Ok(existing);
+            }
+            // The recorded account namespace belongs to the account being left,
+            // so a re-mint under another one takes it with the row. A revoked
+            // device re-minted under the SAME account keeps it: the namespace is
+            // still this node's.
+            if existing.account != account {
+                self.clear_account_namespace()?;
             }
             // Deleting takes the KEM secret with it, which is only safe because
             // both replacement cases leave nothing addressed to it: a revoked

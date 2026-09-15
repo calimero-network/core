@@ -37,7 +37,7 @@ use core::ops::Deref;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use calimero_primitives::identity::{AccountId, PrivateKey};
+use calimero_primitives::identity::{AccountId, DeviceId, PrivateKey};
 
 use crate::account::AccountGenesis;
 use crate::error::AccountError;
@@ -64,7 +64,8 @@ pub(crate) fn sign_payload(
 
 /// A statement an account's **root** key signs, naming the epoch that signed it.
 ///
-/// Implemented by [`crate::DeviceCert`] and [`crate::DeviceRevocation`].
+/// Implemented by [`crate::DeviceCert`], [`crate::DeviceRevocation`] and
+/// [`crate::DeviceScope`].
 /// Deliberately **not** implemented by [`crate::AccountMemberEndorsement`], which
 /// is signed by a granted *member* key rather than by the account root — that is
 /// the whole reason the endorsement exists, and leaving it outside this trait is
@@ -84,6 +85,16 @@ pub trait RootSigned {
     fn payload(&self) -> [u8; 32];
     /// The signature itself.
     fn signature(&self) -> &[u8; 64];
+}
+
+/// A [`RootSigned`] statement about one particular device: what
+/// [`AccountProof::authorises`] needs beyond verification.
+pub trait DeviceBound: RootSigned {
+    /// Builds the error reported when the proof names a different device.
+    const DEVICE_MISMATCH: fn(named: DeviceId, expected: DeviceId) -> AccountError;
+
+    /// The device this statement is about.
+    fn device(&self) -> DeviceId;
 }
 
 /// A statement whose anchor, key chain, and signature have all been checked.
@@ -149,7 +160,7 @@ pub struct AccountProof<T> {
     pub statement: T,
 }
 
-impl<T: RootSigned + Copy> AccountProof<T> {
+impl<T: RootSigned + Clone> AccountProof<T> {
     /// Check this proof against the account the caller already trusts.
     ///
     /// `claimed_account` is what ties the credential to something outside it —
@@ -160,7 +171,30 @@ impl<T: RootSigned + Copy> AccountProof<T> {
     /// See [`verify_root_signed`].
     pub fn verify(&self, claimed_account: AccountId) -> Result<Verified<T>, AccountError> {
         verify_root_signed(claimed_account, &self.genesis, &self.chain, &self.statement)?;
-        Ok(Verified::new(self.statement))
+        Ok(Verified::new(self.statement.clone()))
+    }
+
+    /// Whether this proof speaks for `device` under `account`.
+    ///
+    /// The device is checked before anything is verified, so a proof aimed at
+    /// another device can neither be presented as this one's nor cost a
+    /// signature check.
+    ///
+    /// # Errors
+    /// `T::DEVICE_MISMATCH`, else whatever [`AccountProof::verify`] reports.
+    pub fn authorises(
+        &self,
+        account: AccountId,
+        device: DeviceId,
+    ) -> Result<Verified<T>, AccountError>
+    where
+        T: DeviceBound,
+    {
+        let named = self.statement.device();
+        if named != device {
+            return Err((T::DEVICE_MISMATCH)(named, device));
+        }
+        self.verify(account)
     }
 }
 

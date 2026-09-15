@@ -113,6 +113,13 @@ pub enum OpEvent {
         account: AccountId,
         device: DeviceId,
     },
+    /// `GroupOp::AccountDeviceCertified` - a device was recorded in this
+    /// namespace's registry. Fires only when the row changed, so a re-gossiped
+    /// op wakes nobody; `group_id` is the namespace, which owns the registry.
+    AccountDeviceCertified {
+        group_id: [u8; 32],
+        device: DeviceId,
+    },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including
     /// when flags don't change, so handlers should dedupe if they care.
