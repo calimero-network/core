@@ -386,33 +386,30 @@ pub(crate) mod actor {
         /// Every topic subscribed so far, in the order the handler asked for
         /// them.
         pub(crate) fn subscribed(&mut self) -> Vec<String> {
-            let mut topics = Vec::new();
-            while let Ok(topic) = self.subscribed.try_recv() {
-                topics.push(topic);
-            }
-            topics
+            drain(&mut self.subscribed)
         }
 
         /// Every topic unsubscribed from so far. Drains, so a caller polling
         /// for one has to accumulate what it takes.
         pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
-            let mut topics = Vec::new();
-            while let Ok(topic) = self.unsubscribed.try_recv() {
-                topics.push(topic);
-            }
-            topics
+            drain(&mut self.unsubscribed)
         }
 
         /// Every topic a governance broadcast reached so far. The mesh-count
         /// probe counts as reaching it, so an op that only got as far as trying
         /// still shows up here.
         pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
-            let mut topics = Vec::new();
-            while let Ok(topic) = self.broadcast.try_recv() {
-                topics.push(topic);
-            }
-            topics
+            drain(&mut self.broadcast)
         }
+    }
+
+    /// Everything a recorder holds, in the order it arrived.
+    fn drain(rx: &mut UnboundedReceiver<String>) -> Vec<String> {
+        let mut topics = Vec::new();
+        while let Ok(topic) = rx.try_recv() {
+            topics.push(topic);
+        }
+        topics
     }
 
     /// Start a manager over `store`, with no peer answering join requests.

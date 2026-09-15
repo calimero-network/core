@@ -2438,15 +2438,6 @@ pub struct GroupAccountDeviceValue {
     pub scope_epoch: u32,
 }
 
-/// The target a [`GroupAccountNamespace`] row records. `None` is a namespace
-/// whose target had not synced when the gainer read it, so only an unscoped
-/// device follows it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupAccountNamespaceValue {
-    pub application: Option<ApplicationId>,
-}
-
 /// An account's current root key within a group (see [`GROUP_ACCOUNT_KEY_PREFIX`]).
 ///
 /// Written the first time the group sees any credential for the account, and

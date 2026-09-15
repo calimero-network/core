@@ -171,7 +171,14 @@ fn wait_for_target_then_announce(
         }
         // A `Left` published inside the window would otherwise be undone here,
         // and nothing can drop a namespace the set has re-named.
-        if !still_a_member(&store, namespace) {
+        if !account_is_member(&store, namespace).unwrap_or_else(|err| {
+            warn!(
+                ?err,
+                ?namespace,
+                "could not confirm the account still holds a namespace"
+            );
+            false
+        }) {
             debug!(
                 ?namespace,
                 "the account left it while the gain waited; dropping the gain"
@@ -196,26 +203,16 @@ fn wait_for_target_then_announce(
     }));
 }
 
-/// Is this node's account still a member of `namespace`? Answered from the
-/// member row a leave's own `MemberLeft` apply removes.
+/// Is this node's account a member of `namespace`? Answered from the member row
+/// a leave's own `MemberLeft` apply removes.
 ///
-/// Fails closed: a dropped gain is repaired by gaining the namespace again, a
-/// gain published after a leave is repaired by nothing.
-fn still_a_member(store: &Store, namespace: ContextGroupId) -> bool {
-    let resolved = || -> EyreResult<bool> {
-        let Some(held) = NodeDeviceRepository::new(store).get()? else {
-            return Ok(false);
-        };
-        MembershipRepository::new(store).is_member(&namespace, &held.account)
+/// # Errors
+/// Propagates the device or membership read failure.
+pub(crate) fn account_is_member(store: &Store, namespace: ContextGroupId) -> EyreResult<bool> {
+    let Some(held) = NodeDeviceRepository::new(store).get()? else {
+        return Ok(false);
     };
-    resolved().unwrap_or_else(|err| {
-        warn!(
-            ?err,
-            ?namespace,
-            "could not confirm the account still holds a namespace"
-        );
-        false
-    })
+    MembershipRepository::new(store).is_member(&namespace, &held.account)
 }
 
 async fn publish_or_warn(

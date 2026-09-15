@@ -6,7 +6,7 @@
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_store::key::{GroupAccountNamespace, GroupAccountNamespaceValue};
+use calimero_store::key::GroupAccountNamespace;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::debug;
@@ -48,9 +48,7 @@ impl<'a> AccountNamespaceSet<'a> {
         let application = match application {
             Some(read) => Some(read),
             None => {
-                let kept = handle
-                    .get(&key)?
-                    .and_then(|value: GroupAccountNamespaceValue| value.application);
+                let kept = handle.get(&key)?.flatten();
                 if let Some(kept) = kept {
                     debug!(
                         ?namespace,
@@ -61,7 +59,7 @@ impl<'a> AccountNamespaceSet<'a> {
                 kept
             }
         };
-        handle.put(&key, &GroupAccountNamespaceValue { application })?;
+        handle.put(&key, &application)?;
         Ok(())
     }
 
@@ -87,9 +85,7 @@ impl<'a> AccountNamespaceSet<'a> {
         let handle = self.store.handle();
         let key =
             GroupAccountNamespace::new(self.account_namespace.to_bytes(), namespace.to_bytes());
-        Ok(handle
-            .get(&key)?
-            .map(|value: GroupAccountNamespaceValue| value.application))
+        Ok(handle.get(&key)?)
     }
 
     /// Every namespace in the set, with the application each was recorded under.
@@ -115,7 +111,7 @@ impl<'a> AccountNamespaceSet<'a> {
             let Some(value) = handle.get(&key)? else {
                 continue;
             };
-            out.push((ContextGroupId::from(key.namespace()), value.application));
+            out.push((ContextGroupId::from(key.namespace()), value));
         }
         Ok(out)
     }
@@ -190,5 +186,25 @@ mod tests {
             .expect("re-record, target unread");
 
         assert_eq!(set.contains(ns(0x61)).expect("read"), Some(Some(app(0x11))));
+    }
+
+    /// Dropping the one-field wrapper must not have moved a byte: borsh writes a
+    /// struct's single field inline, so these rows are on disk already.
+    #[test]
+    fn dropping_the_wrapper_left_the_bytes_where_they_were() {
+        #[derive(borsh::BorshSerialize)]
+        struct Wrapped {
+            application: Option<ApplicationId>,
+        }
+
+        for application in [Some(app(0x11)), None] {
+            let wrapped = borsh::to_vec(&Wrapped { application }).expect("encode");
+            assert_eq!(borsh::to_vec(&application).expect("encode"), wrapped);
+            assert_eq!(
+                borsh::from_slice::<Option<ApplicationId>>(&wrapped)
+                    .expect("a row written wrapped"),
+                application
+            );
+        }
     }
 }
