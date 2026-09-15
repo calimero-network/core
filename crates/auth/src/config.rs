@@ -391,7 +391,7 @@ fn default_challenge_ttl_secs() -> u64 {
 }
 
 fn default_account_proof_permissions() -> Vec<String> {
-    vec!["context:intent".to_owned()]
+    vec!["context:intent".to_owned(), "context:query".to_owned()]
 }
 
 impl Default for AccountProofConfig {

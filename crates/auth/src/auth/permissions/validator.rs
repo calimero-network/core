@@ -74,6 +74,8 @@ static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
 
 static CONTEXT_INTENTS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/intents$").unwrap());
+static CONTEXT_QUERY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/query$").unwrap());
 
 static CONTEXT_SYNC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/sync/([^/]+)$").unwrap());
@@ -378,6 +380,27 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                 HttpMethod::POST => {
                     vec![Permission::Context(ContextPermission::PerformIntent(scope))]
                 }
+                _ => vec![],
+            };
+        }
+    }
+
+    // Delegated reads: an account-authenticated caller reads a context.
+    //
+    // Mapped for the same reason `/intents` is, and the omission would have
+    // failed the same way: unmapped, an `/admin-api/*` path falls to the
+    // default-deny below and needs `admin`, so the only way to let somebody read
+    // their own context would be handing them node credentials — which is what
+    // this whole path exists to avoid.
+    //
+    // Scoped to the context and its own verb, not `Execute` (which also covers
+    // join/leave/resync) and not `PerformIntent` (which submits writes). A token
+    // minted so a client can render should carry neither.
+    if let Some(captures) = CONTEXT_QUERY_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Query(scope))],
                 _ => vec![],
             };
         }
