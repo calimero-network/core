@@ -16,7 +16,10 @@ use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{
+    AutoFollowFlags, GroupMember, GroupMemberByAccount, GroupMemberValue, GroupMetaValue,
+};
+use calimero_store::Store;
 
 use super::super::test_fixtures::{
     nest_for_test, nest_for_test_unchecked, sample_meta_with_admin, test_group_id, test_meta,
@@ -2963,4 +2966,250 @@ mod owner_guard_prevents_a_memberless_group {
              which is why no group can end up memberless owing a rotation nobody can pay"
         );
     }
+}
+
+// --- the account → group reverse index (#3941) ----------------------------
+
+/// Sorted group bytes, so assertions do not depend on store iteration order.
+fn groups_of(store: &Store, account: &AccountId) -> Vec<[u8; 32]> {
+    let mut groups: Vec<[u8; 32]> = MembershipRepository::new(store)
+        .groups_for_account(account)
+        .unwrap()
+        .into_iter()
+        .map(|g| g.to_bytes())
+        .collect();
+    groups.sort_unstable();
+    groups
+}
+
+#[test]
+fn an_account_sees_its_own_groups_and_only_those() {
+    let store = test_store();
+    let mine_a = ContextGroupId::from([0xa1; 32]);
+    let mine_b = ContextGroupId::from([0xa2; 32]);
+    let theirs = ContextGroupId::from([0xb1; 32]);
+
+    let me = AccountId::from([0x01; 32]);
+    let them = AccountId::from([0x02; 32]);
+
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&mine_a, &me, GroupMemberRole::Member)
+        .unwrap();
+    members
+        .add_member(&mine_b, &me, GroupMemberRole::Admin)
+        .unwrap();
+    members
+        .add_member(&theirs, &them, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The whole point: one tenant's scan must not reach the other's row, which
+    // is the disclosure the node-wide list endpoints had.
+    assert_eq!(groups_of(&store, &me), vec![[0xa1; 32], [0xa2; 32]]);
+    assert_eq!(groups_of(&store, &them), vec![[0xb1; 32]]);
+    assert!(groups_of(&store, &AccountId::from([0x03; 32])).is_empty());
+}
+
+#[test]
+fn removing_a_member_removes_them_from_the_index() {
+    let store = test_store();
+    let gid = test_group_id();
+    let me = AccountId::from([0x01; 32]);
+
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&gid, &me, GroupMemberRole::Member)
+        .unwrap();
+    assert_eq!(groups_of(&store, &me), vec![gid.to_bytes()]);
+
+    members.remove_member(&gid, &me).unwrap();
+    assert!(
+        groups_of(&store, &me).is_empty(),
+        "an index entry outliving its membership row would list a group the \
+         caller was removed from"
+    );
+
+    // Re-add: the pair has to survive a round trip, since kick-then-rejoin is a
+    // flow the governance layer exercises routinely.
+    members
+        .add_member(&gid, &me, GroupMemberRole::Member)
+        .unwrap();
+    assert_eq!(groups_of(&store, &me), vec![gid.to_bytes()]);
+}
+
+/// A role change rewrites the membership row; it must not disturb the index.
+#[test]
+fn changing_a_role_leaves_the_index_alone() {
+    let store = test_store();
+    let gid = test_group_id();
+    let me = AccountId::from([0x01; 32]);
+
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&gid, &me, GroupMemberRole::Member)
+        .unwrap();
+    members.set_role(&gid, &me, GroupMemberRole::Admin).unwrap();
+
+    assert_eq!(groups_of(&store, &me), vec![gid.to_bytes()]);
+}
+
+/// The regression the backfill exists for: rows written before the index
+/// existed. Simulated by writing the membership row directly, which is what a
+/// build without this index left behind.
+#[test]
+fn membership_rows_written_before_the_index_are_backfilled_on_first_read() {
+    let store = test_store();
+    let gid = test_group_id();
+    let me = AccountId::from([0x01; 32]);
+
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &GroupMember::new(gid.to_bytes(), me),
+                &GroupMemberValue {
+                    role: GroupMemberRole::Member,
+                    private_key: None,
+                    sender_key: None,
+                    auto_follow: AutoFollowFlags::default(),
+                },
+            )
+            .unwrap();
+    }
+
+    // Without the backfill this is empty, and the caller is told they belong to
+    // no groups — which on a list endpoint reads as data loss rather than as a
+    // missing index.
+    assert_eq!(groups_of(&store, &me), vec![gid.to_bytes()]);
+}
+
+/// The marker is what keeps the backfill from re-scanning on every read, so a
+/// second read must not need it — including when the row was removed in
+/// between, which is the case a re-run would silently resurrect.
+#[test]
+fn the_backfill_runs_once_and_does_not_resurrect_a_removed_row() {
+    let store = test_store();
+    let gid = test_group_id();
+    let me = AccountId::from([0x01; 32]);
+
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&gid, &me, GroupMemberRole::Member)
+        .unwrap();
+    assert_eq!(groups_of(&store, &me), vec![gid.to_bytes()]);
+
+    members.remove_member(&gid, &me).unwrap();
+    assert!(groups_of(&store, &me).is_empty());
+}
+
+/// A stale index entry — what a crash between `remove_member`'s two deletes
+/// leaves — must not grant anything. The membership row is authoritative.
+#[test]
+fn a_stale_index_entry_does_not_list_a_group_the_row_denies() {
+    let store = test_store();
+    let gid = test_group_id();
+    let me = AccountId::from([0x01; 32]);
+
+    {
+        let mut handle = store.handle();
+        handle
+            .put(&GroupMemberByAccount::new(me, gid.to_bytes()), &())
+            .unwrap();
+    }
+
+    assert!(
+        groups_of(&store, &me).is_empty(),
+        "the index is a derived view; a group with no membership row is not one \
+         the caller is in, however the entry got there"
+    );
+}
+
+/// Inheritance is the half the index does not store, and the half a list
+/// endpoint must not lose: a member of a parent must see a context living in an
+/// Open subgroup they never joined directly.
+#[test]
+fn the_effective_set_reaches_groups_held_through_a_parent() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = test_group_id();
+    let child = ContextGroupId::from([0xc1; 32]);
+    let me = AccountId::from([0x01; 32]);
+
+    MetaRepository::new(&store)
+        .save(&parent, &sample_meta_with_admin(me))
+        .unwrap();
+    nest_for_test(&store, &parent, &child);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&child, VisibilityMode::Open)
+        .unwrap();
+
+    let members = MembershipRepository::new(&store);
+    // Admin of the parent: inheritance reaches the child via the admin arm, so
+    // no CAN_JOIN_OPEN_SUBGROUPS grant is needed to set this up.
+    members
+        .add_member(&parent, &me, GroupMemberRole::Admin)
+        .unwrap();
+
+    // Direct: the parent only — that is all the index holds.
+    assert_eq!(
+        groups_of(&store, &me),
+        vec![parent.to_bytes()],
+        "the index stores direct rows, and an admin of the parent has only one"
+    );
+
+    // Effective: the child too, decided by `check_path` rather than re-derived
+    // here, so it cannot disagree with `is_member`.
+    let effective: Vec<[u8; 32]> = members
+        .effective_groups_for_account(&me)
+        .unwrap()
+        .into_iter()
+        .map(|g| g.to_bytes())
+        .collect();
+    assert!(effective.contains(&parent.to_bytes()), "{effective:?}");
+    assert!(
+        effective.contains(&child.to_bytes()),
+        "a context in an inherited subgroup would be invisible to its own \
+         member: {effective:?}"
+    );
+    assert!(members.is_member(&child, &me).unwrap());
+}
+
+/// The effective set must not widen past what `is_member` allows: a descendant
+/// the caller does not reach stays out, even though it is a descendant.
+#[test]
+fn the_effective_set_stops_where_is_member_does() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = test_group_id();
+    let child = ContextGroupId::from([0xc2; 32]);
+    // Someone else owns the parent, so `me` is a plain member with no admin
+    // inheritance to ride down.
+    let owner = AccountId::from([0x09; 32]);
+    let me = AccountId::from([0x01; 32]);
+
+    MetaRepository::new(&store)
+        .save(&parent, &sample_meta_with_admin(owner))
+        .unwrap();
+    nest_for_test(&store, &parent, &child);
+    // Restricted, not Open: membership does not flow down to a plain member.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&child, VisibilityMode::Restricted)
+        .unwrap();
+
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&parent, &me, GroupMemberRole::Member)
+        .unwrap();
+
+    let effective = members.effective_groups_for_account(&me).unwrap();
+    assert!(effective.contains(&parent));
+    assert_eq!(
+        effective.contains(&child),
+        members.is_member(&child, &me).unwrap(),
+        "the effective set and is_member have to agree, or a listed context \
+         refuses the read that follows it"
+    );
+    assert!(!effective.contains(&child));
 }
