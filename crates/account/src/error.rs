@@ -121,4 +121,20 @@ pub enum AccountError {
     /// [`AccountProof::verify`](crate::AccountProof::verify) would accept it.
     #[error("certificate verifies for its account but certifies a different key")]
     WarrantProofKeyMismatch,
+    /// The login statement is not validly signed by the device key it names.
+    #[error("login statement has an invalid signature for the device key it names")]
+    LoginSignatureInvalid,
+    /// The login statement was minted for a different node than the one it is
+    /// being presented to.
+    ///
+    /// Its own variant rather than folded into the signature failure: a
+    /// correctly signed statement sent to the wrong node is a client that pinned
+    /// the wrong identity, while a bad signature is a forgery. The two send
+    /// whoever reads the error to entirely different places.
+    #[error("login statement is for a different node than the one it is presented to")]
+    LoginNodeMismatch,
+    /// The login statement was minted for a different client surface than the
+    /// one presenting it.
+    #[error("login statement is for a different audience than the one presenting it")]
+    LoginAudienceMismatch,
 }
