@@ -177,3 +177,82 @@ async fn query(
         .transpose()
         .map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_primitives::context::ContextId;
+
+    use super::*;
+
+    fn ctx() -> ContextId {
+        ContextId::from([0x11; 32])
+    }
+
+    /// The two refusals must not collapse into one status.
+    ///
+    /// They are different instructions to whoever gets them: 403 means a person
+    /// has to add you to the group, 409 means your code called the wrong method.
+    /// Served as one status, a client cannot tell "ask an admin" from "fix your
+    /// call", which is the same failure the intent refusals were typed to avoid.
+    #[test]
+    fn not_a_member_and_not_read_only_are_different_statuses() {
+        let member = refusal_status(
+            &eyre::eyre!(ExecuteError::NotAMember { context_id: ctx() }),
+            "get",
+        );
+        let read_only = refusal_status(
+            &eyre::eyre!(ExecuteError::NotReadOnly { context_id: ctx() }),
+            "set",
+        );
+
+        assert_eq!(member.status_code, StatusCode::FORBIDDEN);
+        assert_eq!(read_only.status_code, StatusCode::CONFLICT);
+        assert_ne!(member.status_code, read_only.status_code);
+    }
+
+    /// A refused read is the caller's problem, never a 500.
+    ///
+    /// Both must be client errors: a 5xx tells a client the node is broken and
+    /// invites a retry, and neither of these gets better on retry.
+    #[test]
+    fn both_refusals_are_client_errors() {
+        for err in [
+            ExecuteError::NotAMember { context_id: ctx() },
+            ExecuteError::NotReadOnly { context_id: ctx() },
+        ] {
+            let mapped = refusal_status(&eyre::eyre!(err), "m");
+            assert!(
+                mapped.status_code.is_client_error(),
+                "{err:?} mapped to {}, which tells the client to retry a request \
+                 that can never succeed",
+                mapped.status_code
+            );
+        }
+    }
+
+    /// `ExecuteError` is `Copy` and so cannot carry the method name; the handler
+    /// supplies it. If that ever stops happening the 409 becomes "some method
+    /// was not read-only", which is the least actionable form of the one error a
+    /// client is most likely to hit.
+    #[test]
+    fn the_read_only_refusal_names_the_method() {
+        let mapped = refusal_status(
+            &eyre::eyre!(ExecuteError::NotReadOnly { context_id: ctx() }),
+            "set_value",
+        );
+        assert!(
+            mapped.message.contains("set_value"),
+            "the refusal should name the method the caller asked for; got: {}",
+            mapped.message
+        );
+    }
+
+    /// Anything that is not one of the two typed refusals falls through to the
+    /// ordinary mapping rather than being reported as a read-specific problem.
+    #[test]
+    fn an_unrelated_failure_is_not_reported_as_a_read_refusal() {
+        let mapped = refusal_status(&eyre::eyre!("the datastore is on fire"), "get");
+        assert_ne!(mapped.status_code, StatusCode::FORBIDDEN);
+        assert_ne!(mapped.status_code, StatusCode::CONFLICT);
+    }
+}
