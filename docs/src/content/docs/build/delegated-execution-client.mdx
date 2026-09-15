@@ -12,13 +12,14 @@ reaches a context through somebody else's node. This page is the contract for th
 the exact bytes it signs, the exact shapes it sends, and which parts are live today.
 
 It exists so a client can be built against a fixed target rather than against a
-guess. Every field here is either quoted from the code that implements it or
-marked as specified-not-yet-built, and the two are never mixed silently.
+guess. Every field here is quoted from the code that implements it, and anything
+still due to change says so where it appears.
 
 <Aside type="caution" title="Read the status markers">
-**Live** means implemented and callable on a node today. **Specified** means this
-page fixes the shape, and the node side is tracked but unbuilt — build against it,
-but expect the endpoint to 404 until the issue closes.
+**Live** means implemented and callable on a node today. Every exchange on this
+page is now live; the one thing still moving is the warrant's field set, and it is
+marked where it appears rather than left for you to discover from a verification
+failure.
 </Aside>
 
 | Contract | Status | Tracking |
@@ -26,7 +27,7 @@ but expect the endpoint to 404 until the issue closes.
 | Discovery — where to write and as whom | **Live** | — |
 | Warrant and delegated write | **Live** (field set changes) | [#3933](https://github.com/calimero-network/core/issues/3933) |
 | Session — challenge and `LoginStatement` | **Live** | [#3930](https://github.com/calimero-network/core/issues/3930) |
-| Read — an authenticated account reads a context | **Specified** | [#3931](https://github.com/calimero-network/core/issues/3931) |
+| Read — an authenticated account reads a context | **Live** | [#3931](https://github.com/calimero-network/core/issues/3931) |
 
 ## 0. Primitives
 
@@ -347,9 +348,9 @@ that. Reads need no warrant, because a read publishes nothing and so has no peer
 convince.
 </Aside>
 
-## 4. Read — specified
+## 4. Read — live
 
-[#3931](https://github.com/calimero-network/core/issues/3931).
+Implemented by [#3931](https://github.com/calimero-network/core/issues/3931).
 
 ```http
 POST /admin-api/contexts/{context_id}/query
@@ -380,7 +381,38 @@ to a user:
 That last one is the one to get right. Reads are gated on the method being declared
 read-only, and the gate **fails closed**: a method that declares nothing is refused
 rather than guessed at. See [#3932](https://github.com/calimero-network/core/issues/3932)
-for how that declaration is derived from the method's receiver.
+for how that declaration is derived from the method's receiver — which is why the
+gate is usable at all, and why a client can call an ordinary `&self` method without
+the app author having annotated anything.
+
+Three things about this endpoint are worth knowing before building against it.
+
+**The account is never in the body.** It comes from the session, so there is no
+field a caller could set to read as somebody else. A session that is not
+account-anchored — a node-owner or client-key token — gets `401` here, not because
+it lacks permission but because this route answers "what may *this account* see"
+and such a session names no account. A node owner reads through the ordinary
+execute path.
+
+**Membership is re-checked on every call**, against the group owning the context,
+never cached from the session. One relay serves several tenants, so a session that
+carried a standing right to read would keep serving somebody after the removal op
+the node has already applied. Inheritance resolves, so a subgroup member reads a
+context they hold through a parent.
+
+**No `rootHash` in the response**, unlike the intent reply. That field answers "did
+this change anything?" and for a read the answer is structurally no; returning it
+would invite a client to watch it for changes that can never come.
+
+<Aside type="note" title="Token scope">
+The read route is gated on `context:query[<context_id>]`, its own permission —
+not `context:execute` (which also covers join, leave and resync) and not
+`context:intent` (which submits writes). A session minted by the `account_proof`
+provider carries `context:intent` and `context:query` and nothing else, which is
+the delegated client's whole surface. Both are gated again below the token: a
+write by the warrant and `CAN_AUTHOR_ON_BEHALF`, a read by the per-call membership
+check above. The token decides who may **ask**.
+</Aside>
 
 ## 5. End to end
 
@@ -397,7 +429,7 @@ for how that declaration is derived from the method's receiver.
            POST /admin-api/contexts/{ctx}/intents  (token + warrant + authorProof)
 ```
 
-Steps 1–5 and 7 work today. Step 6 is refused until [#3931](https://github.com/calimero-network/core/issues/3931) closes.
+Every step works today.
 
 ## Test vectors
 
