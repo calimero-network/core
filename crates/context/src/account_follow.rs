@@ -5,8 +5,8 @@
 //! only from THIS node's account namespace - anything on another group's DAG is
 //! another account's business.
 //!
-//! Following is [`crate::handlers::follow_namespace`]: note participation,
-//! subscribe, pull. From there the existing machinery converges the namespace - the
+//! Following is [`crate::handlers::follow_namespace::follow`]: note
+//! participation, subscribe, pull. From there the existing machinery converges the namespace - the
 //! beacon rescue pulls its DAG, the key pull succeeds because the gainer bound
 //! this device, the target folds, bytecode acquisition runs and contexts join
 //! through the account's auto-follow flags. Both halves are idempotent, so
@@ -26,13 +26,11 @@
 use std::sync::Mutex;
 
 use calimero_account::DeviceId;
-use calimero_context_client::client::ContextClient;
-use calimero_context_client::group::FollowNamespaceRequest;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert, MembershipRepository,
-    NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
+    AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert, NamespaceDagService,
+    NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -42,11 +40,9 @@ use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
-struct HandleState {
-    abort: AbortHandle,
-}
+use crate::account_namespace::account_is_member;
 
-static HANDLE: Mutex<Option<HandleState>> = Mutex::new(None);
+static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
 /// Spawn the account-follow handler. Returns immediately; the handler runs as a
 /// detached tokio task for the process lifetime.
@@ -54,39 +50,35 @@ static HANDLE: Mutex<Option<HandleState>> = Mutex::new(None);
 /// Subscribes synchronously before spawning, for the reason `auto_follow::spawn`
 /// gives: an event fired between this returning and the task's first poll would
 /// otherwise be lost, and the DAG re-drives it only on the next restart.
-pub fn spawn(store: Store, node_client: NodeClient, context_client: ContextClient) {
+pub fn spawn(store: Store, node_client: NodeClient) {
     let mut slot = HANDLE.lock().expect("account-follow HANDLE poisoned");
-    if slot.as_ref().is_some_and(|h| !h.abort.is_finished()) {
+    if slot.as_ref().is_some_and(|abort| !abort.is_finished()) {
         debug!("account-follow handler already running; skipping re-spawn");
         return;
     }
     let rx = op_events::subscribe();
-    let abort = tokio::spawn(async move {
-        run(rx, store, node_client, context_client).await;
-    })
-    .abort_handle();
-    *slot = Some(HandleState { abort });
+    *slot = Some(
+        tokio::spawn(async move {
+            run(rx, store, node_client).await;
+        })
+        .abort_handle(),
+    );
 }
 
 /// Abort the running handler task. Safe with none running; after it, [`spawn`]
 /// may be called again to rebind to a new store or clients. Aborting drops the
 /// run task's `JoinSet`, so the follows still in flight are aborted with it.
 pub fn shutdown() {
-    if let Some(state) = HANDLE
+    if let Some(abort) = HANDLE
         .lock()
         .expect("account-follow HANDLE poisoned")
         .take()
     {
-        state.abort.abort();
+        abort.abort();
     }
 }
 
-async fn run(
-    mut rx: broadcast::Receiver<OpEvent>,
-    store: Store,
-    node_client: NodeClient,
-    context_client: ContextClient,
-) {
+async fn run(mut rx: broadcast::Receiver<OpEvent>, store: Store, node_client: NodeClient) {
     info!("account-follow handler started");
 
     // Nothing re-drives a gain or a leave applied while no listener was up - a
@@ -95,9 +87,8 @@ async fn run(
         unfollow(&node_client, namespace).await;
     }
     if let Some((account_namespace, own)) = own_registry_scope(&store) {
-        for namespace in namespaces_now_covered(&store, account_namespace.to_bytes(), own.device())
-        {
-            follow(&context_client, namespace).await;
+        for namespace in namespaces_in_scope(&store, account_namespace, &own) {
+            follow(&store, &node_client, namespace).await;
         }
     }
 
@@ -134,16 +125,11 @@ async fn run(
                 application,
             } => {
                 let store = store.clone();
-                let context_client = context_client.clone();
+                let node_client = node_client.clone();
                 let _ = tasks.spawn(async move {
-                    handle_namespace_gained(
-                        &store,
-                        &context_client,
-                        group_id,
-                        namespace,
-                        application,
-                    )
-                    .await;
+                    if follows_on_gain(&store, group_id, application) {
+                        follow(&store, &node_client, namespace).await;
+                    }
                 });
             }
             OpEvent::AccountNamespaceLeft {
@@ -158,9 +144,11 @@ async fn run(
             }
             OpEvent::AccountDeviceCertified { group_id, device } => {
                 let store = store.clone();
-                let context_client = context_client.clone();
+                let node_client = node_client.clone();
                 let _ = tasks.spawn(async move {
-                    handle_device_certified(&store, &context_client, group_id, device).await;
+                    for namespace in namespaces_now_covered(&store, group_id, device) {
+                        follow(&store, &node_client, namespace).await;
+                    }
                 });
             }
             _ => {}
@@ -214,12 +202,11 @@ fn folded_here(store: &Store, namespace: ContextGroupId) -> EyreResult<bool> {
 fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
     let devices = NodeDeviceRepository::new(store);
     let resolved = || -> EyreResult<Vec<ContextGroupId>> {
-        let (Some(account_namespace), Some(held)) = (devices.account_namespace()?, devices.get()?)
+        let (Some(account_namespace), Some(_held)) = (devices.account_namespace()?, devices.get()?)
         else {
             return Ok(Vec::new());
         };
         let set = AccountNamespaceSet::new(store, account_namespace);
-        let members = MembershipRepository::new(store);
         let mut left = Vec::new();
         for namespace in NamespaceRepository::new(store).participating_namespaces()? {
             if namespace == account_namespace {
@@ -228,7 +215,7 @@ fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
             let dropped = || -> EyreResult<bool> {
                 Ok(folded_here(store, namespace)?
                     && set.contains(namespace)?.is_none()
-                    && !members.is_member(&namespace, &held.account)?)
+                    && !account_is_member(store, namespace)?)
             };
             match dropped() {
                 Ok(true) => left.push(namespace),
@@ -258,11 +245,7 @@ fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
 
 /// Does a gain announced in `group_id`, of a namespace targeting `application`,
 /// ask this node to follow it?
-pub(crate) fn follows_on_gain(
-    store: &Store,
-    group_id: [u8; 32],
-    application: Option<ApplicationId>,
-) -> bool {
+fn follows_on_gain(store: &Store, group_id: [u8; 32], application: Option<ApplicationId>) -> bool {
     match own_registry_scope(store) {
         Some((account_namespace, own)) => {
             account_namespace.to_bytes() == group_id && own.covers(application)
@@ -275,7 +258,7 @@ pub(crate) fn follows_on_gain(
 ///
 /// How a device paired after the account gained its namespaces, or widened
 /// later, follows what it now may. Empty for any other device or group.
-pub(crate) fn namespaces_now_covered(
+fn namespaces_now_covered(
     store: &Store,
     group_id: [u8; 32],
     device: DeviceId,
@@ -286,6 +269,15 @@ pub(crate) fn namespaces_now_covered(
     if account_namespace.to_bytes() != group_id || own.device() != device {
         return Vec::new();
     }
+    namespaces_in_scope(store, account_namespace, &own)
+}
+
+/// The namespaces in `account_namespace`'s set that `own`'s scope covers.
+fn namespaces_in_scope(
+    store: &Store,
+    account_namespace: ContextGroupId,
+    own: &KnownDeviceCert,
+) -> Vec<ContextGroupId> {
     match AccountNamespaceSet::new(store, account_namespace).namespaces() {
         Ok(set) => set
             .into_iter()
@@ -307,11 +299,7 @@ pub(crate) fn namespaces_now_covered(
 /// Deliberately not gated on a registry row: a device unfollows what its account
 /// left whether or not its own scope has arrived. Never the account namespace
 /// itself, which is the topic every event acted on here arrives over.
-pub(crate) fn unfollows_on_left(
-    store: &Store,
-    group_id: [u8; 32],
-    namespace: ContextGroupId,
-) -> bool {
+fn unfollows_on_left(store: &Store, group_id: [u8; 32], namespace: ContextGroupId) -> bool {
     match NodeDeviceRepository::new(store).account_namespace() {
         Ok(Some(account_namespace)) => {
             account_namespace.to_bytes() == group_id && namespace != account_namespace
@@ -324,29 +312,6 @@ pub(crate) fn unfollows_on_left(
             );
             false
         }
-    }
-}
-
-async fn handle_namespace_gained(
-    store: &Store,
-    context_client: &ContextClient,
-    group_id: [u8; 32],
-    namespace: ContextGroupId,
-    application: Option<ApplicationId>,
-) {
-    if follows_on_gain(store, group_id, application) {
-        follow(context_client, namespace).await;
-    }
-}
-
-async fn handle_device_certified(
-    store: &Store,
-    context_client: &ContextClient,
-    group_id: [u8; 32],
-    device: DeviceId,
-) {
-    for namespace in namespaces_now_covered(store, group_id, device) {
-        follow(context_client, namespace).await;
     }
 }
 
@@ -388,12 +353,9 @@ async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
     }
 }
 
-async fn follow(context_client: &ContextClient, namespace: ContextGroupId) {
-    match context_client
-        .follow_namespace(FollowNamespaceRequest { namespace })
-        .await
-    {
-        Ok(()) => info!(
+async fn follow(store: &Store, node_client: &NodeClient, namespace: ContextGroupId) {
+    match crate::handlers::follow_namespace::follow(store, node_client, &namespace).await {
+        Ok(_identity) => info!(
             ?namespace,
             "account-follow: following a namespace the account gained"
         ),
@@ -408,7 +370,6 @@ async fn follow(context_client: &ContextClient, namespace: ContextGroupId) {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_config::types::ContextGroupId;
@@ -422,10 +383,9 @@ mod tests {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use tokio::time::sleep;
 
     use super::{follows_on_gain, namespaces_now_covered, run, unfollows_on_left};
-    use crate::test_support::actor;
+    use crate::test_support::{actor, eventually};
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
     const OTHER_GROUP: [u8; 32] = [0xC9; 32];
@@ -594,18 +554,19 @@ mod tests {
         let listener = listen(&store, &harness);
 
         let namespaces = NamespaceRepository::new(&store);
-        for _ in 0..100 {
-            if namespaces
+        let followed = eventually(|| {
+            namespaces
                 .participating_namespaces()
                 .expect("read the participation rows")
                 .contains(&missed)
-            {
-                listener.abort();
-                return;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-        panic!("the listener never followed a namespace its account had already gained");
+        })
+        .await;
+        listener.abort();
+
+        assert!(
+            followed,
+            "the listener never followed a namespace its account had already gained"
+        );
     }
 
     /// A leave is unfollowed whether or not this device's own scope ever arrived.
@@ -631,7 +592,6 @@ mod tests {
             op_events::subscribe(),
             store.clone(),
             harness.node_client.clone(),
-            harness.context_client.clone(),
         ))
     }
 
@@ -661,13 +621,11 @@ mod tests {
         done: impl Fn(&[String]) -> bool,
     ) -> Vec<String> {
         let mut seen = Vec::new();
-        for _ in 0..100 {
+        let _reached = eventually(|| {
             seen.append(&mut harness.unsubscribed());
-            if done(&seen) {
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
+            done(&seen)
+        })
+        .await;
         seen
     }
 
@@ -778,25 +736,20 @@ mod tests {
             .expect("takes part in it, and the set names it nowhere");
         folded(&store, left);
 
-        let mut harness = actor::over(store.clone()).await;
-        let listener = listen(&store, &harness);
-        let mut seen = Vec::new();
-        let mut swept = false;
-        for _ in 0..100 {
-            seen.append(&mut harness.unsubscribed());
-            swept = seen.contains(&topic(left))
+        let swept = |seen: &[String]| {
+            seen.contains(&topic(left))
                 && namespaces
                     .participating_namespaces()
                     .expect("read the participation rows")
-                    .contains(&followed);
-            if swept {
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
+                    .contains(&followed)
+        };
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        let seen = unsubscribes_until(&mut harness, &swept).await;
         listener.abort();
 
-        assert!(swept, "both halves of the sweep have to have run");
+        assert!(swept(&seen), "both halves of the sweep have to have run");
         assert!(
             !seen.contains(&topic(kept)),
             "a namespace the account is still a member of must stay followed"
