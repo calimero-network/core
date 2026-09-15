@@ -1032,7 +1032,6 @@ fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> J
 mod tests {
     use std::sync::Arc;
 
-    use calimero_context_client::group::EnsureAccountNamespaceRequest;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -1042,6 +1041,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
     /// A join response's key displaces an unattested held key (#3891).
@@ -1190,11 +1190,8 @@ mod tests {
             .expect("the holder's root");
 
         let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
-        let account_namespace = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
         let _joined = harness

@@ -775,7 +775,7 @@ mod tests {
     use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
-    use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
+    use calimero_context_client::group::CreateGroupRequest;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
@@ -792,6 +792,7 @@ mod tests {
     use calimero_store::{key, types, Store};
 
     use super::rollback_local_group_rows;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
     const APP: [u8; 32] = [0xC1; 32];
@@ -1105,11 +1106,8 @@ mod tests {
             .expect("the holder's root");
 
         let harness = actor::over(store.clone()).await;
-        let account_namespace = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
         let created = harness
@@ -1148,7 +1146,7 @@ mod tests {
     #[actix::test]
     async fn a_gain_before_the_account_namespace_exists_announces_nothing() {
         let store = store();
-        // The root and no `EnsureAccountNamespaceRequest`: the id resolves, the
+        // The root and no ensure call: the id resolves, the
         // namespace it names does not exist.
         let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
         let _root = devices.provision_account_root().expect("the holder's root");
@@ -1208,11 +1206,8 @@ mod tests {
         let _root = devices.provision_account_root().expect("the holder's root");
 
         let harness = actor::over(store.clone()).await;
-        let account_namespace = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
 
@@ -1282,11 +1277,8 @@ mod tests {
             .expect("the holder's root");
 
         let harness = actor::over(store.clone()).await;
-        let account_namespace = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
         // App-less, so the gain reads no target: the state a join is in while

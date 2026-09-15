@@ -177,7 +177,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
 mod tests {
     use std::sync::Arc;
 
-    use calimero_context_client::group::{CreateGroupRequest, EnsureAccountNamespaceRequest};
+    use calimero_context_client::group::CreateGroupRequest;
     use calimero_governance_store::{
         AccountNamespaceSet, MembershipRepository, MetaRepository, NodeDeviceRepository,
     };
@@ -187,6 +187,7 @@ mod tests {
     use calimero_store::Store;
 
     use super::*;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::actor;
 
     const GROUP: [u8; 32] = [0xF1; 32];
@@ -205,11 +206,8 @@ mod tests {
             .expect("the holder's root");
 
         let harness = actor::over(store.clone()).await;
-        let account_namespace = harness
-            .manager
-            .send(EnsureAccountNamespaceRequest)
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
             .await
-            .expect("the manager answers")
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
         let created = harness
