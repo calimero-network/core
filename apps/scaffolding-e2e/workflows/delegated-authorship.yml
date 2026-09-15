@@ -164,7 +164,7 @@ steps:
   # Minted once, presented three times below (refused, accepted, refused) — same
   # bytes each time, so only the grant can explain the different verdicts.
   #
-  # Minted through `merod account sign-warrant` rather than merobox's own
+  # Minted through `merod account warrant` rather than merobox's own
   # `sign_warrant` step, and that is the point rather than a detail. That step
   # reaches the encoding via `from calimero_client_py import sign_warrant`, which
   # pins `calimero-account` to core's `master` — so the signer this scenario used
@@ -177,14 +177,14 @@ steps:
   - name: The author mints one warrant
     type: node_exec
     node: delegated-node-2
-    # Safe here where it is not for `sign-cert` above: `sign-warrant` is
+    # Safe here where it is not for `sign-cert` above: `warrant` is
     # deliberately offline — its `run(self)` takes no root args and opens no
     # datastore — so it never contends for RocksDB's exclusive lock and the node
     # can stay up. Stopping node-2 again here would cost two sync waits.
     allow_running: true
     args:
       - account
-      - sign-warrant
+      - warrant
       - --context
       - '{{context_id}}'
       - --executor
@@ -216,7 +216,7 @@ steps:
       warrant: warrant
 
   # `author_account` comes from the `sign-cert` step above rather than from this
-  # minting, which is the same provenance it always had: `sign-warrant` reads the
+  # minting, which is the same provenance it always had: `warrant` reads the
   # account off the credential (`credential.statement.account`) rather than
   # taking it separately, precisely so the two cannot disagree.
   - name: The warrant speaks for the member that was added
@@ -296,7 +296,7 @@ steps:
     allow_running: true
     args:
       - account
-      - sign-warrant
+      - warrant
       - --context
       - '{{context_id}}'
       - --executor
