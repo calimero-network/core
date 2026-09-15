@@ -25,7 +25,7 @@ but expect the endpoint to 404 until the issue closes.
 |---|---|---|
 | Discovery — where to write and as whom | **Live** | — |
 | Warrant and delegated write | **Live** (field set changes) | [#3933](https://github.com/calimero-network/core/issues/3933) |
-| Session — challenge and `LoginStatement` | **Specified** | [#3930](https://github.com/calimero-network/core/issues/3930) |
+| Session — challenge and `LoginStatement` | **Live** | [#3930](https://github.com/calimero-network/core/issues/3930) |
 | Read — an authenticated account reads a context | **Specified** | [#3931](https://github.com/calimero-network/core/issues/3931) |
 
 ## 0. Primitives
@@ -213,11 +213,11 @@ pub struct AccountProof<T> {
 }
 ```
 
-## 3. Session — specified
+## 3. Session — live
 
-Today the only way to obtain a session on a node is a username and password, which
-an account holder who runs no node does not have. [#3930](https://github.com/calimero-network/core/issues/3930)
-replaces it with a challenge the device key signs.
+A device key obtains a session in two calls. Implemented by
+[#3930](https://github.com/calimero-network/core/issues/3930); enable the
+`account_proof` provider on the node to use it.
 
 ### Challenge
 
@@ -227,66 +227,117 @@ GET /auth/challenge
 
 ```jsonc
 {
-  "challenge": "<64 hex chars — 32 bytes>",
-  "expiresAt": 1789470000            // unix seconds; ≤ 60s from issue
+  "data": {
+    "challenge": "<64 hex chars — 32 bytes>",
+    "expires_at": 1789470000          // unix seconds; 60s from issue by default
+  },
+  "error": null
 }
 ```
 
-The challenge is a MAC over the node's identity, a nonce and an expiry, so the node
-holds no per-challenge state. It is single-use: spent only after a signature over it
-verifies, so a failed attempt does not burn it.
+The 32 bytes are `expiry(8) ‖ nonce(8) ‖ tag(16)`, the tag an HMAC over the first two
+under a key only the node holds. So the node stores nothing at issue time — which
+matters, because this endpoint is unauthenticated and a per-request row would hand
+an anonymous caller a write amplifier.
+
+It is single-use, and **spent only after a signature over it verifies**. Burning it
+on presentation would let anyone who can see a challenge in flight invalidate it
+before its holder finishes signing.
+
+`404` means the provider is not enabled on this node.
 
 ### LoginStatement
 
 ```rust
 // domain calimero.auth.login.v1 · borsh · signed by the DEVICE key
+// crates/account/src/login.rs
 pub struct LoginStatement {
-    pub node: NodeId,
+    pub node: PublicKey,             // this node's identity, as the client pinned it
     pub audience: Audience,          // WebOrigin(String) | CodeSigningId(String) | Cli
     pub challenge: [u8; 32],
-    pub session_key: PublicKey,
+    pub session_key: PublicKey,      // the ephemeral key the session speaks with
+    pub device_key: PublicKey,       // what the signature is checked against
     pub issued_at: u64,
     pub expires_at: u64,
+    pub signature: [u8; 64],
 }
 ```
 
 ```rust
 signature = sign(domain_hash(b"calimero.auth.login.v1", &[
-    node.as_bytes(),
-    &audience_tag_and_bytes,         // borsh of the Audience variant
-    &challenge,
+    node,                            // 32 bytes
+    &audience_tag_and_bytes,         // 1-byte variant tag, then the payload
+    &challenge,                      // 32 bytes
     session_key,                     // 32 bytes
+    device_key,                      // 32 bytes
     &issued_at.to_le_bytes(),
     &expires_at.to_le_bytes(),
 ]))
 ```
 
+The audience tag is `0` for `WebOrigin`, `1` for `CodeSigningId`, `2` for `Cli`,
+followed by the variant's string bytes (empty for `Cli`). The tag is load-bearing:
+without it a statement minted for the web origin `"x"` would verify as one minted
+for the code-signing id `"x"`.
+
 The client learns the node's identity from a pinned certificate, **never from the
 challenge** — otherwise an attacker who can answer on the node's behalf chooses what
-the device signs about.
+the device signs about. That is the field's whole purpose: a hostile relay can fetch
+a real challenge from the target node and serve it to a user as its own, and only
+`node` refuses the replay.
+
+### Exchange
+
+The login goes through the node's existing token endpoint, with
+`auth_method: "account_proof"` — not a bespoke route. That is what gives a
+device-key session the same refresh, revocation and rate limiting every other
+session gets.
 
 ```http
-POST /auth/login
+POST /auth/token
 ```
 
 ```jsonc
 {
-  "loginStatement": "<hex borsh of LoginStatement>",
-  "accountProof":   "<hex borsh of AccountProof<DeviceCert>>"
+  "auth_method": "account_proof",
+  "public_key":  "<the session public key — must match the statement's session_key>",
+  "client_name": "<the node URL, for node-binding the token>",
+  "timestamp":   1789470000,
+  "provider_data": {
+    "challenge":       "<64 hex chars>",
+    "login_statement": "<hex borsh of LoginStatement>",
+    "account_proof":   "<hex borsh of AccountProof<DeviceCert>>"
+  }
 }
 ```
 
 ```jsonc
 // 200
 {
-  "token": "<JWT; subject is the ACCOUNT, not the device>",
-  "expiresAt": 1789471800
+  "data": {
+    "access_token":  "<JWT; subject is the ACCOUNT, not the device>",
+    "refresh_token": "<JWT>"
+  },
+  "error": null
 }
 ```
 
-The session is granted to the **account**. Membership is then evaluated per request
-against the target context's group, not cached at login — a relay serves several
-tenants, so a session must not carry a standing right to read.
+The session is granted to the **account**: the JWT's `sub` is the account id, which
+`/auth/validate` forwards to handlers as `X-Auth-User`.
+
+Membership is *not* established by logging in. It is evaluated per request against
+the target context's group — a relay serves several tenants, so a session must not
+carry a standing right to read.
+
+<Aside type="caution" title="What a session grants today">
+By default a session from this provider carries `context:intent` **and nothing
+else** — the delegated-write path, which is already gated by the warrant and by
+`CAN_AUTHOR_ON_BEHALF`, so the session adds no authority the warrant did not already
+prove. Reads are deliberately excluded until the per-request membership check lands
+with [#3931](https://github.com/calimero-network/core/issues/3931); without it a
+broader default would let any account with a device key read every context on a
+shared relay. Operators widen it with `auth.account_proof.session_permissions`.
+</Aside>
 
 <Aside type="danger" title="A session is not a warrant">
 A session authenticates the caller **to this relay**. It never substitutes for a
@@ -337,7 +388,7 @@ for how that declaration is derived from the method's receiver.
 1.  GET  /api/cloud/me/namespaces/{ns}/relays      → relay_url, executor_account
 2.  GET  /auth/challenge                           → challenge
 3.  sign LoginStatement with the DEVICE key
-4.  POST /auth/login                               → session token
+4.  POST /auth/token  (auth_method=account_proof)  → session token
 5.  GET  /admin-api/contexts/{ctx}/intents         → canAuthorOnBehalf?
     ├── false → stop; ask an admin of groupId for the grant
     └── true  → continue
@@ -346,7 +397,7 @@ for how that declaration is derived from the method's receiver.
            POST /admin-api/contexts/{ctx}/intents  (token + warrant + authorProof)
 ```
 
-Steps 1, 5 and 7 work today. Steps 2–4 and 6 are refused until their issues close.
+Steps 1–5 and 7 work today. Step 6 is refused until [#3931](https://github.com/calimero-network/core/issues/3931) closes.
 
 ## Test vectors
 
