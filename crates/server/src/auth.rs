@@ -68,6 +68,24 @@ pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedNodeOwner;
 
+/// The authenticated requester's **account**, injected by [`AuthGuardService`]
+/// when the session is anchored to an account rather than to a key row in this
+/// node's auth store — today, an `account_proof` login.
+///
+/// Separate from [`AuthenticatedNodeOwner`] because such a caller is precisely
+/// not the node owner: they hold a device certified under their own account
+/// root and may well be a tenant on a relay somebody else runs. Before this
+/// existed they landed in the node-owner arm, because the store lookup
+/// collapsed "no row" into the same answer as "a client key with no public
+/// key".
+///
+/// Holding one of these says the auth layer authenticated *this account*. It
+/// says nothing about what the account may do: membership and capabilities are
+/// at-cut questions, answered per request against the target context's group,
+/// never cached from the session.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedAccount(pub calimero_account::AccountId);
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -265,27 +283,59 @@ where
                         }
                     }
                     Ok(None) => {
-                        // No Ed25519 public key is stored for this key_id. The only
-                        // legitimate case is a client key (`KeyType::Client`): created
-                        // via the `/auth/client-keys` API by the node owner for their
-                        // own applications and provisioned with `public_key: None` by
-                        // design (see `Key::new_client_key`). Client keys are always
-                        // issued by and to the node owner; treating them as NodeOwner
-                        // matches the intended access model.
+                        // No Ed25519 public key came back, which covers two callers
+                        // the store lookup cannot tell apart on its own — it ends in
+                        // `key.and_then(|k| k.public_key)`, so "no row" and "a row
+                        // whose public_key is None" both arrive here. Ask which:
                         //
-                        // Note: username/password root keys do NOT reach this arm.
-                        // The `user_password` provider stores the username as a
-                        // non-hex string in `public_key`, so `get_key_public_key`
+                        // * A ROW EXISTS → a client key (`KeyType::Client`), created
+                        //   via `/auth/client-keys` by the node owner for their own
+                        //   applications and provisioned with `public_key: None` by
+                        //   design. Issued by and to the node owner, so NodeOwner
+                        //   matches the intended access model. Unchanged.
+                        //
+                        // * NO ROW → a session anchored outside this store: an
+                        //   `account_proof` login, whose account is its own
+                        //   cryptographic anchor and which deliberately persists
+                        //   nothing here. Emphatically NOT the node owner — they may
+                        //   be one tenant among many on a relay. Before this split
+                        //   they were granted NodeOwner, on a comment asserting that
+                        //   no such key could exist; adding the provider made that
+                        //   assertion false.
+                        //
+                        // Note: username/password root keys reach neither arm. That
+                        // provider stores the username in `public_key`, so the lookup
                         // returns `Ok(Some(username))` and `PublicKey::from_str` fails
-                        // → that path is handled by the `Err(_)` arm above.
-                        //
-                        // No other key type with `public_key = None` should exist in
-                        // the store. This is a schema guarantee in the auth crate:
-                        // `new_root_key_with_permissions` always sets `public_key` to
-                        // a non-empty string, and `new_client_key` is the only other
-                        // constructor.
-                        warn!(key_id=%auth_response.key_id, "non-key auth (absent public key): granting NodeOwner");
-                        parts.extensions.insert(AuthenticatedNodeOwner);
+                        // → handled by the `Err(_)` arm above.
+                        match service.key_row_exists(&auth_response.key_id).await {
+                            Ok(true) => {
+                                debug!(key_id=%auth_response.key_id, "client key (row present, no public key): granting NodeOwner");
+                                parts.extensions.insert(AuthenticatedNodeOwner);
+                            }
+                            Ok(false) => {
+                                match auth_response.key_id.parse::<calimero_account::AccountId>() {
+                                    Ok(account) => {
+                                        debug!(%account, "account-anchored session: granting AuthenticatedAccount");
+                                        parts.extensions.insert(AuthenticatedAccount(account));
+                                    }
+                                    Err(_) => {
+                                        // Authenticated, but the subject names
+                                        // neither a stored key nor a parseable
+                                        // account. Grant nothing rather than guess:
+                                        // the permission check has already run, and
+                                        // no handler should treat an unidentifiable
+                                        // subject as anybody in particular.
+                                        warn!(key_id=%auth_response.key_id, "authenticated subject is neither a stored key nor an account; granting no identity");
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                // Same posture as the lookup error below: an
+                                // infrastructure failure must not decide an identity.
+                                warn!(key_id=%auth_response.key_id, %err, "failed to determine whether a key row exists; rejecting request");
+                                return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                            }
+                        }
                     }
                     Err(err) => {
                         // A store or network error during key lookup is an
