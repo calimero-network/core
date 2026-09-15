@@ -129,7 +129,12 @@ fn generated_manifest_is_the_golden() {
                 },
             },
             "methods": [
-                { "name": "checked", "params": [], "returns": { "kind": "u64" } },
+                {
+                    "name": "checked",
+                    "params": [],
+                    "returns": { "kind": "u64" },
+                    "intent": "read_only",
+                },
                 {
                     "name": "init",
                     "params": [{ "name": "args", "type": { "$ref": "SeedArgs" } }],
@@ -145,11 +150,13 @@ fn generated_manifest_is_the_golden() {
                     "name": "summarize",
                     "params": [{ "name": "cap", "nullable": true, "type": { "kind": "u64" } }],
                     "returns": { "$ref": "Summary" },
+                    "intent": "read_only",
                 },
                 {
                     "name": "touch",
                     "params": [{ "name": "note", "type": { "kind": "string" } }],
                     "returns": { "kind": "unit" },
+                    "intent": "mutating",
                     "xcall_callable": true,
                     "xcall_callers": "same_app",
                 },
