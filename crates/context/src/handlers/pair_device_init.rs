@@ -33,11 +33,6 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         if let Some(account_namespace) = account_namespace {
-            if let Err(err) = NodeDeviceRepository::new(&self.datastore)
-                .store_account_namespace(&account_namespace)
-            {
-                return ActorResponse::reply(Err(err));
-            }
             follow(&mut namespaces, account_namespace);
         }
 
@@ -89,6 +84,17 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 Ok(enrolled) => enrolled,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
+
+        // Recorded only now that the pairing is accepted: this row is what a
+        // device answers `account_namespace()` from, so writing it ahead of the
+        // refusal renamed the account a refused device already speaks for.
+        if let Some(account_namespace) = account_namespace {
+            if let Err(err) =
+                NodeDeviceRepository::new(&store).store_account_namespace(&account_namespace)
+            {
+                return ActorResponse::reply(Err(err));
+            }
+        }
 
         // Sign what we minted. The three values below are otherwise bare
         // assertions by the time they reach the account holder — anyone able to
@@ -168,9 +174,9 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
 mod tests {
     use std::sync::Arc;
 
-    use calimero_account::AccountGenesis;
+    use calimero_account::{AccountGenesis, DeviceCert};
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::NamespaceRepository;
+    use calimero_governance_store::{AccountBindingRepository, NamespaceRepository};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
@@ -186,6 +192,34 @@ mod tests {
 
     fn topic(namespace: [u8; 32]) -> String {
         format!("ns/{}", hex::encode(namespace))
+    }
+
+    fn account_of(root_seed: u8) -> AccountGenesis {
+        AccountGenesis::new(PrivateKey::from([root_seed; 32]).public_key())
+    }
+
+    /// Mint this node's device under `root_sk`'s account and link it in
+    /// `namespace` - the state a device is in once its holder has certified it,
+    /// and the one enrolment refuses to re-mint over.
+    fn link_held_device(store: &Store, namespace: &ContextGroupId, root_sk: &PrivateKey) {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let held = NodeDeviceRepository::new(store)
+            .ensure_enrolled_into(&[*namespace], genesis)
+            .expect("mint the device this namespace already knows");
+        let cert = DeviceCert::sign(
+            root_sk,
+            held.account,
+            held.device(),
+            &PrivateKey::from([0x7D; 32]).public_key(),
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("the account root signs its own device cert");
+        let _binding = AccountBindingRepository::new(store)
+            .apply_link(namespace, &genesis, &[], &cert)
+            .expect("write the binding")
+            .expect("the credential must be admissible");
     }
 
     /// Both loops run to the end of the set, and neither is cosmetic: a
@@ -294,5 +328,101 @@ mod tests {
         );
         assert_eq!(harness.subscribed(), vec![topic([0x4E; 32])]);
         assert_eq!(response.account, adopted_account().account_id());
+    }
+
+    /// A refused pairing must leave the account namespace alone. The row is what
+    /// `account_namespace()` answers from on a device, so writing it before the
+    /// refusal renamed this device's own account to the one it just declined.
+    #[actix::test]
+    async fn a_refused_pairing_does_not_record_the_account_namespace_it_refused() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let devices = NodeDeviceRepository::new(&store);
+        let mine = ContextGroupId::from([0x4E; 32]);
+        link_held_device(&store, &ONE.into(), &PrivateKey::from([0x51; 32]));
+        devices.store_account_namespace(&mine).expect("record");
+
+        let harness = actor::over(store.clone()).await;
+        let refused = harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![ONE.into()],
+                genesis: account_of(0x52),
+                account_namespace: Some(ContextGroupId::from([0x5F; 32])),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("a linked device belongs to the account that certified it");
+
+        assert!(
+            refused.to_string().contains("linked"),
+            "expected the linked-to-another-account refusal, got: {refused}"
+        );
+        assert_eq!(
+            devices.account_namespace().expect("read"),
+            Some(mine),
+            "a refused pairing must not rename this device's account namespace"
+        );
+    }
+
+    /// Re-pairing into another account drops the namespace the last one named.
+    /// Keeping it leaves the device following - and listing - an account it no
+    /// longer speaks for.
+    #[actix::test]
+    async fn re_pairing_into_another_account_forgets_the_namespace_the_last_one_named() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let devices = NodeDeviceRepository::new(&store);
+        let _minted = devices
+            .ensure_enrolled_into(&[ONE.into()], adopted_account())
+            .expect("mint a device for the first account");
+        devices
+            .store_account_namespace(&ContextGroupId::from([0x4E; 32]))
+            .expect("record");
+
+        let harness = actor::over(store.clone()).await;
+        let _response = harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![ONE.into()],
+                genesis: account_of(0x52),
+                account_namespace: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("an unlinked row yields to the new pairing");
+
+        assert_eq!(
+            devices.account_namespace().expect("read"),
+            None,
+            "the replaced account's namespace must not survive the re-pairing"
+        );
+    }
+
+    /// The same re-pairing, naming a namespace of its own: the new id replaces
+    /// the old rather than either of them lingering.
+    #[actix::test]
+    async fn re_pairing_into_another_account_records_the_namespace_it_names() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let devices = NodeDeviceRepository::new(&store);
+        let _minted = devices
+            .ensure_enrolled_into(&[ONE.into()], adopted_account())
+            .expect("mint a device for the first account");
+        devices
+            .store_account_namespace(&ContextGroupId::from([0x4E; 32]))
+            .expect("record");
+        let theirs = ContextGroupId::from([0x5F; 32]);
+
+        let harness = actor::over(store.clone()).await;
+        let _response = harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![ONE.into()],
+                genesis: account_of(0x52),
+                account_namespace: Some(theirs),
+            })
+            .await
+            .expect("the manager answers")
+            .expect("an unlinked row yields to the new pairing");
+
+        assert_eq!(devices.account_namespace().expect("read"), Some(theirs));
     }
 }
