@@ -2295,14 +2295,9 @@ impl Debug for GroupRevokedDevice {
 pub const GROUP_ACCOUNT_DEVICE_PREFIX: u8 = 0x4D;
 
 /// One device of the account whose namespace this is, in that namespace's
-/// registry (see [`GROUP_ACCOUNT_DEVICE_PREFIX`]).
-///
-/// Key layout `prefix(1) + namespace_id(32) + device_id(32)` = 65 bytes, the
-/// same shape as [`GroupDeviceBinding`], so a `(namespace_id, *)` prefix scan
-/// enumerates an account's devices the way one enumerates a group's bindings.
-///
-/// Replicated, unlike [`NodeAccountDeviceCert`]: it is written by an apply, so
-/// every device of the account holds it.
+/// registry. Key `prefix(1) + namespace_id(32) + device_id(32)`, the same shape
+/// as [`GroupDeviceBinding`], so one prefix scan enumerates an account's
+/// devices. Replicated, unlike [`NodeAccountDeviceCert`].
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDevice(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);

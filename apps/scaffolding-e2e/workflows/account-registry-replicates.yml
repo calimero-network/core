@@ -1,34 +1,7 @@
 name: E2E Account - The Account Namespace Records Each Device
 description: >
-  A device of an account has to know what it may speak for, and until now only
-  the holder did. The scope lived in a node-local cache written where the
-  certificate was signed, so every other device of the account reported itself
-  as scoped to nothing and could carry no sibling anywhere.
-
-  The cast:
-
-    * node-1 - Alice's laptop. Holds the account root, installs the app, creates
-      namespace A, and certifies the phone scoped to that app.
-    * node-2 - Alice's phone. Paired with the account namespace id alone and a
-      scope of one application. A member of nothing, with no cache of its own.
-
-  What each step is load-bearing for:
-
-    1. The laptop installs the app and creates A, so there is a real application
-       id for the scope to name.
-    2. The script pairs the phone with the account namespace id and the scope,
-       checks both sides agree on the namespace and the phone resolves its own
-       binding there, then asserts the laptop still reports that scope - a
-       registry that replaced the cache must not lose it.
-    3. The phone reads its OWN scope back. It caches nothing, so the only way
-       the applications can reach it is as replicated state in the account
-       namespace. This is the assertion that is red before the change.
-    4. The phone sees the laptop's device too. Already true before the change,
-       since the namespace genesis records the founder's binding - kept because
-       it is the shape PR 5 builds on.
-
-  Not asserted here: any device acting on the registry. Binding a sibling from
-  it is the next PR.
+  A phone paired with a one-app scope reads that scope back out of the account
+  namespace, holding no cache of its own.
 
 force_pull_image: false
 
@@ -65,8 +38,7 @@ steps:
     node: account-registry-node-1
     application_id: '{{app}}'
 
-  # merobox's account_pair step has no field for the account namespace id, so a
-  # script drives pair-init and pair-complete and does its own polling.
+  # A script, because merobox's account_pair step has no field for that id.
   - name: Pair node-2 with the account namespace and a scope, and read the scope back
     type: script
     script: scripts/account-namespace-pair.sh

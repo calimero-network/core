@@ -16,10 +16,8 @@ use tracing::{info, warn};
 
 use crate::account_namespace::publish_device_certified;
 
-/// The holder's own registry row, published whenever it is missing.
-///
-/// A device paired later binds the holder into a namespace it founds, and only
-/// this row carries the root signature that needs.
+/// The holder's own registry row, published whenever it is missing: a device
+/// that founds a namespace later binds the holder from it.
 async fn record_holder_device(
     datastore: &Store,
     node_client: &NodeClient,
@@ -29,8 +27,7 @@ async fn record_holder_device(
     signer_sk: &PrivateKey,
     root: &AccountRoot,
 ) {
-    // Read before the credential is built, so the common case where the row is
-    // already there costs one lookup rather than a certificate signature.
+    // Read first, so the common case costs a lookup rather than a signature.
     let stored = NodeDeviceRepository::new(datastore).get().and_then(|own| {
         own.map_or(Ok(None), |own| {
             AccountDeviceRegistry::new(datastore, namespace_id).device(own.device())
@@ -176,9 +173,7 @@ mod tests {
         assert_eq!(meta.target, GroupTarget::default());
     }
 
-    /// A device that founds a namespace has to be able to bind the holder into
-    /// it, and only the registry can tell it the holder's certificate. So the
-    /// holder records itself when it creates the namespace.
+    /// The holder records itself, since only that row carries its certificate.
     #[actix::test]
     async fn creation_records_the_holders_own_device() {
         let store = holder_store();
@@ -206,9 +201,8 @@ mod tests {
         assert_eq!(recorded.proof.statement.device, own.device());
     }
 
-    /// A namespace created before the registry existed, or one whose publish
-    /// failed, leaves the holder unrecorded. The next ensure has to put it back,
-    /// because a device paired later binds the holder from that row alone.
+    /// A missing row, from a failed publish or a namespace older than the
+    /// registry, is put back by the next ensure.
     #[actix::test]
     async fn a_holder_whose_row_is_missing_gets_one_on_the_next_ensure() {
         let store = holder_store();

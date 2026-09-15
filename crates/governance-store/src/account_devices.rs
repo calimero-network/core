@@ -1,10 +1,6 @@
-//! The account namespace's device registry - one row per device of the account,
-//! holding the full certificate proof and the applications the root scoped it to.
-//!
-//! Replicated, unlike the node-local certificate cache it stands beside, which is
-//! what lets a device that is not the holder carry a sibling into a namespace it
-//! gains: a binding row drops the root signature, so nothing else replicated can
-//! rebuild a link.
+//! The account namespace's device registry: one row per device, holding the full
+//! certificate proof and the scope the root signed. Replicated, unlike the
+//! node-local cache, so any device can carry a sibling into a namespace it gains.
 
 use calimero_account::{AccountProof, DeviceCert, DeviceId};
 use calimero_context_config::types::ContextGroupId;
@@ -33,10 +29,8 @@ impl<'a> AccountDeviceRegistry<'a> {
 
     /// Record `proof` and `applications` at `scope_epoch`.
     ///
-    /// `false` means the stored row was already at that epoch or above and was
-    /// left alone, which is what makes a re-gossiped op a no-op rather than a
-    /// rollback to an older scope. That rests on one publisher minting epochs
-    /// from its own folded row, so two different statements never share one.
+    /// `false` means the stored row was already at that epoch or above, which is
+    /// what makes a re-gossiped op a no-op rather than a rollback.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
@@ -93,9 +87,8 @@ impl<'a> AccountDeviceRegistry<'a> {
 
     /// Every device of the account that this namespace has not revoked.
     ///
-    /// The filter lives here rather than at each caller: a binder checks the
-    /// TARGET namespace's tombstones, so a device revoked only here would
-    /// otherwise be carried into every namespace gained afterwards.
+    /// Filtered here, not at each caller: a binder checks the TARGET namespace's
+    /// tombstones, so one revoked only here would be carried on regardless.
     ///
     /// # Errors
     /// Propagates the store scan or read failure.
@@ -144,10 +137,8 @@ mod tests {
         ApplicationId::from([seed; 32])
     }
 
-    /// A certificate this node's own root signed for `device`.
-    ///
-    /// `provision_account_root` returns the existing root, so calling this twice
-    /// certifies two devices of one account rather than minting two accounts.
+    /// A certificate this node's own root signed. The root is reused, so two
+    /// calls certify two devices of one account.
     fn proof(store: &Store, device: u8) -> AccountProof<DeviceCert> {
         let root = NodeDeviceRepository::new(store)
             .provision_account_root()
@@ -168,8 +159,7 @@ mod tests {
         }
     }
 
-    /// The row a scope statement writes, and the epoch rule that keeps a
-    /// re-gossiped op from re-narrowing a device.
+    /// The epoch rule: only a higher one supersedes.
     #[test]
     fn a_higher_scope_epoch_supersedes_and_nothing_else_does() {
         let store = test_store();
@@ -204,9 +194,8 @@ mod tests {
         assert_eq!(epoch, 1);
     }
 
-    /// A device revoked here must never be served to a binder: the tombstone a
-    /// binder checks is the target namespace's, so one revoked only in the
-    /// account namespace would be carried into every namespace gained later.
+    /// A device revoked here is never served, since a binder checks the target
+    /// namespace's tombstones rather than this one's.
     #[test]
     fn a_device_revoked_in_this_namespace_is_never_served() {
         let store = test_store();
@@ -237,8 +226,7 @@ mod tests {
         );
     }
 
-    /// One namespace's registry is not another's. The rows are byte-identical in
-    /// shape, so only the id bytes in the key keep them apart.
+    /// One namespace's registry is not another's; only the key keeps them apart.
     #[test]
     fn a_registry_serves_only_its_own_namespace() {
         let store = test_store();
@@ -247,8 +235,7 @@ mod tests {
         let mine_proof = proof(&store, 0x61);
         let their_proof = proof(&store, 0x62);
         assert!(mine.record(&mine_proof, &[app(1)], 0).expect("record"));
-        // A row under the foreign namespace, so `mine.devices()` walks into it and
-        // the key filter has to reject it rather than just running out of rows.
+        // So the scan walks into a foreign row and the key filter has to reject it.
         assert!(theirs.record(&their_proof, &[app(2)], 0).expect("record"));
 
         let served: Vec<_> = mine
@@ -268,8 +255,7 @@ mod tests {
             .is_none());
     }
 
-    /// Nesting the node-local value inside the row must not have moved a byte:
-    /// borsh writes a struct field inline, so these rows are on disk already.
+    /// Nesting the node-local value must not move a byte: borsh writes it inline.
     #[test]
     fn nesting_the_certificate_value_left_the_bytes_where_they_were() {
         #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]

@@ -11961,13 +11961,8 @@ mod account_plane_apply {
         );
     }
 
-    /// A namespace owned by the account THIS NODE's own root holds, with
-    /// `signer_sk` bound to it - the shape an account namespace has, since its
-    /// founder is its only member and the registry rows are its own devices.
-    ///
-    /// The binding is minted directly rather than through `enrol_member`, which
-    /// derives an account from the signing key and so would own the namespace on
-    /// behalf of a principal no root in this store holds.
+    /// A namespace owned by the account THIS NODE's root holds, with `signer_sk`
+    /// bound directly: `enrol_member` would derive an account no root here holds.
     fn account_namespace_owned_by_this_node(
         store: &Store,
         gid: &ContextGroupId,
@@ -11991,8 +11986,7 @@ mod account_plane_apply {
             .apply_link(gid, &root.genesis(), &[], &cert)
             .unwrap()
             .expect("the founder's own device binds");
-        // A plain meta row: the Admin membership row below is what the registry
-        // gate reads, and `sample_meta_with_admin` would make it admin regardless.
+        // The Admin membership row below is what the registry gate reads.
         MetaRepository::new(store).save(gid, &test_meta()).unwrap();
         MembershipRepository::new(store)
             .add_member(gid, &account, GroupMemberRole::Admin)
@@ -12000,8 +11994,7 @@ mod account_plane_apply {
         root
     }
 
-    /// The pair of proofs the op carries, minted under a bare root key so this
-    /// one helper serves both this node's root and a stranger's.
+    /// The op's pair of proofs, under a bare root so one helper serves both.
     fn certified(
         root_sk: &PrivateKey,
         device: DeviceId,
@@ -12036,8 +12029,7 @@ mod account_plane_apply {
         )
     }
 
-    /// The good case, through the real pipeline: the account that owns this
-    /// namespace records one of its devices, with the scope its root signed.
+    /// The good case: the owning account records a device and the scope it signed.
     #[test]
     fn the_owning_account_records_a_device_and_its_scope() {
         let store = test_store();
@@ -12083,12 +12075,8 @@ mod account_plane_apply {
         );
     }
 
-    /// An admin of the namespace who is not the account the statements name
-    /// writes nothing. Otherwise an admin could scope somebody else's devices,
-    /// and the registry is what other devices bind FROM.
-    ///
-    /// The signer is an ADMIN deliberately: it leaves the account equality as the
-    /// only condition this case breaks.
+    /// An admin who is not the account the statements name writes nothing, or it
+    /// could scope another account's devices. Admin, so only that condition breaks.
     #[test]
     fn a_signer_of_another_account_records_nothing() {
         let store = test_store();
@@ -12124,9 +12112,8 @@ mod account_plane_apply {
         );
     }
 
-    /// The mirror of the case above: the signer speaks for exactly the account
-    /// the statements name, but holds only `Member`. Membership in a namespace
-    /// is not authority over its registry.
+    /// The mirror: the right account, but only `Member`. Membership in a
+    /// namespace is not authority over its registry.
     #[test]
     fn a_member_that_is_not_an_admin_records_nothing() {
         let store = test_store();
@@ -12160,9 +12147,8 @@ mod account_plane_apply {
         );
     }
 
-    /// The gate has to decide at the op's cut, not from the rows this replica
-    /// happens to have folded: an admin here and not there would write the row
-    /// on one replica and skip it on the other.
+    /// Decided at the op's cut, not from folded rows: an admin here and not there
+    /// would write the row on one replica and skip it on the other.
     #[test]
     fn an_admin_only_in_live_rows_is_refused_at_the_cut() {
         let store = test_store();
@@ -12199,8 +12185,7 @@ mod account_plane_apply {
         );
     }
 
-    /// The mirror: the cut says admin and the live rows say plain member, and
-    /// the cut is what the row is written on.
+    /// The mirror: the cut says admin, the live rows say member, and the cut wins.
     #[test]
     fn a_cut_that_says_admin_records_even_without_live_rows() {
         let store = test_store();
@@ -12241,10 +12226,8 @@ mod account_plane_apply {
             .is_some());
     }
 
-    /// The other side of the account equality: the signer is the account the
-    /// namespace belongs to, and the certificate names somebody else. Refused
-    /// before either signature is checked, so relaying a genuine certificate of
-    /// another account records nothing here.
+    /// The other side of the account equality: the certificate names somebody
+    /// else. Refused before any signature, so relaying a genuine one writes nothing.
     #[test]
     fn a_certificate_of_another_account_records_nothing() {
         let store = test_store();
@@ -12272,10 +12255,8 @@ mod account_plane_apply {
             .is_none());
     }
 
-    /// A certificate that CLAIMS the owner's account but is anchored on a
-    /// stranger's genesis, carried beside a genuine owner-signed scope for the
-    /// same device. Every other gate passes; only verifying the certificate
-    /// against the account catches it.
+    /// A certificate claiming the owner's account but anchored on a stranger's
+    /// genesis: every gate passes except verifying it against the account.
     #[test]
     fn a_strangers_certificate_beside_an_owner_signed_scope_records_nothing() {
         let store = test_store();
@@ -12326,8 +12307,7 @@ mod account_plane_apply {
         );
     }
 
-    /// A replayed older scope must not re-narrow a device the account has since
-    /// widened.
+    /// A replayed older scope must not re-narrow a device since widened.
     #[test]
     fn a_stale_scope_epoch_leaves_the_row_alone() {
         let store = test_store();
@@ -12372,9 +12352,8 @@ mod account_plane_apply {
         assert_eq!(epoch, 1);
     }
 
-    /// The park the link gate already takes, reached through the signer instead
-    /// of an endorser: an unresolvable cut must stall the op rather than decide
-    /// it from live rows, or two replicas keep different registries for it.
+    /// The park the link gate takes, through the signer: an unresolvable cut
+    /// stalls the op rather than deciding it from live rows.
     #[test]
     fn an_unresolvable_cut_parks_a_certification_instead_of_refusing_it() {
         let store = test_store();

@@ -1260,8 +1260,7 @@ impl ContextClient {
         self.registry.datastore()
     }
 
-    /// Returns a reference to the underlying `NodeClient`.
-    /// Used by governance operations that publish from a plain function.
+    /// The node client, for governance publishes made from a plain function.
     pub const fn node_client(&self) -> &NodeClient {
         &self.node_client
     }

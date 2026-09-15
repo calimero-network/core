@@ -3,9 +3,8 @@
 # Pair <new-node> onto <holder>'s account with only the account namespace id, and
 # check both nodes agree on it and see the device bound there.
 #
-# With an application csv, the pairing is scoped to those applications and the
-# new node must also read its OWN scope back out of the namespace. It holds no
-# certificate cache, so the scope can only have reached it as replicated state.
+# With an application csv the pairing is scoped, and the new node must read its
+# OWN scope back out of the namespace, which it caches nowhere.
 #
 # args: [ <holder>, <new-node>, <application-csv|-> ]
 set -eu
@@ -82,15 +81,13 @@ if [ "${applications}" = "-" ]; then
     exit 0
 fi
 
-# The holder has always been able to say this, from the certificate it signed.
-# Asserted so a registry that replaced the cache cannot quietly lose the scope.
+# Asserted so a registry replacing the cache cannot quietly lose the scope.
 api "${holder}" GET "account/devices" \
     | jq -e --arg d "${device}" --argjson a "${scope}" \
         'any(.devices[]; .deviceId == $d and ($a - .applications) == [])' >/dev/null \
     || fail "the holder does not report the phone as scoped to ${applications}"
 
-# The assertion the scoped run exists for. The phone caches no certificate, so
-# an empty scope here is the whole gap: it knows it is a device and not what for.
+# What the scoped run exists for: the phone knows it is a device, not what for.
 tries=45
 while [ "${tries}" -gt 0 ]; do
     if api "${newnode}" GET "account/devices" \
@@ -103,8 +100,7 @@ while [ "${tries}" -gt 0 ]; do
 done
 [ "${tries}" -gt 0 ] || fail "the phone never learned its own scope from the account namespace"
 
-# Corroborating, and already true before the registry: the holder's own device is
-# bound in the account namespace by its genesis, so the binding scan finds it.
+# Already true before the registry: the genesis binds the holder's own device.
 api "${newnode}" GET "account/devices" \
     | jq -e --arg d "${holder_device}" 'any(.devices[]; .deviceId == $d)' >/dev/null \
     || fail "the phone does not see the holder's device"

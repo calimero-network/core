@@ -1,23 +1,5 @@
-//! What a device of an account may speak for, and the root-signed statement
-//! that says so.
-//!
-//! # Why it is shaped this way
-//!
-//! **Root-signed, like [`crate::DeviceRevocation`], and for the same reason.**
-//! Only the account root decides a device's scope, and "is this signer the
-//! account's current root" cannot be answered from folded state without two
-//! replicas reaching different verdicts. The statement carries its own proof, so
-//! the answer is a property of the statement rather than of the receiver.
-//!
-//! **Scope is deliberately not a field on [`crate::DeviceCert`].** A certificate
-//! travels into every namespace the device is bound in, so carrying the
-//! applications on it would tell every member of every project which other
-//! projects the account's devices reach. This statement travels only inside the
-//! account namespace.
-//!
-//! **[`DeviceScope::scope_epoch`] orders scopes for one device**, separately from
-//! the root-key epoch. The registry keeps a row only when the incoming epoch is
-//! above the stored one, so a replayed older statement re-narrows nothing.
+//! What a device of an account may speak for: a root-signed statement, kept off
+//! [`crate::DeviceCert`] so it travels only inside the account namespace.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -51,10 +33,8 @@ pub struct DeviceScope {
 impl DeviceScope {
     /// Canonical bytes the root key signs. Covers every field but the signature.
     ///
-    /// The application ids are trailing parts of the same hash rather than a
-    /// borsh blob: `domain_hash` length-prefixes each part, so the preimage is
-    /// self-delimiting, and encoding here would have to be fallible while
-    /// [`RootSigned::payload`] is not.
+    /// Application ids are trailing hash parts, not a borsh blob: `domain_hash`
+    /// length-prefixes each, so the preimage is self-delimiting and infallible.
     #[must_use]
     pub fn signing_payload(
         account: AccountId,

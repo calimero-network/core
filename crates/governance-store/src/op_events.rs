@@ -113,14 +113,9 @@ pub enum OpEvent {
         account: AccountId,
         device: DeviceId,
     },
-    /// `GroupOp::AccountDeviceCertified` - a device of this namespace's account
-    /// was recorded in its registry, at a scope epoch above the stored one, by a
-    /// signer who is an admin at the cut and speaks for the account the
-    /// statements name.
-    ///
-    /// Fires only when the row actually changed, so a re-gossiped op wakes
-    /// nobody. Named the account namespace's `group_id` rather than the device's
-    /// account, because the registry is a property of the namespace.
+    /// `GroupOp::AccountDeviceCertified` - a device was recorded in this
+    /// namespace's registry. Fires only when the row changed, so a re-gossiped
+    /// op wakes nobody; `group_id` is the namespace, which owns the registry.
     AccountDeviceCertified {
         group_id: [u8; 32],
         device: DeviceId,

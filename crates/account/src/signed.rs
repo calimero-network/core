@@ -87,11 +87,8 @@ pub trait RootSigned {
     fn signature(&self) -> &[u8; 64];
 }
 
-/// A [`RootSigned`] statement about one particular device.
-///
-/// What [`AccountProof::authorises`] needs on top of verification: the device the
-/// statement names, and the error to report when that is not the device the
-/// caller asked about.
+/// A [`RootSigned`] statement about one particular device: what
+/// [`AccountProof::authorises`] needs beyond verification.
 pub trait DeviceBound: RootSigned {
     /// Builds the error reported when the proof names a different device.
     const DEVICE_MISMATCH: fn(named: DeviceId, expected: DeviceId) -> AccountError;
@@ -179,14 +176,12 @@ impl<T: RootSigned + Clone> AccountProof<T> {
 
     /// Whether this proof speaks for `device` under `account`.
     ///
-    /// Checks the device the caller expects against the one the proof names
-    /// before verifying anything, so a valid proof for one device can never be
-    /// presented as another's, and a proof aimed at the wrong device buys no
-    /// caller an Ed25519 verification.
+    /// The device is checked before anything is verified, so a proof aimed at
+    /// another device can neither be presented as this one's nor cost a
+    /// signature check.
     ///
     /// # Errors
-    /// `T::DEVICE_MISMATCH` when the proof names a different device; otherwise
-    /// whatever [`AccountProof::verify`] reports.
+    /// `T::DEVICE_MISMATCH`, else whatever [`AccountProof::verify`] reports.
     pub fn authorises(
         &self,
         account: AccountId,

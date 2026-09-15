@@ -1,8 +1,6 @@
 //! Publishing one device's row into the account namespace's device registry.
 //!
-//! One place rather than one per publisher, because the scope epoch is minted
-//! from THIS node's folded row and only the account holder ever signs, so a
-//! single publisher is what keeps two statements off the same epoch.
+//! One publisher, because the scope epoch is minted from THIS node's folded row.
 
 use calimero_account::{AccountProof, DeviceCert, DeviceScope};
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
@@ -18,9 +16,8 @@ use tracing::warn;
 /// Record `certificate` and `applications` in `namespace`'s registry, at the
 /// next scope epoch for that device.
 ///
-/// Never fails the caller: every step here runs after the work a request was
-/// made for is already done, so a failure is a `warn!` and the next pairing or
-/// relink republishes it. `site` names the handler on the delivery metric.
+/// Never fails the caller: every step runs after the work the request was made
+/// for, so a failure warns and the next pairing or relink republishes it.
 #[allow(clippy::too_many_arguments, reason = "orthogonal publish-path args")]
 pub async fn publish_device_certified(
     store: &Store,

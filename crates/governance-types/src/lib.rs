@@ -172,10 +172,8 @@ id_newtype! {
 /// rollup compares against. v11 added mandatory coordinates to three variants,
 /// changing their content hash, so a v10 peer must reject rather than mis-decode.
 ///
-/// v12: appends `GroupOp::AccountDeviceCertified`, the account namespace's
-/// device-registry op. No prior ordinal moves; the bump makes a peer that
-/// predates the variant fail at the version gate rather than partway through a
-/// DAG it cannot finish folding.
+/// v12: appends `GroupOp::AccountDeviceCertified`; no prior ordinal moves, so a
+/// v11 peer fails at the version gate rather than partway through a DAG.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 12;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
@@ -622,21 +620,14 @@ pub enum GroupOp {
         /// an exclusion: the device is already gone from the recipient list.
         device: DeviceId,
     },
-    /// Record a device of this namespace's account in its registry.
-    ///
-    /// The apply enforces two things: only an admin of the namespace may carry
-    /// the statements in, and only about its own account's devices. The account
-    /// namespace is therefore the only place a row lands, and a project
-    /// namespace's members never learn what an account's devices are scoped to.
+    /// Record a device of this namespace's account in its registry. The apply
+    /// admits only an admin writing about its own account's devices.
     ///
     /// Both statements are root-signed and self-contained, so a receiver checks
-    /// them without having folded a prior op about the account - the same
-    /// property [`GroupOp::AccountDeviceLinked`] relies on, and the reason the
-    /// certificate is carried here in full: the replicated binding row drops the
-    /// root signature, so a link cannot be rebuilt from folded state.
-    ///
-    /// Boxed for the reason [`JoinAccountCredential`] is: two genesis-plus-chain
-    /// proofs inline push the enum past the large-variant threshold.
+    /// them without having folded anything about the account, and the full
+    /// certificate is here because a binding row drops the root signature.
+    /// Boxed like [`JoinAccountCredential`]: two proofs inline make the variant
+    /// too large.
     AccountDeviceCertified {
         /// The device's certificate, exactly as a link op carries it.
         certificate: Box<AccountProof<DeviceCert>>,
@@ -1896,9 +1887,8 @@ pub mod bounds {
     /// against real use: an account rotating its root key once a day would take
     /// well over two years to reach it.
     pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
-    /// Max applications one device scope may name. A scope is a person's list of
-    /// projects, so the cap is about what a hostile op may claim, not what a real
-    /// one needs.
+    /// Max applications one device scope may name: a cap on what a hostile op
+    /// may claim, not on what a real one needs.
     pub const MAX_DEVICE_SCOPE_APPLICATIONS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
     /// Admitters named in an invitation, and addresses offered for them.

@@ -59,9 +59,8 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
         );
     }
 
-    // Replicated, so a device that is not the holder reads every sibling's scope
-    // here; the cache still answers for devices the registry drops, revoked ones
-    // included.
+    // Replicated, so a non-holder reads every sibling's scope here; the cache
+    // still answers for devices the registry drops, revoked ones included.
     if let Some(namespace) = devices.account_namespace()? {
         for cert in AccountDeviceRegistry::new(store, namespace).devices()? {
             let entry = by_device.entry(cert.device()).or_insert_with(|| Draft {
@@ -365,9 +364,8 @@ mod tests {
         assert!(collect(&store).expect("read").is_none());
     }
 
-    /// The registry is what a device that is not the holder has instead of a
-    /// cache, so the scope in the listing comes from there - and wins over a
-    /// cached row, which is the older statement by construction.
+    /// The listing reads the scope from the registry, which wins over the cached
+    /// row: that one is the older statement by construction.
     #[test]
     fn the_listing_reads_the_scope_from_the_account_namespace_registry() {
         let (store, root) = seeded_account();
@@ -412,8 +410,8 @@ mod tests {
         assert_eq!(entry.applications, vec![narrow, wide]);
     }
 
-    /// A device the registry knows and this node holds no certificate for is
-    /// still listed: that is every sibling, seen from a paired device.
+    /// A device known only to the registry is still listed: every sibling, seen
+    /// from a paired device.
     #[test]
     fn a_device_known_only_to_the_registry_is_listed_with_its_scope() {
         let (store, root) = seeded_account();
