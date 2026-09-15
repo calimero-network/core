@@ -1,5 +1,7 @@
 #![allow(single_use_lifetimes, reason = "borsh shenanigans")]
 
+use calimero_primitives::application::ApplicationId;
+
 use crate::entry::Borsh;
 use crate::key;
 use crate::types::PredefinedEntry;
@@ -73,6 +75,13 @@ impl PredefinedEntry for key::NodeAccountDeviceCert {
 impl PredefinedEntry for key::GroupAccountDevice {
     type Codec = Borsh;
     type DataType<'a> = key::GroupAccountDeviceValue;
+}
+
+impl PredefinedEntry for key::GroupAccountNamespace {
+    type Codec = Borsh;
+    // The application the namespace targets; `None` is one whose target had not
+    // synced when the gainer read it, so only an unscoped device follows it.
+    type DataType<'a> = Option<ApplicationId>;
 }
 
 impl PredefinedEntry for key::GroupReentryBlock {

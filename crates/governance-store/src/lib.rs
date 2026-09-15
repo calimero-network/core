@@ -41,6 +41,7 @@ pub mod absorb;
 pub mod absorb_record;
 mod account_bindings;
 mod account_devices;
+mod account_namespaces;
 pub mod authorizer;
 mod capabilities;
 pub mod cascade;
@@ -88,6 +89,7 @@ pub use self::account_bindings::{
     BindingRejected, DeviceBinding,
 };
 pub use self::account_devices::AccountDeviceRegistry;
+pub use self::account_namespaces::AccountNamespaceSet;
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{

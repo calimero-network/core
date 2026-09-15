@@ -44,7 +44,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | Introspection / admin | `get_group_info`, `get_group_for_context`, `list_all_groups`, `list_group_members`, `list_group_contexts`, `get_cascade_status`, `issue_ownership_proof`, `admit_tee_node`, `set_tee_admission_policy` |
 | Application updates | `update_application/mod.rs` |
 
-One module there is not a handler: `ensure_account_namespace` is a plain function `pair_device_complete` calls, creating the holder's account namespace on first use, naming it, and recording the holder's own device in it.
+Two modules there are not handlers. `ensure_account_namespace` is a plain function `pair_device_complete` calls, creating the holder's account namespace on first use, naming it, and recording the holder's own device in it. `follow_namespace` is the one definition of following a namespace - note participation, subscribe, pull - called by `pair_device_init` and by the `account_follow` listener.
 
 ## Background Listeners (spawned in `Actor::started`)
 
@@ -56,8 +56,9 @@ One module there is not a handler: `ensure_account_namespace` is a plain functio
 | `rotation_listener` | `MemberLeft` (persisted worklist) | Discharges the forward-secrecy key rotation a self-leaver cannot mint themselves; every remaining admin races to publish, convergence is by highest epoch |
 | `membership_events` | `MemberAdded`/`MemberRemoved`/`MemberRoleChanged`, `MigrationStarted` | Observational bridge: turns those `OpEvent`s into `NodeEvent::GroupMembership` / `NodeEvent::GroupMigration` for connected SSE/WS clients. Migration rides the apply path so every node that folds the op announces it, not only the one whose client asked |
 | `account_migration` | Nothing - one shot on start | Publishes a pre-registry holder's cached device certificates into the account namespace, then drops the rows - only once every statement landed, so a partial run is retried by the next start, and never at a scope wider than the registry already holds |
+| `account_follow` | `AccountNamespaceGained`, `AccountNamespaceLeft`, `AccountDeviceCertified` (this node's own device) | Follows a namespace the account gained whose application this device's registry scope covers, walks the whole set when this device's own scope arrives, and pulls then unsubscribes from one the account left. Every start sweeps both ways: it follows what the set covers, and unfollows a namespace this node has folded whose set row is gone and whose member row shows the account gone - all three, so an unsynced namespace is never mistaken for a left one |
 
-**Spawn ordering is load-bearing** (see the comment block in `lib.rs`'s `Actor::started`): `auto_follow::spawn` must run before `self_purge::spawn` because auto-follow subscribes to `op_events` synchronously and has no startup re-scan of its own. `account_migration::spawn` takes no `OpEvent` subscription, so it orders against nothing.
+**Spawn ordering is load-bearing** (see the comment block in `lib.rs`'s `Actor::started`): `auto_follow::spawn` must run before `self_purge::spawn` because auto-follow subscribes to `op_events` synchronously and has no startup re-scan of its own. `account_migration::spawn` takes no `OpEvent` subscription, so it orders against nothing. `account_follow::spawn` does take one and is spawned last, after `account_migration`, whose one-shot publishes `AccountDeviceCertified` - and that is fine, because its start-up sweep walks the account's namespace set itself and so covers exactly what the missed event's arm would have done.
 
 ## Cache Capacity Constants (`src/lib.rs`)
 
@@ -100,7 +101,8 @@ One module there is not a handler: `ensure_account_namespace` is a plain functio
 | `src/activation.rs` | Per-context "last activated blob" marker (`activated_bytecode()`; `marker == group.bytecode_id` invariant) |
 | `src/unified_op_store.rs`, `src/unified_applier.rs`, `src/scope_projection.rs` | The additive unified causal-log substrate (not yet load-bearing) |
 | `src/apply_authorizer.rs` | `AtCutAuthorizer` impl resolving apply-time authorization against the folded projection |
-| `src/auto_follow.rs`, `src/self_purge.rs`, `src/tee_subgroup_admit.rs`, `src/rotation_listener.rs`, `src/membership_events.rs` | The five background listeners spawned in `Actor::started` |
+| `src/auto_follow.rs`, `src/account_follow.rs`, `src/self_purge.rs`, `src/tee_subgroup_admit.rs`, `src/rotation_listener.rs`, `src/membership_events.rs` | The background listeners spawned in `Actor::started` |
+| `src/account_namespace.rs` | `announce` - the one place a gained/left op is published into this node's account namespace, called by `create_group`, `join_group`, `leave_namespace` and the creation backfill |
 | `src/migration_events.rs` | `NodeEvent::GroupMigration` emit helper - resolves the namespace root every migration payload is keyed on |
 | `src/error.rs` | `ContextError` - typed errors (`ContextDeleted`, `StateInconsistency`, `StorageError`) |
 | `tests/*.rs` | Integration suites: cascade apply/atomicity/concurrency, HLC fencing, op-store reconstruction, projection/membership equivalence |

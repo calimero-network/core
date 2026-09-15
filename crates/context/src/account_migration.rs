@@ -134,7 +134,6 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
     use calimero_governance_store::{AccountDeviceRegistry, AccountRoot, NodeDeviceRepository};
@@ -143,10 +142,9 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{NodeAccountDeviceCert, NodeAccountDeviceCertValue};
     use calimero_store::Store;
-    use tokio::time::sleep;
 
     use super::run;
-    use crate::test_support::{actor, certify_device};
+    use crate::test_support::{actor, certify_device, eventually};
 
     const APP_ONE: [u8; 32] = [0x11; 32];
 
@@ -205,13 +203,10 @@ mod tests {
     /// signal that everything the migration will publish is in the registry.
     async fn migrated(store: &Store) {
         let devices = NodeDeviceRepository::new(store);
-        for _ in 0..100 {
-            if devices.legacy_device_certs().expect("read").is_empty() {
-                return;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-        panic!("the migration left the cached rows behind for five seconds");
+        assert!(
+            eventually(|| devices.legacy_device_certs().expect("read").is_empty()).await,
+            "the migration left the cached rows behind"
+        );
     }
 
     /// One statement per cached row, at the scope the pairing gave it, and the
