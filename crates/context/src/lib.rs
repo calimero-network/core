@@ -247,8 +247,12 @@ impl ContextLock {
     ///
     /// Only used for methods declared read-only in the module ABI. Multiple
     /// concurrent read-guard holders on the same context are safe as long as
-    /// the method cannot write (enforced by the `ReadOnlyContextStorage` wrapper
-    /// passed to the runtime in place of the normal mutable storage).
+    /// none of them writes *shared* state — enforced by the
+    /// `ReadOnlyContextStorage` wrapper passed to the runtime in place of the
+    /// normal mutable storage. Node-local materialization (the ordered index, a
+    /// private-plane root) still happens under a shared guard, because it is
+    /// idempotent and derived: two readers rebuilding the same index write the
+    /// same bytes.
     fn lock_read(
         &self,
     ) -> Either<ContextGuard, std::pin::Pin<Box<dyn Future<Output = ContextGuard> + Send>>> {

@@ -2664,12 +2664,25 @@ pub(crate) async fn execute(
     global_runtime()
         .spawn_blocking(move || {
             let outcome = if is_read_only_call {
-                // Wrap storage in a read-only view: write host calls are silenced
-                // so a method holding a shared read guard cannot mutate shared
-                // state. The post-exec assertion on outcome.root_hash / artifact
-                // catches any method that nonetheless produced a mutation.
-                let mut ro_storage = ReadOnlyContextStorage::new(&mut storage);
-                let mut ro_private = ReadOnlyContextStorage::new(&mut private_storage);
+                // Wrap shared storage in a read-only view: `set`/`remove` host
+                // calls are silenced so a method holding a shared read guard
+                // cannot mutate shared state. The post-exec assertion on
+                // outcome.root_hash / artifact catches any method that
+                // nonetheless produced a mutation.
+                //
+                // `with_local_index` rather than `new`: the ordered secondary
+                // index is node-local and rebuilt lazily *by* an ordered read,
+                // so silencing it does not make the read safer, it makes it
+                // return nothing. See `ReadOnlyContextStorage`'s own docs.
+                let mut ro_storage = ReadOnlyContextStorage::with_local_index(&mut storage);
+                // The private plane is NOT wrapped. It is node-local: a separate
+                // column, never hashed into the root, never gossiped, and
+                // committed only under `outcome.root_hash.is_some()` — which a
+                // read-only call discards before the commit block is reached. So
+                // nothing here can escape the transaction, while a first read of
+                // a private collection can still create the root element it
+                // hangs off. Wrapping it bought no safety and cost exactly that:
+                // `my_secrets()` panicked with `CannotCreateOrphan`.
                 module.run_with_origin(
                     context_id,
                     principal.account,
@@ -2677,7 +2690,7 @@ pub(crate) async fn execute(
                     &method,
                     &input,
                     &mut ro_storage,
-                    Some(&mut ro_private),
+                    Some(&mut private_storage),
                     Some(node_client),
                     xcall_origin,
                 )?
