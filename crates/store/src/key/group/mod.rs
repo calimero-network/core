@@ -17,8 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4E` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4F`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4F` is taken
+// except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
+// `0x50`**.
 //
 // This pointer was stale when `GroupMemberByAccount` (0x4D) claimed its byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -26,6 +27,13 @@ use zeroize::ZeroizeOnDrop;
 // byte-identical in length and only the prefix distinguishes them — so re-derive
 // the list with `grep 'u8 = 0x'` before claiming a byte, as the note below says,
 // and move this pointer in the same commit.
+//
+// Grepping this file is necessary and not sufficient: it answers for the branch
+// you are on, and two branches in flight can claim the same byte without either
+// one's grep seeing the other. `GROUP_MEMBER_INDEX_BACKFILL_PREFIX` was 0x4E
+// here while `NODE_ACCOUNT_NAMESPACE_PREFIX` took 0x4E on master, so the
+// collision existed only in the merge. So re-derive the list against the *merge
+// base you will land on*, not against your branch.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -41,7 +49,15 @@ pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_MEMBER_BY_ACCOUNT_PREFIX: u8 = 0x4D;
 /// Singleton marker: the reverse index above has been built from the membership
 /// rows that predate it. See [`GroupMemberIndexBackfilled`].
-pub const GROUP_MEMBER_INDEX_BACKFILL_PREFIX: u8 = 0x4E;
+///
+/// 0x4F rather than 0x4E: `NODE_ACCOUNT_NAMESPACE_PREFIX` landed on 0x4E while
+/// this branch was open, in this same `Column::Group`. The two are different
+/// lengths — that one is a bare-prefix singleton, this one carries 32 zero bytes
+/// — so no exact-key lookup could have confused them, and that is exactly why
+/// sharing the byte was worth moving rather than arguing about: the ledger holds
+/// so that nobody has to re-derive that argument per pair, and any prefix scan
+/// over 0x4E would have returned the other family's row regardless.
+pub const GROUP_MEMBER_INDEX_BACKFILL_PREFIX: u8 = 0x4F;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
