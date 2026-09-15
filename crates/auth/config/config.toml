@@ -78,10 +78,17 @@ challenge_ttl_secs = 60
 # Client surfaces a session may be minted for: a bare origin, "codesign:<id>", or
 # "cli". An EMPTY list accepts any audience and is warned about at startup.
 allowed_audiences = []
-# Permissions a session carries. Defaults to the delegated-write path alone,
-# which the warrant and CAN_AUTHOR_ON_BEHALF already gate. Do not add reads until
-# the node evaluates the caller's membership per request (#3931).
-session_permissions = ["context:intent"]
+# Permissions a session carries. Defaults to both halves of the delegated
+# surface and nothing above them: a write, which the warrant and
+# CAN_AUTHOR_ON_BEHALF gate, and a read, which the node gates by re-checking the
+# caller's membership on EVERY call (#3931) rather than trusting the session --
+# so a removed member stops being served when the governance op lands, not when
+# their token expires. That per-request check is what made it safe to mint reads
+# by default; before it, this was context:intent alone.
+# Nothing else belongs here. An admin or context:execute scope would be
+# authority the token confers by itself, where these two are each separately
+# gated.
+session_permissions = ["context:intent", "context:query"]
 
 # Development/testing configuration
 [development]

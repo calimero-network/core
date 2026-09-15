@@ -561,7 +561,12 @@ mod tests {
                 .to_string(),
             "the subject must be the account, not the device and not a stored key id"
         );
-        assert_eq!(response.permissions, vec!["context:intent".to_owned()]);
+        // The configured scope, verbatim: a minted session carries what the
+        // operator set and nothing the provider added on its own.
+        assert_eq!(
+            response.permissions,
+            vec!["context:intent".to_owned(), "context:query".to_owned()]
+        );
     }
 
     // --- the criterion: a device not certified by the account is refused ----
@@ -811,13 +816,30 @@ mod tests {
         .is_err());
     }
 
-    /// The default session grants only the delegated-write path, which is
-    /// already gated by the warrant and `CAN_AUTHOR_ON_BEHALF`. Widening it
-    /// before a per-request membership check exists would hand any account with
-    /// a device key read access to every context on a shared relay.
+    /// The default session grants the delegated pair and nothing else.
+    ///
+    /// This test used to be `the_default_session_does_not_grant_reads`, and the
+    /// reason it no longer is, is the whole point of #3931: reads were withheld
+    /// until the node evaluated the caller's membership **per request**, which
+    /// `query_context` now does — through `MembershipRepository::is_member`, on
+    /// every call, so a removed member stops being served the moment the
+    /// governance op lands rather than when their session expires. With that in
+    /// place `context:query` is safe to mint by default, and the config comment
+    /// that said "do not add reads until (#3931)" has been satisfied rather than
+    /// overruled.
+    ///
+    /// What still has to hold is the ceiling: both halves of the delegated
+    /// surface and nothing above it. Each is separately gated — a write by the
+    /// warrant and `CAN_AUTHOR_ON_BEHALF`, a read by the per-call membership
+    /// check — so neither is authority this token confers on its own. An
+    /// `admin`, `context:execute` or alias scope here would be, which is why
+    /// this asserts the exact set rather than `contains`.
     #[test]
-    fn the_default_session_does_not_grant_reads() {
+    fn the_default_session_grants_the_delegated_pair_and_no_more() {
         let perms = AccountProofConfig::default().session_permissions;
-        assert_eq!(perms, vec!["context:intent".to_owned()]);
+        assert_eq!(
+            perms,
+            vec!["context:intent".to_owned(), "context:query".to_owned()]
+        );
     }
 }
