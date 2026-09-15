@@ -1077,6 +1077,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-client-stub"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "borsh",
+ "calimero-account",
+ "calimero-primitives",
+ "clap",
+ "eyre",
+ "hex",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "calimero-config"
 version = "0.0.0"
 dependencies = [

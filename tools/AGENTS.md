@@ -10,6 +10,7 @@ Development and debugging tools for Calimero infrastructure.
 | `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
+| `client-stub`  | `calimero-client-stub` | Serves the delegated-execution client contracts, for client development |
 
 Everything here is a Rust crate.
 
@@ -95,6 +96,32 @@ cargo-mero/
 - A `#[cfg]` on an `#[app::logic]` method still lands in the ABI: the attribute macro sees the method before cfg is applied. Struct fields and enum variants are cfg-stripped before the derive runs, so those are honored.
 - `cargo-mero` has a lib target (`src/lib.rs`), not just a binary: `main.rs` is a one-line `cargo_mero::run()` call, and `manifest`/`meta` are `pub mod` so `tests/*.rs` can drive them directly instead of spawning a subprocess.
 - `manifest::render` builds `calimero_bundle::BundleManifest` directly, with no `..Default::default()` and no `..` in the node's `BundleManifest::artifacts()` destructure - a new field on that type is a compile error here until handled, not silent drift.
+
+## client-stub - Delegated-Execution Client Contracts
+
+A stub node serving the exchanges in
+[`docs/src/content/docs/build/delegated-execution-client.mdx`](../docs/src/content/docs/build/delegated-execution-client.mdx),
+so a client can be built before the node side lands (core#3930, #3931).
+
+```bash
+cargo run -p calimero-client-stub -- --port 8080
+cargo run -p calimero-client-stub -- --refuse-authorship   # canAuthorOnBehalf: false
+```
+
+**Not a security boundary.** It verifies no signatures and accepts any well-formed
+proof. What it does check is what a client can get wrong on its own side: hex-borsh
+encodings, and whether a warrant's `intent_hash` commits to the method and args it
+arrived with — the `domain_hash` construction being the one thing a cross-language
+client reliably gets wrong, because a missing length prefix produces plausible
+digests that never verify.
+
+The rule for anything added here: fail the client where a real node would, and
+nowhere else. Stricter teaches people to work around it; laxer lets bugs reach
+staging.
+
+`src/lib.rs` owns the router and handlers; `src/main.rs` is arg parsing and
+`axum::serve`. `tests/contract.rs` drives `router()` — the same value `main`
+serves — with `tower::ServiceExt::oneshot`, so no port is bound.
 
 ## merodb - Database Tool
 

@@ -1,0 +1,365 @@
+---
+title: Delegated Execution Client Contract
+description: The wire contracts a client uses to authenticate, read and write through a node it does not own.
+sidebar:
+  order: 11
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A client that holds an account root and a device key, and runs no node of its own,
+reaches a context through somebody else's node. This page is the contract for that:
+the exact bytes it signs, the exact shapes it sends, and which parts are live today.
+
+It exists so a client can be built against a fixed target rather than against a
+guess. Every field here is either quoted from the code that implements it or
+marked as specified-not-yet-built, and the two are never mixed silently.
+
+<Aside type="caution" title="Read the status markers">
+**Live** means implemented and callable on a node today. **Specified** means this
+page fixes the shape, and the node side is tracked but unbuilt — build against it,
+expect it to be served by the stub until the issue closes.
+</Aside>
+
+| Contract | Status | Tracking |
+|---|---|---|
+| Discovery — where to write and as whom | **Live** | — |
+| Warrant and delegated write | **Live** (field set changes) | [#3933](https://github.com/calimero-network/core/issues/3933) |
+| Session — challenge and `LoginStatement` | **Specified** | [#3930](https://github.com/calimero-network/core/issues/3930) |
+| Read — an authenticated account reads a context | **Specified** | [#3931](https://github.com/calimero-network/core/issues/3931) |
+
+## 0. Primitives
+
+Two conventions run through everything below.
+
+### Domain-separated hashing
+
+Every signature in Calimero is over a 32-byte digest produced by one function, so
+a signature minted for one purpose can never be replayed as another. Length-prefixing
+each segment is what stops `("ab", "c")` and `("a", "bc")` hashing alike.
+
+```rust
+// crates/primitives/src/identity.rs
+pub fn domain_hash(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update((domain.len() as u64).to_le_bytes());
+    hasher.update(domain);
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+```
+
+In other words: `SHA256( u64le(len(domain)) ‖ domain ‖ ( u64le(len(part)) ‖ part )* )`,
+with every length a little-endian `u64`.
+
+A client implementing this in another language must reproduce it byte for byte.
+It is the single most likely place for a cross-language client to go wrong, because
+a missing length prefix still produces plausible-looking digests that never verify.
+
+### Encoding on the wire
+
+Signed structures cross the HTTP boundary as **hex-encoded borsh**, never as JSON.
+The canonical form of a signed statement is its borsh encoding; re-describing its
+fields as JSON would create a second spelling that could disagree with the bytes
+the signature covers.
+
+Everything unsigned — request envelopes, arguments, responses — is JSON, camelCase.
+
+## 1. Discovery — live today
+
+Before minting a warrant a client needs two facts it cannot derive: which node to
+talk to, and which account that node will name as `executor`.
+
+**Which relay**, from the cloud:
+
+```http
+GET /api/cloud/me/namespaces/{namespace_id}/relays
+```
+
+```jsonc
+{
+  "namespace_id": "…",
+  "relays": [
+    {
+      "peer_id": "12D3KooW…",
+      "relay_url": "https://node-7.example.net",   // where to send the intent
+      "executor_account": "…",                      // what the warrant must name
+      "authorship_ready": true,                     // may it author here yet
+      "status": "active",
+      "assigned_at": "…", "confirmed_at": "…", "last_seen_at": "…"
+    }
+  ]
+}
+```
+
+**Whether this context is open to delegation**, from the node itself:
+
+```http
+GET /admin-api/contexts/{context_id}/intents
+```
+
+```jsonc
+{
+  "executorAccount": "…",
+  "canAuthorOnBehalf": false,
+  "groupId": "…",
+  "grantedOnGroupId": null
+}
+```
+
+`canAuthorOnBehalf: false` is the **default state of every context** — authorship is
+implied by neither membership nor admin, and is never granted implicitly. A client
+should read this before signing anything and, when it is false, tell the user to ask
+an admin of `groupId` for the grant rather than minting a warrant that will be
+refused after the nonce is already spent.
+
+## 2. Warrant and delegated write
+
+### What a warrant commits to
+
+```rust
+// crates/account/src/warrant.rs — live today
+pub struct Warrant {
+    pub context: ContextId,
+    pub author_account: AccountId,
+    pub author_device_key: PublicKey,
+    pub executor: AccountId,
+    pub intent_hash: [u8; 32],
+    pub nonce: u64,
+    pub not_after: u64,
+    pub signature: [u8; 64],
+}
+```
+
+The intent is committed to as a hash, not carried in the clear:
+
+```rust
+intent_hash = domain_hash(b"calimero.warrant.intent.v1", &[method.as_bytes(), args])
+```
+
+And the signature covers, in this order:
+
+```rust
+signature = sign(domain_hash(b"calimero.warrant.v1", &[
+    context.digest(),
+    author_account.as_bytes(),
+    author_device_key,              // 32 bytes
+    executor.as_bytes(),
+    intent_hash,                    // 32 bytes
+    &nonce.to_le_bytes(),
+    &not_after.to_le_bytes(),
+]))
+```
+
+### The field set is changing
+
+[#3933](https://github.com/calimero-network/core/issues/3933) adds `method` in the clear
+(so peers can select a per-method write-set), `app_version`, and cited `account_heads` /
+`governance_floor`, and may replace `not_after` with a governance height. **Every one of
+those changes the signed bytes**, and the signing domain bumps to `calimero.warrant.v2`.
+
+There is no backwards compatibility: warrants signed under `v1` will stop verifying.
+Build the builder so the field list and the domain constant are in one place.
+
+<Aside type="note" title="Why not_after is not checked at apply">
+`not_after` is a wall clock, and a wall clock must never gate an apply. Peers apply at
+different times, so a warrant that expired between two receivers would be accepted by
+one and refused by the other, and authorization would stop converging. The bound is
+checked by the relay at the API boundary, where one clock decides and nothing has
+converged yet.
+</Aside>
+
+### Submitting it
+
+```http
+POST /admin-api/contexts/{context_id}/intents
+```
+
+```jsonc
+{
+  "method": "set",
+  "argsJson": { "key": "a", "value": "b" },
+  "warrant":     "<hex borsh of Warrant>",
+  "authorProof": "<hex borsh of AccountProof<DeviceCert>>"
+}
+```
+
+The client supplies only **its own half** of the proof. The executor's proof and
+signing key are attached by the node from its own credentials, because the warrant
+authorizes an operator *account* and the author has no business knowing which of
+that operator's processes will run it.
+
+```jsonc
+// 200
+{
+  "data": {
+    "rootHash": "…",              // the context's scope root after the run
+    "returns":  { /* the method's own return value, or null */ }
+  }
+}
+```
+
+`AccountProof<T>` is the self-contained credential that ties a device key to an account:
+
+```rust
+// crates/account/src/signed.rs
+pub struct AccountProof<T> {
+    pub genesis: AccountGenesis,        // hashes to the AccountId
+    pub chain: Vec<RootKeyHandoff>,     // root rollovers, epoch 0 upward
+    pub statement: T,                   // here: DeviceCert
+}
+```
+
+## 3. Session — specified
+
+Today the only way to obtain a session on a node is a username and password, which
+an account holder who runs no node does not have. [#3930](https://github.com/calimero-network/core/issues/3930)
+replaces it with a challenge the device key signs.
+
+### Challenge
+
+```http
+GET /auth/challenge
+```
+
+```jsonc
+{
+  "challenge": "<64 hex chars — 32 bytes>",
+  "expiresAt": 1789470000            // unix seconds; ≤ 60s from issue
+}
+```
+
+The challenge is a MAC over the node's identity, a nonce and an expiry, so the node
+holds no per-challenge state. It is single-use: spent only after a signature over it
+verifies, so a failed attempt does not burn it.
+
+### LoginStatement
+
+```rust
+// domain calimero.auth.login.v1 · borsh · signed by the DEVICE key
+pub struct LoginStatement {
+    pub node: NodeId,
+    pub audience: Audience,          // WebOrigin(String) | CodeSigningId(String) | Cli
+    pub challenge: [u8; 32],
+    pub session_key: PublicKey,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+```
+
+```rust
+signature = sign(domain_hash(b"calimero.auth.login.v1", &[
+    node.as_bytes(),
+    &audience_tag_and_bytes,         // borsh of the Audience variant
+    &challenge,
+    session_key,                     // 32 bytes
+    &issued_at.to_le_bytes(),
+    &expires_at.to_le_bytes(),
+]))
+```
+
+The client learns the node's identity from a pinned certificate, **never from the
+challenge** — otherwise an attacker who can answer on the node's behalf chooses what
+the device signs about.
+
+```http
+POST /auth/login
+```
+
+```jsonc
+{
+  "loginStatement": "<hex borsh of LoginStatement>",
+  "accountProof":   "<hex borsh of AccountProof<DeviceCert>>"
+}
+```
+
+```jsonc
+// 200
+{
+  "token": "<JWT; subject is the ACCOUNT, not the device>",
+  "expiresAt": 1789471800
+}
+```
+
+The session is granted to the **account**. Membership is then evaluated per request
+against the target context's group, not cached at login — a relay serves several
+tenants, so a session must not carry a standing right to read.
+
+<Aside type="danger" title="A session is not a warrant">
+A session authenticates the caller **to this relay**. It never substitutes for a
+warrant on a write: a warrant proves to peers who never saw the HTTP request that the
+author consented to that operation, and a bearer token scoped to one relay cannot do
+that. Reads need no warrant, because a read publishes nothing and so has no peer to
+convince.
+</Aside>
+
+## 4. Read — specified
+
+[#3931](https://github.com/calimero-network/core/issues/3931).
+
+```http
+POST /admin-api/contexts/{context_id}/query
+Authorization: Bearer <session token>
+```
+
+```jsonc
+{
+  "method": "get",
+  "argsJson": { "key": "a" }
+}
+```
+
+```jsonc
+// 200
+{ "data": { "returns": { /* the method's return value */ } } }
+```
+
+Three refusals a client must handle distinctly, because they mean different things
+to a user:
+
+| Status | Meaning | What the client should do |
+|---|---|---|
+| `401` | no session, or it expired | re-run the login exchange |
+| `403` | the account is not a member of this context's group | tell the user; do not retry |
+| `409` | the method is not read-only | a bug in the client's method choice — this is a write, mint a warrant |
+
+That last one is the one to get right. Reads are gated on the method being declared
+read-only, and the gate **fails closed**: a method that declares nothing is refused
+rather than guessed at. See [#3932](https://github.com/calimero-network/core/issues/3932)
+for how that declaration is derived from the method's receiver.
+
+## 5. End to end
+
+```
+1.  GET  /api/cloud/me/namespaces/{ns}/relays      → relay_url, executor_account
+2.  GET  /auth/challenge                           → challenge
+3.  sign LoginStatement with the DEVICE key
+4.  POST /auth/login                               → session token
+5.  GET  /admin-api/contexts/{ctx}/intents         → canAuthorOnBehalf?
+    ├── false → stop; ask an admin of groupId for the grant
+    └── true  → continue
+6.  READ   POST /admin-api/contexts/{ctx}/query    (token; no warrant)
+7.  WRITE  sign a Warrant with the DEVICE key
+           POST /admin-api/contexts/{ctx}/intents  (token + warrant + authorProof)
+```
+
+Steps 1, 5 and 7 work today. Steps 2–4 and 6 are served by the stub until their
+issues close.
+
+## Running the stub
+
+The stub serves every exchange on this page so a client can be built and tested
+before the node side lands.
+
+```bash
+cargo run -p calimero-client-stub -- --port 8080
+```
+
+It is deliberately **not** a security boundary: it verifies shapes and encodings,
+not signatures, and it accepts any well-formed proof. Its job is to fail your client
+in the same places a real node will — a malformed `domain_hash`, a missing length
+prefix, a warrant whose `intent_hash` does not match the method and args it was sent
+with — and nothing more.
