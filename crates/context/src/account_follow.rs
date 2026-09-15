@@ -8,10 +8,7 @@
 //! this node's own publish coming back.
 //!
 //! Projecting is carrying a newly certified sibling into the namespaces this node
-//! takes part in whose target its scope covers. Every online device folds that one
-//! op, so k of them would publish the same m binds; a random wait of up to
-//! [`PROJECTION_JITTER_MAX_MS`] first lets a faster sibling's link land, which the
-//! per-namespace already-bound read inside the bind then skips.
+//! takes part in whose target its scope covers.
 //!
 //! Carrying is republishing a proof-bearing revocation folded here into the
 //! namespaces this node takes part in where the device is still linked. The
@@ -199,6 +196,8 @@ async fn run(
                     }
                 });
             }
+            // Only a proof-bearing revocation carries: an admin one authorises
+            // nothing outside the group whose admin gate let it through.
             OpEvent::DeviceRevoked {
                 group_id,
                 account,
@@ -440,19 +439,14 @@ fn namespaces_to_bind_into(
 
 /// The namespaces a proof-bearing revocation folded here has to be carried into.
 ///
-/// An admin revocation authorises nothing outside its own group, so it is not
-/// carried. `is_device_linked` reads the bindings still in force, so one that
-/// has already tombstoned the device is skipped by the same call - and, unlike
-/// the revoker's own `raw_binding` read, one superseded by a root rotation too.
-pub(crate) fn namespaces_to_revoke_in(
+/// `is_device_linked` reads the bindings still in force, so one that has already
+/// tombstoned the device is skipped by the same call - and, unlike the revoker's
+/// own `raw_binding` read, one superseded by a root rotation too.
+fn namespaces_to_revoke_in(
     store: &Store,
     group_id: [u8; 32],
     device: DeviceId,
-    proof: Option<&SignedDeviceRevocation>,
 ) -> Vec<ContextGroupId> {
-    if proof.is_none() {
-        return Vec::new();
-    }
     let Some(account_namespace) = account_namespace_if_ours(store, group_id) else {
         return Vec::new();
     };
@@ -516,8 +510,6 @@ async fn handle_sibling_certified(
     publish_sibling_link(store, node_client, ack_router, &targets, &signer_sk, &cert).await;
 }
 
-/// Wait, then bind - the wait damps k devices publishing one certification's m
-/// binds at once, and the per-namespace already-bound read skips what landed.
 async fn publish_sibling_link(
     store: &Store,
     node_client: &NodeClient,
@@ -562,7 +554,7 @@ async fn handle_revocation_carry(
     device: DeviceId,
     proof: SignedDeviceRevocation,
 ) {
-    let targets = namespaces_to_revoke_in(store, group_id, device, Some(&proof));
+    let targets = namespaces_to_revoke_in(store, group_id, device);
     if targets.is_empty() {
         return;
     }
@@ -713,9 +705,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        carry_into, follows_on_gain, handle_revocation_carry, namespaces_now_covered,
-        namespaces_to_bind_into, namespaces_to_revoke_in, publish_sibling_link, run,
-        signing_identity, unfollows_on_left,
+        carry_into, follows_on_gain, namespaces_now_covered, namespaces_to_bind_into,
+        namespaces_to_revoke_in, publish_sibling_link, run, signing_identity, unfollows_on_left,
     };
     use crate::test_support::{actor, eventually};
 
@@ -732,9 +723,9 @@ mod tests {
 
     /// This node as a DEVICE of an account whose root lives elsewhere, scoped to
     /// `applications` (empty is every application): the account namespace
-    /// recorded by pairing, this node's device minted under the account's
-    /// genesis, and its own certified row folded - the state a device is in once
-    /// pairing has settled.
+    /// recorded by pairing and taken part in, this node's device minted under the
+    /// account's genesis, and its own certified row folded - the state a device
+    /// is in once pairing has settled.
     ///
     /// A device and not a holder on purpose. `NodeDeviceRepository::account_namespace`
     /// answers a holder from its root derivation and only falls through to the
@@ -775,6 +766,9 @@ mod tests {
         let _recorded = AccountDeviceRegistry::new(store, account_namespace)
             .record(&proof, applications, 0)
             .expect("record this device in its account's registry");
+        let _identity = NamespaceRepository::new(store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
         (account_namespace, held.device(), root_sk)
     }
 
@@ -1200,7 +1194,7 @@ mod tests {
     /// The carry. Every namespace this node takes part in that still has the
     /// device live, and nothing else: not the account namespace where it already
     /// landed, not one that has already tombstoned it, not one this node is a
-    /// stranger to, and nothing at all without a proof.
+    /// stranger to.
     #[test]
     fn a_proof_bearing_revocation_is_carried_only_where_the_device_is_still_live() {
         let store = store();
@@ -1219,19 +1213,13 @@ mod tests {
         AccountBindingRepository::new(&store)
             .apply_revocation(&already_tombstoned, lost)
             .expect("tombstone one of them ahead of the carry");
-        let proof = a_revocation_of(&root_sk, lost);
 
         assert_eq!(
-            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), lost, Some(&proof)),
+            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), lost),
             vec![still_live]
         );
         assert_eq!(
-            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), lost, None),
-            Vec::<ContextGroupId>::new(),
-            "an admin revocation carries no proof, and admin authority stops at its group"
-        );
-        assert_eq!(
-            namespaces_to_revoke_in(&store, OTHER_GROUP, lost, Some(&proof)),
+            namespaces_to_revoke_in(&store, OTHER_GROUP, lost),
             Vec::<ContextGroupId>::new(),
             "a revocation folded on a project's DAG is this node's own publish coming back"
         );
@@ -1249,9 +1237,6 @@ mod tests {
         let elsewhere = ContextGroupId::from([0x82; 32]);
         a_namespace_targeting(&store, covered, app(0x11));
         a_namespace_targeting(&store, elsewhere, app(0x22));
-        let _identity = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
         let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x63, &[app(0x11)]);
 
         let (cert, targets) =
@@ -1278,9 +1263,6 @@ mod tests {
         let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let project = ContextGroupId::from([0x83; 32]);
         a_namespace_targeting(&store, project, app(0x11));
-        let _identity = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
         let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x64, &[]);
 
         let (_cert, targets) =
@@ -1299,9 +1281,6 @@ mod tests {
         let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let project = ContextGroupId::from([0x85; 32]);
         a_namespace_targeting(&store, project, app(0x11));
-        let _identity = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
         let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x66, &[]);
         AccountBindingRepository::new(&store)
             .apply_revocation(&account_namespace, sibling)
@@ -1374,9 +1353,6 @@ mod tests {
         let _key_id = GroupKeyring::new(&store, project)
             .store_key(&[0x42; 32])
             .expect("hold this namespace's scope key, without which nothing is published");
-        let _identity = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
         let sibling = a_sibling_scoped_to(&store, account_namespace, &root_sk, 0x6B, &[app(0x11)]);
         let (cert, targets) =
             namespaces_to_bind_into(&store, account_namespace.to_bytes(), sibling)
@@ -1466,9 +1442,6 @@ mod tests {
         let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let elsewhere = ContextGroupId::from([0x8A; 32]);
         a_namespace_targeting(&store, elsewhere, app(0x11));
-        let _identity = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
         let lost = DeviceId::from([0x6A; 32]);
         a_device_bound_in(&store, account_namespace, &root_sk, lost);
         a_device_bound_in(&store, elsewhere, &root_sk, lost);
@@ -1495,46 +1468,10 @@ mod tests {
             carried,
             "the listener never carried a proof-bearing revocation off the account topic"
         );
-    }
-
-    /// The carry through the real publish path and the real store: the tombstone
-    /// lands in the namespace the revoker never reached, and not in the account
-    /// namespace, where the revocation it folded already is.
-    #[actix::test]
-    async fn the_carry_tombstones_the_device_where_the_revoker_could_not_reach() {
-        let store = store();
-        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
-        let elsewhere = ContextGroupId::from([0x86; 32]);
-        a_namespace_targeting(&store, elsewhere, app(0x11));
-        let _identity = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
-
-        let lost = DeviceId::from([0x67; 32]);
-        a_device_bound_in(&store, account_namespace, &root_sk, lost);
-        a_device_bound_in(&store, elsewhere, &root_sk, lost);
-        let proof = a_revocation_of(&root_sk, lost);
-        let account = AccountGenesis::new(root_sk.public_key()).account_id();
-
-        let harness = actor::over(store.clone()).await;
-        handle_revocation_carry(
-            &store,
-            &harness.node_client,
-            harness.context_client.ack_router(),
-            account_namespace.to_bytes(),
-            account,
-            lost,
-            proof,
-        )
-        .await;
-
-        let bindings = AccountBindingRepository::new(&store);
         assert!(
-            bindings.is_revoked(&elsewhere, lost).expect("read"),
-            "the namespace the revoker never reached must hold the tombstone"
-        );
-        assert!(
-            !bindings.is_revoked(&account_namespace, lost).expect("read"),
+            !bindings
+                .is_revoked(&account_namespace, lost)
+                .expect("read the account namespace's tombstone row"),
             "the account namespace is where the revocation came FROM; republishing there echoes"
         );
     }

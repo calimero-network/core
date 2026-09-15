@@ -37,8 +37,11 @@ phrase=$(offline_merod "${holder}" account export | sed -n '1p')
 phrase_file="data/${publisher}/recovery.txt"
 trap 'rm -f "${phrase_file}"' EXIT
 printf '%s\n' "${phrase}" > "${phrase_file}"
+# The same split offline_merod makes: a binary-mode node reads the file where it
+# lies, a container reads it under the home the bind mount put it at.
+if [ -x "${MEROD_BIN}" ]; then home="data/${publisher}"; else home=/app/data; fi
 proof=$(offline_merod "${publisher}" account revoke-proof \
-    --device "${device}" --from "$(offline_home "${publisher}")/recovery.txt" | sed -n '1p')
+    --device "${device}" --from "${home}/recovery.txt" | sed -n '1p')
 [ -n "${proof}" ] || fail "minting the revocation proof produced nothing"
 
 account_namespace=$(api "${publisher}" GET "identity" | jq -r '.data.accountNamespaceId // empty')
