@@ -15,6 +15,7 @@ mod login;
 mod pairing;
 mod revocation;
 mod root_key;
+mod scope;
 mod sdk_credential_fixture;
 mod signed;
 mod warrant;
