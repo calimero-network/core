@@ -237,6 +237,7 @@ fn create_test_bundle_custom_wasm_path(
         min_runtime_version: "0.1.0".to_string(),
         metadata: None,
         handlers: None,
+        build_info: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: wasm_path.to_string(),
@@ -1159,6 +1160,7 @@ fn create_test_bundle_with_key(
         min_runtime_version: "0.1.0".to_string(),
         metadata: None,
         handlers: None,
+        build_info: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
