@@ -30,7 +30,9 @@ use crate::account::AccountGenesis;
 use crate::domain::DEVICE_REVOCATION_SIGN_DOMAIN;
 use crate::error::AccountError;
 use crate::root_key::RootKeyHandoff;
-use crate::signed::{sign_payload, verify_root_signed, AccountProof, RootSigned, Verified};
+use crate::signed::{
+    sign_payload, verify_root_signed, AccountProof, DeviceBound, RootSigned, Verified,
+};
 
 /// A root-signed withdrawal of a device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -102,38 +104,21 @@ impl RootSigned for DeviceRevocation {
     }
 }
 
+impl DeviceBound for DeviceRevocation {
+    const DEVICE_MISMATCH: fn(DeviceId, DeviceId) -> AccountError =
+        |named, expected| AccountError::RevocationDeviceMismatch { named, expected };
+
+    fn device(&self) -> DeviceId {
+        self.device
+    }
+}
+
 /// A [`DeviceRevocation`] together with everything needed to verify it.
 pub type SignedDeviceRevocation = AccountProof<DeviceRevocation>;
 
 /// A [`DeviceRevocation`] whose anchor, chain, and signature have all been
 /// checked. See [`Verified`] for what that does — and does not — mean.
 pub type VerifiedDeviceRevocation = Verified<DeviceRevocation>;
-
-impl SignedDeviceRevocation {
-    /// Whether this proof authorises withdrawing `device` from `account`.
-    ///
-    /// Checks the device the caller expects against the one the proof names before
-    /// verifying anything, so a valid proof for one device cannot authorise
-    /// another.
-    ///
-    /// # Errors
-    /// [`AccountError::RevocationDeviceMismatch`] when the proof names a
-    /// different device than the op does; otherwise whatever
-    /// [`AccountProof::verify`] reports.
-    pub fn authorises(
-        &self,
-        account: AccountId,
-        device: DeviceId,
-    ) -> Result<VerifiedDeviceRevocation, AccountError> {
-        if self.statement.device != device {
-            return Err(AccountError::RevocationDeviceMismatch {
-                named: self.statement.device,
-                expected: device,
-            });
-        }
-        self.verify(account)
-    }
-}
 
 /// Verify a revocation against the account it names, from the account id alone.
 ///

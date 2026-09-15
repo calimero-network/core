@@ -33,6 +33,7 @@ steps:
     args:
       - account-ns-node-1
       - account-ns-node-2
+      - '-'
 
   - name: The laptop's namespace listing stays empty
     type: assert_api_response

@@ -93,6 +93,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             proof,
         } => account_ops::apply_device_unlinked(ctx, account, device, proof.as_ref())?,
         GroupOp::AccountKeysRotated { handoff } => account_ops::apply_keys_rotated(ctx, handoff)?,
+        GroupOp::AccountDeviceCertified { certificate, scope } => {
+            account_ops::apply_device_certified(ctx, certificate, scope)?
+        }
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,

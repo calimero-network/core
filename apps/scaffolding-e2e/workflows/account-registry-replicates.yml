@@ -1,0 +1,51 @@
+name: E2E Account - The Account Namespace Records Each Device
+description: >
+  A phone paired with a one-app scope reads that scope back out of the account
+  namespace, holding no cache of its own.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: account-registry-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-registry-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-registry-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install the app on node-1
+    type: install_application
+    node: account-registry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-1 creates namespace A, targeting the app
+    type: create_namespace
+    node: account-registry-node-1
+    application_id: '{{app}}'
+
+  # A script, because merobox's account_pair step has no field for that id.
+  - name: Pair node-2 with the account namespace and a scope, and read the scope back
+    type: script
+    script: scripts/account-namespace-pair.sh
+    target: local
+    args:
+      - account-registry-node-1
+      - account-registry-node-2
+      - '{{app}}'
+
+stop_all_nodes: true
