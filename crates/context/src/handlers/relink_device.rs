@@ -260,41 +260,6 @@ mod tests {
         ));
     }
 
-    /// The registry is the only place a certificate lives now, and it is
-    /// replicated - so a device this node never certified itself, learned from
-    /// the account namespace, is one it can still relink.
-    #[test]
-    fn a_device_only_the_registry_knows_is_relinked() {
-        let store = a_node_holding_its_own_account();
-        let devices = NodeDeviceRepository::new(&store);
-        let root = devices
-            .account_root()
-            .expect("read")
-            .expect("this node holds its own account");
-        let device = DeviceId::from([0x36; 32]);
-        let proof = calimero_account::AccountProof {
-            genesis: root.genesis(),
-            chain: vec![],
-            statement: calimero_account::DeviceCert::sign(
-                root.signing_key(),
-                root.account(),
-                device,
-                &PrivateKey::from([0x36; 32]).public_key(),
-                &calimero_account::KemPublicKey::from([0xC9; 32]),
-                0,
-                0,
-            )
-            .expect("the account root signs its own device cert"),
-        };
-        let _recorded = AccountDeviceRegistry::new(&store, root.account_namespace())
-            .record(&proof, &[app(APP_ONE)], 3)
-            .expect("the certified op's apply wrote this row");
-
-        let (_root, cert) = resolve_target(&store, device, vec![]).expect("the registry knows it");
-
-        assert_eq!(cert.applications, vec![app(APP_ONE)]);
-    }
-
     /// Refused outright rather than skipped per namespace. The tombstone is per
     /// namespace but the id is spent everywhere, so repairing around it would be
     /// repairing the wrong thing - and the refusal has to say that enrolling

@@ -15,17 +15,13 @@ if [ "$#" -ne 4 ]; then
     exit 1
 fi
 
+# shellcheck source=apps/scaffolding-e2e/scripts/account-api.sh
 . "$(dirname "$0")/account-api.sh"
 
 founder="$1"
 holder="$2"
 namespace="$3"
 scoped="$4"
-
-fail() {
-    echo "FAIL: $1" >&2
-    exit 1
-}
 
 account_namespace=$(api "${holder}" GET "identity" | jq -r '.data.accountNamespaceId // empty')
 [ -n "${account_namespace}" ] || fail "the holder names no account namespace"

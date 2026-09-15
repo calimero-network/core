@@ -4,6 +4,13 @@
 #
 # Uses curl against the admin API rather than meroctl: the merod image ships no
 # CLI, so a `target: local` script has none to call.
+
+# Abandon the run, naming what did not hold.
+fail() {
+    echo "FAIL: $1" >&2
+    exit 1
+}
+
 # The node's admin URL. A Docker node publishes its RPC port; a binary-mode
 # node records it in the config merobox wrote under ./data.
 node_url() {

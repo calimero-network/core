@@ -25,11 +25,6 @@ newnode="$2"
 namespaces="$3"
 applications="$4"
 
-fail() {
-    echo "FAIL: $1" >&2
-    exit 1
-}
-
 # `-` for none, so an empty positional cannot be mistaken for a missing one.
 json_array() {
     if [ "$1" = "-" ]; then
@@ -85,14 +80,12 @@ api "${holder}" GET "account/devices" \
 tries=45
 while [ "${tries}" -gt 0 ]; do
     listing=$(api "${newnode}" GET "account/devices" 2>/dev/null || true)
-    if [ "${applications}" = "-" ]; then
-        if echo "${listing}" | jq -e --arg d "${device}" --arg ns "${account_namespace}" \
-            'any(.devices[]; .deviceId == $d and .isSelf and (.namespaces | index($ns)) != null)' \
-            >/dev/null 2>&1; then
-            break
-        fi
-    elif echo "${listing}" | jq -e --arg d "${device}" --argjson want "${scope}" \
-        'any(.devices[]; .deviceId == $d and .isSelf and .applications == $want)' \
+    if echo "${listing}" | jq -e --arg d "${device}" --arg ns "${account_namespace}" \
+        --argjson want "${scope}" \
+        'any(.devices[]; .deviceId == $d and .isSelf
+             and (if ($want | length) == 0
+                  then (.namespaces | index($ns)) != null
+                  else .applications == $want end))' \
         >/dev/null 2>&1; then
         break
     fi
