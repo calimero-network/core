@@ -14,13 +14,14 @@ Generates and verifies Intel TDX attestation quotes, binding them to a nonce and
 # Build
 cargo build -p calimero-tee-attestation
 
-# Test (the `policy` module has unit tests; the rest is exercised via callers)
+# Test (the `policy` module has unit tests; the rest is exercised via callers,
+# except the CLI's exit-code contract — see the `cli` feature below)
 cargo test -p calimero-tee-attestation
 ```
 
 ### The `mock-attestation` feature (default OFF)
 
-The crate has exactly one feature: **`mock-attestation`**, default **off**. It gates the entire mock path so it is *structurally absent* from production builds rather than merely runtime-guarded:
+One of the crate's two features (the other is [`cli`](#the-cli-feature-and-calimero-tee-verify-default-off)). **`mock-attestation`** defaults **off**. It gates the entire mock path so it is *structurally absent* from production builds rather than merely runtime-guarded:
 
 | Item | Without the feature |
 | --- | --- |
@@ -40,7 +41,46 @@ Consumers propagate it explicitly: `calimero-server/mock-attestation`, `calimero
 
 > **External consumers (mero-tee):** enabling `mock-attestation` re-exposes `is_mock_quote` / `verify_mock_attestation`. A consumer that calls those symbols must enable the feature explicitly; with it off they will not resolve.
 
-## Public API
+### The `cli` feature and `calimero-tee-verify` (default OFF)
+
+`verify_attestation` is a library function, so a verifier that is not written in Rust cannot reach it. **`cli`** builds `calimero-tee-verify`, a thin JSON-in/JSON-out wrapper over it, for exactly that caller — mdma's manager is Python and verifies quotes that fleet nodes submit to `POST /api/fleet/nodes/register`.
+
+```bash
+cargo build -p calimero-tee-attestation --features cli     # produces the binary
+cargo test  -p calimero-tee-attestation --features cli     # includes tests/verify_cli.rs
+```
+
+The feature exists because `verify_attestation` is `async` while the library itself needs no runtime: `cli = ["dep:tokio"]`, and the `[[bin]]` carries `required-features = ["cli"]`. A default build therefore pulls no async runtime and produces no binary — `cargo build -p calimero-tee-attestation --bins` reports "no targets matched".
+
+Reads one JSON object on stdin, writes one on stdout:
+
+```text
+{"quote_b64": "...", "nonce_hex": "<64 hex>", "app_hash_hex": "<64 hex>"}
+  -> {"valid": true, "quote_verified": true, "nonce_verified": true,
+      "application_hash_verified": true, "tcb_status": "UpToDate",
+      "advisory_ids": [], "tcb_evaluation_data_number": 17,
+      "measurements": {"mrtd": "...", "rtmr0": "...", "rtmr1": "...",
+                       "rtmr2": "...", "rtmr3": "..."}}
+```
+
+`quote_hex` is accepted in place of `quote_b64`. Errors are written to stdout as JSON as well as to stderr, because the caller is a program.
+
+**The exit code is the contract, and it separates "no" from "don't know."** Collateral is fetched from Intel PCS over the network, so a verdict and an outage must not look alike — otherwise an outage becomes an open door:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | A verdict was reached. Read `valid`; it may be `false`. |
+| `1` | The input was unusable (bad JSON, bad hex, wrong lengths). |
+| `2` | **No verdict** could be reached (quote unparseable, collateral fetch failed). Not a rejection — fail closed, never treat as invalid-and-move-on. |
+
+`tests/verify_cli.rs` pins that contract, which is the part a caller depends on and the part reading the JSON cannot check.
+
+Two properties carry over from the library and matter more here, because the consumer is remote:
+
+- **`valid` mirrors `is_valid()`, so it is crypto/structural only** — it ignores `tcb_status` and the measurement registers, both of which are *reported* for the caller to enforce. A `Revoked` platform still produces `valid: true`. A caller that admits on `valid` alone has built the same trap `policy_valid` exists to avoid.
+- **There is no mock path in this binary at all**, under any feature combination: it only ever calls `verify_attestation`, so a mock quote fails the real DCAP parse and exits non-zero rather than producing a verdict. That is deliberate — a mock quote is valid by construction, so accepting one would let an untrusted caller present something that verifies with no hardware behind it.
+
+
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
@@ -91,6 +131,8 @@ This crate has no dstack or Phala-specific code - it is a generic TDX quote gene
 | `src/policy.rs` | `VerificationResult::policy_valid`, `VerifierPolicy`, `PolicyRejection`, `MeasurementRegister`, the TCB constants, and the policy unit tests. Deliberately mirrors `calimero_governance_store::membership::policy_rules::tcb_status_allowed` by value rather than importing it — this is a leaf `publish = true` crate and must not depend on the governance store, so the two MUST stay in sync |
 | `src/info.rs` | `get_tee_info`, `TeeInfo`; MRTD retrieval and cloud-provider detection |
 | `src/error.rs` | `AttestationError` |
+| `src/bin/verify_cli.rs` | **`cli` feature only.** `calimero-tee-verify`: stdin/stdout JSON over `verify_attestation`, for verifiers that are not Rust. Module docs carry the full interface and the exit-code contract |
+| `tests/verify_cli.rs` | Pins that exit-code contract: unusable input exits 1, an unjudgeable quote exits 2 rather than reporting invalid, and a mock quote never produces a verdict |
 
 ## Invariants and Gotchas
 
