@@ -395,16 +395,37 @@ impl PublicLogicMethod<'_> {
             ),
         };
 
-        // `#[app::init]` is mutually exclusive with both of these (rejected
-        // above), so an initializer always lands on the defaults.
-        let intent = if self
+        // Derived from the receiver, not from `#[app::view]` alone.
+        //
+        // The receiver already decides whether a method can persist anything:
+        // `state_finalizer` below emits `app.commit()` only for `&mut self` (and
+        // for an initializer), so a `&self` method's state changes are dropped
+        // rather than written back. Reading the intent off the annotation instead
+        // left that fact unused and the ABI almost empty -- two methods across
+        // the whole `apps/` tree carried `#[app::view]`, against 573 `pub fn`s,
+        // so every read gate downstream refused nearly everything.
+        //
+        // `#[app::view]` stays as an explicit assertion, and the two cannot
+        // disagree: `#[app::view]` on `&mut self` is already a compile error
+        // (`ParseError::ViewCannotMutate`).
+        //
+        // `Owned` and no-receiver stay `Unspecified`. Both take the no-commit
+        // branch, so they look read-only, but an owned receiver is unusual enough
+        // that the fail-safe default is worth keeping until someone wants it --
+        // and `#[app::init]` (which is mutually exclusive with `view`, rejected
+        // above) always lands here.
+        let is_view = self
             .modifiers
             .iter()
-            .any(|modifier| matches!(modifier, Modifer::View))
-        {
-            quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly }
-        } else {
-            quote! { ::calimero_sdk::abi::MethodIntent::Unspecified }
+            .any(|modifier| matches!(modifier, Modifer::View));
+        let intent = match (&self.self_type, is_view) {
+            (_, true) | (Some(SelfType::Immutable(_)), _) => {
+                quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly }
+            }
+            (Some(SelfType::Mutable(_)), _) => {
+                quote! { ::calimero_sdk::abi::MethodIntent::Mutating }
+            }
+            _ => quote! { ::calimero_sdk::abi::MethodIntent::Unspecified },
         };
 
         let policy = self.modifiers.iter().find_map(|modifier| match modifier {
