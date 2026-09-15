@@ -1,13 +1,5 @@
-//! Create this account's namespace the first time the holder needs to write to
-//! it, and name it.
-//!
-//! The creation is skipped when a meta row already exists, so a crash between
-//! the row and the creation heals on the next call, and so does losing the race
-//! to a concurrent first pairing.
-//!
-//! Every call also records the holder's own device in the namespace's registry
-//! when no row is there, so a namespace created before the registry existed, or
-//! one whose publish failed, heals the same way.
+//! Create the holder's account namespace on first use, and name it. Every call also
+//! records the holder's own device in the registry when that row is missing.
 
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::CreateGroupRequest;
@@ -20,7 +12,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::account_namespace::publish_device_certified;
 
@@ -115,17 +107,9 @@ pub(crate) async fn ensure_account_namespace(
             .await
         {
             Ok(_created) => info!(?namespace_id, "created this account's namespace"),
-            // Two first pairings race here; the one that loses finds the
-            // namespace created and only has the row left to do.
-            Err(err) => {
-                if MetaRepository::new(store).load(&namespace_id)?.is_none() {
-                    return Err(err);
-                }
-                debug!(
-                    ?namespace_id,
-                    "another call created this account's namespace"
-                );
-            }
+            // Losing the race to a concurrent first pairing is not an error.
+            Err(_) if MetaRepository::new(store).load(&namespace_id)?.is_some() => {}
+            Err(err) => return Err(err),
         }
     }
 
