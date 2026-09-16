@@ -113,8 +113,16 @@ READ_RES=$(curl -sS -X POST "${URL}/admin-api/contexts/${CONTEXT}/query" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H 'Content-Type: application/json' \
     -d '{"method":"get","argsJson":{"key":"delegated"}}')
-echo "${READ_RES}" | grep -q '"output"' \
-    || fail "the delegated read returned no output: ${READ_RES}"
+# Assert the VALUE, not merely that some field came back. The response shape
+# is `QueryContextApiResponseData { returns }` (crates/server/.../query_context.rs),
+# and an earlier version of this check grepped for `"output"` -- a field that
+# does not exist on this route. It therefore failed while the read was
+# succeeding, and would equally have passed on any body that happened to carry
+# the word. `read-by-a-keyholder` is what the scenario wrote two steps up, so
+# matching it proves the keyholder read THIS context's state rather than an
+# empty or defaulted answer.
+echo "${READ_RES}" | grep -q '"returns"[[:space:]]*:[[:space:]]*"read-by-a-keyholder"' \
+    || fail "the delegated read did not return the value the scenario wrote: ${READ_RES}"
 echo "delegated read served: ${READ_RES}"
 
 # --- 5. Events are deliberately NOT asserted here ---------------------------
