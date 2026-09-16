@@ -17,7 +17,7 @@
 use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
-use calimero_account::{AccountId, DeviceId};
+use calimero_account::{AccountId, DeviceId, SignedDeviceRevocation};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -110,10 +110,15 @@ pub enum OpEvent {
     /// rotate excluding NOBODY by name — the revoked device is already absent from
     /// the recipient list, and excluding its account would cut off a member who
     /// never left.
+    ///
+    /// It carries the proof that authorised the unlink, and none for an admin one,
+    /// whose authority is this group's alone. A proof names no namespace, so it
+    /// verifies wherever another device of the account republishes the withdrawal.
     DeviceRevoked {
         group_id: [u8; 32],
         account: AccountId,
         device: DeviceId,
+        proof: Option<Box<SignedDeviceRevocation>>,
     },
     /// `GroupOp::AccountDeviceCertified` - a device was recorded in this
     /// namespace's registry. Fires only when the row changed, so a re-gossiped
