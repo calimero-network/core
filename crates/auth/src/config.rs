@@ -391,9 +391,16 @@ pub struct AccountProofConfig {
     /// (`query_context`, through `MembershipRepository::is_member`), so the
     /// note is satisfied rather than overruled.
     ///
+    /// `context:subscribe` (#3942) joins them on the same terms. A delegated
+    /// device that can read and write but receives no events shows a UI that
+    /// looks frozen, and the subscription is gated the same way the other two
+    /// are: membership is re-evaluated per subscription against the group that
+    /// owns each context, so the scope decides who may ASK for a stream and
+    /// never what that stream carries.
+    ///
     /// Do not add anything else. `admin`, `context:execute` or an alias scope
-    /// would be authority this token confers by itself, which neither of these
-    /// two is.
+    /// would be authority this token confers by itself, which none of these
+    /// three is.
     #[serde(default = "default_account_proof_permissions")]
     pub session_permissions: Vec<String>,
 }
@@ -403,7 +410,11 @@ fn default_challenge_ttl_secs() -> u64 {
 }
 
 fn default_account_proof_permissions() -> Vec<String> {
-    vec!["context:intent".to_owned(), "context:query".to_owned()]
+    vec![
+        "context:intent".to_owned(),
+        "context:query".to_owned(),
+        "context:subscribe".to_owned(),
+    ]
 }
 
 impl Default for AccountProofConfig {

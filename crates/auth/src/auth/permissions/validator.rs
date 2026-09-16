@@ -113,6 +113,18 @@ fn alias_type_from_segment(segment: &str) -> AliasType {
 pub struct PermissionValidator;
 
 fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<Permission> {
+    // `/sse/session/{id}` — the third of the SSE routes, and the only one with a
+    // parameter, so it cannot live in the exact-path map with its two siblings.
+    // Same authority as those: the id it reads names a stream, and the stream is
+    // what the authority is about. A prefix match rather than a regex because
+    // the id is not extracted — the permission is `Global` either way, and the
+    // session's own owner binding is what keeps one caller off another's.
+    if path.starts_with("/sse/session/") && matches!(method, HttpMethod::GET) {
+        return vec![Permission::Context(ContextPermission::Subscribe(
+            ResourceScope::Global,
+        ))];
+    }
+
     // Handle parameterized routes with pre-compiled regex patterns
     if let Some(captures) = APPLICATION_REGEX.captures(path) {
         if let Some(app_id) = captures.get(1) {
@@ -496,6 +508,24 @@ impl PermissionValidator {
             // JSON-RPC endpoints
             ("/jsonrpc", HttpMethod::POST) => vec![Permission::Context(
                 ContextPermission::Execute(ResourceScope::Global, UserScope::Any, None),
+            )],
+
+            // Event transports. Both required NO permission before #3942, so a
+            // token minted for any purpose at all could open a stream and be
+            // held back only by the per-subscription membership gates. Those
+            // gates still decide what a subscriber SEES; this decides who may
+            // ask in the first place.
+            //
+            // `Global` because the contexts and groups are named in the request
+            // body, not the path — same shape as `/jsonrpc` above. `/sse` is
+            // three routes (open, subscribe, read session) and all three are
+            // one authority: a session id is useless without the stream it
+            // names, so splitting them would protect nothing and give an
+            // operator three scopes to get right instead of one.
+            ("/ws", HttpMethod::GET)
+            | ("/sse", HttpMethod::GET)
+            | ("/sse/subscription", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Subscribe(ResourceScope::Global),
             )],
 
             // Admin API - Applications
@@ -1222,20 +1252,47 @@ mod tests {
     fn non_admin_api_namespaces_are_not_force_denied() {
         let validator = PermissionValidator::new();
 
-        // /ws and /sse have no mapping and must stay empty (open to any valid
-        // token at the scope gate; their own handlers enforce session/context
-        // rules).
-        for path in ["/ws", "/sse", "/sse/session/123", "/auth/providers"] {
+        // `/auth/*` is public and must stay unmapped.
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/auth/providers")
+            .body(Body::empty())
+            .unwrap();
+        assert!(
+            validator.determine_required_permissions(&req).is_empty(),
+            "/auth/providers must not be forced to admin by the /admin-api default-deny",
+        );
+
+        // The event transports are mapped as of #3942 — and to `context:subscribe`
+        // specifically, NOT to the `/admin-api/*` default-deny. The distinction is
+        // the point of this test: forcing them to `admin` would lock out every
+        // scoped token, while leaving them unmapped (their state before #3942)
+        // let any token at all open a stream.
+        for path in ["/ws", "/sse", "/sse/session/123"] {
             let req = Request::builder()
                 .method(Method::GET)
                 .uri(path)
                 .body(Body::empty())
                 .unwrap();
-            assert!(
-                validator.determine_required_permissions(&req).is_empty(),
-                "{path} must not be forced to admin by the /admin-api default-deny",
+            assert_eq!(
+                validator.determine_required_permissions(&req),
+                vec![Permission::Context(ContextPermission::Subscribe(
+                    ResourceScope::Global
+                ))],
+                "{path} must require context:subscribe",
             );
         }
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/sse/subscription")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            validator.determine_required_permissions(&req),
+            vec![Permission::Context(ContextPermission::Subscribe(
+                ResourceScope::Global
+            ))],
+        );
 
         // /jsonrpc stays mapped to context execute, not admin.
         let req = Request::builder()

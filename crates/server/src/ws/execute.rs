@@ -11,12 +11,12 @@
 //! (see `service_mounts`), and individual messages are not re-authenticated, so
 //! `execute` here runs with the same authority as the connection's subscriptions.
 
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
 use tracing::{error, field, info, warn, Span};
 
+use crate::caller_account::EventCaller;
 use crate::execute::{execute_request, CallerIdentity};
 use crate::ws::ServiceState;
 
@@ -26,7 +26,7 @@ use crate::ws::ServiceState;
 /// serialization failures become `InternalError`s.
 pub(crate) async fn handle(
     state: &ServiceState,
-    caller: Option<PublicKey>,
+    caller: Option<EventCaller>,
     node_owner: bool,
     request: ExecutionRequest,
 ) -> ResponseBody {
@@ -59,7 +59,28 @@ pub(crate) async fn handle(
     info!("Received execution request");
 
     let caller_identity = match caller.as_ref() {
-        Some(key) => CallerIdentity::Key(key),
+        Some(EventCaller::Key(key)) => CallerIdentity::Key(key),
+        // An account-anchored session can now hold a WebSocket (#3942), which it
+        // could not before, so this arm is reachable where it was not. It is
+        // refused rather than served: `execute` runs as a context identity, and
+        // an account that runs no node holds none. A delegated device's write
+        // goes through `POST /admin-api/contexts/:id/intents` with a warrant,
+        // which is what carries the author's consent; a session alone is not
+        // that consent and must not be spent as if it were.
+        Some(EventCaller::Account(account)) => {
+            warn!(
+                %account,
+                "refusing WS execute for an account-anchored session: a delegated write \
+                 needs a warrant via POST /admin-api/contexts/:id/intents"
+            );
+            return ResponseBody::Error(ResponseBodyError::ServerError(
+                ServerResponseError::ParseError(
+                    "an account-authenticated session cannot execute directly; \
+                     submit a warranted intent instead"
+                        .to_owned(),
+                ),
+            ));
+        }
         None => {
             if !node_owner && state.auth_enabled {
                 warn!("No auth extensions on WebSocket execute — auth guard may not be running");

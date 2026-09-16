@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use serde_json::to_value as to_json_value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use super::session::SessionState;
 use super::state::ServiceState;
@@ -55,6 +55,14 @@ pub async fn handle_node_events(
 ) {
     let events = state.node_client.receive_events();
 
+    // Validate before serving anything. A session resumed from a persisted
+    // record arrives with its subscriptions restored but no grant — stale by
+    // construction — so this is where a reconnect re-derives them against live
+    // membership, using the caller the resuming request proved rather than one
+    // remembered from the record. A session that was never persisted and just
+    // subscribed is already vouched for, so this costs it nothing.
+    prune_stale_grants(session_id, &state, &session_state, None).await;
+
     let mut events = pin!(events);
 
     loop {
@@ -97,6 +105,19 @@ pub async fn handle_node_events(
             subscriptions
         );
 
+        // Captured before the match below consumes `event`. ANY membership
+        // change to a group can invalidate a subscription already granted — a
+        // removal most obviously, but a re-add at a lower role demotes the
+        // admin-only payloads too, and the payload tags do not distinguish
+        // them. It drives the prune whether or not this session watches the
+        // group it names: the session's own watched set decides, and that set
+        // includes ancestors, so a removal from a parent reaches an inherited
+        // member of a descendant.
+        let membership_changed = match &event {
+            NodeEvent::GroupMembership(membership_event) => Some(membership_event.group_id),
+            NodeEvent::Context(_) | NodeEvent::GroupMigration(_) => None,
+        };
+
         let event = match event {
             NodeEvent::Context(event) if subscriptions.contains(&event.context_id) => {
                 NodeEvent::Context(event)
@@ -105,7 +126,15 @@ pub async fn handle_node_events(
             NodeEvent::GroupMembership(event) if group_subscriptions.contains(&event.group_id) => {
                 NodeEvent::GroupMembership(event)
             }
-            NodeEvent::GroupMembership(_) => continue,
+            // Not delivered — this session does not watch the group the
+            // removal names — but still pruned, because the removal may
+            // revoke a subgroup this session DOES watch by inheritance. The
+            // other two `continue` arms need no such call: only a
+            // `GroupMembership` event can set `membership_revoked`.
+            NodeEvent::GroupMembership(_) => {
+                prune_stale_grants(session_id, &state, &session_state, membership_changed).await;
+                continue;
+            }
             NodeEvent::GroupMigration(event)
                 if crate::ws::may_deliver_group_event(
                     event.payload.requires_group_admin(),
@@ -141,5 +170,128 @@ pub async fn handle_node_events(
             );
             break;
         };
+
+        // AFTER delivery, deliberately: the removed member is told they were
+        // removed on the same stream the removal takes away from them. Pruning
+        // first would drop the one event that explains the silence.
+        prune_stale_grants(session_id, &state, &session_state, membership_changed).await;
+    }
+}
+
+/// Drop this session's subscriptions whose caller no longer passes the
+/// subscribe-time gate.
+///
+/// Runs only on a membership REMOVAL (`revoked`), not on every event: that is
+/// what makes it affordable. The cost is one re-authorization pass per removal
+/// — a rare, governance-paced event — rather than a membership lookup per event
+/// per subscriber, on a path that carries video frames and document updates.
+///
+/// Scoped to this session because the task is: SSE spawns one event task per
+/// connection, so every connected session prunes itself and no session is
+/// pruned twice. A session with NO live connection has no task and is not
+/// pruned here — it does not need to be, because it is delivering nothing;
+/// what protects it is that the reduced set is PERSISTED below, so the
+/// subscriptions a reconnect restores are the ones that survived the last
+/// prune, never the revoked ones.
+async fn prune_stale_grants(
+    session_id: ConnectionId,
+    state: &ServiceState,
+    session_state: &SessionState,
+    changed_group: Option<calimero_primitives::hash::Hash>,
+) {
+    // Snapshot under a write lock — `note_membership_change` records the
+    // staleness — and release it before the membership lookups, which touch the
+    // store and must not run while holding it.
+    let (caller, node_owner, subscriptions, group_subscriptions) = {
+        let inner = session_state.inner.read().await;
+        // The cheap filter, and all most events cost: a hash-set lookup under
+        // the read lock deciding whether this change can touch this session at
+        // all. A session already stale — a resumed one, whose subscriptions
+        // came back from the store without a grant — is affected by everything
+        // and falls through to re-derive, which is what `None` relies on.
+        let affected = match changed_group {
+            Some(group) => inner.grants.is_affected_by(&group),
+            None => inner.grants.is_stale(),
+        };
+        if !affected {
+            return;
+        }
+        (
+            inner.caller,
+            inner.node_owner,
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        )
+    };
+    if subscriptions.is_empty() && group_subscriptions.is_empty() {
+        return;
+    }
+
+    let revocation = crate::ws::revoke_lost_subscriptions(
+        &state.ctx_client,
+        state.auth_enabled,
+        node_owner,
+        caller.as_ref(),
+        &subscriptions,
+        &group_subscriptions,
+    );
+    if revocation.is_empty() {
+        // Nothing came off, but the session is still marked stale; re-vouch so
+        // it stops re-deriving on every subsequent membership change.
+        let mut inner = session_state.inner.write().await;
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
+        );
+        return;
+    }
+    let (contexts, denied_groups, demoted_groups) = revocation.lost();
+    warn!(
+        %session_id,
+        contexts = contexts.len(),
+        groups = denied_groups.len(),
+        demoted = demoted_groups.len(),
+        "revoking SSE subscriptions: the caller no longer passes the observation gate",
+    );
+
+    // Same lock order the subscribe path uses: persist-guard, then `inner`,
+    // and the store write happens outside `inner` so it cannot stall delivery.
+    let _persist = session_state.persist_guard().await;
+    let persisted = {
+        let mut guard = session_state.inner.write().await;
+        let inner = &mut *guard;
+        revocation.apply(
+            &mut inner.subscriptions,
+            &mut inner.group_subscriptions,
+            &mut inner.admin_group_subscriptions,
+        );
+        // Re-vouch for what survived: the subscriptions changed, so what
+        // governs them may have too.
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
+        );
+        inner.to_persisted()
+    };
+    let mut store = state.store.clone();
+    if let Err(err) = super::storage::save_session(&mut store, session_id, &persisted) {
+        // The in-memory set is already reduced, so this connection stops
+        // delivering either way; what a failed write costs is that a RECONNECT
+        // could restore the revoked ids from the stale record. Loud for that
+        // reason.
+        error!(
+            %session_id, %err,
+            "Failed to persist revoked SSE subscriptions; a reconnect may restore them",
+        );
     }
 }

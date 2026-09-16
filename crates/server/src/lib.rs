@@ -31,6 +31,7 @@ pub mod jsonrpc;
 mod metrics;
 mod service_mounts;
 pub mod sse;
+mod subscription_grants;
 #[cfg(test)]
 mod test_support;
 pub mod ws;
