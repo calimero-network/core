@@ -565,7 +565,11 @@ mod tests {
         // operator set and nothing the provider added on its own.
         assert_eq!(
             response.permissions,
-            vec!["context:intent".to_owned(), "context:query".to_owned()]
+            vec![
+                "context:intent".to_owned(),
+                "context:query".to_owned(),
+                "context:subscribe".to_owned()
+            ]
         );
     }
 
@@ -835,11 +839,15 @@ mod tests {
     /// `admin`, `context:execute` or alias scope here would be, which is why
     /// this asserts the exact set rather than `contains`.
     #[test]
-    fn the_default_session_grants_the_delegated_pair_and_no_more() {
+    fn the_default_session_grants_the_delegated_surface_and_no_more() {
         let perms = AccountProofConfig::default().session_permissions;
         assert_eq!(
             perms,
-            vec!["context:intent".to_owned(), "context:query".to_owned()]
+            vec![
+                "context:intent".to_owned(),
+                "context:query".to_owned(),
+                "context:subscribe".to_owned()
+            ]
         );
     }
 }
