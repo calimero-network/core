@@ -69,7 +69,12 @@ use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
 
 /// The auth method this provider answers to.
-const METHOD: &str = "account_proof";
+///
+/// Public because the auth layer classifies a stored key by the provider that
+/// minted it: a record carrying this method names an ACCOUNT, and its caller
+/// must be identified as that account rather than as the node owner. Sharing
+/// one constant is what stops the two sides drifting apart silently.
+pub const METHOD: &str = "account_proof";
 
 /// The config spelling of an audience, for matching against `allowed_audiences`.
 ///

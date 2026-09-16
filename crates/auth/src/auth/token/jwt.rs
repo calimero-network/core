@@ -679,6 +679,34 @@ impl TokenManager {
         Ok(key.is_some())
     }
 
+    /// Whether `key_id` names a record that an account-anchored login created.
+    ///
+    /// The subject of such a session is an account, not a key this node issued,
+    /// so a caller must be identified as that account rather than as the node
+    /// owner. Row EXISTENCE cannot answer this: an `account_proof` login records
+    /// the account on first use (so an operator has something to revoke), which
+    /// makes it indistinguishable from a client key by presence alone.
+    ///
+    /// The record's own `auth_method` is what decides, because it says which
+    /// provider minted it rather than being inferred from a side effect.
+    ///
+    /// Uses `get_key_including_invalid`: a revoked account must still classify
+    /// as an account, or revoking one would silently promote it to node owner.
+    ///
+    /// # Errors
+    /// [`AuthError::StorageError`] if the lookup fails. Callers must fail closed.
+    pub async fn is_account_anchored_key(&self, key_id: &str) -> Result<bool, AuthError> {
+        let key = self
+            .key_manager
+            .get_key_including_invalid(key_id)
+            .await
+            .map_err(|e| AuthError::StorageError(e.into()))?;
+        Ok(key.is_some_and(|k| {
+            k.is_root_key()
+                && k.auth_method.as_deref() == Some(crate::providers::impls::account_proof::METHOD)
+        }))
+    }
+
     /// Storage key for a consumed-refresh-token denylist entry.
     fn consumed_refresh_key(jti: &str) -> String {
         format!("{CONSUMED_REFRESH_PREFIX}{jti}")
@@ -1576,6 +1604,89 @@ mod tests {
             Some("auth:3001")
         )
         .is_ok());
+    }
+
+    /// The auth layer decides whether a caller is an ACCOUNT or the NODE OWNER
+    /// from these three answers. Presence alone cannot separate them: an
+    /// account-proof login records its account on first use (so an operator has
+    /// something to revoke), which puts a row in the same store a client key
+    /// lives in. Classifying on presence read that account as the node owner —
+    /// on a relay, another tenant entirely.
+    #[tokio::test]
+    async fn an_account_record_is_account_anchored_and_a_client_key_is_not() {
+        use crate::providers::impls::account_proof::METHOD;
+        use crate::storage::models::{Key, KeyType};
+        use crate::storage::KeyManager;
+
+        let tm = test_token_manager().await;
+        let keys = KeyManager::new(Arc::clone(&tm.storage));
+
+        let account = "22643c2cbb64d461ad67d57d82dd85524522e571a220874e72305cc7dcf9dd2b";
+        let account_key = Key::new_root_key_with_permissions(
+            account.to_owned(),
+            METHOD.to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        keys.set_key(account, &account_key).await.expect("store");
+
+        // A client key is the other caller in this store with no usable public
+        // key of its own, and it IS the node owner's. The two must not collide.
+        let mut client = Key::new_root_key_with_permissions(
+            "client-holder".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        client.key_type = KeyType::Client;
+        client.public_key = None;
+        keys.set_key("client-1", &client).await.expect("store");
+
+        assert!(
+            tm.is_account_anchored_key(account).await.expect("classify"),
+            "an account-proof record names an account, not a key this node issued"
+        );
+        assert!(
+            !tm.is_account_anchored_key("client-1")
+                .await
+                .expect("classify"),
+            "a client key belongs to the node owner and must not read as an account"
+        );
+        assert!(
+            !tm.is_account_anchored_key("absent")
+                .await
+                .expect("classify"),
+            "nothing stored is not an account"
+        );
+    }
+
+    /// Revoking an account must not promote it. `get_key` hides an invalid row,
+    /// so a classifier written against it would answer "not an account" for a
+    /// revoked one and fall through to the node-owner inference — at the one
+    /// moment the operator was trying to take access away.
+    #[tokio::test]
+    async fn a_revoked_account_still_classifies_as_an_account() {
+        use crate::providers::impls::account_proof::METHOD;
+        use crate::storage::models::Key;
+        use crate::storage::KeyManager;
+
+        let tm = test_token_manager().await;
+        let keys = KeyManager::new(Arc::clone(&tm.storage));
+
+        let account = "22643c2cbb64d461ad67d57d82dd85524522e571a220874e72305cc7dcf9dd2b";
+        let mut key = Key::new_root_key_with_permissions(
+            account.to_owned(),
+            METHOD.to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        key.revoke();
+        keys.set_key(account, &key).await.expect("store");
+
+        assert!(
+            tm.is_account_anchored_key(account).await.expect("classify"),
+            "a revoked account is still an account; revocation is enforced earlier"
+        );
     }
 
     async fn test_token_manager() -> TokenManager {
