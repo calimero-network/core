@@ -47,7 +47,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_governance_store::AccountBindingRepository;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::GetContextIdentitiesResponse;
+use calimero_server_primitives::admin::{GetContextIdentitiesResponse, IdentitiesOf};
 use futures_util::TryStreamExt;
 use reqwest::StatusCode;
 use tracing::{error, info};
@@ -122,11 +122,18 @@ pub async fn handler(
                 .ctx_client
                 .get_context_members(&context.id, Some(owned));
 
+            // The roster and the node's own keys are different answers and say
+            // so: `owned` is exactly what distinguishes them here.
+            let identities_of = if owned {
+                IdentitiesOf::Node
+            } else {
+                IdentitiesOf::Members
+            };
             return match stream.map_ok(|(id, _)| id).try_collect::<Vec<_>>().await {
                 Ok(identities) => {
                     info!(context_id=%context_id, count=%identities.len(), "Context identities retrieved successfully");
                     ApiResponse {
-                        payload: GetContextIdentitiesResponse::new(identities),
+                        payload: GetContextIdentitiesResponse::new(identities, identities_of),
                     }
                     .into_response()
                 }
@@ -158,7 +165,7 @@ pub async fn handler(
         "Caller's context identities retrieved successfully",
     );
     ApiResponse {
-        payload: GetContextIdentitiesResponse::new(identities),
+        payload: GetContextIdentitiesResponse::new(identities, IdentitiesOf::Caller),
     }
     .into_response()
 }

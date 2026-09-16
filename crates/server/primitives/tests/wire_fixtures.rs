@@ -16,10 +16,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiRequest, CreateContextRequest, CreateContextResponseData,
-    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, IntentRelayApiResponse,
-    JoinGroupApiResponse, JoinNamespaceApiResponse, ReparentGroupApiRequest,
-    ReparentGroupApiResponse, UpgradeGroupApiResponse,
+    AddGroupMembersApiRequest, ContextIdentitiesResponseData, CreateContextRequest,
+    CreateContextResponseData, GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse,
+    IntentRelayApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
+    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -108,6 +108,13 @@ wire_fixtures! {
     // different values — a field crossed between them shows as a diff rather
     // than round-tripping cleanly.
     intent_relay_res: IntentRelayApiResponse => "contexts/intent_relay.res.json",
+    // `identitiesOf` is the field that says WHICH question the list answers —
+    // the node's own signing identities, the context roster, or the calling
+    // account's devices. A client that reads the list without it cannot tell a
+    // delegated answer from a node one, and the two are different keys. Pinned
+    // so a rename surfaces here rather than as apps silently treating the
+    // node's identities as their own.
+    identities_res: ContextIdentitiesResponseData => "contexts/identities.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
 }
