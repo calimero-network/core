@@ -1,7 +1,7 @@
 #!/bin/sh
 #
-# A device that holds no node obtains a session, reads a context and receives an
-# event — with no password anywhere in the flow.
+# A device that holds no node obtains a session and reads a context, with no
+# password anywhere in the flow.
 #
 # This is the half of epic #3928 that `delegated-authorship.yml` does not cover.
 # That scenario proves a keyholder can WRITE through a relay, but it logs in with
@@ -86,8 +86,16 @@ echo "statement signed, session key ${SESSION_KEY}"
 
 # --- 3. The node mints a session from it ------------------------------------
 
-TOKEN_BODY=$(printf '{"auth_method":"account_proof","public_key":"%s","client_name":"%s","provider_data":{"challenge":"%s","login_statement":"%s","account_proof":"%s"}}' \
-    "${SESSION_KEY}" "${URL}" "${CHALLENGE}" "${STATEMENT}" "${CREDENTIAL}")
+# `timestamp` is REQUIRED and `BaseTokenRequest` is `deny_unknown_fields`, so a
+# body missing it is rejected before any provider runs -- and the refusal names
+# deserialization, not the login, which reads as though the statement were at
+# fault. `permissions` is deliberately OMITTED rather than set: leaving it unset
+# takes the provider's own `session_permissions` (`context:intent`,
+# `context:query`, `context:subscribe`) instead of asking for authority a
+# delegated session must not have. mero-js#84 is the same mistake made the other
+# way -- `authenticate()` hardcodes `['admin']`.
+TOKEN_BODY=$(printf '{"auth_method":"account_proof","public_key":"%s","client_name":"%s","timestamp":%s,"provider_data":{"challenge":"%s","login_statement":"%s","account_proof":"%s"}}' \
+    "${SESSION_KEY}" "${URL}" "$(date +%s)" "${CHALLENGE}" "${STATEMENT}" "${CREDENTIAL}")
 
 TOKEN_RES=$(curl -sS -X POST "${URL}/auth/token" \
     -H 'Content-Type: application/json' \
