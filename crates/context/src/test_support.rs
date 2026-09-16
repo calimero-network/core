@@ -94,8 +94,8 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
 }
 
 /// A second device of this node's account, certified by its root exactly as
-/// `pair_device_complete` would, and scoped to `applications` (empty is every
-/// application).
+/// `pair_device_complete` would, recorded in the account namespace's registry
+/// and scoped to `applications` (empty is every application).
 ///
 /// The id is `seed` repeated rather than minted, so the store's key-ordered scan
 /// visits these devices in a known order.
@@ -128,9 +128,15 @@ pub fn certify_device(
         )
         .expect("the account root signs its own device cert"),
     };
-    devices
-        .remember_device_cert(&proof, applications)
-        .expect("remember the device");
+    // The registry lives in the account namespace, which a node holding a root
+    // names from that root before anything has created it.
+    let namespace = devices
+        .account_namespace()
+        .expect("read the account namespace")
+        .expect("a store with an account root names one");
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
+        .record(&proof, applications, 0)
+        .expect("record the device in the account namespace");
     device
 }
 
@@ -284,6 +290,19 @@ pub fn opened_root(
     )
 }
 
+/// Poll `read` until it answers true, bounded: a gain with no target yet is
+/// announced off the caller, so reading straight after is a race.
+#[cfg(test)]
+pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if read() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
 /// A live [`ContextManager`](crate::ContextManager) over a caller-supplied
 /// store, for handler logic that only an actor can reach.
 ///
@@ -298,6 +317,7 @@ pub(crate) mod actor {
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_node_primitives::client::NodeClient;
     use calimero_node_primitives::test_fixtures::node_client_over;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -306,12 +326,12 @@ pub(crate) mod actor {
 
     use crate::ContextManager;
 
-    /// Answers the three commands the pairing and governance paths issue, and
-    /// records the topics. Any other command is dropped, which fails the
-    /// caller's `rx.await` rather than hanging it: add the variant when a path
-    /// under test starts issuing one.
+    /// Answers the four commands the pairing and governance paths issue, and
+    /// records the topics. Any other is dropped, which panics its caller.
     struct StubNetwork {
         subscribed: UnboundedSender<String>,
+        unsubscribed: UnboundedSender<String>,
+        broadcast: UnboundedSender<String>,
     }
 
     impl Actor for StubNetwork {
@@ -327,10 +347,16 @@ pub(crate) mod actor {
                     let _ignored = self.subscribed.send(request.0.to_string());
                     let _ignored = outcome.send(Ok(request.0));
                 }
-                NetworkMessage::MeshPeerCount { outcome, .. } => {
+                NetworkMessage::Unsubscribe { request, outcome } => {
+                    let _ignored = self.unsubscribed.send(request.0.to_string());
+                    let _ignored = outcome.send(Ok(request.0));
+                }
+                NetworkMessage::MeshPeerCount { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.0.to_string());
                     let _ignored = outcome.send(0);
                 }
-                NetworkMessage::Publish { outcome, .. } => {
+                NetworkMessage::Publish { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
                 _ => {}
@@ -343,8 +369,11 @@ pub(crate) mod actor {
     /// rows it wrote.
     pub(crate) struct Harness {
         pub manager: Addr<ContextManager>,
+        pub node_client: NodeClient,
         pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
+        unsubscribed: UnboundedReceiver<String>,
+        broadcast: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
@@ -354,12 +383,29 @@ pub(crate) mod actor {
         /// Every topic subscribed so far, in the order the handler asked for
         /// them.
         pub(crate) fn subscribed(&mut self) -> Vec<String> {
-            let mut topics = Vec::new();
-            while let Ok(topic) = self.subscribed.try_recv() {
-                topics.push(topic);
-            }
-            topics
+            drain(&mut self.subscribed)
         }
+
+        /// Every topic unsubscribed from so far. Drains, so a caller polling
+        /// for one has to accumulate what it takes.
+        pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
+            drain(&mut self.unsubscribed)
+        }
+
+        /// Every topic a governance broadcast reached. The mesh-count probe counts,
+        /// so an op that only got as far as trying still shows up.
+        pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
+            drain(&mut self.broadcast)
+        }
+    }
+
+    /// Everything a recorder holds, in the order it arrived.
+    fn drain(rx: &mut UnboundedReceiver<String>) -> Vec<String> {
+        let mut topics = Vec::new();
+        while let Ok(topic) = rx.try_recv() {
+            topics.push(topic);
+        }
+        topics
     }
 
     /// Start a manager over `store`, with no peer answering join requests.
@@ -378,12 +424,16 @@ pub(crate) mod actor {
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
+        let (unsubscribed_tx, unsubscribed) = unbounded_channel();
+        let (broadcast_tx, broadcast) = unbounded_channel();
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
         let stub = StubNetwork::create(move |ctx| {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
+                unsubscribed: unsubscribed_tx,
+                broadcast: broadcast_tx,
             }
         });
 
@@ -405,7 +455,7 @@ pub(crate) mod actor {
         let context = LazyRecipient::new();
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
-        let manager = ContextManager::new(store, node_client, context_client.clone(), None);
+        let manager = ContextManager::new(store, node_client.clone(), context_client.clone(), None);
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager
@@ -413,8 +463,11 @@ pub(crate) mod actor {
 
         Harness {
             manager,
+            node_client,
             context_client,
             subscribed,
+            unsubscribed,
+            broadcast,
             _dirs: (data_dir, blob_dir),
             _network: stub,
         }

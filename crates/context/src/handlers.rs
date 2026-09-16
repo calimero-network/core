@@ -20,6 +20,7 @@ pub mod delete_namespace;
 pub mod detach_context_from_group;
 pub mod ensure_account_namespace;
 pub mod execute;
+pub mod follow_namespace;
 pub mod get_cascade_status;
 pub mod get_context_metadata;
 pub mod get_group_for_context;

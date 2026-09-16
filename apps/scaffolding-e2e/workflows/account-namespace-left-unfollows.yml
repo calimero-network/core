@@ -1,0 +1,121 @@
+name: E2E Account - A Namespace The Account Leaves Is Unfollowed
+description: >
+  A namespace any device of the account joins is followed by its other in-scope
+  devices, and unfollowed once the account leaves.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-left-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-left-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-left-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: account-left-node-3
+    username: dev
+    password: dev-password
+
+  # The bundle: acquisition completes only for it, not a raw wasm's derived id.
+  - name: Install app A on node-3
+    type: install_application
+    node: account-left-node-3
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_a: applicationId
+
+  - name: Install app A on node-1
+    type: install_application
+    node: account-left-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+
+  # Bob's, not Alice's: the owner and the last admin are refused a self-leave.
+  - name: Node-3 creates namespace A, targeting app A
+    type: create_namespace
+    node: account-left-node-3
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a: namespaceId
+
+  # Before the join and naming no project namespace, so everything the phone
+  # learns about A comes from the account namespace.
+  - name: Pair node-2 onto Alice's account, with only the account namespace
+    type: script
+    script: scripts/account-namespace-pair-into.sh
+    target: local
+    args:
+      - account-left-node-1
+      - account-left-node-2
+      - '-'
+      - '{{app_a}}'
+
+  - name: Invite node-1 to namespace A
+    type: create_namespace_invitation
+    node: account-left-node-3
+    namespace_id: '{{ns_a}}'
+    outputs:
+      invite_a: invitation
+
+  - name: Node-1 joins namespace A
+    type: join_namespace
+    node: account-left-node-1
+    namespace_id: '{{ns_a}}'
+    invitation: '{{invite_a}}'
+
+  - name: Settle the join to namespace A
+    type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-2 is a member of nothing by construction, so it
+      answers no governance state hash and cannot be barriered on. Every read of
+      it below carries `retries` instead.
+    nodes:
+      - account-left-node-1
+      - account-left-node-3
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  # The red step: nothing ever named A to the phone.
+  - name: The phone lists the namespace its laptop joined
+    type: assert_api_response
+    node: account-left-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_a}}'
+    match:
+      targetApplicationId: '{{app_a}}'
+    retries: 45
+    interval: 2
+
+  - name: Node-1 leaves namespace A
+    type: leave_namespace
+    node: account-left-node-1
+    namespace_id: '{{ns_a}}'
+
+  # Empty, not one fewer: the account namespace is never listed as a project.
+  - name: The phone stops listing it
+    type: assert_api_response
+    node: account-left-node-2
+    path: /admin-api/namespaces
+    absent:
+      - data.0
+    retries: 45
+    interval: 2
+
+stop_all_nodes: true

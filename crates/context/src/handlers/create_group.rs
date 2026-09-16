@@ -628,6 +628,20 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 )
                 .await;
 
+                // A root this node created is a namespace its account has gained; a
+                // subgroup was covered when the account gained its namespace.
+                if parent_group_id.is_none() {
+                    crate::account_namespace::announce(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        namespace_id,
+                        crate::account_namespace::AccountNamespaceChange::Gained,
+                        "create_group",
+                    )
+                    .await;
+                }
+
                 info!(
                     ?group_id,
                     ?parent_group_id,
@@ -764,8 +778,9 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        now_millis, AccountBindingRepository, CapabilitiesRepository, GroupKeyring,
-        MembershipRepository, MetaRepository, MetadataRepository,
+        governance_broadcast, now_millis, AccountBindingRepository, AccountNamespaceSet,
+        CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
+        MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -776,6 +791,7 @@ mod tests {
     use calimero_store::{key, types, Store};
 
     use super::rollback_local_group_rows;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
     const APP: [u8; 32] = [0xC1; 32];
@@ -1003,6 +1019,9 @@ mod tests {
     /// A namespace this node creates is a namespace it has just gained, and the
     /// devices it already certified belong there. Without the auto-bind the
     /// creation succeeds and the paired device silently never sees the group.
+    ///
+    /// The devices come from the account namespace's registry, so this holds on
+    /// any device of the account, not only the one that did the certifying.
     #[actix::test]
     async fn creating_a_namespace_carries_this_accounts_devices_into_it() {
         let store = store();
@@ -1071,6 +1090,175 @@ mod tests {
         assert_eq!(
             rung.bytecode_id, [0x01; 32],
             "the rung names the bytecode blob the application row resolves to"
+        );
+    }
+
+    /// A namespace this node creates is one its account gained, and the other
+    /// devices learn it from the DAG, the only thing that reaches them.
+    #[actix::test]
+    async fn creating_a_namespace_records_it_in_the_account_namespace() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            Some(Some(ApplicationId::from(APP))),
+            "the namespace the creation gained, with the target it was created for"
+        );
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(account_namespace)
+                .expect("read the set"),
+            None,
+            "and never the account namespace itself"
+        );
+    }
+
+    /// The derived id names the account namespace long before one exists, so
+    /// announcing into it would write to a DAG that is not there.
+    #[actix::test]
+    async fn a_gain_before_the_account_namespace_exists_announces_nothing() {
+        let store = store();
+        // The root and no ensure call: the id resolves, the
+        // namespace it names does not exist.
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("the holder's root");
+        let account_namespace = devices
+            .account_namespace()
+            .expect("read the account namespace")
+            .expect("the holder names one");
+        // Targeted, so the announce takes the synchronous path: an app-less one
+        // defers instead, and the guard below would never be reached at all.
+        install_application(&store, ApplicationId::from(APP));
+
+        let mut harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            None,
+            "nothing may be recorded under a namespace this node does not take part in"
+        );
+        assert!(
+            calimero_governance_store::get_op_head(&store, &account_namespace)
+                .expect("read the op head")
+                .is_none(),
+            "and no op may be applied to the account namespace"
+        );
+        // The load-bearing one: the two above also hold when a publish is
+        // attempted and refused a layer down, so the topic is what pins the guard.
+        let topic = governance_broadcast::ns_topic(account_namespace.to_bytes().into()).to_string();
+        assert!(
+            !harness.broadcast_topics().contains(&topic),
+            "no governance broadcast may be attempted on a namespace this node \
+             does not take part in"
+        );
+    }
+
+    /// A leave published while a gain still waits for its target must win, or
+    /// the pending gain re-names a namespace the sweep can no longer drop.
+    #[actix::test]
+    async fn a_gain_still_waiting_is_dropped_when_the_account_leaves_the_namespace() {
+        let store = store();
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+
+        let create = |group: [u8; 32]| CreateGroupRequest {
+            group_id: Some(group.into()),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        };
+        // App-less, so both gains defer. The left one is created FIRST, so the
+        // control's publish proves the left one's chance to publish has passed.
+        let left = harness
+            .manager
+            .send(create(GROUP))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+        let control = harness
+            .manager
+            .send(create([0xC4; 32]))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let account = devices
+            .get()
+            .expect("read this node's device")
+            .expect("it has one")
+            .account;
+        MembershipRepository::new(&store)
+            .remove_member(&left.group_id, &account)
+            .expect("the account leaves it while the gain is still waiting");
+
+        let metas = MetaRepository::new(&store);
+        for group in [left.group_id, control.group_id] {
+            let mut meta = metas.load(&group).expect("read the meta").expect("one row");
+            meta.target.application_id = ApplicationId::from(APP);
+            metas.save(&group, &meta).expect("the target folds");
+        }
+
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        assert!(
+            crate::test_support::eventually(|| set
+                .contains(control.group_id)
+                .expect("read the set")
+                == Some(Some(ApplicationId::from(APP))))
+            .await,
+            "the control gain has to land, and with the target it folded late"
+        );
+        assert_eq!(
+            set.contains(left.group_id).expect("read the set"),
+            None,
+            "a gain whose namespace the account has left must not be published"
         );
     }
 

@@ -26,6 +26,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
 
+pub mod account_follow;
+mod account_migration;
 mod account_namespace;
 pub mod activation;
 pub(crate) mod apply_authorizer;
@@ -812,6 +814,26 @@ impl Actor for ContextManager {
         // rationale as the TEE-admit listener above.
         rotation_listener::shutdown();
         rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // What the account gains, leaves, certifies and revokes, acted on here.
+        // Ahead of the migration below, whose certificates it must project: no
+        // sweep re-drives a projection this listener was not up for.
+        account_follow::shutdown();
+        account_follow::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+        );
+
+        // One-shot. A holder upgraded from before the registry still keeps its
+        // device certificates node-local, where no other device of the account
+        // can read them.
+        account_migration::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+            self.context_client.clone(),
+        );
     }
 }
 

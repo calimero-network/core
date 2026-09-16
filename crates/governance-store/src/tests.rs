@@ -10966,16 +10966,19 @@ mod parked_op_retries_to_success {
 mod account_plane_apply {
     use super::*;
     use calimero_account::{
-        AccountGenesis, AccountProof, DeviceCert, DeviceId, DeviceScope, KemPublicKey,
-        RootKeyHandoff,
+        AccountGenesis, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId, DeviceScope,
+        KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
     };
     use calimero_context_client::local_governance::GroupOp;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
+    use tokio::sync::broadcast;
 
-    use crate::op_events::OpEvent;
+    use crate::op_events::{self, OpEvent};
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
-    use crate::{AccountBindingRepository, AccountDeviceRegistry, AccountRoot};
+    use crate::{
+        AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, AccountRoot,
+    };
 
     fn key(seed: u8) -> PrivateKey {
         PrivateKey::from([seed; 32])
@@ -11003,61 +11006,60 @@ mod account_plane_apply {
             .collect()
     }
 
-    /// The second write point of the certificate cache, and the one that covers a
-    /// multi-holder account: another device of this same account certified a
-    /// third, and this node learns of it only by folding the link. The replicated
-    /// binding drops the root signature, so without this the device could never be
-    /// carried into a namespace gained later.
-    #[test]
-    fn a_link_this_accounts_own_root_signed_is_remembered_where_it_applies() {
-        let store = test_store();
-        let gid = test_group_id();
-        let admin_sk = key(1);
-        let _admin = group_with_admin(&store, &gid, &admin_sk);
-
-        let devices = crate::NodeDeviceRepository::new(&store);
-        let root = devices.provision_account_root().unwrap();
-        let account = root.account();
-        let device = DeviceId::mint(account, [7u8; 16]);
+    /// A device of a fresh account, linked into `gid` by its admin. The account's
+    /// root key comes back beside it: only that key can sign a revocation proof.
+    fn a_linked_device(
+        store: &Store,
+        gid: &ContextGroupId,
+        admin_sk: &PrivateKey,
+        seed: u8,
+    ) -> (PrivateKey, AccountGenesis, DeviceId) {
+        let owner_sk = key(seed);
+        let genesis = AccountGenesis::new(owner_sk.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [seed; 16]);
         let cert = DeviceCert::sign(
-            root.signing_key(),
+            &owner_sk,
             account,
             device,
-            &key(5).public_key(),
-            &KemPublicKey::from([5u8; 32]),
+            &owner_sk.public_key(),
+            &KemPublicKey::from([seed; 32]),
             0,
             0,
         )
         .unwrap();
-        // The account has to be a member before a device of it may link, and the
-        // endorser has to be one too - the admin is both here.
-        MembershipRepository::new(&store)
-            .add_member(&gid, &account, GroupMemberRole::Member)
-            .unwrap();
-
         sign_apply_local_group_op_borsh(
-            &store,
-            &gid,
-            &admin_sk,
+            store,
+            gid,
+            admin_sk,
             GroupOp::AccountDeviceLinked {
-                genesis: root.genesis(),
+                genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
-                    .unwrap(),
+                endorsement: AccountMemberEndorsement::sign(admin_sk, account).unwrap(),
             },
         )
         .unwrap();
+        (owner_sk, genesis, device)
+    }
 
-        let held = devices
-            .device_cert(device)
-            .unwrap()
-            .expect("a device of this node's own account must be remembered");
-        assert_eq!(held.proof.statement, cert, "the root signature included");
-        assert!(
-            held.applications.is_empty(),
-            "the wire carries no scope, so the widest one is the only honest guess"
-        );
+    /// The proof the next `DeviceRevoked` for `gid` carried.
+    async fn revoked_proof_on(
+        rx: &mut broadcast::Receiver<OpEvent>,
+        gid: ContextGroupId,
+    ) -> Option<Box<SignedDeviceRevocation>> {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("an event within two seconds")
+                .expect("the channel stays open")
+            {
+                OpEvent::DeviceRevoked {
+                    group_id, proof, ..
+                } if group_id == gid.to_bytes() => break proof,
+                _ => continue,
+            }
+        }
     }
 
     /// A device bound after the group's contexts were registered saw those
@@ -11122,57 +11124,6 @@ mod account_plane_apply {
             }
         }
         panic!("linking a device must start the context sweep for its account");
-    }
-
-    /// And only for this node's own account: a stranger's device is somebody
-    /// else's to extend, and this node holds no root that could certify it.
-    #[test]
-    fn a_link_for_another_account_is_not_remembered_here() {
-        let store = test_store();
-        let gid = test_group_id();
-        let admin_sk = key(1);
-        group_with_admin(&store, &gid, &admin_sk);
-        let devices = crate::NodeDeviceRepository::new(&store);
-        let _own = devices.provision_account_root().unwrap();
-
-        let stranger_root = key(9);
-        let genesis = AccountGenesis::new(stranger_root.public_key());
-        let account = genesis.account_id();
-        let device = DeviceId::mint(account, [8u8; 16]);
-        let cert = DeviceCert::sign(
-            &stranger_root,
-            account,
-            device,
-            &key(6).public_key(),
-            &KemPublicKey::from([6u8; 32]),
-            0,
-            0,
-        )
-        .unwrap();
-        MembershipRepository::new(&store)
-            .add_member(&gid, &account, GroupMemberRole::Member)
-            .unwrap();
-
-        sign_apply_local_group_op_borsh(
-            &store,
-            &gid,
-            &admin_sk,
-            GroupOp::AccountDeviceLinked {
-                genesis,
-                chain: vec![],
-                cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
-                    .unwrap(),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            live_for(&store, &gid, account).len(),
-            1,
-            "the link itself must land - only the cache is scoped to our own account"
-        );
-        assert!(devices.device_cert(device).unwrap().is_none());
     }
 
     #[test]
@@ -11738,6 +11689,88 @@ mod account_plane_apply {
             live_for(&store, &gid, account).len(),
             1,
             "the victim's device must still be in force"
+        );
+    }
+
+    /// What a device of the account needs to carry a revocation elsewhere: the
+    /// proof itself, on the event, exactly as the op carried it.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_self_service_unlink_puts_its_proof_on_the_event() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0xD1; 32]);
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 8);
+        let account = genesis.account_id();
+
+        let proof = SignedDeviceRevocation {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(&owner_sk, account, device, 0)
+                .unwrap(),
+        };
+
+        let mut rx = op_events::subscribe();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: Some(proof.clone()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            revoked_proof_on(&mut rx, gid).await.map(|boxed| *boxed),
+            Some(proof)
+        );
+    }
+
+    /// A proof the apply refused carries nothing to forward: the admin gate is
+    /// what let that op through, and admin authority stops at this group.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn an_unauthorising_proof_is_not_put_on_the_event() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0xD2; 32]);
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        let (_owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 9);
+        let account = genesis.account_id();
+
+        // Signed by a root that owns a different account, so `authorises` refuses
+        // it and the admin gate is what applies the op.
+        let stranger_sk = key(12);
+        let forged = SignedDeviceRevocation {
+            genesis: AccountGenesis::new(stranger_sk.public_key()),
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(&stranger_sk, account, device, 0)
+                .unwrap(),
+        };
+
+        let mut rx = op_events::subscribe();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: Some(forged),
+            },
+        )
+        .unwrap();
+
+        assert!(revoked_proof_on(&mut rx, gid).await.is_none());
+        assert!(
+            AccountBindingRepository::new(&store)
+                .is_revoked(&gid, device)
+                .unwrap(),
+            "the admin gate still applied it here"
         );
     }
 
@@ -12386,6 +12419,160 @@ mod account_plane_apply {
                 .unwrap()
                 .is_none(),
             "a parked op must not write a registry row"
+        );
+    }
+
+    /// The good case, through the real pipeline: the account that owns this
+    /// namespace records a namespace it has gained, with the target it read.
+    #[test]
+    fn the_owning_account_records_a_namespace_it_gained() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let gained = ContextGroupId::from([0x81; 32]);
+        let app = ApplicationId::from([0x44; 32]);
+
+        let (handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespaceGained {
+                namespace: gained,
+                application: Some(app),
+            },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert!(handled);
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceGained {
+                group_id: gid.to_bytes(),
+                namespace: gained,
+                application: Some(app),
+            }],
+            "a recorded namespace owes the wake-up that decides who follows it"
+        );
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, gid)
+                .contains(gained)
+                .unwrap(),
+            Some(Some(app)),
+        );
+    }
+
+    /// The leave half, and its no-op case: a leave for a namespace this device
+    /// never gained still fires the event, which is what makes it unfollow.
+    #[test]
+    fn a_left_namespace_leaves_the_set() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let gained = ContextGroupId::from([0x82; 32]);
+        let never_gained = ContextGroupId::from([0x83; 32]);
+        for op in [
+            GroupOp::AccountNamespaceGained {
+                namespace: gained,
+                application: None,
+            },
+            GroupOp::AccountNamespaceLeft { namespace: gained },
+        ] {
+            sign_apply_local_group_op_borsh(&store, &gid, &owner_sk, op).unwrap();
+        }
+
+        // The one apply that differs from the certified one, so the one that
+        // has to be driven through the path events come back on.
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespaceLeft {
+                namespace: never_gained,
+            },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceLeft {
+                group_id: gid.to_bytes(),
+                namespace: never_gained,
+            }],
+            "a leave with no row behind it still owes the unfollow"
+        );
+
+        let set = AccountNamespaceSet::new(&store, gid);
+        assert_eq!(set.contains(gained).unwrap(), None);
+        assert_eq!(set.contains(never_gained).unwrap(), None);
+        assert_eq!(set.namespaces().unwrap(), vec![]);
+    }
+
+    /// An admin at the cut that this namespace can name no account for writes
+    /// nothing. The set is the account's own state, and a key bound to no
+    /// account here is nobody it may be written on behalf of.
+    ///
+    /// Admin AT THE CUT is the only way to be an admin without a binding, which
+    /// is why this one goes through `apply_group_op_mutations` with a fixed
+    /// authorizer: the live fallback resolves a key to its account through the
+    /// binding rows, so an unbound signer never reaches the second half.
+    #[test]
+    fn a_signer_bound_to_no_account_changes_no_set_row() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let planted = ContextGroupId::from([0x84; 32]);
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountNamespaceGained {
+                namespace: planted,
+                application: None,
+            },
+        )
+        .unwrap();
+
+        // Never enrolled here, so `signer_account` resolves to nothing.
+        let stranger = key(4).public_key();
+        let hijacked = ContextGroupId::from([0x85; 32]);
+        for op in [
+            GroupOp::AccountNamespaceGained {
+                namespace: hijacked,
+                application: None,
+            },
+            GroupOp::AccountNamespaceLeft { namespace: planted },
+        ] {
+            let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+                &store,
+                &gid,
+                &stranger,
+                &op,
+                &CUT,
+                &FixedAuthorizer(true),
+            )
+            .unwrap();
+            assert_eq!(events, vec![], "a refused op owes no wake-up");
+        }
+
+        let set = AccountNamespaceSet::new(&store, gid);
+        assert_eq!(
+            set.contains(hijacked).unwrap(),
+            None,
+            "an admin the namespace can name no account for records no namespace"
+        );
+        assert_eq!(
+            set.contains(planted).unwrap(),
+            Some(None),
+            "and cannot delete what the account itself wrote"
         );
     }
 }

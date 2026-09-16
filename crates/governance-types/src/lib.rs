@@ -174,7 +174,11 @@ id_newtype! {
 ///
 /// v12: appends `GroupOp::AccountDeviceCertified`; no prior ordinal moves, so a
 /// v11 peer fails at the version gate rather than partway through a DAG.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 12;
+///
+/// v13: appends `GroupOp::AccountNamespaceGained` and
+/// `GroupOp::AccountNamespaceLeft`; no prior ordinal moves, so a v12 peer fails
+/// at the version gate rather than partway through a DAG.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 13;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -621,7 +625,8 @@ pub enum GroupOp {
         device: DeviceId,
     },
     /// Record a device of this namespace's account in its registry. The apply
-    /// admits only an admin writing about its own account's devices.
+    /// admits only an admin writing about the account the statements name; the
+    /// publishers, not the apply, confine this op to the account namespace.
     ///
     /// Both statements are root-signed and self-contained, so a receiver checks
     /// them without having folded anything about the account, and the full
@@ -633,6 +638,29 @@ pub enum GroupOp {
         certificate: Box<AccountProof<DeviceCert>>,
         /// What that device may speak for, at which scope epoch.
         scope: Box<AccountProof<DeviceScope>>,
+    },
+    /// Record that this namespace's account is a member of `namespace`.
+    ///
+    /// Published by the node that gained it, at either gain site, after the
+    /// links it publishes there - so no device follows a namespace before the
+    /// authority it needs there exists. Never published for the account
+    /// namespace itself, which no device has to be told about.
+    ///
+    /// `application` is what the gainer read from the namespace's metadata at
+    /// that moment, and it decides which devices follow. A device learns the
+    /// authoritative target by folding the namespace itself.
+    AccountNamespaceGained {
+        /// The namespace the account is now a member of.
+        namespace: ContextGroupId,
+        /// The application it targeted when the gainer read it.
+        application: Option<ApplicationId>,
+    },
+    /// Record that this namespace's account is no longer a member of `namespace`.
+    ///
+    /// Published by the node that leaves, after its `MemberLeft` lands there.
+    AccountNamespaceLeft {
+        /// The namespace the account has left.
+        namespace: ContextGroupId,
     },
 }
 
@@ -675,6 +703,8 @@ impl GroupOp {
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
             GroupOp::GroupKeyRotatedForDevice { .. } => "group_key_rotated_for_device",
             GroupOp::AccountDeviceCertified { .. } => "account_device_certified",
+            GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
+            GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
         }
     }
 }
