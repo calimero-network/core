@@ -107,6 +107,19 @@ impl PredefinedEntry for key::GroupContextIndex {
     type DataType<'a> = ();
 }
 
+/// `()`, like the other index rows here: the row's existence is the fact, and
+/// the role and capabilities stay authoritative on `GroupMember`. A value here
+/// would be a second copy able to disagree with them.
+impl PredefinedEntry for key::GroupMemberByAccount {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
+impl PredefinedEntry for key::GroupMemberIndexBackfilled {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::ContextGroupRef {
     type Codec = Borsh;
     type DataType<'a> = [u8; 32];
