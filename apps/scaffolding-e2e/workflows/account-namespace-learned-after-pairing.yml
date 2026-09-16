@@ -60,11 +60,12 @@ steps:
   # The script polls until node-2 resolves its own binding in the account namespace.
   - name: Pair node-2 again, this time naming the account namespace
     type: script
-    script: scripts/account-namespace-pair.sh
+    script: scripts/account-namespace-pair-into.sh
     target: local
     args:
       - learned-node-1
       - learned-node-2
+      - '-'
       - '-'
 
 stop_all_nodes: true

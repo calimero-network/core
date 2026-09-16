@@ -41,11 +41,12 @@ steps:
   # A script, because merobox's account_pair step has no field for that id.
   - name: Pair node-2 with the account namespace and a scope, and read the scope back
     type: script
-    script: scripts/account-namespace-pair.sh
+    script: scripts/account-namespace-pair-into.sh
     target: local
     args:
       - account-registry-node-1
       - account-registry-node-2
+      - '-'
       - '{{app}}'
 
 stop_all_nodes: true
