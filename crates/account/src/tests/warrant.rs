@@ -1,18 +1,23 @@
 //! Tests for delegated authorship: the warrant, and the bundle that carries it.
 
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::{DeviceId, PrivateKey, PublicKey};
+use calimero_primitives::identity::{domain_hash, DeviceId, PrivateKey, PublicKey};
 
 use super::support::{genesis_for, key, sign_cert};
 use crate::account::AccountGenesis;
 use crate::device::DeviceCert;
 use crate::error::AccountError;
 use crate::signed::AccountProof;
-use crate::warrant::{Delegation, Warrant};
+use crate::warrant::{Delegation, Warrant, WarrantTerms};
 
 const CTX: [u8; 32] = [0x11; 32];
 const OTHER_CTX: [u8; 32] = [0x12; 32];
 const INTENT: [u8; 32] = [0xab; 32];
+const APP: [u8; 32] = [0x33; 32];
+const METHOD: &str = "set";
+const ACCOUNT_HEAD: [u8; 32] = [0x44; 32];
+const GOVERNANCE_HEAD: [u8; 32] = [0x55; 32];
 
 fn ctx(bytes: [u8; 32]) -> ContextId {
     ContextId::from(bytes)
@@ -74,17 +79,28 @@ impl Party {
 fn fixture() -> (Party, Party, Warrant) {
     let author = party(1, 2, 0x01);
     let executor = party(3, 4, 0x02);
-    let warrant = Warrant::sign(
-        &author.device_sk,
-        ctx(CTX),
-        author.account(),
-        executor.account(),
-        INTENT,
-        7,
-        1_755_903_600,
-    )
-    .expect("signing must succeed");
+    let warrant =
+        Warrant::sign(&author.device_sk, terms(&author, &executor)).expect("signing must succeed");
     (author, executor, warrant)
+}
+
+/// The v2 terms every test in this file starts from. Each cited-head list holds
+/// exactly one entry: an empty pair would not distinguish a warrant that cites
+/// nothing from one whose lists were stripped in flight, which is the case the
+/// length prefixes in `signing_payload` exist for.
+fn terms(author: &Party, executor: &Party) -> WarrantTerms {
+    WarrantTerms {
+        context: ctx(CTX),
+        author_account: author.account(),
+        executor: executor.account(),
+        app_version: ApplicationId::from(APP),
+        method: METHOD.to_owned(),
+        intent_hash: INTENT,
+        account_heads: vec![ACCOUNT_HEAD],
+        governance_floor: vec![GOVERNANCE_HEAD],
+        nonce: 7,
+        not_after: 1_755_903_600,
+    }
 }
 
 fn delegation(author: &Party, executor: &Party, warrant: Warrant) -> Delegation {
@@ -122,54 +138,102 @@ fn every_field_is_covered_by_the_signature() {
     let (_author, _executor, warrant) = fixture();
     let other = party(9, 10, 0x09);
 
+    // `..warrant.clone()` rather than `..warrant`: v2 carries a `String` and two
+    // `Vec`s, so the functional-update syntax moves instead of copying.
     let mutations: Vec<(&str, Warrant)> = vec![
         (
             "context",
             Warrant {
                 context: ctx(OTHER_CTX),
-                ..warrant
+                ..warrant.clone()
             },
         ),
         (
             "author_account",
             Warrant {
                 author_account: other.account(),
-                ..warrant
+                ..warrant.clone()
             },
         ),
         (
             "author_device_key",
             Warrant {
                 author_device_key: other.device_key(),
-                ..warrant
+                ..warrant.clone()
             },
         ),
         (
             "executor",
             Warrant {
                 executor: other.account(),
-                ..warrant
+                ..warrant.clone()
+            },
+        ),
+        (
+            "app_version",
+            Warrant {
+                app_version: ApplicationId::from([0x99; 32]),
+                ..warrant.clone()
+            },
+        ),
+        (
+            "method",
+            Warrant {
+                method: "get".to_owned(),
+                ..warrant.clone()
             },
         ),
         (
             "intent_hash",
             Warrant {
                 intent_hash: [0xcd; 32],
-                ..warrant
+                ..warrant.clone()
+            },
+        ),
+        (
+            "account_heads",
+            Warrant {
+                account_heads: vec![[0x99; 32]],
+                ..warrant.clone()
+            },
+        ),
+        (
+            "governance_floor",
+            Warrant {
+                governance_floor: vec![[0x99; 32]],
+                ..warrant.clone()
+            },
+        ),
+        // Dropping a cited list entirely, not just changing it: without the
+        // length prefixes in `signing_payload` this one would hash the same as
+        // moving `GOVERNANCE_HEAD` into `account_heads`, and a relay could
+        // relabel which plane a head was cited from.
+        (
+            "account_heads (emptied)",
+            Warrant {
+                account_heads: vec![],
+                ..warrant.clone()
+            },
+        ),
+        (
+            "governance_floor (emptied)",
+            Warrant {
+                governance_floor: vec![],
+                ..warrant.clone()
             },
         ),
         (
             "nonce",
             Warrant {
                 nonce: warrant.nonce + 1,
-                ..warrant
+                ..warrant.clone()
             },
         ),
         (
             "not_after",
             Warrant {
                 not_after: warrant.not_after + 1,
-                ..warrant
+                ..warrant.clone()
             },
         ),
     ];
@@ -190,7 +254,7 @@ fn a_warrant_signed_by_another_key_than_it_names_is_refused() {
     // Keep every signed field, swap only the key the signature is checked under.
     let forged = Warrant {
         author_device_key: impostor.device_key(),
-        ..warrant
+        ..warrant.clone()
     };
 
     assert_eq!(
@@ -227,7 +291,7 @@ fn a_warrant_authorises_only_its_own_context_and_executor() {
 #[test]
 fn a_well_formed_delegation_verifies() {
     let (author, executor, warrant) = fixture();
-    let bundle = delegation(&author, &executor, warrant);
+    let bundle = delegation(&author, &executor, warrant.clone());
 
     let verified = bundle
         .verify()
@@ -318,7 +382,7 @@ fn an_author_proof_for_the_wrong_account_is_refused() {
 #[test]
 fn a_delegation_round_trips_through_borsh_and_still_verifies() {
     let (author, executor, warrant) = fixture();
-    let bundle = delegation(&author, &executor, warrant);
+    let bundle = delegation(&author, &executor, warrant.clone());
 
     let bytes = borsh::to_vec(&bundle).expect("borsh must encode");
     let decoded: Delegation = borsh::from_slice(&bytes).expect("borsh must decode");
@@ -336,7 +400,7 @@ fn a_delegation_round_trips_through_borsh_and_still_verifies() {
 #[test]
 fn boxing_the_proofs_is_invisible_on_the_wire() {
     let (author, executor, warrant) = fixture();
-    let bundle = delegation(&author, &executor, warrant);
+    let bundle = delegation(&author, &executor, warrant.clone());
 
     let boxed = borsh::to_vec(&bundle).expect("borsh must encode");
     // Field order, and it is load-bearing: this is the pin that catches a
@@ -362,12 +426,11 @@ fn a_warrant_covers_only_the_intent_it_was_minted_for() {
 
     let warrant = Warrant::sign(
         &author.device_sk,
-        ctx(CTX),
-        author.account(),
-        executor.account(),
-        Warrant::intent_hash("send_message", args),
-        7,
-        1_755_903_600,
+        WarrantTerms {
+            method: "send_message".to_owned(),
+            intent_hash: Warrant::intent_hash("send_message", args),
+            ..terms(&author, &executor)
+        },
     )
     .expect("signing must succeed");
 
@@ -393,5 +456,61 @@ fn the_method_args_boundary_cannot_be_shifted() {
         Warrant::intent_hash("ab", b"x"),
         Warrant::intent_hash("a", b"bx"),
         "moving a byte across the method/args boundary must change the commitment"
+    );
+}
+
+/// #3933 bumps `WARRANT_SIGN_DOMAIN` to `v2`. The bump is the cheap half of the
+/// break and the one worth a test: without it, a v1 signature could only be
+/// stopped by borsh failing to parse the new layout, which is a property of an
+/// encoder rather than a decision anyone made.
+///
+/// Signs the v2 field set under the **old** domain and nothing else, so what
+/// this proves is the domain and not the layout: same bytes, same key, same
+/// order — only the domain string differs, and the signature is refused.
+#[test]
+fn a_warrant_signed_under_the_old_domain_does_not_verify() {
+    const OLD_DOMAIN: &[u8] = b"calimero.warrant.v1";
+
+    let author = party(1, 2, 0x01);
+    let executor = party(3, 4, 0x02);
+    let mut warrant =
+        Warrant::sign(&author.device_sk, terms(&author, &executor)).expect("signing must succeed");
+
+    // Exactly `signing_payload`'s parts, in its order, under the old domain.
+    let account_len = (warrant.account_heads.len() as u64).to_le_bytes();
+    let governance_len = (warrant.governance_floor.len() as u64).to_le_bytes();
+    let nonce = warrant.nonce.to_le_bytes();
+    let not_after = warrant.not_after.to_le_bytes();
+    let mut parts: Vec<&[u8]> = vec![
+        warrant.context.digest(),
+        warrant.author_account.as_bytes(),
+        AsRef::<[u8; 32]>::as_ref(&warrant.author_device_key),
+        warrant.executor.as_bytes(),
+        AsRef::<[u8; 32]>::as_ref(&warrant.app_version),
+        warrant.method.as_bytes(),
+        &warrant.intent_hash,
+        &account_len,
+    ];
+    parts.extend(warrant.account_heads.iter().map(|h| h.as_slice()));
+    parts.push(&governance_len);
+    parts.extend(warrant.governance_floor.iter().map(|h| h.as_slice()));
+    parts.push(&nonce);
+    parts.push(&not_after);
+
+    let under_old_domain = domain_hash(OLD_DOMAIN, &parts);
+    assert_ne!(
+        under_old_domain,
+        warrant.signing_payload(),
+        "the two domains must not agree, or the bump did nothing"
+    );
+
+    warrant.signature =
+        crate::signed::sign_payload(&author.device_sk, &under_old_domain).expect("signing");
+
+    assert_eq!(
+        warrant.verify_signature(),
+        Err(AccountError::WarrantSignatureInvalid),
+        "a warrant signed under the v1 domain must be refused outright, not left \
+         to borsh to reject by accident"
     );
 }

@@ -147,6 +147,7 @@ fn audiences_with_equal_payloads_do_not_share_a_preimage() {
 /// payloads they produce, which is what actually reaches a verifier.
 #[test]
 fn a_login_payload_is_not_a_warrant_payload() {
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::AccountId;
 
@@ -161,14 +162,20 @@ fn a_login_payload_is_not_a_warrant_payload() {
         0,
         0,
     );
-    let warrant = Warrant::signing_payload(
-        ContextId::from([0u8; 32]),
-        AccountId::from([0u8; 32]),
-        &key(3).public_key(),
-        AccountId::from([0u8; 32]),
-        &[0u8; 32],
-        0,
-        0,
-    );
+    let warrant = Warrant {
+        context: ContextId::from([0u8; 32]),
+        author_account: AccountId::from([0u8; 32]),
+        author_device_key: key(3).public_key(),
+        executor: AccountId::from([0u8; 32]),
+        app_version: ApplicationId::from([0u8; 32]),
+        method: String::new(),
+        intent_hash: [0u8; 32],
+        account_heads: vec![],
+        governance_floor: vec![],
+        nonce: 0,
+        not_after: 0,
+        signature: [0u8; 64],
+    }
+    .signing_payload();
     assert_ne!(login, warrant);
 }

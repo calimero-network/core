@@ -245,6 +245,23 @@ pub struct WarrantCommand {
     #[arg(long, value_name = "HEX")]
     executor: String,
 
+    /// The application build this warrant is signed against, 64 hex chars.
+    ///
+    /// Pins the code rather than a version string, so a relay cannot wait for an
+    /// upgrade that widens what `--method` does and then spend a warrant signed
+    /// against the narrower one. Read it from the context
+    /// (`meroctl context get <id>`); `meroctl context intent` reads it for you,
+    /// which is the reason to prefer that command where a node is reachable.
+    ///
+    /// Defaults to all-zeros because this command is deliberately offline and
+    /// has nothing to read it from. Nothing verifies the field yet (#3933 lands
+    /// the field set ahead of its enforcement, so a client builds against the
+    /// final signed bytes once) — but a warrant minted with the default will be
+    /// refused once pinning lands, so pass the real value for anything meant to
+    /// outlive this release.
+    #[arg(long, value_name = "HEX", default_value_t = String::new())]
+    app_version: String,
+
     /// Monotonic per device.
     #[arg(long)]
     nonce: u64,
@@ -319,14 +336,31 @@ impl WarrantCommand {
                 .saturating_add(self.valid_for)
         });
 
+        let app_version = if self.app_version.trim().is_empty() {
+            calimero_primitives::application::ApplicationId::from([0u8; 32])
+        } else {
+            calimero_primitives::application::ApplicationId::from(parse_key(
+                &self.app_version,
+                "app-version",
+            )?)
+        };
+
         let warrant = calimero_account::Warrant::sign(
             &secret,
-            context,
-            credential.statement.account,
-            executor,
-            calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
-            self.nonce,
-            not_after,
+            calimero_account::WarrantTerms {
+                context,
+                author_account: credential.statement.account,
+                executor,
+                app_version,
+                method: self.method.clone(),
+                intent_hash: calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
+                // An offline minter cites nothing: it has no log to read heads
+                // from, and inventing them would be worse than saying so.
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: self.nonce,
+                not_after,
+            },
         )
         .map_err(|err| eyre::eyre!("failed to sign the warrant: {err}"))?;
 
