@@ -11730,9 +11730,8 @@ mod account_plane_apply {
         );
     }
 
-    /// An admin revocation carries nothing to forward, and neither does one whose
-    /// proof the apply refused - the admin gate is what let that op through, and
-    /// admin authority stops at this group.
+    /// A proof the apply refused carries nothing to forward: the admin gate is
+    /// what let that op through, and admin authority stops at this group.
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
     async fn an_unauthorising_proof_is_not_put_on_the_event() {

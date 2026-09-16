@@ -1,12 +1,7 @@
 #!/bin/sh
 #
 # Retire <lost-device> from <publisher>, holding nothing but <holder>'s recovery
-# phrase. The proof is minted where no account root lives, and published into the
-# ACCOUNT namespace, whose id no merobox step can name.
-#
-# <holder> must be STOPPED: `account export` opens the datastore directly and
-# RocksDB's lock is exclusive. `revoke-proof --from` opens no store at all, which
-# is why it can run on a node that is up.
+# phrase, published into the ACCOUNT namespace, whose id no merobox step can name.
 #
 # args: [ <holder>, <publisher>, <lost-device> ]
 set -eu
@@ -16,19 +11,15 @@ if [ "$#" -ne 3 ]; then
     exit 1
 fi
 
+# shellcheck source=apps/scaffolding-e2e/scripts/account-api.sh
 . "$(dirname "$0")/account-api.sh"
 
 holder="$1"
 publisher="$2"
 device="$3"
 
-fail() {
-    echo "FAIL: $1" >&2
-    exit 1
-}
-
-# `sed -n 1p` and not `head -1`: head closes the pipe, merod panics printing the
-# rest, and a panic in the log reads as a broken step rather than a read.
+# <holder> must be STOPPED: `account export` opens the datastore and RocksDB's lock
+# is exclusive. `sed -n 1p`, not `head -1`: head closes the pipe and merod panics.
 phrase=$(offline_merod "${holder}" account export | sed -n '1p')
 [ -n "${phrase}" ] || fail "the lost holder's recovery phrase came back empty"
 

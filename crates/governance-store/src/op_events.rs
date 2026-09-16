@@ -111,15 +111,13 @@ pub enum OpEvent {
     /// the recipient list, and excluding its account would cut off a member who
     /// never left.
     ///
-    /// It carries the proof when one authorised the unlink. A proof names an
-    /// account and a device and no namespace, so it verifies wherever it lands,
-    /// which is what lets another device of the account republish the same
-    /// withdrawal in a namespace the revoker could not reach.
+    /// It carries the proof that authorised the unlink, and none for an admin one,
+    /// whose authority is this group's alone. A proof names no namespace, so it
+    /// verifies wherever another device of the account republishes the withdrawal.
     DeviceRevoked {
         group_id: [u8; 32],
         account: AccountId,
         device: DeviceId,
-        /// Absent for an admin revocation, whose authority is this group's alone.
         proof: Option<Box<SignedDeviceRevocation>>,
     },
     /// `GroupOp::AccountDeviceCertified` - a device was recorded in this

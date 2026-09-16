@@ -291,8 +291,8 @@ pub async fn bind_device_everywhere(
 /// rotation where this node may sign one.
 ///
 /// The rotation is admin-only - peers accept a sidecar only from an admin at the
-/// cut - so elsewhere the device loses the right to write at once and the
-/// rotation is left owed. `Ok(true)` means it rode along.
+/// cut - so elsewhere the write right is gone and the rotation is left owed.
+/// `Ok(true)` means it rode along.
 pub async fn revoke_device_in(
     store: &Store,
     node_client: &NodeClient,
@@ -302,9 +302,8 @@ pub async fn revoke_device_in(
     device: DeviceId,
     op: GroupOp,
 ) -> EyreResult<bool> {
-    // Admin-ness is a question about THIS namespace, and so is the account a
-    // signing key speaks for, so both are answered where the op is going. A read
-    // that fails costs the rotation and never the withdrawal, as the one beside it.
+    // Both questions are about THIS namespace, so both are answered where the op
+    // is going. A failed read costs the rotation, never the withdrawal.
     let is_admin_here = member_account_in_namespace(store, namespace, &signer_sk.public_key())
         .ok()
         .flatten()
@@ -345,10 +344,9 @@ pub async fn revoke_device_in(
 #[cfg(test)]
 mod tests {
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::GroupMetaValue;
-
-    use calimero_primitives::context::GroupMemberRole;
 
     use super::*;
     use crate::test_fixtures::{

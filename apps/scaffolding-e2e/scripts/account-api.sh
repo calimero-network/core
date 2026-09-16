@@ -35,9 +35,8 @@ node_url() {
     echo "http://127.0.0.1:${_hostport}"
 }
 
-# Run an offline `merod` subcommand against <node>'s home. Same split as
-# node_url, and for the same reason: in binary mode there is no container to
-# exec into, and merobox's own node_exec step refuses to run at all there.
+# Run an offline `merod` subcommand against <node>'s home. Same split as node_url:
+# in binary mode there is no container to exec into, and node_exec refuses to run.
 offline_merod() {
     _node="$1"
     shift

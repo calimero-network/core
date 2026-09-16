@@ -1,50 +1,7 @@
 name: E2E Account - The Founder Carries a Later Device Into Its Namespace
 description: >
-  The standing rule the account namespace exists for: a device certified AFTER a
-  namespace was gained is carried into it by whichever device of the account is
-  already there. Until now only the holder ever carried anybody anywhere, at the
-  moment it signed the certificate - so a device paired after the phone founded a
-  project was simply absent from it, with nothing that would ever notice.
-
-  The cast:
-
-    * node-1 - Alice's laptop. Holds the account root, installs the app, creates
-      namespace A. It is the only node that can certify a device.
-    * node-2 - Alice's phone. Paired with no application scope, so it may speak
-      for everything. It founds namespace C while the laptop is down.
-    * node-3 - Alice's tablet. Paired last, while the phone is down, scoped to
-      the application C targets.
-
-  Why only the phone can put the tablet in C: no two of these nodes are up
-  together until the tablet's certificate is already written down. The laptop is
-  stopped before C is founded, so it hears no gain for C and takes no part in it.
-  The phone is stopped before the tablet is paired, so the laptop's pair-complete
-  fan-out - which reaches the namespaces the laptop itself takes part in - names
-  A and the account namespace and nothing else. When the laptop later folds the
-  gain for C and follows it, following subscribes and notes participation and
-  binds nobody. So the tablet's link in C is the phone's publish or nobody's.
-
-  What each step is load-bearing for:
-
-    1. The laptop creates A and pairs the phone. The script returns only once the
-       phone has read its own link back out of the account namespace, which is
-       the barrier the stop below must not race.
-    2. The laptop goes down. From here it folds nothing the phone publishes.
-    3. The phone founds C as Alice's account, and carries the laptop's binding
-       into it out of the registry - the rule that has its own scenario, and the
-       reason a binding in C proves nothing about the tablet on its own.
-    4. The phone goes down and the laptop comes back, so neither can reach the
-       other's DAG while the tablet is paired.
-    5. The laptop certifies the tablet, scoped to C's application, and binds it
-       into A - asserted, because it is what the laptop's reach actually is - and
-       into the account namespace. Not into C, which it has never heard of.
-    6. The phone comes back, folds the tablet's certificate off the account
-       namespace and binds it into C, with the scope only the account root could
-       have signed. The tablet, following C off the same account namespace, folds
-       that binding and agrees.
-
-  Not asserted here: anything about revocation, which is the other half of this
-  PR and has its own scenario.
+  A device certified AFTER a namespace was gained is carried into it by whichever
+  device of the account already takes part, not by the holder that signed it.
 
 force_pull_image: false
 
@@ -108,8 +65,8 @@ steps:
       - '-'
       - '-'
 
-  # Down before C exists, so the laptop never folds the gain for it and never
-  # takes part in it while the tablet is being certified.
+  # Down before C exists, so the laptop never folds the gain for it and takes no
+  # part in it while the tablet is certified - leaving the phone the only carrier.
   - name: The laptop goes down
     type: stop_node
     nodes: account-project-node-1

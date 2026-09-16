@@ -1,41 +1,14 @@
-//! Following what this account gains, unfollowing what it leaves, projecting a
-//! sibling it certifies, and carrying a revocation it proved.
+//! Following what this account gains, unfollowing what it leaves, binding a
+//! sibling it certifies and carrying a revocation it proved: an op-event listener
+//! beside [`crate::auto_follow`], reacting only to this node's own account
+//! namespace, and sweeping both ways on every start.
 //!
-//! The device side of the account namespace: a listener on the op-event channel,
-//! beside [`crate::auto_follow`] and shaped like it. Four events, and each is
-//! acted on only where the guard says it arrived on THIS node's account
-//! namespace - the same op on a project's DAG is another account's business, or
-//! this node's own publish coming back.
-//!
-//! Projecting is carrying a newly certified sibling into the namespaces this node
-//! takes part in whose target its scope covers.
-//!
-//! Carrying is republishing a proof-bearing revocation folded here into the
-//! namespaces this node takes part in where the device is still linked. The
-//! proof names an account and a device and no namespace, so it verifies wherever
-//! it lands, and a device the revoker could not reach is withdrawn there too.
-//!
-//! What projection does not repair: a sibling whose certificate this node folded
-//! BEFORE it took part in N is never carried into N by this node, because
-//! following N binds nobody. A relink is what repairs that.
-//!
-//! Following is [`crate::handlers::follow_namespace::follow`]: note participation,
-//! subscribe, pull. From there the existing machinery converges the namespace - the
-//! beacon rescue pulls its DAG, the key pull succeeds because the gainer bound
-//! this device, the target folds, bytecode acquisition runs and contexts join
-//! through the account's auto-follow flags. Both halves are idempotent, so
-//! following one this node already takes part in costs nothing.
-//!
-//! Unfollowing pulls the namespace once and then unsubscribes: the local view of
-//! it turns on folding its own `MemberLeft`, which never arrives on a dropped
-//! topic. Local state is kept, as the holder's own `leave_namespace` keeps it, so
-//! a later gain re-follows into state that is already there.
-//!
-//! Every start sweeps both ways, because nothing re-drives an op applied while no
-//! listener was up. The unfollow half is deliberately conservative: this node has
-//! to have folded the namespace, the set has to have dropped it, AND its member
-//! row has to show the account gone. An unsynced namespace answers "absent" to
-//! the last two, and dropping it on that alone would unfollow what it is still in.
+//! Unfollowing pulls once before it unsubscribes, since the `MemberLeft` the
+//! local view turns on travels on the topic about to be dropped. It needs all
+//! three of: folded here, absent from the set, member row gone - an unsynced
+//! namespace answers absent to the last two. The sweep covers those two arms
+//! alone: a certificate or a revocation folded before the listener was up is
+//! repaired by a relink or a repeated revoke, never re-driven.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -69,12 +42,10 @@ const PROJECTION_JITTER_MAX_MS: u64 = 5; // the tests assert on the bind, not on
 
 static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
-/// Spawn the account-follow handler. Returns immediately; the handler runs as a
-/// detached tokio task for the process lifetime.
+/// Spawn the account-follow handler, detached for the process lifetime.
 ///
-/// Subscribes synchronously before spawning, for the reason `auto_follow::spawn`
-/// gives: an event fired between this returning and the task's first poll would
-/// otherwise be lost, and the DAG re-drives it only on the next restart.
+/// Subscribes before spawning, as `auto_follow::spawn` does: an event fired
+/// before the task's first poll would be lost until the next restart.
 pub fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) {
     let mut slot = HANDLE.lock().expect("account-follow HANDLE poisoned");
     if slot.as_ref().is_some_and(|abort| !abort.is_finished()) {
@@ -90,9 +61,8 @@ pub fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) 
     );
 }
 
-/// Abort the running handler task. Safe with none running; after it, [`spawn`]
-/// may be called again to rebind to a new store or clients. Aborting drops the
-/// run task's `JoinSet`, so the follows still in flight are aborted with it.
+/// Abort the running handler; [`spawn`] may then rebind it. Aborting drops the
+/// run task's `JoinSet`, so the follows still in flight go with it.
 pub fn shutdown() {
     if let Some(abort) = HANDLE
         .lock()
@@ -225,11 +195,8 @@ async fn run(
     }
 }
 
-/// This node's own row in its account namespace's registry.
-///
-/// `None` on a node that follows no account namespace, and on one whose own
-/// certified op has not been folded here yet - which simply does nothing until
-/// it arrives.
+/// This node's own row in its account namespace's registry. `None` until this
+/// node's own certified op is folded here, which does nothing until it arrives.
 fn own_registry_scope(store: &Store) -> Option<(ContextGroupId, KnownDeviceCert)> {
     let devices = NodeDeviceRepository::new(store);
     let resolved = || -> EyreResult<Option<(ContextGroupId, KnownDeviceCert)>> {
@@ -252,11 +219,8 @@ fn own_registry_scope(store: &Store) -> Option<(ContextGroupId, KnownDeviceCert)
     }
 }
 
-/// This node's account namespace, when `group_id` is it.
-///
-/// Every rule in this module is about facts the ACCOUNT wrote down; the same op
-/// folded on a project's DAG is another account's business, or this node's own
-/// publish coming back.
+/// This node's account namespace, when `group_id` is it. The same op folded on a
+/// project's DAG is another account's business, or this node's own publish back.
 fn account_namespace_if_ours(store: &Store, group_id: [u8; 32]) -> Option<ContextGroupId> {
     match NodeDeviceRepository::new(store).account_namespace() {
         Ok(Some(account_namespace)) if account_namespace.to_bytes() == group_id => {
@@ -284,11 +248,8 @@ fn folded_here(store: &Store, namespace: ContextGroupId) -> EyreResult<bool> {
     )
 }
 
-/// The namespaces this node takes part in that its account has left.
-///
-/// Three reads, and all three have to say so: an unsynced namespace and an
-/// unsynced set both read as absent, and unfollowing on that would cut this
-/// node off a namespace it is still in.
+/// The namespaces this node takes part in that its account has left: all three
+/// reads must say so, since an unsynced namespace and set both read absent.
 fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
     let devices = NodeDeviceRepository::new(store);
     let resolved = || -> EyreResult<Vec<ContextGroupId>> {
@@ -387,11 +348,9 @@ fn namespaces_in_scope(
 /// The certificate to publish for a newly certified device of this account, and
 /// the namespaces this node has to publish it into.
 ///
-/// `None` for this node's own device - the holder that signed it published it
-/// already - and never the account namespace, whose unset target no scope could
-/// name. Also `None` for a device revoked ANYWHERE this node takes part: the id
-/// is spent everywhere, and a revoker publishes its tombstone only where it takes
-/// part, so the target's own DAG is no gate.
+/// `None` for this node's own device, published by the holder that signed it,
+/// and for one revoked ANYWHERE this node takes part - the id is spent
+/// everywhere. Never the account namespace, whose unset target no scope names.
 fn namespaces_to_bind_into(
     store: &Store,
     group_id: [u8; 32],
@@ -438,10 +397,8 @@ fn namespaces_to_bind_into(
 }
 
 /// The namespaces a proof-bearing revocation folded here has to be carried into.
-///
-/// `is_device_linked` reads the bindings still in force, so one that has already
-/// tombstoned the device is skipped by the same call - and, unlike the revoker's
-/// own `raw_binding` read, one superseded by a root rotation too.
+/// `is_device_linked` reads the bindings still in force, so one already
+/// tombstoned - or superseded by a root rotation - is skipped by the same call.
 fn namespaces_to_revoke_in(
     store: &Store,
     group_id: [u8; 32],
@@ -487,9 +444,8 @@ fn unfollows_on_left(store: &Store, group_id: [u8; 32], namespace: ContextGroupI
         .is_some_and(|account_namespace| namespace != account_namespace)
 }
 
-/// `Linked { key_delivered: true }` below is published, not accepted: a projector
-/// that is no admin there has its `KeyDelivery` refused, and the sibling recovers
-/// the key by pulling it, as any participant holding none does.
+/// Bind a newly certified sibling where its scope reaches. A projector that is no
+/// admin has its `KeyDelivery` refused; the sibling pulls the key for itself.
 async fn handle_sibling_certified(
     store: &Store,
     node_client: &NodeClient,
@@ -800,10 +756,8 @@ mod tests {
             .expect("take part in the namespace");
     }
 
-    /// A sibling of this account in the registry, scoped to `applications`.
-    ///
-    /// Takes the root key rather than reading one: this node is a device, and a
-    /// device holds no account root to sign a sibling's certificate with.
+    /// A sibling of this account in the registry, scoped to `applications`. Takes
+    /// the root key: a device holds none to sign a sibling's certificate with.
     fn a_sibling_scoped_to(
         store: &Store,
         account_namespace: ContextGroupId,
@@ -1191,10 +1145,8 @@ mod tests {
         }
     }
 
-    /// The carry. Every namespace this node takes part in that still has the
-    /// device live, and nothing else: not the account namespace where it already
-    /// landed, not one that has already tombstoned it, not one this node is a
-    /// stranger to.
+    /// The carry reaches every namespace this node takes part in that still has
+    /// the device live: not the account namespace, not one already tombstoned.
     #[test]
     fn a_proof_bearing_revocation_is_carried_only_where_the_device_is_still_live() {
         let store = store();
@@ -1225,10 +1177,8 @@ mod tests {
         );
     }
 
-    /// The projection rule. A sibling reaches the namespaces this node takes
-    /// part in that its scope covers, and nothing else - not one out of scope,
-    /// not the account namespace, whose certified op is already the record
-    /// there and whose unset target no scope could name.
+    /// The projection rule. A sibling reaches the namespaces this node takes part
+    /// in that its scope covers: not one out of scope, not the account namespace.
     #[test]
     fn a_certified_sibling_is_bound_where_its_scope_reaches_and_nowhere_else() {
         let store = store();
@@ -1272,9 +1222,8 @@ mod tests {
         assert_eq!(targets, vec![project]);
     }
 
-    /// A revoked id is spent everywhere, so there is nowhere left to carry it.
-    /// The target's own tombstone is not the gate: a revoker publishes one only
-    /// where it takes part, so a namespace it is a stranger to never hears.
+    /// A revoked id is spent everywhere, so there is nowhere left to project it -
+    /// the target's own tombstone is no gate, a stranger revoker never wrote one.
     #[test]
     fn a_sibling_revoked_anywhere_is_projected_nowhere() {
         let store = store();

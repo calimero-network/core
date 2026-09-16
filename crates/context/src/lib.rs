@@ -815,10 +815,9 @@ impl Actor for ContextManager {
         rotation_listener::shutdown();
         rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
 
-        // What the account gains and leaves, followed and unfollowed on this
-        // device. Shutdown-then-spawn to rebind, as the singleton listeners above.
-        // Ahead of the migration below, so the certificates its one-shot publishes
-        // are projected: no sweep re-drives a projection this listener missed.
+        // What the account gains, leaves, certifies and revokes, acted on here.
+        // Ahead of the migration below, whose certificates it must project: no
+        // sweep re-drives a projection this listener was not up for.
         account_follow::shutdown();
         account_follow::spawn(
             self.datastore.clone(),
