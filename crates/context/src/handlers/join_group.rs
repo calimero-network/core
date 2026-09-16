@@ -837,9 +837,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await;
 
-                // And tell the account's other devices, so they follow it too.
-                // After the bind, never before: no device may follow a namespace
-                // before the authority it needs there exists.
+                // Tell the account's other devices, after the bind: no device may follow
+                // a namespace before the authority it needs there exists.
                 crate::account_namespace::announce(
                     &datastore,
                     &node_client,

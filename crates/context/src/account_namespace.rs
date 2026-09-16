@@ -1,9 +1,6 @@
 //! Publishing into this node's account namespace: one device's row into its
-//! registry, and one namespace into its set.
-//!
-//! One publisher per op: the registry's scope epoch is minted from THIS node's
-//! folded row, and `announce` writes only into an account namespace this node
-//! has, never into the namespace being announced.
+//! registry, and one namespace into its set. One publisher per op, since the
+//! scope epoch is minted from THIS node's folded row.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -126,11 +123,8 @@ pub(crate) enum AccountNamespaceChange {
 
 /// Tell this account's other devices that this node gained or left `namespace`.
 ///
-/// Best effort by design: a device that misses it re-reads the set from the DAG,
-/// and no creation, join or leave may fail because a publish did not. Nothing to
-/// read back - a skip, a failure and a set that did not take the change are all
-/// warned here, and a gain with no target yet publishes after this has returned.
-/// `site` names the caller on the delivery metric.
+/// Best effort by design: no creation, join or leave may fail because a publish
+/// did not, so every skip and failure is warned here rather than returned.
 pub(crate) async fn announce(
     store: &Store,
     node_client: &NodeClient,
@@ -290,11 +284,8 @@ async fn publish(
     Ok(())
 }
 
-/// The application `namespace` targets, as this node has folded it so far.
-///
-/// The zero id a cold-start seed writes is reported as absent, so no device
-/// reads it as a real id it could be scoped to. `device_link::plan` leaves the
-/// same zero unfiltered; `KnownDeviceCert::covers` answers the same either way.
+/// The application `namespace` targets, as folded here. The zero id a
+/// cold-start seed writes reads as absent, never as an id to be scoped to.
 fn target_application(
     store: &Store,
     namespace: ContextGroupId,

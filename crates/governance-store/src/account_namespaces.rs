@@ -1,8 +1,7 @@
 //! The namespaces one account takes part in, as its own namespace records them.
 //!
 //! One row per namespace, written by the `AccountNamespaceGained` apply and
-//! deleted by `AccountNamespaceLeft`. A device paired after the account gained
-//! its namespaces, or widened later, walks this to find what it may now follow.
+//! deleted by `AccountNamespaceLeft`. A device paired or widened later walks it.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -29,11 +28,9 @@ impl<'a> AccountNamespaceSet<'a> {
         }
     }
 
-    /// Record `namespace` under the application the gain read, replacing an
-    /// application recorded before: that gain read the metadata more recently.
-    ///
-    /// A gain that read NO application keeps the one already recorded. It knows
-    /// less than the set does, and a scoped device follows on that value alone.
+    /// Record `namespace` under the application the gain read, replacing one
+    /// recorded before: that gain read the metadata more recently. A gain that
+    /// read NONE keeps what is recorded, since a scoped device follows on it.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
@@ -95,9 +92,8 @@ impl<'a> AccountNamespaceSet<'a> {
     pub fn namespaces(&self) -> EyreResult<Vec<(ContextGroupId, Option<ApplicationId>)>> {
         let account = self.account_namespace.to_bytes();
 
-        // Keys first, then one `get` each - deliberately, and NOT the cursor's
-        // `entries()`: other families in this column carry the same 65 bytes, so
-        // the typed value iterator would fail decoding a neighbour's row mid-scan.
+        // Keys first, then one `get` each, NOT the cursor's `entries()`: other
+        // families share these 65 bytes and would fail decoding mid-scan.
         let keys = collect_keys_with_prefix(
             self.store,
             GroupAccountNamespace::new(account, [0u8; 32]),

@@ -628,9 +628,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 )
                 .await;
 
-                // A root this node created is a namespace its account has gained.
-                // A subgroup is not: its namespace was announced when the account
-                // gained that.
+                // A root this node created is a namespace its account has gained; a
+                // subgroup was covered when the account gained its namespace.
                 if parent_group_id.is_none() {
                     crate::account_namespace::announce(
                         &datastore,
@@ -1094,9 +1093,8 @@ mod tests {
         );
     }
 
-    /// A namespace this node creates is one its account has gained, and every
-    /// other device of the account has to be able to find out - from the DAG,
-    /// because nothing else reaches a device that is a member of nothing.
+    /// A namespace this node creates is one its account gained, and the other
+    /// devices learn it from the DAG, the only thing that reaches them.
     #[actix::test]
     async fn creating_a_namespace_records_it_in_the_account_namespace() {
         let store = store();
@@ -1140,9 +1138,8 @@ mod tests {
         );
     }
 
-    /// The account namespace's id is derived from the holder's root, so it names
-    /// a namespace long before one exists. Announcing into it then would apply an
-    /// op to a DAG that is not there, which is what the participation guard stops.
+    /// The derived id names the account namespace long before one exists, so
+    /// announcing into it would write to a DAG that is not there.
     #[actix::test]
     async fn a_gain_before_the_account_namespace_exists_announces_nothing() {
         let store = store();
@@ -1196,9 +1193,8 @@ mod tests {
         );
     }
 
-    /// A leave published while a gain is still waiting for its target must win.
-    /// The pending gain would otherwise re-name a namespace the account left,
-    /// and the sweep cannot undo that: it needs the set to have dropped it.
+    /// A leave published while a gain still waits for its target must win, or
+    /// the pending gain re-names a namespace the sweep can no longer drop.
     #[actix::test]
     async fn a_gain_still_waiting_is_dropped_when_the_account_leaves_the_namespace() {
         let store = store();

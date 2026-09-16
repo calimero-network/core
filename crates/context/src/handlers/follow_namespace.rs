@@ -1,11 +1,8 @@
 //! Taking part in a namespace and listening on it - one definition, shared by
 //! `pair-init` and the account-follow listener.
 //!
-//! Node-local and idempotent on both halves, so following twice, or following
-//! one this node already takes part in, costs nothing. Participation is not
-//! cosmetic: the sync layer and the startup sweep walk it, so a namespace
-//! without a row is one this node never syncs, and one without a subscription is
-//! one it never hears a beacon on.
+//! Idempotent on both halves. Participation is not cosmetic: the sync layer and
+//! the startup sweep walk it, so a namespace without a row is never synced.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::NamespaceRepository;
@@ -15,11 +12,10 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::warn;
 
-/// Take part in `namespace`, subscribe to its topic and pull it, answering
-/// with this node's signing identity for it.
+/// Take part in `namespace`, subscribe to its topic and pull it, answering with
+/// this node's signing identity for it.
 ///
-/// The pull is best-effort and only logged on failure, same as `pair_device_init`
-/// treats it today: gossip alone can leave a namespace's first op pending forever.
+/// The pull is best effort: gossip alone can leave a first op pending forever.
 ///
 /// # Errors
 /// Propagates the identity provisioning or the subscribe failure.

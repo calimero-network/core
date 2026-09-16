@@ -333,8 +333,7 @@ steps:
 
   # The namespace set and the application scope are chosen independently on
   # purpose. node-2 subscribes to A1 and B1; node-1 certifies it for app A only.
-  # Through a script: merobox's account_pair step has no field for the account
-  # namespace, and cannot template two captures into one comma-joined argument.
+  # A script: account_pair has no field for the account namespace id.
   - name: Pair node-2 onto Alice's account, listening on A1
     type: script
     script: scripts/account-namespace-pair-into.sh
@@ -345,8 +344,7 @@ steps:
       - '{{ns_a1}}'
       - '{{app_a}}'
 
-  # A second call, not one - pair-init's namespace set is additive, so node-2
-  # ends up listening on A1 and B1, same as the single call this stands in for.
+  # A second call: pair-init's namespace set is additive, so A1 and B1 both land.
   - name: Extend the pairing so node-2 also listens on B1
     type: script
     script: scripts/account-namespace-pair-into.sh
@@ -366,8 +364,7 @@ steps:
       paired_account: accountId
       paired_device: deviceId
 
-  # One account, two distinct replicas - sharing a device id would collide
-  # counters and an HLC seed. Key delivery is asserted inside the script.
+  # One account, two replicas: a shared device id would collide counters.
   - name: The phone joined Alice's account as a second device
     type: json_assert
     statements:
@@ -504,8 +501,7 @@ steps:
         - '{{ns_b1}}'
         - '{{ns_a2}}'
 
-  # The acceptance criterion this scenario exists for: node-2 lists A2 only
-  # because it followed the account namespace that node-1 wrote one line into.
+  # The acceptance criterion: node-2 lists A2 only via the account namespace.
   - name: The paired device lists A2, which nothing ever told it about
     type: assert_api_response
     node: account-scope-node-2

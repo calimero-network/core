@@ -1,27 +1,11 @@
-//! Following what this account gains, and unfollowing what it leaves.
+//! Following what this account gains and unfollowing what it leaves: an op-event
+//! listener beside [`crate::auto_follow`], reacting only to this node's own
+//! account namespace, and sweeping both ways on every start.
 //!
-//! The device side of the account namespace: a listener on the op-event channel,
-//! beside [`crate::auto_follow`] and shaped like it. Three events, and all three
-//! only from THIS node's account namespace - anything on another group's DAG is
-//! another account's business.
-//!
-//! Following is [`crate::handlers::follow_namespace::follow`]: note
-//! participation, subscribe, pull. From there the existing machinery converges the namespace - the
-//! beacon rescue pulls its DAG, the key pull succeeds because the gainer bound
-//! this device, the target folds, bytecode acquisition runs and contexts join
-//! through the account's auto-follow flags. Both halves are idempotent, so
-//! following one this node already takes part in costs nothing.
-//!
-//! Unfollowing pulls the namespace once and then unsubscribes: the local view of
-//! it turns on folding its own `MemberLeft`, which never arrives on a dropped
-//! topic. Local state is kept, as the holder's own `leave_namespace` keeps it, so
-//! a later gain re-follows into state that is already there.
-//!
-//! Every start sweeps both ways, because nothing re-drives an op applied while no
-//! listener was up. The unfollow half is deliberately conservative: this node has
-//! to have folded the namespace, the set has to have dropped it, AND its member
-//! row has to show the account gone. An unsynced namespace answers "absent" to
-//! the last two, and dropping it on that alone would unfollow what it is still in.
+//! Unfollowing pulls once before it unsubscribes, since the `MemberLeft` the
+//! local view turns on travels on the topic about to be dropped. It needs all
+//! three of: folded here, absent from the set, member row gone - an unsynced
+//! namespace answers absent to the last two.
 
 use std::sync::Mutex;
 
@@ -44,12 +28,10 @@ use crate::account_namespace::account_is_member;
 
 static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
-/// Spawn the account-follow handler. Returns immediately; the handler runs as a
-/// detached tokio task for the process lifetime.
+/// Spawn the account-follow handler, detached for the process lifetime.
 ///
-/// Subscribes synchronously before spawning, for the reason `auto_follow::spawn`
-/// gives: an event fired between this returning and the task's first poll would
-/// otherwise be lost, and the DAG re-drives it only on the next restart.
+/// Subscribes before spawning, as `auto_follow::spawn` does: an event fired
+/// before the task's first poll would be lost until the next restart.
 pub fn spawn(store: Store, node_client: NodeClient) {
     let mut slot = HANDLE.lock().expect("account-follow HANDLE poisoned");
     if slot.as_ref().is_some_and(|abort| !abort.is_finished()) {
@@ -65,9 +47,8 @@ pub fn spawn(store: Store, node_client: NodeClient) {
     );
 }
 
-/// Abort the running handler task. Safe with none running; after it, [`spawn`]
-/// may be called again to rebind to a new store or clients. Aborting drops the
-/// run task's `JoinSet`, so the follows still in flight are aborted with it.
+/// Abort the running handler; [`spawn`] may then rebind it. Aborting drops the
+/// run task's `JoinSet`, so the follows still in flight go with it.
 pub fn shutdown() {
     if let Some(abort) = HANDLE
         .lock()
@@ -156,11 +137,8 @@ async fn run(mut rx: broadcast::Receiver<OpEvent>, store: Store, node_client: No
     }
 }
 
-/// This node's own row in its account namespace's registry.
-///
-/// `None` on a node that follows no account namespace, and on one whose own
-/// certified op has not been folded here yet - which simply does nothing until
-/// it arrives.
+/// This node's own row in its account namespace's registry. `None` until this
+/// node's own certified op is folded here, which does nothing until it arrives.
 fn own_registry_scope(store: &Store) -> Option<(ContextGroupId, KnownDeviceCert)> {
     let devices = NodeDeviceRepository::new(store);
     let resolved = || -> EyreResult<Option<(ContextGroupId, KnownDeviceCert)>> {
@@ -194,11 +172,8 @@ fn folded_here(store: &Store, namespace: ContextGroupId) -> EyreResult<bool> {
     )
 }
 
-/// The namespaces this node takes part in that its account has left.
-///
-/// Three reads, and all three have to say so: an unsynced namespace and an
-/// unsynced set both read as absent, and unfollowing on that would cut this
-/// node off a namespace it is still in.
+/// The namespaces this node takes part in that its account has left: all three
+/// reads must say so, since an unsynced namespace and set both read absent.
 fn namespaces_the_account_left(store: &Store) -> Vec<ContextGroupId> {
     let devices = NodeDeviceRepository::new(store);
     let resolved = || -> EyreResult<Vec<ContextGroupId>> {

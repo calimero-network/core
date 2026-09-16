@@ -2536,16 +2536,9 @@ impl Debug for GroupAccountDevice {
 /// Prefix for [`GroupAccountNamespace`].
 pub const GROUP_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x51;
 
-/// A namespace this namespace's account takes part in (see
-/// [`GROUP_ACCOUNT_NAMESPACE_PREFIX`]).
-///
-/// Written only in an account namespace. Key layout `prefix(1) +
-/// account_namespace(32) + namespace(32)` = 65 bytes, the same shape as
-/// [`GroupDeviceBinding`], so a `(account_namespace, *)` prefix scan enumerates
-/// one account's whole set.
-///
-/// The first range is `account_namespace`, not the `group_id` the byte-identical
-/// [`GroupAccountDevice`] calls its own: here it is always the account's.
+/// A namespace this namespace's account takes part in, written only in an
+/// account namespace. Key `prefix(1) + account_namespace(32) + namespace(32)`,
+/// the same shape as [`GroupDeviceBinding`], so one prefix scan gives the set.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountNamespace(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
@@ -3958,6 +3951,11 @@ mod tests {
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
+            ("GROUP_MEMBER_BY_ACCOUNT", GROUP_MEMBER_BY_ACCOUNT_PREFIX),
+            (
+                "GROUP_MEMBER_INDEX_BACKFILL",
+                GROUP_MEMBER_INDEX_BACKFILL_PREFIX,
+            ),
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),

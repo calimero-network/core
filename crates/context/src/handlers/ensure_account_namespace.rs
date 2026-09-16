@@ -293,9 +293,7 @@ mod tests {
     }
 
     /// A device paired later learns the account's EXISTING namespaces from the
-    /// DAG alone, so the creation writes down what this node already takes part
-    /// in. Without it, only namespaces gained after the first pairing are ever
-    /// announced, and a holder that paired late would carry nothing across.
+    /// DAG alone, so the creation writes down what this node takes part in.
     #[actix::test]
     async fn creation_backfills_the_namespaces_this_node_already_takes_part_in() {
         let store = holder_store();

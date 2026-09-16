@@ -192,12 +192,9 @@ mod tests {
 
     const GROUP: [u8; 32] = [0xF1; 32];
 
-    /// Leaving is the ACCOUNT leaving, so a device that goes on following the
-    /// namespace is following one it may no longer read.
-    ///
-    /// The namespace is created app-less and then handed to a second admin: the
-    /// owner and the last admin are both refused a self-leave, and neither
-    /// refusal is what this test is about.
+    /// Leaving is the ACCOUNT leaving, so a device still following reads a
+    /// namespace it may not. Handed to a second admin because the owner and the
+    /// last admin are both refused a self-leave.
     #[actix::test]
     async fn leaving_a_namespace_drops_it_from_the_account_namespace() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));

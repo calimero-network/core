@@ -173,13 +173,10 @@ fn remember_own_link_if_ours(
     }
 }
 
-/// The account the signer of an account-namespace op speaks for, or `None` when
-/// it may not write this namespace's account state at all.
+/// The account the signer of an account-namespace op speaks for, else `None`.
 ///
-/// Admin AT THE CUT, never the live meta row: `admin_identity` moves under
-/// `TransferOwnership`, so two replicas at different fold depths would disagree.
-/// An admin bound to no account here is refused too - it is nobody this
-/// namespace can name.
+/// Admin AT THE CUT, never the live meta row, which moves under
+/// `TransferOwnership` and would split replicas by fold depth.
 fn owning_account_signer(ctx: &GroupApplyCtx<'_>, what: &str) -> EyreResult<Option<AccountId>> {
     let group_id = *ctx.group_id();
 
@@ -274,10 +271,7 @@ pub(crate) fn apply_device_certified(
 }
 
 /// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
-///
-/// The set is what a device paired later, or widened later, walks to find what
-/// it may follow. A gain that read a target replaces the recorded one - "newer"
-/// means later-applied, not causally later - and one that read none keeps it.
+/// A gain that read a target replaces the recorded one; one that read none keeps it.
 pub(crate) fn apply_namespace_gained(
     ctx: &mut GroupApplyCtx<'_>,
     namespace: &ContextGroupId,
@@ -298,10 +292,8 @@ pub(crate) fn apply_namespace_gained(
     Ok(())
 }
 
-/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left.
-///
-/// The event fires whether or not a row was there to delete: a device following
-/// the namespace from its pairing list has to unfollow it just the same.
+/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left. The
+/// event fires with or without a row: a device may follow it from its pair list.
 pub(crate) fn apply_namespace_left(
     ctx: &mut GroupApplyCtx<'_>,
     namespace: &ContextGroupId,

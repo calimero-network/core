@@ -290,9 +290,8 @@ pub fn opened_root(
     )
 }
 
-/// Poll `read` until it answers true, bounded. A gain whose namespace has no
-/// target yet is announced off the caller, so a set read straight after a
-/// create or an ensure is a race the caller cannot win.
+/// Poll `read` until it answers true, bounded: a gain with no target yet is
+/// announced off the caller, so reading straight after is a race.
 #[cfg(test)]
 pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
     for _ in 0..100 {
@@ -328,9 +327,7 @@ pub(crate) mod actor {
     use crate::ContextManager;
 
     /// Answers the four commands the pairing and governance paths issue, and
-    /// records the topics. Any other command is dropped, which panics the
-    /// caller on its `rx.await` and takes the actor down with it: add the
-    /// variant when a path under test starts issuing one.
+    /// records the topics. Any other is dropped, which panics its caller.
     struct StubNetwork {
         subscribed: UnboundedSender<String>,
         unsubscribed: UnboundedSender<String>,
@@ -395,9 +392,8 @@ pub(crate) mod actor {
             drain(&mut self.unsubscribed)
         }
 
-        /// Every topic a governance broadcast reached so far. The mesh-count
-        /// probe counts as reaching it, so an op that only got as far as trying
-        /// still shows up here.
+        /// Every topic a governance broadcast reached. The mesh-count probe counts,
+        /// so an op that only got as far as trying still shows up.
         pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
             drain(&mut self.broadcast)
         }

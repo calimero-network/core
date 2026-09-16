@@ -124,19 +124,15 @@ pub enum OpEvent {
     },
     /// `GroupOp::AccountNamespaceGained` - this namespace's account is a member
     /// of `namespace`, which targeted `application` when the gainer read it.
-    ///
-    /// A device that follows on this learns the authoritative target by folding
-    /// the namespace itself; this field only decides whether to follow at all.
+    /// That field only decides whether to follow; folding gives the real target.
     AccountNamespaceGained {
         group_id: [u8; 32],
         namespace: ContextGroupId,
         application: Option<ApplicationId>,
     },
     /// `GroupOp::AccountNamespaceLeft` - this namespace's account is no longer a
-    /// member of `namespace`.
-    ///
-    /// Fires even when no set row was there to delete: a device may be following
-    /// the namespace from its pairing list and still have to unfollow.
+    /// member of `namespace`. Fires with or without a row: a device may follow
+    /// it from its pairing list and still have to unfollow.
     AccountNamespaceLeft {
         group_id: [u8; 32],
         namespace: ContextGroupId,
