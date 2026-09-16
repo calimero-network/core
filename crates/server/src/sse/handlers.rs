@@ -1093,7 +1093,7 @@ mod tests {
         // A session subscribed to the group, stamped with the caller that was
         // authorized for it — exactly what `sse_handler` and the subscribe POST
         // leave behind.
-        let (session, _tx, mut rx) = session_with_connection();
+        let (session, _tx, _rx) = session_with_connection();
         let session_id: ConnectionId = 7;
         {
             let mut inner = session.inner.write().await;
@@ -1109,17 +1109,17 @@ mod tests {
                 .insert(session_id, session.clone()),
         );
 
-        let (task_tx, task_rx) = mpsc::channel::<Command>(16);
+        // `_rx` above keeps the session's BOUND connection alive (its sink is
+        // weak, so dropping the receiver would kill it); this second channel is
+        // the one the event task itself writes to, and the one delivery is
+        // asserted on.
+        let (task_tx, mut rx) = mpsc::channel::<Command>(16);
         let task = tokio::spawn(crate::sse::events::handle_node_events(
             session_id,
             Arc::clone(&state),
             session.clone(),
             task_tx,
         ));
-        // `rx` stands in for the response stream of the bound connection; the
-        // task writes to its own sender, so read from that one.
-        drop(rx);
-        let mut rx = task_rx;
 
         // The task subscribes to the broadcast on its first poll; sending
         // before that fails outright (a broadcast send with no receivers is an
