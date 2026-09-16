@@ -411,8 +411,23 @@ pub struct LoginStatementCommand {
     /// Distinct from the device key on purpose: the session key is what the
     /// token authorises, so a leaked session cannot be escalated into use of the
     /// device key itself.
-    #[arg(long, value_name = "HEX")]
-    session_key: String,
+    ///
+    /// This is the PUBLIC half. Use `--generate-session-key` to mint a pair
+    /// instead: a caller with only a secret has no way to derive the public half
+    /// without a tool, which is the same wall this command exists to remove.
+    #[arg(
+        long,
+        value_name = "HEX",
+        required_unless_present = "generate_session_key"
+    )]
+    session_key: Option<String>,
+
+    /// Mint the session keypair here and print both halves.
+    ///
+    /// The statement names the public half; the secret is printed so the caller
+    /// can speak with it afterwards. Mutually exclusive with `--session-key`.
+    #[arg(long, default_value_t = false, conflicts_with = "session_key")]
+    generate_session_key: bool,
 
     /// The device key that signs this, as a secret, 64 hex chars.
     ///
@@ -463,10 +478,16 @@ impl LoginStatementCommand {
     fn run(self) -> EyreResult<()> {
         let challenge = parse_key(&self.challenge, "challenge")?;
         let node = calimero_primitives::identity::PublicKey::from(parse_key(&self.node, "node")?);
-        let session_key = calimero_primitives::identity::PublicKey::from(parse_key(
-            &self.session_key,
-            "session-key",
-        )?);
+        let (session_key, generated_session_secret) = if self.generate_session_key {
+            let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+            (sk.public_key(), Some(hex::encode(sk.as_bytes())))
+        } else {
+            let spelled = self.session_key.as_deref().unwrap_or_default();
+            (
+                calimero_primitives::identity::PublicKey::from(parse_key(spelled, "session-key")?),
+                None,
+            )
+        };
         let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
 
         let audience = parse_audience(&self.audience);
@@ -498,6 +519,12 @@ impl LoginStatementCommand {
             )
         );
         println!("Device:  {}", hex::encode(secret.public_key()));
+        println!("Session: {}", hex::encode(session_key));
+        if let Some(session_secret) = generated_session_secret {
+            // Last, and labelled, so a caller taking the statement with `head -1`
+            // never picks this up by accident.
+            println!("Session-Secret: {session_secret}");
+        }
         println!("Expires: {expires_at}");
 
         Ok(())
