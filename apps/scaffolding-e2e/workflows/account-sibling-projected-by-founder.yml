@@ -53,17 +53,22 @@ steps:
     outputs:
       ns_a: namespaceId
 
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-project-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+      account_ns: accountNamespaceId
+
   # No application scope: the phone may speak for everything, which is what makes
   # it able to found C at all.
   - name: Pair node-2 onto Alice's account through the account namespace
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-project-node-1
-      - account-project-node-2
-      - '-'
-      - '-'
+    type: account_pair
+    node: account-project-node-2
+    holder: account-project-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    await_self: true
 
   # Down before C exists, so the laptop never folds the gain for it and takes no
   # part in it while the tablet is certified - leaving the phone the only carrier.
@@ -97,14 +102,14 @@ steps:
   # Scoped to the application C targets, so the phone's projection rule has a
   # namespace to name and the laptop's fan-out still does not.
   - name: Pair node-3 onto Alice's account, scoped to the app C targets
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-project-node-1
-      - account-project-node-3
-      - '-'
+    type: account_pair
+    node: account-project-node-3
+    holder: account-project-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    applications:
       - '{{app}}'
+    await_self: true
 
   - name: What node-3 speaks as
     type: node_identity
