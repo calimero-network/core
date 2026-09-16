@@ -263,6 +263,7 @@ steps:
     timeout: 120
     trigger_sync: true
 
+  # The laptop's own node accepts the write; its peers drop it, which the read below asserts.
   - name: The retired laptop can no longer write
     type: call
     node: account-carry-node-1
@@ -271,7 +272,7 @@ steps:
     args:
       key: from-the-laptop
       value: after-the-loss
-    expected_failure: true
+    allow_failure: true
 
   - name: Give the refused delta every chance to land
     type: wait
