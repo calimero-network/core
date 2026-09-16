@@ -204,7 +204,7 @@ pub async fn start(
     let mut app = Router::new();
 
     let mut embedded_auth = if config.use_embedded_auth() {
-        Some(auth::initialise(&config).await?)
+        Some(auth::initialise(&config, &datastore).await?)
     } else {
         None
     };

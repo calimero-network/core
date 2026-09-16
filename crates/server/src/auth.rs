@@ -7,6 +7,8 @@ use axum::extract::OriginalUri;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use calimero_governance_store::NamespaceRepository;
+use calimero_store::Store;
 use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
@@ -102,12 +104,69 @@ impl BundledAuth {
     }
 }
 
+/// Name this node in the auth config, so `account_proof` can tell a login
+/// statement minted for it from one minted elsewhere.
+///
+/// `account_proof` refuses to start without `auth.account_proof.node_key`,
+/// deliberately: a guessed value would accept statements addressed to a
+/// different node. Nothing set it, so the provider could not start anywhere.
+///
+/// **Which key.** The node's *device signing key* — the one it signs ops with,
+/// and the one its device certificate certifies. That is what the client
+/// contract means by learning the node's identity "from a pinned certificate":
+/// a libp2p identity key is a network address, certified by nothing, and
+/// pinning it would pin something no certificate attests to.
+///
+/// Resolved here rather than in `merod run` because it lives in the datastore,
+/// which `run` never opens — it hands the config to the node, which opens it
+/// later. This is the first point that holds both the auth config and a store.
+///
+/// Read once at startup, so a device minted or rotated afterwards is picked up
+/// on the next restart. That matches the field being configuration: a value
+/// clients have pinned should not change under them mid-session.
+///
+/// Filled **only when unset**, so an operator who pinned a value keeps it, and
+/// a node answering on several identities can name the one its clients pinned.
+fn name_this_node(config: &mut mero_auth::config::AuthConfig, datastore: &Store) {
+    if config.account_proof.node_key.is_some() {
+        return;
+    }
+
+    match NamespaceRepository::new(datastore).node_identity() {
+        Ok(Some(identity)) => {
+            let key = identity.public_key.to_string();
+            info!(
+                node_key = %key,
+                "embedded auth: naming this node for account-proof logins",
+            );
+            config.account_proof.node_key = Some(key);
+        }
+        // Not an error: a node mints its signing key the first time it takes
+        // part in a namespace, so a fresh one legitimately has none yet. Leaving
+        // the field unset keeps `account_proof` refusing to start on its own
+        // terms rather than starting with a key it invented.
+        Ok(None) => info!(
+            "embedded auth: this node has no signing key yet, so account-proof logins stay \
+             disabled; it mints one the first time it takes part in a namespace",
+        ),
+        // A failed read is not a missing row, and treating them alike would say
+        // "not enrolled" when the truth is "could not look".
+        Err(err) => warn!(
+            %err,
+            "embedded auth: could not read this node's signing key, so account-proof logins \
+             stay disabled",
+        ),
+    }
+}
+
 /// Initialise the embedded authentication service according to the server configuration.
-pub async fn initialise(server_config: &ServerConfig) -> Result<BundledAuth> {
-    let auth_config = server_config
+pub async fn initialise(server_config: &ServerConfig, datastore: &Store) -> Result<BundledAuth> {
+    let mut auth_config = server_config
         .embedded_auth_config()
         .cloned()
         .unwrap_or_else(default_config);
+
+    name_this_node(&mut auth_config, datastore);
 
     // Path resolution is handled by merod run.rs before passing config here
     let app = build_app(auth_config).await?;
