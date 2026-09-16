@@ -12,6 +12,7 @@ mod account;
 mod device;
 mod domain;
 mod login;
+mod login_wire_fixture;
 mod pairing;
 mod revocation;
 mod root_key;

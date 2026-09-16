@@ -213,6 +213,40 @@ impl RunCommand {
                 );
             }
 
+            // Tell the embedded auth service which node it is.
+            //
+            // `account_proof` refuses to start without this, deliberately: the
+            // field is what makes a login statement addressed to THIS node, and
+            // a guessed value would accept statements minted for another one.
+            // But nothing set it, so the provider could not start on any node --
+            // the service is a separate component that does not know the node's
+            // identity, and in embedded mode merod is holding both halves and
+            // was not connecting them.
+            //
+            // Only filled when unset: an operator who pinned a value meant it,
+            // and a node that answers on several identities may need to name the
+            // one its clients actually pinned.
+            if auth_config.account_proof.node_key.is_none() {
+                match config.identity.keypair.public().try_into_ed25519() {
+                    Ok(public) => {
+                        let key = hex::encode(public.to_bytes());
+                        info!(
+                            node_key = %key,
+                            "embedded auth: naming this node for account-proof logins",
+                        );
+                        auth_config.account_proof.node_key = Some(key);
+                    }
+                    // Not fatal: every other provider still works, and
+                    // `account_proof` refuses to start on its own terms rather
+                    // than silently accepting anything.
+                    Err(err) => warn!(
+                        %err,
+                        "embedded auth: this node's identity is not Ed25519, so account-proof \
+                         logins stay disabled; set auth.account_proof.node_key to enable them",
+                    ),
+                }
+            }
+
             server_source.embedded_auth = Some(auth_config);
         } else if let Some(cfg) = server_source.embedded_auth.as_mut() {
             // Also resolve paths for proxy mode if config exists
