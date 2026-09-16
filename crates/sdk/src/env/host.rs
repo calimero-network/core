@@ -316,6 +316,13 @@ pub(crate) fn blob_open(blob_id: &[u8; 32]) -> u64 {
     })
 }
 
+/// `context_id` is ignored: this in-memory double has no network, so a blob
+/// that isn't in the local map isn't held by any peer either — "unavailable"
+/// is exactly the local-only result.
+pub(crate) fn blob_open_in_context(blob_id: &[u8; 32], _context_id: &[u8; 32]) -> u64 {
+    blob_open(blob_id)
+}
+
 pub(crate) fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
     with(|h| {
         let Some((_, data, cursor)) = h.blob_read_handles.get_mut(&fd) else {

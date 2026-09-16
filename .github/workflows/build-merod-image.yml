@@ -19,6 +19,16 @@ name: Build merod image (reusable)
 
 on:
   workflow_call:
+    inputs:
+      with-mock-tee-image:
+        description: >
+          Also build and upload `merod:local-mock-tee` — the same merod compiled
+          with `--features mock-attestation`, which is what `merod run
+          --mock-tee` requires. Off by default so callers that have no mock-TEE
+          scenario (app-migration-e2e) do not pay for a second compile.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -77,5 +87,48 @@ jobs:
         with:
           name: merod-image
           path: /tmp/merod-local.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+      # A second image for mock-TEE scenarios only. `merod run --mock-tee`
+      # refuses to start unless the binary was built with `mock-attestation`,
+      # and that feature must NOT be on for the rest of the matrix: those
+      # scenarios should exercise the same feature set a release binary has.
+      # Hence a separate image rather than adding the feature to the shared one.
+      # It rides the warm target dir above, so only the crates whose features
+      # changed are recompiled.
+      - name: Build mock-attestation merod binary
+        if: inputs.with-mock-tee-image
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo build -p merod --release --features mock-attestation \
+            --target x86_64-unknown-linux-gnu
+
+      - name: Build mock-attestation Docker image
+        if: inputs.with-mock-tee-image
+        run: |
+          mkdir -p bin/amd64
+          cp target/x86_64-unknown-linux-gnu/release/merod bin/amd64/
+          # meroctl is not needed for e2e tests but the Dockerfile expects it
+          touch bin/amd64/meroctl
+          docker build \
+            -f .github/workflows/deps/prebuilt.Dockerfile \
+            -t merod:local-mock-tee \
+            --build-arg TARGETARCH=amd64 \
+            .
+          docker images merod:local-mock-tee
+
+      - name: Save and upload mock-attestation Docker image
+        if: inputs.with-mock-tee-image
+        run: docker save merod:local-mock-tee | zstd -T0 -3 -o /tmp/merod-local-mock-tee.tar.zst
+
+      - name: Upload mock-attestation Docker image
+        if: inputs.with-mock-tee-image
+        uses: actions/upload-artifact@v7
+        with:
+          name: merod-image-mock-tee
+          path: /tmp/merod-local-mock-tee.tar.zst
           retention-days: 1
           compression-level: 0

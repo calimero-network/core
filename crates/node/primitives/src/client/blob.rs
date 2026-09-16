@@ -15,12 +15,14 @@ use calimero_store::key;
 use calimero_store::layer::LayerExt;
 use calimero_store::namespace_signer::resolve_owned_namespace_signer;
 use eyre::bail;
+use futures_util::future::join_all;
 use futures_util::{AsyncRead, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, trace, warn};
 
+use super::provider_order::order_candidates;
 use super::NodeClient;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
 use crate::messages::NodeMessage::GetBlobBytes;
@@ -115,6 +117,225 @@ impl BlobManager {
     }
 }
 
+/// How many peers are probed at once when looking for a blob's holder.
+///
+/// Bounded on purpose: the candidate list is the whole subscriber set of a
+/// context topic (up to `MAX_ESTABLISHED_TOTAL` peers), and probing all of it
+/// on every local miss is the fan-out this discovery path exists to avoid. At a
+/// realistic holder fraction of 0.2-0.3, eight probes answer 83-94% of misses,
+/// and a miss only widens the search by one more batch.
+///
+/// This bounds the *width* of the search. [`MAX_PROBE_BATCHES`] bounds its
+/// *volume*, and [`DISCOVERY_DEADLINE`] bounds its duration — a batch cap alone
+/// is not a bounded search.
+const PROBE_BATCH: usize = 8;
+
+/// How many batches a single sweep may probe before giving up on it.
+///
+/// So a sweep asks at most `PROBE_BATCH * MAX_PROBE_BATCHES` = 32 peers,
+/// regardless of how large the subscriber set is. Without this, a miss on a
+/// 1024-peer context probes all 1024 — 128 sequential batches, each able to
+/// burn a full probe timeout.
+///
+/// **This is a deliberate incompleteness.** A blob held ONLY by a peer outside
+/// the first 32 candidates will not be found, and `get_blob` reports it as
+/// absent. That is the documented escalation trigger for this design: a context
+/// large enough for the holder to hide beyond the prefix needs real provider
+/// state (an anchor, a rendezvous, a sharded index), not a wider linear scan.
+/// The trade is against a search that can otherwise run for tens of minutes
+/// inside an HTTP request.
+const MAX_PROBE_BATCHES: usize = 4;
+
+/// Wall-clock ceiling on the whole discover-and-fetch path, retries included.
+///
+/// `get_blob` is awaited synchronously by an HTTP handler
+/// (`crates/server/src/admin/handlers/blob.rs`) and by the lazy-upgrade
+/// bytecode fetch inside `execute`
+/// (`crates/context/src/handlers/execute/mod.rs`), so an unbounded search here
+/// is a request that never answers. 30s is chosen to sit above the worst
+/// legitimate discovery cost — `MAX_PROBE_BATCHES` sequential batches at the
+/// network layer's 5s probe timeout is 20s, plus up to ~3.1s of retry backoff —
+/// while staying inside a request budget; it is the same order as the transfer
+/// layer's 30s `CHUNK_RECEIVE_TIMEOUT`.
+///
+/// The deadline is enforced at batch and fetch boundaries: it stops new work
+/// from starting, and deliberately does NOT abort a transfer already in flight,
+/// because cancelling a large blob mid-stream throws away everything received
+/// so far. The overrun is therefore bounded by one in-flight fetch.
+const DISCOVERY_DEADLINE: core::time::Duration = core::time::Duration::from_secs(30);
+
+/// How many times the whole discovery sweep is retried before giving up.
+///
+/// Retries exist for ONE case: an empty candidate set, meaning this node has
+/// only just joined and the context topic's subscriber set is still filling.
+/// Once a non-empty set has been swept without success, the sweep is not
+/// repeated — re-running a search that already asked its candidates and got
+/// "no" is repeating work, not making progress.
+const MAX_DISCOVERY_ATTEMPTS: usize = 6;
+
+/// First retry gap; each attempt doubles it up to [`MAX_RETRY_DELAY`].
+const INITIAL_RETRY_DELAY: core::time::Duration = core::time::Duration::from_millis(100);
+
+/// Ceiling on the retry gap.
+const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+
+/// 100ms, doubling per attempt, capped at [`MAX_RETRY_DELAY`]. The `.min(31)`
+/// bounds the shift so it stays well-defined if [`MAX_DISCOVERY_ATTEMPTS`] is
+/// ever raised past 32.
+fn discovery_backoff(attempt: usize) -> core::time::Duration {
+    // `saturating_sub(1)` so the shift is underflow-safe even if the loop
+    // bounds ever start at 0 (today it's 1..=MAX).
+    INITIAL_RETRY_DELAY
+        .saturating_mul(1_u32 << (attempt.saturating_sub(1) as u32).min(31))
+        .min(MAX_RETRY_DELAY)
+}
+
+/// Index of the first peer in `candidates` that answers "yes, I hold it".
+///
+/// Probes go out `PROBE_BATCH` at a time, concurrently within a batch (so one
+/// slow peer costs the batch a single probe timeout, not one per peer) and
+/// strictly sequentially between batches: a batch containing a holder ends the
+/// search, and no peer after it is ever probed. Within a batch, the
+/// earliest-listed holder wins, which keeps the choice deterministic.
+///
+/// At most [`MAX_PROBE_BATCHES`] batches are probed, and `deadline` is checked
+/// before each one, so this returns `None` for "not found, not asked, or out of
+/// time" — all three are the same answer to the caller.
+///
+/// `probe` must answer `false` for a peer it cannot reach — a search with other
+/// candidates left should not be aborted by one unreachable peer.
+async fn find_blob_holder<P, F>(
+    candidates: &[PeerId],
+    probe: P,
+    deadline: tokio::time::Instant,
+) -> Option<usize>
+where
+    P: Fn(PeerId) -> F,
+    F: core::future::Future<Output = bool>,
+{
+    for (batch_index, batch) in candidates
+        .chunks(PROBE_BATCH)
+        .take(MAX_PROBE_BATCHES)
+        .enumerate()
+    {
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+
+        let answers = join_all(batch.iter().map(|peer_id| {
+            let peer_id = *peer_id;
+            let probe = &probe;
+            async move { probe(peer_id).await }
+        }))
+        .await;
+
+        if let Some(offset) = answers.into_iter().position(|holds| holds) {
+            return Some(batch_index * PROBE_BATCH + offset);
+        }
+    }
+
+    None
+}
+
+/// Fetch the blob from the first holder in `candidates` that actually delivers.
+///
+/// A failed fetch is NOT evidence that the blob is gone: the peer may have
+/// dropped the connection, timed out, or served bytes whose recomputed id does
+/// not match. Any of those says something about that peer, not about the blob,
+/// so the search resumes at the candidate after it rather than reporting
+/// absence. `fetch` returns `None` for exactly that case, and `Some(value)` —
+/// including a failure value the caller wants propagated — to end the search.
+///
+/// Resuming re-probes the rest of the failed peer's batch, which is a handful
+/// of wasted header exchanges in an already-degraded case; the short-circuit
+/// property is untouched, since a search whose first winner delivers still
+/// probes exactly one batch.
+///
+/// `deadline` is what keeps that fallback from compounding: a fetch costs up to
+/// the transfer timeout, so without it a long list of holders that each accept
+/// and then fail would run for tens of minutes.
+async fn fetch_from_first_holder<T, P, PF, D, DF>(
+    candidates: &[PeerId],
+    probe: P,
+    fetch: D,
+    deadline: tokio::time::Instant,
+) -> Option<T>
+where
+    P: Fn(PeerId) -> PF,
+    PF: core::future::Future<Output = bool>,
+    D: Fn(PeerId) -> DF,
+    DF: core::future::Future<Output = Option<T>>,
+{
+    let mut searched = 0;
+
+    while searched < candidates.len() {
+        let found = find_blob_holder(&candidates[searched..], &probe, deadline).await?;
+        let peer_id = candidates[searched + found];
+
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+
+        if let Some(value) = fetch(peer_id).await {
+            return Some(value);
+        }
+
+        searched += found + 1;
+    }
+
+    None
+}
+
+/// Discover a holder among the context's peers and fetch the blob from it,
+/// retrying only while the candidate set is still empty.
+///
+/// `resolve_candidates` is called afresh on every attempt: the reason to retry
+/// at all is that the subscriber set grows, so re-using a stale (empty) list
+/// would make the retries pointless. Once it comes back non-empty, that sweep
+/// is the answer — success or not — and the whole path is capped by
+/// [`DISCOVERY_DEADLINE`] regardless.
+async fn discover_and_fetch_blob<T, C, CF, P, PF, D, DF>(
+    resolve_candidates: C,
+    probe: P,
+    fetch: D,
+) -> Option<T>
+where
+    C: Fn() -> CF,
+    CF: core::future::Future<Output = Vec<PeerId>>,
+    P: Fn(PeerId) -> PF,
+    PF: core::future::Future<Output = bool>,
+    D: Fn(PeerId) -> DF,
+    DF: core::future::Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + DISCOVERY_DEADLINE;
+
+    for attempt in 1..=MAX_DISCOVERY_ATTEMPTS {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        let candidates = resolve_candidates().await;
+        let had_candidates = !candidates.is_empty();
+
+        if let Some(value) = fetch_from_first_holder(&candidates, &probe, &fetch, deadline).await {
+            return Some(value);
+        }
+
+        // The only thing a retry can fix is an empty set that has since
+        // filled. A non-empty sweep already asked its candidates and was told
+        // no, so re-sweeping it is repeating failed work at full width.
+        if had_candidates {
+            break;
+        }
+
+        if attempt < MAX_DISCOVERY_ATTEMPTS {
+            tokio::time::sleep(discovery_backoff(attempt)).await;
+        }
+    }
+
+    None
+}
+
 impl NodeClient {
     // todo! maybe this should be an actor method?
     // todo! so we can cache the blob in case it's
@@ -153,162 +374,149 @@ impl NodeClient {
                 "Blob not found locally, attempting network discovery"
             );
 
-            // Poll the DHT quickly at first and widen the gap only if the record
-            // stays missing. The blob record is usually available within a few
-            // hundred ms on a warm cluster; a flat multi-second wait otherwise
-            // dominates time-to-first-byte even when both peers are local.
-            const MAX_RETRIES: usize = 6;
-            const INITIAL_RETRY_DELAY: core::time::Duration =
-                core::time::Duration::from_millis(100);
-            const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+            // Ask the context's peers who holds this blob, rather than
+            // reading a single-valued DHT provider record: custody is a
+            // property of a peer's own blob store, so the peer is the
+            // authority on it and the answer cannot go stale.
+            //
+            // `subscribed_peers` is the full connected+subscribed set, not the
+            // grafted mesh, so probing all of it on every miss is exactly the
+            // fan-out this design exists to avoid. Probes therefore go out in
+            // bounded batches, short-circuiting on the first holder, capped at
+            // `MAX_PROBE_BATCHES` batches per sweep and by `DISCOVERY_DEADLINE`
+            // overall, and retried only while the subscriber set is still empty
+            // (a mesh that has not converged yet).
+            //
+            // Generate authorization for the blob once. The same signed proof
+            // authorizes both the probes and the fetch that follows them — a
+            // peer answers `found: false` to an unauthorized probe, so probing
+            // without it would find only public blobs.
+            let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
 
-            // 100ms, doubling per attempt, capped at MAX_RETRY_DELAY. The
-            // `.min(31)` bounds the shift so it stays well-defined if
-            // MAX_RETRIES is ever raised past 32.
-            let backoff = |attempt: usize| {
-                // `saturating_sub(1)` so the shift is underflow-safe even
-                // if the loop bounds ever start at 0 (today it's 1..=MAX).
-                INITIAL_RETRY_DELAY
-                    .saturating_mul(1_u32 << (attempt.saturating_sub(1) as u32).min(31))
-                    .min(MAX_RETRY_DELAY)
-            };
-
-            for attempt in 1..=MAX_RETRIES {
-                tracing::debug!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    attempt,
-                    max_attempts = MAX_RETRIES,
-                    "Attempting network discovery"
-                );
-
-                // Provider records are opportunistic (few paths announce, restarts
-                // drop them); the context's subscribers are the authoritative set.
-                let peers = match self
-                    .network_client
-                    .query_blob(*blob_id, Some(*context_id))
-                    .await
-                {
-                    Ok(peers) if !peers.is_empty() => peers,
-                    Ok(_) => self.context_subscribers(context_id).await,
-                    Err(e) => {
-                        tracing::warn!(
-                            blob_id = %blob_id,
-                            context_id = %context_id,
-                            attempt,
-                            error = %e,
-                            "Failed to query DHT for blob"
-                        );
-                        self.context_subscribers(context_id).await
-                    }
-                };
-
-                if peers.is_empty() {
+            let fetched = discover_and_fetch_blob(
+                || async {
+                    let candidates = self.context_subscribers(context_id).await;
+                    // Ordering runs BEFORE batching, so on a context with more
+                    // than `PROBE_BATCH * MAX_PROBE_BATCHES` subscribers it
+                    // decides which candidates are probed at all, not just in
+                    // what order: a holder past the cap is never asked. Putting
+                    // availability nodes first is therefore what keeps a large
+                    // context findable, on top of turning the common case into
+                    // a single round trip.
+                    order_candidates(
+                        candidates,
+                        &self.member_roles.anchors_for_context(context_id),
+                    )
+                },
+                |peer_id| async move {
+                    self.network_client
+                        .probe_blob(*blob_id, *context_id, peer_id, auth)
+                        .await
+                        .unwrap_or(false)
+                },
+                |peer_id| async move {
                     tracing::info!(
                         blob_id = %blob_id,
                         context_id = %context_id,
-                        attempt,
-                        "No peers found with blob"
-                    );
-                    if attempt < MAX_RETRIES {
-                        tokio::time::sleep(backoff(attempt)).await;
-                        continue;
-                    }
-                    return Ok(None);
-                }
-
-                tracing::info!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    peer_count = peers.len(),
-                    attempt,
-                    "Found {} peers with blob, attempting download", peers.len()
-                );
-
-                // Try to get the blob from each available peer
-                for (peer_index, peer_id) in peers.iter().enumerate() {
-                    tracing::debug!(
                         peer_id = %peer_id,
-                        peer_index = peer_index + 1,
-                        total_peers = peers.len(),
-                        attempt,
-                        "Attempting to download blob from peer"
+                        "Found a peer holding the blob, downloading"
                     );
 
-                    // Generate Authorization for the blob.
-                    let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
-
-                    match self
+                    let data = match self
                         .network_client
-                        .request_blob(*blob_id, *context_id, *peer_id, auth)
+                        .request_blob(*blob_id, *context_id, peer_id, auth)
                         .await
                     {
-                        Ok(Some(data)) => {
-                            tracing::info!(
+                        Ok(Some(data)) => data,
+                        Ok(None) => {
+                            // The peer said yes to the probe and no to the
+                            // fetch: custody changed underneath us, or it
+                            // declined. That is a fact about this peer, not
+                            // about the blob — keep searching.
+                            tracing::warn!(
                                 blob_id = %blob_id,
                                 peer_id = %peer_id,
-                                size = data.len(),
-                                attempt,
-                                "Successfully downloaded blob from network"
+                                "Peer answered the probe but did not serve the blob"
                             );
-
-                            // Store the blob locally for future use
-                            let (blob_id_stored, _size) = self
-                                .add_blob(data.as_slice(), Some(data.len() as u64), None)
-                                .await?;
-
-                            // Shared contract: rejects and deletes, so a lying
-                            // peer cannot grow this node's blobstore per retry.
-                            if let Err(err) = self
-                                .verify_stored_blob(blob_id_stored, Some(*blob_id))
-                                .await
-                            {
-                                tracing::warn!(%peer_id, %err, "rejecting downloaded blob");
-                                continue;
-                            }
-
-                            // Return the newly stored blob as a stream
-                            return self.blob_manager.get_blob_stream(*blob_id);
-                        }
-                        Ok(None) => {
-                            tracing::debug!(
-                                peer_id = %peer_id,
-                                attempt,
-                                "Peer doesn't have the blob"
-                            );
+                            return None;
                         }
                         Err(e) => {
                             tracing::warn!(
+                                blob_id = %blob_id,
                                 peer_id = %peer_id,
                                 error = %e,
-                                attempt,
-                                "Failed to download blob from peer"
+                                "Failed to download blob from peer, trying the next holder"
                             );
+                            return None;
                         }
-                    }
-                }
+                    };
 
-                // If we reach here, all peers failed for this attempt
-                if attempt < MAX_RETRIES {
-                    let retry_delay = backoff(attempt);
                     tracing::info!(
                         blob_id = %blob_id,
-                        context_id = %context_id,
-                        attempt,
-                        retry_delay_ms = retry_delay.as_millis(),
-                        "All peers failed, retrying after backoff"
+                        peer_id = %peer_id,
+                        size = data.len(),
+                        "Successfully downloaded blob from network"
                     );
-                    tokio::time::sleep(retry_delay).await;
-                }
-            }
 
-            tracing::debug!(
-                blob_id = %blob_id,
-                context_id = %context_id,
-                max_attempts = MAX_RETRIES,
-                "Failed to download blob from any peer after all retry attempts"
-            );
-            return Ok(None);
+                    // Store the blob locally for future use. A failure here is
+                    // local, so it will fail identically for every other
+                    // holder: end the search and surface it.
+                    let (blob_id_stored, _size) = match self
+                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                        .await
+                    {
+                        Ok(stored) => stored,
+                        Err(e) => return Some(Err(e)),
+                    };
+
+                    // Blobs are content-addressed, so a mismatch means this
+                    // peer served different bytes than were asked for. Refuse
+                    // them and ask the next holder.
+                    if blob_id_stored != *blob_id {
+                        tracing::warn!(
+                            expected = %blob_id,
+                            actual = %blob_id_stored,
+                            peer_id = %peer_id,
+                            "Downloaded blob ID mismatch, trying the next holder"
+                        );
+                        // The bytes are already on disk under the id they
+                        // actually hash to, and nothing reclaims them: there is
+                        // no content-addressed GC, and the search continues to
+                        // the next holder, so a lying peer would otherwise cost
+                        // a fresh copy per attempt. Same cleanup rule as
+                        // `add_blob`'s own rejection path.
+                        if let Err(err) = self.delete_blob(blob_id_stored).await {
+                            tracing::warn!(
+                                blob_id = %blob_id_stored,
+                                %err,
+                                "failed to delete the bytes a peer served under the wrong id"
+                            );
+                        }
+                        return None;
+                    }
+
+                    // Return the newly stored blob as a stream
+                    Some(self.blob_manager.get_blob_stream(*blob_id))
+                },
+            )
+            .await;
+
+            let Some(result) = fetched else {
+                // "Not found" here also covers "not asked" and "out of
+                // time": the search is capped at `MAX_PROBE_BATCHES` batches
+                // per sweep and by `DISCOVERY_DEADLINE`, so on a very large
+                // context a holder can sit beyond the probed prefix.
+                tracing::info!(
+                    blob_id = %blob_id,
+                    context_id = %context_id,
+                    max_probed = PROBE_BATCH * MAX_PROBE_BATCHES,
+                    deadline_secs = DISCOVERY_DEADLINE.as_secs(),
+                    "No context peer served this blob"
+                );
+                return Ok(None);
+            };
+
+            return result;
         };
 
         Ok(Some(stream))
@@ -408,20 +616,45 @@ impl NodeClient {
             .await
     }
 
-    /// Query the network for peers that have a specific blob
+    /// Query the network for peers that have a specific blob.
+    ///
+    /// **No in-tree caller.** `get_blob` discovers holders by probing the
+    /// context's peers — custody is a property of a peer's own blob store, so
+    /// the peer is the authority on it and the answer cannot go stale, which a
+    /// DHT provider record can. Kept as published API for out-of-tree callers,
+    /// alongside its write side [`NodeClient::announce_blob_to_kad`].
+    #[deprecated(note = "blob discovery is by probing the context's subscribers over \
+                CALIMERO_BLOB_PROTOCOL, not by DHT lookup: a kad record is \
+                opportunistic and goes stale, while a peer is the authority on \
+                its own custody. Use `NodeClient::get_blob`.")]
     pub async fn find_blob_providers(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
     ) -> eyre::Result<Vec<PeerId>> {
+        // Deprecated all the way down: this method IS the kad read, so it can
+        // only be implemented in terms of the deprecated network call.
+        #[allow(deprecated, reason = "this wrapper is itself the deprecated API")]
         self.network_client
             .query_blob(*blob_id, Some(*context_id))
             .await
     }
 
-    /// Announce a blob to the network for discovery. Application bytecode an
+    /// Publish a DHT provider record for a blob. Application bytecode an
     /// http node holds is skipped: it does not serve those bytes either.
-    pub async fn announce_blob_to_network(
+    ///
+    /// Called by [`NodeClient::announce_blob_to_network`], which writes the kad
+    /// record *as well as* announcing to the context's availability nodes. The
+    /// record exists purely for peers that have not upgraded: they discover
+    /// blobs by DHT lookup and by nothing else, so a node that stopped writing
+    /// it would become invisible to them. Nothing in this tree reads it —
+    /// see [`NodeClient::find_blob_providers`] — so it is deprecated on the
+    /// read side and on its own, and will go once no such peer remains.
+    #[deprecated(note = "producers announce to a context's availability nodes over \
+                CALIMERO_BLOB_ANNOUNCE_PROTOCOL; the kad record is written only \
+                for peers that still discover blobs by DHT lookup. Use \
+                `NodeClient::announce_blob_to_network`, which does both.")]
+    pub async fn announce_blob_to_kad(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
@@ -430,6 +663,9 @@ impl NodeClient {
         if !self.may_share_blob(blob_id)? {
             return Ok(());
         }
+        // Deprecated all the way down: this method IS the kad write, so it can
+        // only be implemented in terms of the deprecated network call.
+        #[allow(deprecated, reason = "this wrapper is itself the deprecated API")]
         self.network_client
             .announce_blob(*blob_id, *context_id, size)
             .await
@@ -444,6 +680,156 @@ impl NodeClient {
         // A node holds a handful of applications, so scanning their rows costs
         // less than a reverse blob -> application index would to keep correct.
         Ok(!self.is_blob_application_artifact(blob_id)?)
+    }
+
+    /// Tell the context's availability nodes that this node now holds a blob,
+    /// so they can prefetch it.
+    ///
+    /// This is the ONE place in the system where the blob→context association
+    /// exists: `BlobMeta` is keyed by blob id alone, and state deltas carry
+    /// opaque borsh values, so nothing downstream can recover which context a
+    /// blob belongs to. Every producer — the app host function, the admin
+    /// upload handler, and `upgrade_group` — already calls this, which is why
+    /// prefetch hangs off it.
+    ///
+    /// Delivery is direct streams to a bounded, chosen set: the context's
+    /// `ReadOnlyTee` members, resolved through the same lookup that orders
+    /// probe candidates. Never gossipsub — `flood_publish` fans every publish
+    /// to every subscriber of the topic, so a topic broadcast would tell the
+    /// whole context about every blob, which is precisely the fan-out this
+    /// design exists to avoid.
+    ///
+    /// **Both announce routes run.** Besides the anchor notice, this still
+    /// writes the deprecated kad provider record
+    /// ([`NodeClient::announce_blob_to_kad`]) for peers that have not upgraded:
+    /// those discover blobs by DHT lookup and by nothing else, so a node that
+    /// stopped writing the record would become invisible to them. The reverse
+    /// direction needs nothing — an un-upgraded peer answers an ordinary blob
+    /// request, so a probing node still finds it — which is why it is only the
+    /// write that mixed versions depend on. Nothing in this tree reads the
+    /// record.
+    ///
+    /// **Returns as soon as the anchor work is scheduled, without waiting for
+    /// it.** That announce is best-effort by design and its outcome is nothing
+    /// the uploader can act on, so making a user-facing upload wait on it buys
+    /// nothing: the blob is already stored, and one unreachable availability
+    /// node would otherwise put a full announce timeout on the admin upload
+    /// handler's response. The detached work stays bounded by the network
+    /// layer's per-announce timeout.
+    ///
+    /// So `Ok(())` means "scheduled", never "delivered": a caller that needs to
+    /// know an availability node actually holds the bytes must observe that on
+    /// the availability node, not here.
+    ///
+    /// **Known gap:** an availability node that is offline right now misses
+    /// this blob and has no catch-up path — see the module docs of
+    /// `calimero_node::handlers::blob_announce`.
+    pub async fn announce_blob_to_network(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+        size: u64,
+    ) -> eyre::Result<()> {
+        // An announce is an invitation to fetch, so BOTH routes below are bound
+        // by this one withholding policy: a node in registry-only mode does not
+        // serve application bytecode, so it must neither publish a record
+        // saying it has those bytes nor invite an availability node to come and
+        // take them.
+        if !self.may_share_blob(blob_id)? {
+            return Ok(());
+        }
+
+        // The kad write is awaited; the anchor announce below is not. The
+        // asymmetry is the point: `put_record` at `Quorum::One` returns once the
+        // record is queued locally, so this costs one actor round trip and no
+        // remote peer's reachability can stall it — unlike a direct stream to an
+        // availability node, which is exactly the full-timeout risk the detached
+        // path exists to keep off a user-facing upload.
+        //
+        // Its failure is swallowed rather than returned: the write that produced
+        // this blob has already been reported successful and the blob stays
+        // findable by probing, so there is nothing for a caller to do with the
+        // error. Swallowed, but never silent.
+        #[allow(
+            deprecated,
+            reason = "deliberate compatibility path, not an oversight: a peer \
+                      still running the pre-probe code discovers blobs only by \
+                      DHT lookup, so the record has to keep being written until \
+                      no such peer remains"
+        )]
+        if let Err(err) = self.announce_blob_to_kad(blob_id, context_id, size).await {
+            tracing::debug!(
+                %blob_id,
+                %context_id,
+                %err,
+                "failed to write the blob's kad provider record; peers that \
+                 probe are unaffected"
+            );
+        }
+
+        let client = self.clone();
+        let blob_id = *blob_id;
+        let context_id = *context_id;
+
+        // Detached on purpose (see above). Anchor resolution is a store read,
+        // so it goes inside the task too — the caller then does no I/O at all
+        // on the announce path.
+        drop(tokio::spawn(async move {
+            client.announce_to_anchors(blob_id, context_id, size).await;
+        }));
+
+        Ok(())
+    }
+
+    /// The body of the announce, run detached by
+    /// [`NodeClient::announce_blob_to_network`].
+    ///
+    /// Every failure is logged and swallowed: this runs after the write that
+    /// produced the blob was already reported successful, so there is nobody
+    /// left to return an error to. A context with no availability node
+    /// announces to nobody, which is a no-op rather than a failure.
+    async fn announce_to_anchors(&self, blob_id: BlobId, context_id: ContextId, size: u64) {
+        let anchors = self.member_roles.anchors_for_context(&context_id);
+        if anchors.is_empty() {
+            tracing::debug!(
+                %blob_id,
+                %context_id,
+                "no availability node known for this context; blob stays findable by probing"
+            );
+            return;
+        }
+
+        let announced = join_all(anchors.iter().map(|peer_id| async move {
+            self.network_client
+                .announce_blob_to_peer(*peer_id, blob_id, context_id, size)
+                .await
+                .map_err(|err| (*peer_id, err))
+        }))
+        .await;
+
+        let mut delivered = 0_usize;
+        for outcome in announced {
+            match outcome {
+                Ok(()) => delivered += 1,
+                Err((peer_id, err)) => {
+                    tracing::debug!(
+                        %blob_id,
+                        %context_id,
+                        %peer_id,
+                        %err,
+                        "failed to announce blob to availability node"
+                    );
+                }
+            }
+        }
+
+        tracing::debug!(
+            %blob_id,
+            %context_id,
+            delivered,
+            attempted = anchors.len(),
+            "announced blob to availability nodes"
+        );
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
@@ -750,4 +1136,426 @@ fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
     }
 
     "application/octet-stream"
+}
+
+#[cfg(test)]
+mod blob_discovery_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    use super::{
+        discover_and_fetch_blob, fetch_from_first_holder, find_blob_holder, PeerId,
+        DISCOVERY_DEADLINE, MAX_DISCOVERY_ATTEMPTS, MAX_PROBE_BATCHES, PROBE_BATCH,
+    };
+
+    /// The most peers a single sweep may ask.
+    const PROBE_WINDOW: usize = PROBE_BATCH * MAX_PROBE_BATCHES;
+
+    /// A deadline far enough out that a test which is not about the deadline
+    /// never trips it. Tests that ARE about it build their own.
+    fn no_deadline() -> tokio::time::Instant {
+        tokio::time::Instant::now() + core::time::Duration::from_secs(3600)
+    }
+
+    /// Records who was probed, and how many probes were ever in flight at once.
+    #[derive(Default)]
+    struct ProbeRecorder {
+        probed: Mutex<Vec<PeerId>>,
+        in_flight: AtomicUsize,
+        peak_in_flight: AtomicUsize,
+    }
+
+    impl ProbeRecorder {
+        /// Run one probe: enter, yield enough times that any concurrent sibling
+        /// gets scheduled (so `peak_in_flight` reflects real overlap rather
+        /// than luck), then leave with `answer`.
+        async fn probe(&self, peer_id: PeerId, answer: bool) -> bool {
+            self.probed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(peer_id);
+
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ignored = self.peak_in_flight.fetch_max(now, Ordering::SeqCst);
+
+            for _ in 0..(PROBE_BATCH * 2) {
+                tokio::task::yield_now().await;
+            }
+
+            let _ignored = self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            answer
+        }
+
+        fn probed(&self) -> Vec<PeerId> {
+            self.probed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    fn peers(count: usize) -> Vec<PeerId> {
+        (0..count).map(|_| PeerId::random()).collect()
+    }
+
+    #[tokio::test]
+    async fn never_exceeds_the_batch_bound() {
+        // Far more candidates than one batch: the width bound is what stops
+        // this from becoming a broadcast to every subscriber of the topic.
+        let candidates = peers(PROBE_WINDOW * 3);
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, false),
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, None);
+        assert_eq!(
+            recorder.peak_in_flight.load(Ordering::SeqCst),
+            PROBE_BATCH,
+            "probes must run a full batch wide, and no wider"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sweep_probes_at_most_the_window_however_many_candidates_there_are() {
+        // The volume bound, which the width bound alone does NOT give: a
+        // 1024-peer context must not cost 128 sequential batches.
+        let candidates = peers(PROBE_WINDOW * 32);
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, false),
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, None);
+        assert_eq!(recorder.probed(), candidates[..PROBE_WINDOW].to_vec());
+    }
+
+    #[tokio::test]
+    async fn the_whole_retry_path_probes_a_bounded_total() {
+        // Width x volume x retries is the number that actually matters: before
+        // the caps, a miss on a large context probed every candidate on every
+        // one of the 6 attempts.
+        let candidates = peers(PROBE_WINDOW * 8);
+        let recorder = ProbeRecorder::default();
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async { candidates.clone() },
+            |peer_id| recorder.probe(peer_id, false),
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, None);
+        // One window, once: a non-empty sweep that finds nothing is not
+        // re-swept, so this is the whole cost of a miss.
+        assert_eq!(recorder.probed().len(), PROBE_WINDOW);
+    }
+
+    #[tokio::test]
+    async fn a_non_empty_sweep_is_never_re_swept() {
+        let candidates = peers(3);
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
+                candidates.clone()
+            },
+            |_peer_id| async { false },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, None);
+        assert_eq!(
+            sweeps.load(Ordering::SeqCst),
+            1,
+            "retries are for an empty candidate set, not for repeating a failed search"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_terminates_the_search() {
+        // Every probe burns the network layer's probe timeout and nobody
+        // holds it. Without a deadline this walks the window at 5s a batch;
+        // with one it stops as soon as the budget is gone.
+        let candidates = peers(PROBE_WINDOW);
+        let recorder = ProbeRecorder::default();
+        let started = tokio::time::Instant::now();
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async { candidates.clone() },
+            |peer_id| {
+                let recorder = &recorder;
+                async move {
+                    tokio::time::sleep(core::time::Duration::from_secs(11)).await;
+                    recorder.probe(peer_id, false).await
+                }
+            },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, None);
+        // 11s a batch against a 30s budget: three batches start, the fourth
+        // is refused. The search ends on the deadline, not on the candidates.
+        assert_eq!(recorder.probed().len(), PROBE_BATCH * 3);
+        assert!(started.elapsed() <= DISCOVERY_DEADLINE + core::time::Duration::from_secs(11));
+    }
+
+    #[tokio::test]
+    async fn stops_at_the_first_holder_without_probing_the_rest() {
+        let candidates = peers(PROBE_BATCH * 3);
+        let holder_index = 2;
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == candidates[holder_index];
+                recorder.probe(peer_id, answer)
+            },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, Some(holder_index));
+        // The holder is in the first batch, so the search ends there: the
+        // batch it sits in is probed in full (those probes are concurrent and
+        // already in flight), and not one peer beyond it.
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH].to_vec());
+    }
+
+    #[tokio::test]
+    async fn widens_past_a_missing_batch() {
+        let candidates = peers(PROBE_BATCH * 3);
+        let holder_index = PROBE_BATCH + 1;
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == candidates[holder_index];
+                recorder.probe(peer_id, answer)
+            },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, Some(holder_index));
+        // Two batches: the miss widened the search exactly once, and the third
+        // batch was never touched.
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH * 2].to_vec());
+    }
+
+    #[tokio::test]
+    async fn earliest_holder_in_a_batch_wins() {
+        // Determinism matters: concurrent probes complete in arbitrary order,
+        // so the winner is chosen by candidate order, not by who answers first.
+        let candidates = peers(PROBE_BATCH);
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == candidates[1] || peer_id == candidates[5];
+                recorder.probe(peer_id, answer)
+            },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, Some(1));
+    }
+
+    #[tokio::test]
+    async fn no_candidates_means_no_holder() {
+        let recorder = ProbeRecorder::default();
+
+        let holder =
+            find_blob_holder(&[], |peer_id| recorder.probe(peer_id, true), no_deadline()).await;
+
+        assert_eq!(holder, None);
+        assert!(recorder.probed().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_falls_back_to_the_next_holder() {
+        // Two holders in the same batch. The first one wins the probe and then
+        // fails to deliver — which says something about that peer, not about
+        // the blob — so the second must be asked.
+        let candidates = peers(PROBE_BATCH * 2);
+        let bad = candidates[1];
+        let good = candidates[4];
+        let recorder = ProbeRecorder::default();
+        let fetched_from = Mutex::new(Vec::new());
+
+        let result: Option<&str> = fetch_from_first_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == bad || peer_id == good;
+                recorder.probe(peer_id, answer)
+            },
+            |peer_id| {
+                let fetched_from = &fetched_from;
+                async move {
+                    fetched_from
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(peer_id);
+                    (peer_id == good).then_some("bytes")
+                }
+            },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        // Both were asked, in candidate order: the bad one first, then the
+        // fallback. A single-holder implementation stops after the bad one.
+        assert_eq!(
+            *fetched_from
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![bad, good]
+        );
+        // The bound still holds while falling back.
+        assert_eq!(recorder.peak_in_flight.load(Ordering::SeqCst), PROBE_BATCH);
+    }
+
+    #[tokio::test]
+    async fn every_holder_failing_is_not_a_holder_found() {
+        let candidates = peers(3);
+        let recorder = ProbeRecorder::default();
+        let fetches = AtomicUsize::new(0);
+
+        let result: Option<&str> = fetch_from_first_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, true),
+            |_peer_id| async {
+                let _ignored = fetches.fetch_add(1, Ordering::SeqCst);
+                None
+            },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(result, None);
+        // Every candidate was fetched from before giving up: the fallback
+        // walks the list rather than stopping at the first disappointment.
+        assert_eq!(fetches.load(Ordering::SeqCst), candidates.len());
+        // Resuming re-probes the remainder of the failed peer's batch, so all
+        // three answer, then two, then one. That waste is the documented cost
+        // of the fallback, and it is bounded by the batch, not by the list.
+        assert_eq!(recorder.probed().len(), 3 + 2 + 1);
+    }
+
+    #[tokio::test]
+    async fn a_successful_first_winner_still_probes_only_one_batch() {
+        // The fallback must not have cost the short-circuit: the happy path is
+        // still exactly one batch of probes and one fetch.
+        let candidates = peers(PROBE_BATCH * 3);
+        let recorder = ProbeRecorder::default();
+
+        let result: Option<&str> = fetch_from_first_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == candidates[0];
+                recorder.probe(peer_id, answer)
+            },
+            |_peer_id| async { Some("bytes") },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH].to_vec());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_the_sweep_while_the_subscriber_set_fills() {
+        // The regression this guards: a node that has just joined has no
+        // subscribed peers yet. "No candidates" is not "nobody has it", and
+        // widening an empty list yields nothing — only retrying can find the
+        // holder that shows up on attempt 3.
+        let late_holder = PeerId::random();
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let sweep = sweeps.fetch_add(1, Ordering::SeqCst) + 1;
+                if sweep < 3 {
+                    Vec::new()
+                } else {
+                    vec![late_holder]
+                }
+            },
+            |_peer_id| async { true },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        assert_eq!(sweeps.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_once_the_attempt_budget_is_spent() {
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            },
+            |_peer_id| async { true },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, None);
+        assert_eq!(sweeps.load(Ordering::SeqCst), MAX_DISCOVERY_ATTEMPTS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sweep_that_finds_a_holder_does_not_retry() {
+        let holder = PeerId::random();
+        let sweeps = AtomicUsize::new(0);
+
+        let result: Option<&str> = discover_and_fetch_blob(
+            || async {
+                let _ignored = sweeps.fetch_add(1, Ordering::SeqCst);
+                vec![holder]
+            },
+            |_peer_id| async { true },
+            |_peer_id| async { Some("bytes") },
+        )
+        .await;
+
+        assert_eq!(result, Some("bytes"));
+        assert_eq!(sweeps.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        use super::{discovery_backoff, INITIAL_RETRY_DELAY, MAX_RETRY_DELAY};
+
+        assert_eq!(discovery_backoff(1), INITIAL_RETRY_DELAY);
+        assert_eq!(discovery_backoff(2), INITIAL_RETRY_DELAY * 2);
+        assert_eq!(discovery_backoff(3), INITIAL_RETRY_DELAY * 4);
+        assert_eq!(discovery_backoff(5), INITIAL_RETRY_DELAY * 16);
+        // 100ms * 32 would be 3.2s, so attempt 6 is where the cap bites.
+        assert_eq!(discovery_backoff(6), MAX_RETRY_DELAY);
+        // Underflow- and overflow-safe at both ends of the range.
+        assert_eq!(discovery_backoff(0), INITIAL_RETRY_DELAY);
+        assert_eq!(discovery_backoff(usize::MAX), MAX_RETRY_DELAY);
+    }
 }
