@@ -16,9 +16,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiRequest, ContextIdentitiesResponseData, CreateContextRequest,
-    CreateContextResponseData, GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse,
-    IntentRelayApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
+    AccountDevicesApiResponse, AccountPairInitApiRequest, AddGroupMembersApiRequest,
+    ContextIdentitiesResponseData, CreateContextRequest, CreateContextResponseData,
+    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, IntentRelayApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, NodeIdentityApiResponse,
     ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
@@ -80,6 +81,8 @@ macro_rules! wire_fixtures {
 // Scope: the endpoints that drifted (mero-js #51/#53) + jsonrpc. Adding a fixture
 // is one row here plus the committed JSON; expanding to the full DTO surface and
 // the auth-crate DTOs is mechanical.
+// Identity and account fixtures are pinned because the SDKs mirror these DTOs
+// by hand.
 wire_fixtures! {
     create_context_req: CreateContextRequest => "contexts/create_context.req.json",
     create_context_res: CreateContextResponseData => "contexts/create_context.res.json",
@@ -117,4 +120,7 @@ wire_fixtures! {
     identities_res: ContextIdentitiesResponseData => "contexts/identities.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
+    node_identity_res: NodeIdentityApiResponse => "identity/node_identity.res.json",
+    account_pair_init_req: AccountPairInitApiRequest => "account/pair_init.req.json",
+    account_devices_res: AccountDevicesApiResponse => "account/devices.res.json",
 }
