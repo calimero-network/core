@@ -75,6 +75,7 @@ SIGNED=$(offline_merod "${NODE}" account login-statement \
     --node "${NODE_KEY}" \
     --device-secret "${DEVICE_SECRET}" \
     --generate-session-key \
+    --credential "${CREDENTIAL}" \
     --audience cli)
 
 STATEMENT=$(echo "${SIGNED}" | head -1)

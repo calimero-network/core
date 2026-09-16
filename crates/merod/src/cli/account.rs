@@ -448,6 +448,17 @@ pub struct LoginStatementCommand {
     #[arg(long, default_value = "cli")]
     audience: String,
 
+    /// The device's credential, as printed by `sign-cert`. Optional.
+    ///
+    /// Not carried in the statement — the login POSTs it alongside as the
+    /// account proof. Accepted here only so the pair can be checked before the
+    /// node sees it, for the reason `warrant` does the same: a server's refusal
+    /// reads as a credential problem when it is really a key that the
+    /// certificate does not certify, and that is a slow thing to work out from
+    /// a 401.
+    #[arg(long, value_name = "HEX")]
+    credential: Option<String>,
+
     /// Seconds from now that the statement stays honourable.
     #[arg(long, default_value_t = 300)]
     valid_for: u64,
@@ -491,6 +502,21 @@ impl LoginStatementCommand {
         let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
 
         let audience = parse_audience(&self.audience);
+
+        // Refused here rather than by the node, because the node's refusal is a
+        // 401 that looks like a permission problem.
+        if let Some(credential) = self.credential.as_deref() {
+            let bytes = hex::decode(credential.trim()).wrap_err("--credential is not hex")?;
+            let credential: calimero_account::AccountProof<calimero_account::DeviceCert> =
+                borsh::from_slice(&bytes)
+                    .wrap_err("--credential is not a valid device credential")?;
+            if credential.statement.sign_pk != secret.public_key() {
+                eyre::bail!(
+                    "the credential certifies a different key than --device-secret holds, so \
+                     the session it asks for would be refused"
+                );
+            }
+        }
 
         let issued_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
