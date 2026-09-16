@@ -106,7 +106,7 @@ pub(crate) struct ConnectionStateInner {
     /// connection, or `None` when the auth method does not provide a
     /// cryptographic key (e.g. embedded username/password auth). Set once at
     /// upgrade time; immutable for the life of the connection.
-    pub(crate) caller: Option<calimero_primitives::identity::PublicKey>,
+    pub(crate) caller: Option<crate::caller_account::EventCaller>,
     /// `true` when the auth layer positively confirmed this connection as the
     /// node owner via a non-key method (e.g. embedded username/password).
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
@@ -115,7 +115,7 @@ pub(crate) struct ConnectionStateInner {
 }
 
 impl ConnectionStateInner {
-    fn new(caller: Option<calimero_primitives::identity::PublicKey>, node_owner: bool) -> Self {
+    fn new(caller: Option<crate::caller_account::EventCaller>, node_owner: bool) -> Self {
         Self {
             subscriptions: HashSet::default(),
             group_subscriptions: HashSet::default(),
@@ -237,6 +237,7 @@ async fn ws_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -276,10 +277,19 @@ async fn ws_handler(
     //                               warn loudly (misconfiguration signal)
     //                             - auth_enabled=false → intentional no-auth deployment;
     //                               proceed silently at debug level
-    let (caller, node_owner) = match (auth_key, auth_node_owner) {
-        (Some(ext), _) => (Some(ext.0 .0), false),
-        (None, Some(_)) => (None, true),
-        (None, None) => {
+    let (caller, node_owner) = match (auth_key, auth_node_owner, auth_account) {
+        (Some(ext), _, _) => (Some(EventCaller::Key(ext.0 .0)), false),
+        (None, Some(_), _) => (None, true),
+        // An account-anchored session (#3930). Emphatically NOT the node owner
+        // — it may be one tenant among many on a relay — so it carries its own
+        // identity and is authorized per subscription like any other caller.
+        //
+        // Before #3942 this fell into the arm below and was answered with 401:
+        // a delegated device could not open a WebSocket at all, which is a
+        // harder failure than the SSE one (where it connected and then resolved
+        // to nobody).
+        (None, None, Some(ext)) => (Some(EventCaller::Account(ext.0 .0)), false),
+        (None, None, None) => {
             if state.auth_enabled {
                 warn!(
                     "No auth extensions present on WebSocket upgrade — auth guard may not be running"
@@ -304,7 +314,7 @@ async fn ws_handler(
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<ServiceState>,
-    caller: Option<calimero_primitives::identity::PublicKey>,
+    caller: Option<crate::caller_account::EventCaller>,
     node_owner: bool,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
@@ -920,7 +930,8 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
 
 /// WebSocket command channel buffer size

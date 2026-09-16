@@ -60,7 +60,8 @@ use super::events::handle_node_events;
 use super::session::{now_secs, SessionState, SessionStateInner};
 use super::state::ServiceState;
 use super::storage::{delete_session, load_session, save_session};
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::caller_account::EventCaller;
 
 /// Sentinel principal for sessions owned by the node owner (non-key auth, e.g.
 /// embedded username/password). All node-owner requests share one principal —
@@ -82,6 +83,17 @@ const UNAUTHENTICATED_PRINCIPAL: &str = "<unauthenticated>";
 ///
 /// - A verified Ed25519 key → that key's string form.
 /// - Non-key auth (`AuthenticatedNodeOwner`) → the shared [`NODE_OWNER_PRINCIPAL`].
+/// - An account-anchored session (`AuthenticatedAccount`, #3930) → that
+///   **account's** string form, which is distinct per account.
+///
+///   This arm closes a hole rather than merely adding a case. Without it such a
+///   session matched none of the arms above and fell through to
+///   [`UNAUTHENTICATED_PRINCIPAL`] — a *constant*. Every account-anchored
+///   session therefore carried the same owner string, so `owner_allows_access`
+///   compared two of them equal and handed one account's session to another.
+///   The sentinel is documented below as fail-closed for owned sessions, and it
+///   is — but only against a caller who does not also carry it. Once #3930 made
+///   more than one such caller possible, it stopped separating tenants.
 /// - Neither, auth **enabled** → [`UNAUTHENTICATED_PRINCIPAL`]: the guard is
 ///   running but injected no principal (bypassed / mounted elsewhere). Fail
 ///   closed rather than silently granting access.
@@ -90,12 +102,15 @@ const UNAUTHENTICATED_PRINCIPAL: &str = "<unauthenticated>";
 fn caller_principal(
     auth_key: Option<&AuthenticatedKey>,
     auth_node_owner: Option<&AuthenticatedNodeOwner>,
+    auth_account: Option<&AuthenticatedAccount>,
     auth_enabled: bool,
 ) -> Option<String> {
     if let Some(AuthenticatedKey(pk)) = auth_key {
         Some(pk.to_string())
     } else if auth_node_owner.is_some() {
         Some(NODE_OWNER_PRINCIPAL.to_owned())
+    } else if let Some(AuthenticatedAccount(account)) = auth_account {
+        Some(account.to_string())
     } else if auth_enabled {
         Some(UNAUTHENTICATED_PRINCIPAL.to_owned())
     } else {
@@ -189,11 +204,13 @@ pub async fn handle_subscription(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
     let caller = caller_principal(
         auth_key.as_deref(),
         auth_node_owner.as_deref(),
+        auth_account.as_deref(),
         state.auth_enabled,
     );
     let session_id = match request.id.parse::<ConnectionId>() {
@@ -247,17 +264,27 @@ pub async fn handle_subscription(
                 // carry state, so a non-member must not receive them. Unauthorized
                 // ids are dropped and the response reflects only what was subscribed.
                 let node_owner = auth_node_owner.is_some();
+                // Who this subscribe authorizes as. A client key resolves to an
+                // account through the binding rows; an account-anchored session
+                // already is one. Built once and used for both the context and
+                // the group gate, so the two cannot disagree about who is asking.
+                let event_caller = match (&auth_key, &auth_account) {
+                    (Some(Extension(AuthenticatedKey(pk))), _) => Some(EventCaller::Key(*pk)),
+                    (None, Some(Extension(AuthenticatedAccount(account)))) => {
+                        Some(EventCaller::Account(*account))
+                    }
+                    (None, None) => None,
+                };
                 let subscribed: Vec<_> = ctxs
                     .context_ids
                     .iter()
                     .copied()
                     .filter(|ctx| {
-                        let caller = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                         let authorized = crate::ws::caller_may_observe_context(
                             &state.ctx_client,
                             state.auth_enabled,
                             node_owner,
-                            caller,
+                            event_caller.as_ref(),
                             ctx,
                         );
                         if !authorized {
@@ -272,12 +299,11 @@ pub async fn handle_subscription(
                 // Subscribe-time only, like may_observe_context. Admin authority
                 // is resolved in the same pass, since admin-only payloads ride
                 // the same subscription.
-                let caller_key = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                 let groups = crate::ws::authorize_group_subscriptions(
                     &state.ctx_client,
                     state.auth_enabled,
                     node_owner,
-                    caller_key,
+                    event_caller.as_ref(),
                     ctxs.group_ids.iter().copied(),
                 );
                 for group_id in &groups.denied {
@@ -459,6 +485,7 @@ pub async fn sse_handler(
     let caller = caller_principal(
         request.extensions().get::<AuthenticatedKey>(),
         request.extensions().get::<AuthenticatedNodeOwner>(),
+        request.extensions().get::<AuthenticatedAccount>(),
         state.auth_enabled,
     );
 
@@ -681,12 +708,14 @@ pub async fn get_session_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
     Path(session_id): Path<ConnectionId>,
 ) -> impl IntoResponse {
     debug!(%session_id, "GET session info request");
     let caller = caller_principal(
         auth_key.as_deref(),
         auth_node_owner.as_deref(),
+        auth_account.as_deref(),
         state.auth_enabled,
     );
 
@@ -830,39 +859,92 @@ mod tests {
         PublicKey::from([b; 32])
     }
 
+    fn account(b: u8) -> calimero_account::AccountId {
+        calimero_account::AccountId::from([b; 32])
+    }
+
     #[test]
     fn caller_principal_prefers_key_then_node_owner_then_none() {
         // A verified key wins and maps to its string form.
         let key = AuthenticatedKey(pk(1));
         assert_eq!(
-            caller_principal(Some(&key), None, true),
+            caller_principal(Some(&key), None, None, true),
             Some(pk(1).to_string()),
         );
         // A key takes precedence even if the node-owner marker is also present.
         assert_eq!(
-            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner), true),
+            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner), None, true),
             Some(pk(1).to_string()),
         );
         // Non-key auth collapses to the shared node-owner principal.
         assert_eq!(
-            caller_principal(None, Some(&AuthenticatedNodeOwner), true),
+            caller_principal(None, Some(&AuthenticatedNodeOwner), None, true),
             Some(NODE_OWNER_PRINCIPAL.to_owned()),
         );
         // Auth enabled but no principal → fail-closed sentinel (never matches a
         // real owner).
         assert_eq!(
-            caller_principal(None, None, true),
+            caller_principal(None, None, None, true),
             Some(UNAUTHENTICATED_PRINCIPAL.to_owned()),
         );
         // Auth disabled: no principal to bind to (single-tenant allowance).
-        assert_eq!(caller_principal(None, None, false), None);
+        assert_eq!(caller_principal(None, None, None, false), None);
+    }
+
+    #[test]
+    fn each_account_session_is_its_own_principal() {
+        // The arm this covers is why the sentinel stopped separating tenants.
+        //
+        // An `account_proof` session carries neither a key nor the node-owner
+        // marker, so before #3942 it fell through to UNAUTHENTICATED_PRINCIPAL
+        // — a constant. Two accounts then produced the SAME owner string, and
+        // `owner_allows_access` compares owner to caller for equality, so one
+        // account could reach the other's session.
+        let a = AuthenticatedAccount(account(1));
+        let b = AuthenticatedAccount(account(2));
+
+        let principal_a = caller_principal(None, None, Some(&a), true);
+        let principal_b = caller_principal(None, None, Some(&b), true);
+
+        assert_eq!(principal_a, Some(account(1).to_string()));
+        assert_ne!(
+            principal_a, principal_b,
+            "two accounts must not share one session-owner principal",
+        );
+        assert_ne!(
+            principal_a,
+            Some(UNAUTHENTICATED_PRINCIPAL.to_owned()),
+            "an authenticated account must not land on the fail-closed sentinel",
+        );
+
+        // The property that matters, stated as the access decision rather than
+        // as string inequality: B cannot reach a session A owns, and A can.
+        assert!(!owner_allows_access(&principal_a, &principal_b));
+        assert!(owner_allows_access(&principal_a, &principal_a));
+    }
+
+    #[test]
+    fn a_key_outranks_an_account_and_the_node_owner_outranks_both() {
+        // Precedence is asserted rather than assumed because the arms are an
+        // if/else chain: a caller presenting two extensions must resolve the
+        // same way every time, or session ownership depends on header order.
+        let key = AuthenticatedKey(pk(1));
+        let acct = AuthenticatedAccount(account(1));
+        assert_eq!(
+            caller_principal(Some(&key), None, Some(&acct), true),
+            Some(pk(1).to_string()),
+        );
+        assert_eq!(
+            caller_principal(None, Some(&AuthenticatedNodeOwner), Some(&acct), true),
+            Some(NODE_OWNER_PRINCIPAL.to_owned()),
+        );
     }
 
     #[test]
     fn auth_enabled_request_without_principal_is_denied_on_owned_session() {
         // The fail-closed sentinel must not be able to read an owned session.
         let owner = Some(pk(7).to_string());
-        let unauth = caller_principal(None, None, true);
+        let unauth = caller_principal(None, None, None, true);
         assert_eq!(unauth, Some(UNAUTHENTICATED_PRINCIPAL.to_owned()));
         assert!(
             !owner_allows_access(&owner, &unauth),
@@ -1067,6 +1149,7 @@ mod tests {
         let subscribe = || {
             handle_subscription(
                 Extension(Arc::clone(&state)),
+                None,
                 None,
                 None,
                 Json(

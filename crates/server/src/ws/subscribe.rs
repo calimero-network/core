@@ -5,12 +5,12 @@ use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::MembershipRepository;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::ws::{SubscribeRequest, SubscribeResponse};
 use calimero_server_primitives::Infallible;
 use eyre::Result as EyreResult;
 use tracing::warn;
 
+use crate::caller_account::EventCaller;
 use crate::ws::{mount_method, ConnectionState, ServiceState};
 
 mount_method!(SubscribeRequest-> Result<SubscribeResponse, Infallible>, handle);
@@ -165,17 +165,29 @@ pub(crate) fn caller_may_observe_context(
     ctx_client: &ContextClient,
     auth_enabled: bool,
     node_owner: bool,
-    caller: Option<&calimero_primitives::identity::PublicKey>,
+    caller: Option<&EventCaller>,
     context_id: &calimero_primitives::context::ContextId,
 ) -> bool {
-    let caller_is_member = caller.map(|key| {
-        let account = crate::caller_account::for_context(ctx_client, context_id, key);
-        ctx_client
-            .has_member(context_id, key, account)
-            .unwrap_or_else(|err| {
-                warn!(%context_id, %err, "has_member lookup failed; denying observation");
-                false
-            })
+    let caller_is_member = caller.map(|caller| match caller {
+        // A key keeps the key-keyed arm: `has_member` checks
+        // `ContextIdentity(context, key)` first, which answers for a context
+        // this node joined directly and has no account-keyed equivalent.
+        EventCaller::Key(key) => {
+            let account = crate::caller_account::for_context(ctx_client, context_id, key);
+            ctx_client
+                .has_member(context_id, key, account)
+                .unwrap_or_else(|err| {
+                    warn!(%context_id, %err, "has_member lookup failed; denying observation");
+                    false
+                })
+        }
+        // An account-anchored caller has no key, so the `ContextIdentity` arm
+        // is not merely skipped but meaningless: there is no key it could be
+        // keyed by. What remains is the group-keyed question, which is the
+        // whole of the membership rule for this caller.
+        EventCaller::Account(account) => {
+            crate::caller_account::account_is_context_member(ctx_client, context_id, account)
+        }
     });
     may_observe_context(auth_enabled, node_owner, caller_is_member)
 }
@@ -249,7 +261,7 @@ pub(crate) fn authorize_group_subscriptions(
     ctx_client: &ContextClient,
     auth_enabled: bool,
     node_owner: bool,
-    caller: Option<&PublicKey>,
+    caller: Option<&EventCaller>,
     group_ids: impl IntoIterator<Item = Hash>,
 ) -> GroupSubscriptions {
     let mut decided = GroupSubscriptions {
@@ -303,13 +315,25 @@ pub(crate) fn caller_group_access(
     ctx_client: &ContextClient,
     auth_enabled: bool,
     node_owner: bool,
-    caller: Option<&PublicKey>,
+    caller: Option<&EventCaller>,
     group_id: &Hash,
 ) -> GroupAccess {
-    let resolved = caller.map(|key| {
+    let resolved = caller.map(|caller| {
         let gid = ContextGroupId::from(*group_id.as_bytes());
-        let Some(account) = crate::caller_account::for_group(ctx_client, &gid, key) else {
-            return (false, false);
+        // Both authorities below are held by the ACCOUNT, so this is the only
+        // step that differs between the two caller shapes: a key has to be
+        // resolved to one and may resolve to none, an account-anchored caller
+        // already is one. Everything after this point is identical, which is
+        // why the resolution is a `match` producing an account rather than two
+        // copies of the membership logic.
+        let account = match caller {
+            EventCaller::Key(key) => {
+                let Some(account) = crate::caller_account::for_group(ctx_client, &gid, key) else {
+                    return (false, false);
+                };
+                account
+            }
+            EventCaller::Account(account) => *account,
         };
         let memberships = MembershipRepository::new(ctx_client.datastore());
         let member = memberships
