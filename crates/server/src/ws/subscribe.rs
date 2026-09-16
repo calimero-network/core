@@ -74,6 +74,18 @@ async fn handle(
             &mut inner.group_subscriptions,
             &mut inner.admin_group_subscriptions,
         );
+        // Vouch for what was just granted. Until a membership event names one
+        // of the groups these subscriptions depend on, the fan-out will not ask
+        // the store about this connection again.
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
+        );
     }
     let subscribed_groups = groups.subscribed;
 

@@ -343,6 +343,19 @@ pub async fn handle_subscription(
                     // connected.
                     inner.caller = event_caller;
                     inner.node_owner = node_owner;
+                    // Vouch for what was just granted. Until a membership event
+                    // names one of the groups these subscriptions depend on,
+                    // the event task will not ask the store about this session
+                    // again.
+                    let (subscriptions, group_subscriptions) = (
+                        inner.subscriptions.clone(),
+                        inner.group_subscriptions.clone(),
+                    );
+                    inner.grants.vouch(
+                        state.ctx_client.datastore(),
+                        &subscriptions,
+                        &group_subscriptions,
+                    );
                     inner.touch();
                     inner.to_persisted()
                 };
@@ -1198,6 +1211,118 @@ mod tests {
         assert!(
             persisted.group_subscriptions.is_empty(),
             "a reconnect must not restore a revoked subscription",
+        );
+
+        task.abort();
+    }
+
+    /// A session resumed from a persisted record is re-derived BEFORE it is
+    /// served — with no membership event arriving to prompt it.
+    ///
+    /// This is what makes persisting a session safe. The record restores the
+    /// subscriptions but carries no grant and no caller, so the resumed session
+    /// is stale by construction and `handle_node_events` validates it against
+    /// live membership on the way in, using the caller the resuming request
+    /// proved. Without that, a session persisted while its owner was a member
+    /// comes back subscribed after the removal and serves the group's events
+    /// from its first poll.
+    ///
+    /// Note what is deliberately absent: nothing is published on the event
+    /// channel before the assertion. The revocation here is the resume's own
+    /// doing.
+    #[actix::test]
+    async fn a_resumed_session_is_re_derived_before_it_is_served() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let member_pk = PublicKey::from([0x6Bu8; 32]);
+        let (state, _events, _blob_dir) = sse_state_authed().await;
+        let store = &state.store;
+        let (group, _subgroup, member) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+
+        // Persist a session subscribed to the group, as one left by a client
+        // that subscribed while it was still a member.
+        let session_id: ConnectionId = 11;
+        let (session, _tx, _rx) = session_with_connection();
+        {
+            let mut inner = session.inner.write().await;
+            let _ = inner.group_subscriptions.insert(group);
+        }
+        let persisted = session.inner.read().await.to_persisted();
+        let mut save_store = state.store.clone();
+        crate::sse::storage::save_session(&mut save_store, session_id, &persisted)
+            .expect("session persists");
+
+        // Membership goes away while the session is disconnected.
+        MembershipRepository::new(store)
+            .remove_member(&ns_gid, &member)
+            .unwrap();
+
+        // The client reconnects: the record is restored, and the resuming
+        // request stamps the caller it proved.
+        let restored = crate::sse::storage::load_session(&state.store, session_id)
+            .expect("record readable")
+            .expect("record present");
+        assert!(
+            restored.group_subscriptions.contains(&group),
+            "precondition: the persisted record still carries the subscription",
+        );
+        let resumed = SessionState::new(SessionStateInner::from_persisted(restored));
+        {
+            let mut inner = resumed.inner.write().await;
+            inner.caller = Some(EventCaller::Key(member_pk));
+            inner.node_owner = false;
+        }
+        assert!(
+            resumed.inner.read().await.grants.is_stale(),
+            "a resumed session must start un-vouched",
+        );
+        drop(
+            state
+                .sessions
+                .write()
+                .await
+                .insert(session_id, resumed.clone()),
+        );
+
+        let (task_tx, _task_rx) = mpsc::channel::<Command>(16);
+        let task = tokio::spawn(crate::sse::events::handle_node_events(
+            session_id,
+            Arc::clone(&state),
+            resumed.clone(),
+            task_tx,
+        ));
+
+        // Give the task its first poll. No event is published — the resume
+        // itself is what must revoke.
+        let revoked = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if resumed.inner.read().await.group_subscriptions.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            revoked.is_ok(),
+            "the resume must re-derive and drop the subscription without waiting for an event",
+        );
+
+        // ...and the reduced set is written back, so a second reconnect cannot
+        // restore it either.
+        let after = crate::sse::storage::load_session(&state.store, session_id)
+            .expect("record readable")
+            .expect("record present");
+        assert!(
+            after.group_subscriptions.is_empty(),
+            "the revocation must be persisted, not only applied in memory",
         );
 
         task.abort();

@@ -55,6 +55,14 @@ pub async fn handle_node_events(
 ) {
     let events = state.node_client.receive_events();
 
+    // Validate before serving anything. A session resumed from a persisted
+    // record arrives with its subscriptions restored but no grant — stale by
+    // construction — so this is where a reconnect re-derives them against live
+    // membership, using the caller the resuming request proved rather than one
+    // remembered from the record. A session that was never persisted and just
+    // subscribed is already vouched for, so this costs it nothing.
+    prune_stale_grants(session_id, &state, &session_state, None).await;
+
     let mut events = pin!(events);
 
     loop {
@@ -97,19 +105,18 @@ pub async fn handle_node_events(
             subscriptions
         );
 
-        // Captured before the match below consumes `event`. A removal is the
-        // one event that can invalidate a subscription already granted, and it
-        // drives the prune whether or not this session is subscribed to the
-        // group it names: a removal from a parent group can revoke an inherited
-        // member of a descendant, which this session may well be watching.
-        let membership_revoked = matches!(
-            &event,
-            NodeEvent::GroupMembership(membership_event)
-                if matches!(
-                    membership_event.payload,
-                    calimero_primitives::events::MembershipChangePayload::MemberRemoved(_)
-                )
-        );
+        // Captured before the match below consumes `event`. ANY membership
+        // change to a group can invalidate a subscription already granted — a
+        // removal most obviously, but a re-add at a lower role demotes the
+        // admin-only payloads too, and the payload tags do not distinguish
+        // them. It drives the prune whether or not this session watches the
+        // group it names: the session's own watched set decides, and that set
+        // includes ancestors, so a removal from a parent reaches an inherited
+        // member of a descendant.
+        let membership_changed = match &event {
+            NodeEvent::GroupMembership(membership_event) => Some(membership_event.group_id),
+            NodeEvent::Context(_) | NodeEvent::GroupMigration(_) => None,
+        };
 
         let event = match event {
             NodeEvent::Context(event) if subscriptions.contains(&event.context_id) => {
@@ -125,8 +132,7 @@ pub async fn handle_node_events(
             // other two `continue` arms need no such call: only a
             // `GroupMembership` event can set `membership_revoked`.
             NodeEvent::GroupMembership(_) => {
-                prune_revoked_subscriptions(session_id, &state, &session_state, membership_revoked)
-                    .await;
+                prune_stale_grants(session_id, &state, &session_state, membership_changed).await;
                 continue;
             }
             NodeEvent::GroupMigration(event)
@@ -168,7 +174,7 @@ pub async fn handle_node_events(
         // AFTER delivery, deliberately: the removed member is told they were
         // removed on the same stream the removal takes away from them. Pruning
         // first would drop the one event that explains the silence.
-        prune_revoked_subscriptions(session_id, &state, &session_state, membership_revoked).await;
+        prune_stale_grants(session_id, &state, &session_state, membership_changed).await;
     }
 }
 
@@ -187,20 +193,29 @@ pub async fn handle_node_events(
 /// what protects it is that the reduced set is PERSISTED below, so the
 /// subscriptions a reconnect restores are the ones that survived the last
 /// prune, never the revoked ones.
-async fn prune_revoked_subscriptions(
+async fn prune_stale_grants(
     session_id: ConnectionId,
     state: &ServiceState,
     session_state: &SessionState,
-    revoked: bool,
+    changed_group: Option<calimero_primitives::hash::Hash>,
 ) {
-    if !revoked {
-        return;
-    }
-
-    // Snapshot under a read lock; the membership lookups below touch the store
-    // and must not run while holding it.
+    // Snapshot under a write lock — `note_membership_change` records the
+    // staleness — and release it before the membership lookups, which touch the
+    // store and must not run while holding it.
     let (caller, node_owner, subscriptions, group_subscriptions) = {
         let inner = session_state.inner.read().await;
+        // The cheap filter, and all most events cost: a hash-set lookup under
+        // the read lock deciding whether this change can touch this session at
+        // all. A session already stale — a resumed one, whose subscriptions
+        // came back from the store without a grant — is affected by everything
+        // and falls through to re-derive, which is what `None` relies on.
+        let affected = match changed_group {
+            Some(group) => inner.grants.is_affected_by(&group),
+            None => inner.grants.is_stale(),
+        };
+        if !affected {
+            return;
+        }
         (
             inner.caller,
             inner.node_owner,
@@ -221,6 +236,18 @@ async fn prune_revoked_subscriptions(
         &group_subscriptions,
     );
     if revocation.is_empty() {
+        // Nothing came off, but the session is still marked stale; re-vouch so
+        // it stops re-deriving on every subsequent membership change.
+        let mut inner = session_state.inner.write().await;
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
+        );
         return;
     }
     let (contexts, denied_groups, demoted_groups) = revocation.lost();
@@ -242,6 +269,17 @@ async fn prune_revoked_subscriptions(
             &mut inner.subscriptions,
             &mut inner.group_subscriptions,
             &mut inner.admin_group_subscriptions,
+        );
+        // Re-vouch for what survived: the subscriptions changed, so what
+        // governs them may have too.
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
         );
         inner.to_persisted()
     };

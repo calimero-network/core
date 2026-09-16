@@ -113,6 +113,11 @@ pub(crate) struct ConnectionStateInner {
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
     /// when `caller` is `None`.
     pub(crate) node_owner: bool,
+    /// What this connection's subscriptions depend on, and whether that has
+    /// been checked since it last could have changed. See
+    /// [`crate::subscription_grants`] for why authority is vouched for rather
+    /// than re-derived on every event.
+    pub(crate) grants: crate::subscription_grants::Grants,
 }
 
 impl ConnectionStateInner {
@@ -124,6 +129,7 @@ impl ConnectionStateInner {
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
+            grants: crate::subscription_grants::Grants::default(),
         }
     }
 }
@@ -479,17 +485,17 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
             },
         };
 
-        // Captured before `event` is consumed by serialization below. A
-        // removal is the one event that can invalidate a subscription already
-        // granted, so it is what drives the prune after delivery.
-        let membership_revoked = matches!(
-            &event,
-            NodeEvent::GroupMembership(membership_event)
-                if matches!(
-                    membership_event.payload,
-                    calimero_primitives::events::MembershipChangePayload::MemberRemoved(_)
-                )
-        );
+        // Captured before `event` is consumed by serialization below. ANY
+        // membership change to a group advances that group's generation, not
+        // just a removal: a removal is the obvious way to lose authority, but a
+        // re-add at a lower role demotes the admin-only payloads a subscription
+        // was granted, and the payload tags do not distinguish the two. The
+        // bump costs an integer and one subtree read; only connections whose
+        // grants actually go stale pay to re-derive.
+        let membership_changed = match &event {
+            NodeEvent::GroupMembership(membership_event) => Some(membership_event.group_id),
+            NodeEvent::Context(_) | NodeEvent::GroupMigration(_) => None,
+        };
 
         debug!("Received node event: {:?}", event);
 
@@ -555,34 +561,31 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
         // AFTER delivery, deliberately: the removed member is told they were
         // removed on the same stream the removal takes away from them. Pruning
         // first would drop the one event that explains the silence.
-        if membership_revoked {
-            prune_revoked_subscriptions(&state).await;
+        if let Some(group_id) = membership_changed {
+            prune_stale_grants(&state, &group_id).await;
         }
     }
 
     debug!("Node event stream ended, stopping WS event fan-out");
 }
 
-/// Drop every subscription whose caller no longer passes the subscribe-time
-/// gate, across all connections.
+/// Re-derive authority for the connections whose grants just went stale, and
+/// drop whatever no longer passes the subscribe-time gate.
 ///
-/// Run when a membership REMOVAL is observed, not on every event: that is what
-/// makes this affordable. The cost is one re-authorization pass per removal —
-/// a rare, governance-paced event — rather than a membership lookup per event
-/// per subscriber, which is the same work on a path that carries video frames
-/// and document updates.
+/// Run after a membership change on `group_id`. The narrowing is the point: a
+/// connection whose subscriptions do not depend on that group answers with one
+/// hash-set lookup and is skipped, so the store-touching re-derivation below
+/// runs only for connections the change could genuinely have affected. This
+/// function previously re-authorized *every* connection against the store on
+/// *every* removal.
 ///
-/// Every connection is re-authorized, not just the removed account's. The event
-/// names an account, but a connection's authority is not always a comparison
-/// against it: a key-anchored caller resolves to an account per context, and a
-/// removal from a parent group can revoke an inherited member of a descendant.
-/// Re-running the gate answers all of those without this function having to
-/// know which; getting that inference wrong fails OPEN, which is the direction
-/// that leaks.
+/// The set a connection is tested against includes each governing group's
+/// ANCESTORS, so an inherited member of a descendant is caught by a removal
+/// that names only the parent.
 ///
 /// Node-owner and no-auth connections are unaffected — the gates admit them
 /// unconditionally, so they never appear in a revocation.
-async fn prune_revoked_subscriptions(state: &ServiceState) {
+async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
     // Snapshot under the read lock, re-authorize without it. The membership
     // lookups touch the store, and holding either lock across them would stall
     // the fan-out for every other subscriber.
@@ -592,6 +595,12 @@ async fn prune_revoked_subscriptions(state: &ServiceState) {
         for (connection_id, connection) in &*connections {
             let inner = connection.inner.read().await;
             if inner.subscriptions.is_empty() && inner.group_subscriptions.is_empty() {
+                continue;
+            }
+            // The cheap filter, and the only thing most connections do: a
+            // hash-set lookup under the read lock deciding whether this change
+            // can touch them. Everything below this line reaches the store.
+            if !inner.grants.is_affected_by(group_id) {
                 continue;
             }
             snapshots.push((
@@ -616,17 +625,16 @@ async fn prune_revoked_subscriptions(state: &ServiceState) {
             &subscriptions,
             &group_subscriptions,
         );
-        if revocation.is_empty() {
-            continue;
-        }
         let (contexts, denied_groups, demoted_groups) = revocation.lost();
-        warn!(
-            %connection_id,
-            contexts = contexts.len(),
-            groups = denied_groups.len(),
-            demoted = demoted_groups.len(),
-            "revoking subscriptions: the caller no longer passes the observation gate",
-        );
+        if !revocation.is_empty() {
+            warn!(
+                %connection_id,
+                contexts = contexts.len(),
+                groups = denied_groups.len(),
+                demoted = demoted_groups.len(),
+                "revoking subscriptions: the caller no longer passes the observation gate",
+            );
+        }
         // Re-taken rather than held: a subscribe that raced this pass had to
         // pass the same gate to add anything, so the worst case is that an id
         // re-granted in between comes off and the client re-subscribes. Erring
@@ -637,6 +645,18 @@ async fn prune_revoked_subscriptions(state: &ServiceState) {
             &mut inner.subscriptions,
             &mut inner.group_subscriptions,
             &mut inner.admin_group_subscriptions,
+        );
+        // Re-vouch for what survived: the subscriptions changed, so what
+        // governs them may have too, and without this the connection stays
+        // stale and re-derives on every subsequent membership change.
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
         );
     }
 }

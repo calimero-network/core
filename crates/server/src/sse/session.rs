@@ -76,6 +76,16 @@ pub struct SessionStateInner {
     /// observation gates admit the node owner unconditionally, so a prune that
     /// did not know this would revoke the owner's own subscriptions.
     pub node_owner: bool,
+    /// What this session's subscriptions depend on, and whether that has been
+    /// checked since it last could have changed.
+    ///
+    /// Not persisted, and that is the point: the subscriptions come back from
+    /// the store on a resume, the grant does not, so a resumed session starts
+    /// STALE and is re-derived against live membership before it is served —
+    /// using the caller proven by the token on the resuming request, never an
+    /// authorization remembered from the record. See
+    /// [`crate::subscription_grants`].
+    pub grants: crate::subscription_grants::Grants,
 }
 
 impl Default for SessionStateInner {
@@ -94,6 +104,7 @@ impl Default for SessionStateInner {
             owner: None,
             caller: None,
             node_owner: false,
+            grants: crate::subscription_grants::Grants::default(),
         }
     }
 }
@@ -122,6 +133,10 @@ impl SessionStateInner {
             // from its own authenticated request.
             caller: None,
             node_owner: false,
+            // Default is STALE: the subscriptions above came back from the
+            // record, so they are re-derived against live membership before
+            // this session is served again.
+            grants: crate::subscription_grants::Grants::default(),
         }
     }
 
