@@ -26,6 +26,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
 
+pub mod account_follow;
 mod account_migration;
 mod account_namespace;
 pub mod activation;
@@ -823,6 +824,11 @@ impl Actor for ContextManager {
             Arc::clone(&self.ack_router),
             self.context_client.clone(),
         );
+
+        // What the account gains and leaves, followed and unfollowed on this
+        // device. Shutdown-then-spawn to rebind, as the singleton listeners above.
+        account_follow::shutdown();
+        account_follow::spawn(self.datastore.clone(), self.node_client.clone());
     }
 }
 

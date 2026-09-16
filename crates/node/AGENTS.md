@@ -238,6 +238,12 @@ cargo test -p calimero-node --test network_simulation
 - `ReadinessCache::insert` does NOT verify signatures or membership -
   the receiver-side gate `verify_readiness_beacon` is the choke point;
   callers from outside the receiver path must verify first
+- A beacon's `dag_head` is the lex-min of the sender's head SET, so it cannot
+  represent a fork: a peer holding `{L, G}` advertises whichever sorts lower,
+  and if we already hold that one we look caught up. `applied_through` is what
+  detects the fork, hence `peer_applied_more` in `beacon_indicates_divergence`.
+  The repair pull then goes to the beacon's own signer, the one node
+  demonstrably holding what we lack, not a subscriber that may be as far behind
 - `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
   `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
   parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side

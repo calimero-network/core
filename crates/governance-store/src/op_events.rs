@@ -18,6 +18,8 @@ use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
 use calimero_account::{AccountId, DeviceId};
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use tokio::sync::broadcast;
@@ -119,6 +121,21 @@ pub enum OpEvent {
     AccountDeviceCertified {
         group_id: [u8; 32],
         device: DeviceId,
+    },
+    /// `GroupOp::AccountNamespaceGained` - this namespace's account is a member
+    /// of `namespace`, which targeted `application` when the gainer read it.
+    /// That field only decides whether to follow; folding gives the real target.
+    AccountNamespaceGained {
+        group_id: [u8; 32],
+        namespace: ContextGroupId,
+        application: Option<ApplicationId>,
+    },
+    /// `GroupOp::AccountNamespaceLeft` - this namespace's account is no longer a
+    /// member of `namespace`. Fires with or without a row: a device may follow
+    /// it from its pairing list and still have to unfollow.
+    AccountNamespaceLeft {
+        group_id: [u8; 32],
+        namespace: ContextGroupId,
     },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including
