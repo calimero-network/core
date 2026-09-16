@@ -352,13 +352,25 @@ pub struct AccountProofConfig {
     #[serde(default = "default_challenge_ttl_secs")]
     pub challenge_ttl_secs: u64,
 
-    /// Hex of this node's namespace public key, as a client pins it.
+    /// Hex of this node's **device signing key**, as a client pins it.
+    ///
+    /// The key this node signs ops with, and the one its device certificate
+    /// certifies — not a namespace key, and not its libp2p identity. That is
+    /// what the client contract means by learning the node's identity "from a
+    /// pinned certificate": a libp2p key is a network address certified by
+    /// nothing, and a node belongs to many namespaces so no single namespace key
+    /// identifies it. (This doc previously said "namespace public key", which is
+    /// how a first implementation came to fill it with the libp2p key.)
     ///
     /// Required when the provider is enabled. Without it a malicious relay could
     /// fetch a challenge from this node, serve it to a user as its own, and
     /// replay the resulting statement here — the `node` field in the statement
     /// is what refuses that, and it can only be checked against a value this
     /// service already knows.
+    ///
+    /// Left unset, the embedded server fills it from the node's own signing key
+    /// at startup. A node that has not yet taken part in a namespace has no such
+    /// key, and the provider stays disabled until it does.
     #[serde(default)]
     pub node_key: Option<String>,
 
