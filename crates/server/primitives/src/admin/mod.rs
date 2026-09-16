@@ -316,10 +316,39 @@ impl GetContextStorageResponse {
     }
 }
 
+/// Whose identities a `GetContextIdentitiesResponse` is listing.
+///
+/// `identities-owned` answers a different question depending on who asks — the
+/// node's own signing identities for a node-owner session, the calling
+/// account's certified devices for a delegated one. Carried explicitly so a
+/// response says which reading it is rather than leaving the caller to infer it
+/// from its own token.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentitiesOf {
+    /// Every identity that is a member of the context — the `/identities`
+    /// roster, the same for every caller.
+    Members,
+    /// The identities this NODE holds a signing key for.
+    Node,
+    /// The calling account's certified, unrevoked devices in the group owning
+    /// this context. These are keys the CLIENT holds, not the node.
+    Caller,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextIdentitiesResponseData {
     pub identities: Vec<PublicKey>,
+    /// Which reading of the request this list is.
+    ///
+    /// `Option` for reading a response from a node predating the field, which
+    /// said nothing about it; this server always sets it. Defaulting it to a
+    /// concrete variant would be worse than absent — the honest answer for an
+    /// older node is "it did not say", not a guess that could be wrong in the
+    /// direction that matters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identities_of: Option<IdentitiesOf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -329,9 +358,12 @@ pub struct GetContextIdentitiesResponse {
 }
 
 impl GetContextIdentitiesResponse {
-    pub const fn new(identities: Vec<PublicKey>) -> Self {
+    pub const fn new(identities: Vec<PublicKey>, identities_of: IdentitiesOf) -> Self {
         Self {
-            data: ContextIdentitiesResponseData { identities },
+            data: ContextIdentitiesResponseData {
+                identities,
+                identities_of: Some(identities_of),
+            },
         }
     }
 }
