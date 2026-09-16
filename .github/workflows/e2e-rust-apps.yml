@@ -566,6 +566,16 @@ jobs:
           - workflow: delegated-authorship
             file: workflows/delegated-authorship.yml
             app: scaffolding-e2e
+          # The password-free SESSION, which nothing else covers: a device
+          # holding only a key logs in to a node it does not own and reads.
+          # `delegated-authorship` above proves the WRITE but logs in with a
+          # username and password, which is the provider this path removes.
+          # Turns `account_proof` on in the node's own config, because it is off
+          # by default and stays that way (an empty `allowed_audiences` accepts
+          # any audience, so enabling it everywhere would ship that as default).
+          - workflow: delegated-session
+            file: workflows/delegated-session.yml
+            app: scaffolding-e2e
           # A node holding NO account root joins and writes, under a certificate
           # its root signed on another machine — the cold-storage posture the
           # account/device split exists for (#3430).

@@ -109,31 +109,18 @@ echo "${READ_RES}" | grep -q '"output"' \
     || fail "the delegated read returned no output: ${READ_RES}"
 echo "delegated read served: ${READ_RES}"
 
-# --- 5. The session receives events -----------------------------------------
+# --- 5. Events are deliberately NOT asserted here ---------------------------
 #
-# #3942. Subscribing is what makes a client's UI update by itself; without it a
-# delegated device can read and write and still look frozen.
+# A subscribed session only sees an event if something WRITES while it is
+# listening, and merobox runs steps sequentially: during any sleep in this
+# script nothing else is running, so a stream assertion here could only ever
+# time out. An earlier draft slept 8s waiting for traffic that no step produced.
+#
+# The honest trigger is a delegated WRITE from this same session -- a warrant
+# minted by the device, spent by the relay -- which is #3942's real shape and
+# needs the authorship grant `delegated-authorship.yml` sets up. Combining the
+# two is worth doing and is not this scenario's first job: what has never run
+# end to end is the password-free SESSION, and that is what the steps above
+# prove.
 
-SSE_OUT=$(mktemp)
-curl -sS -N --max-time 15 "${URL}/sse" \
-    -H "Authorization: Bearer ${TOKEN}" > "${SSE_OUT}" 2>/dev/null &
-SSE_PID=$!
-sleep 2
-
-curl -fsS -X POST "${URL}/sse/subscription" \
-    -H "Authorization: Bearer ${TOKEN}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"contextIds\":[\"${CONTEXT}\"]}" >/dev/null \
-    || fail "the session could not subscribe"
-
-# Give the stream something to carry, then let it arrive.
-sleep 8
-kill "${SSE_PID}" 2>/dev/null || true
-wait "${SSE_PID}" 2>/dev/null || true
-
-grep -q 'data:' "${SSE_OUT}" \
-    || fail "the subscribed session received no events (stream was: $(head -c 200 "${SSE_OUT}"))"
-echo "events delivered to a password-free session"
-rm -f "${SSE_OUT}"
-
-echo "PASS: a device holding only a key obtained a session, read, and received events"
+echo "PASS: a device holding only a key obtained a session and read a context, with no password in the flow"
