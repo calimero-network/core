@@ -64,7 +64,8 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
-use crate::storage::Storage;
+use crate::storage::models::Key;
+use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
 
 /// The auth method this provider answers to.
@@ -153,6 +154,13 @@ pub struct AccountProofProvider {
     /// fails at startup rather than on every login.
     node_key: PublicKey,
     challenges: Arc<ChallengeMinter>,
+    /// Where the account's key record lives.
+    ///
+    /// Needed because a verified proof is not enough on its own: both
+    /// `generate_token_pair` and `/auth/validate` look the subject up here and
+    /// fail closed when it is absent, so an account with no record authenticates
+    /// and then cannot be issued a token.
+    key_manager: KeyManager,
 }
 
 impl Clone for AccountProofProvider {
@@ -161,6 +169,7 @@ impl Clone for AccountProofProvider {
             config: self.config.clone(),
             node_key: self.node_key,
             challenges: Arc::clone(&self.challenges),
+            key_manager: self.key_manager.clone(),
         }
     }
 }
@@ -173,7 +182,11 @@ impl AccountProofProvider {
     /// purpose: a provider that cannot check which node a statement was minted
     /// for would accept statements minted for any node, which is the one failure
     /// this check exists to prevent.
-    pub fn new(storage: Arc<dyn Storage>, config: AccountProofConfig) -> Result<Self> {
+    pub fn new(
+        storage: Arc<dyn Storage>,
+        key_manager: KeyManager,
+        config: AccountProofConfig,
+    ) -> Result<Self> {
         let raw = config.node_key.as_deref().ok_or_else(|| {
             eyre!(
                 "the {METHOD} provider is enabled but auth.account_proof.node_key is unset; \
@@ -199,7 +212,67 @@ impl AccountProofProvider {
             config,
             node_key,
             challenges,
+            key_manager,
         })
+    }
+
+    /// Make sure this account has a key record, minting one on first sight.
+    ///
+    /// Unlike `user_password`, this provider has no registration step to hang a
+    /// key off: a keyholder's whole premise is that it has no prior relationship
+    /// with this node. Possession of the account root, proven against a
+    /// challenge this node minted, IS the registration — so the first successful
+    /// proof creates the record and later ones reuse it.
+    ///
+    /// Registering on first authentication means a successful proof writes a
+    /// record, so a caller minting account roots offline could grow the keystore
+    /// one tiny row at a time. The login rate limiter in `token_handler` is what
+    /// bounds that, as it does for every other login path; nothing here adds a
+    /// second quota on top of it.
+    ///
+    /// **A revoked record is never resurrected.** The lookup deliberately
+    /// includes invalid keys: `get_key` hides them, so checking with that would
+    /// see "absent", mint a fresh valid record, and silently undo the
+    /// revocation. An operator who revokes an account's key needs that to stay
+    /// revoked across the account's next login attempt, which is the only moment
+    /// it matters.
+    async fn ensure_account_key(&self, key_id: &str) -> Result<()> {
+        match self.key_manager.get_key_including_invalid(key_id).await {
+            Ok(Some(key)) => {
+                if !key.is_valid() {
+                    bail!("this account's key has been revoked on this node");
+                }
+                if !key.is_root_key() {
+                    bail!("account {key_id} is registered here as a non-root key");
+                }
+                // Left exactly as stored. The minted token carries the
+                // operator's CURRENT `session_permissions` either way, and
+                // rewriting the record on every login would churn its metadata
+                // for no gain.
+                Ok(())
+            }
+            Ok(None) => {
+                debug!(account = %key_id, "minting the key record for a first-time keyholder");
+                let key = Key::new_root_key_with_permissions(
+                    // The account is its own public-key index entry: it is
+                    // derived from the root signing key and names nothing else.
+                    key_id.to_owned(),
+                    METHOD.to_owned(),
+                    self.config.session_permissions.clone(),
+                    // Deliberately unset. Neither the token path nor
+                    // `/auth/validate` resolves this record per node, and a
+                    // node-scoped record would strand the account the first time
+                    // the node is reached through a different URL.
+                    None,
+                );
+                self.key_manager
+                    .set_key(key_id, &key)
+                    .await
+                    .map_err(|err| eyre!("could not record this account on the node: {err}"))?;
+                Ok(())
+            }
+            Err(err) => bail!("could not read this account's key record: {err}"),
+        }
     }
 
     /// Whether `audience` is one the operator permits.
@@ -297,13 +370,22 @@ struct AccountProofVerifier {
 impl AuthVerifierFn for AccountProofVerifier {
     async fn verify(&self) -> Result<AuthResponse> {
         let account = self.provider.authenticate_core(&self.auth_data).await?;
+        let key_id = account.to_string();
+
+        // A verified proof is not the whole job: the subject has to EXIST as a
+        // key record. `generate_token_pair` and `/auth/validate` both resolve
+        // `key_id` through the key manager and fail closed when it is missing,
+        // so returning a subject with no record authenticates successfully and
+        // then dies one line later as "Failed to generate tokens" — a 500 that
+        // names nothing, which is exactly how this shipped.
+        self.provider.ensure_account_key(&key_id).await?;
 
         Ok(AuthResponse {
             is_valid: true,
-            // The subject is the ACCOUNT, not the device and not a stored key
-            // id. This is what reaches handlers as `X-Auth-User`, and it is the
-            // only identity governance rows are keyed by.
-            key_id: account.to_string(),
+            // The subject is the ACCOUNT, not the device. This is what reaches
+            // handlers as `X-Auth-User`, and it is the only identity governance
+            // rows are keyed by.
+            key_id,
             permissions: self.provider.config.session_permissions.clone(),
         })
     }
@@ -427,6 +509,7 @@ impl ProviderRegistration for AccountProofProviderRegistration {
         let config = context.config.account_proof.clone();
         Ok(Box::new(AccountProofProvider::new(
             context.storage,
+            context.key_manager,
             config,
         )?))
     }
@@ -480,7 +563,8 @@ mod tests {
 
     fn provider(storage: Arc<dyn Storage>) -> AccountProofProvider {
         AccountProofProvider::new(
-            storage,
+            Arc::clone(&storage),
+            KeyManager::new(storage),
             AccountProofConfig {
                 node_key: Some(key(NODE_SEED).public_key().to_string()),
                 ..AccountProofConfig::default()
@@ -769,12 +853,121 @@ mod tests {
         assert!(err.to_string().contains("expired"), "got: {err}");
     }
 
+    // --- the key record the rest of the auth stack resolves -----------------
+
+    /// The regression this file exists to prevent recurring.
+    ///
+    /// Verification used to return the account as `key_id` and stop there. Both
+    /// `generate_token_pair` and `/auth/validate` then resolve that subject
+    /// through the key manager and fail closed when it is missing, so a
+    /// perfectly valid proof authenticated and died one line later with
+    /// "Failed to generate tokens" — a 500 naming nothing.
+    ///
+    /// The older test above asserts the RESPONSE and passed throughout. Nothing
+    /// asserted the precondition the next stage requires, which is why this
+    /// reached CI.
+    #[tokio::test]
+    async fn a_first_login_leaves_a_key_record_the_token_path_can_resolve() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let keys = KeyManager::new(Arc::clone(&storage));
+        let p = provider(storage);
+        let (root, device, session) = (key(1), key(2), key(3));
+        let data = valid_login(&p, &root, &device, &session).await;
+        let account = AccountGenesis::new(root.public_key())
+            .account_id()
+            .to_string();
+
+        assert!(
+            keys.get_key(&account).await.expect("read").is_none(),
+            "precondition: a keyholder has no relationship with this node yet"
+        );
+
+        let verifier = p.create_verifier(METHOD, Box::new(data)).expect("verifier");
+        let response = verifier.verify().await.expect("verify");
+
+        let stored = keys
+            .get_key(&response.key_id)
+            .await
+            .expect("read")
+            .expect("the subject must resolve to a key, or no token can be minted");
+        assert!(stored.is_valid());
+        assert!(
+            stored.is_root_key(),
+            "the account owns itself; it is not a client of anything"
+        );
+        assert_eq!(stored.auth_method.as_deref(), Some(METHOD));
+        assert_eq!(
+            stored.public_key.as_deref(),
+            Some(account.as_str()),
+            "the record is indexed by the account it names"
+        );
+    }
+
+    /// Minting on first sight must not mean re-minting on every sight: a second
+    /// login reuses the record rather than churning it.
+    #[tokio::test]
+    async fn a_repeat_login_reuses_the_existing_record() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let keys = KeyManager::new(Arc::clone(&storage));
+        let p = provider(storage);
+        let (root, device) = (key(1), key(2));
+
+        for session_seed in [3, 4] {
+            let data = valid_login(&p, &root, &device, &key(session_seed)).await;
+            let verifier = p.create_verifier(METHOD, Box::new(data)).expect("verifier");
+            verifier.verify().await.expect("verify");
+        }
+
+        let account = AccountGenesis::new(root.public_key())
+            .account_id()
+            .to_string();
+        assert!(keys.get_key(&account).await.expect("read").is_some());
+    }
+
+    /// Revocation has to survive the account's next login, which is the only
+    /// moment it matters. `get_key` hides invalid keys, so a mint-if-absent
+    /// check written against it would see "absent" and silently un-revoke.
+    #[tokio::test]
+    async fn a_revoked_account_is_not_resurrected_by_logging_in_again() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let keys = KeyManager::new(Arc::clone(&storage));
+        let p = provider(storage);
+        let (root, device) = (key(1), key(2));
+        let account = AccountGenesis::new(root.public_key())
+            .account_id()
+            .to_string();
+
+        let data = valid_login(&p, &root, &device, &key(3)).await;
+        let verifier = p.create_verifier(METHOD, Box::new(data)).expect("verifier");
+        verifier.verify().await.expect("first login");
+
+        let mut stored = keys.get_key(&account).await.expect("read").expect("minted");
+        stored.revoke();
+        keys.set_key(&account, &stored)
+            .await
+            .expect("store revoked");
+        assert!(
+            keys.get_key(&account).await.expect("read").is_none(),
+            "precondition: `get_key` hides a revoked key, which is the trap"
+        );
+
+        let data = valid_login(&p, &root, &device, &key(4)).await;
+        let verifier = p.create_verifier(METHOD, Box::new(data)).expect("verifier");
+        let err = verifier
+            .verify()
+            .await
+            .expect_err("a revoked account must not authenticate");
+        assert!(err.to_string().contains("revoked"), "got: {err}");
+    }
+
     // --- audience policy ----------------------------------------------------
 
     #[tokio::test]
     async fn an_audience_outside_the_allow_list_is_refused() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let p = AccountProofProvider::new(
-            Arc::new(MemoryStorage::new()),
+            Arc::clone(&storage),
+            KeyManager::new(storage),
             AccountProofConfig {
                 node_key: Some(key(NODE_SEED).public_key().to_string()),
                 allowed_audiences: vec!["https://app.example".to_owned()],
@@ -798,8 +991,10 @@ mod tests {
     /// everything.
     #[test]
     fn the_provider_refuses_to_build_without_a_node_key() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let err = AccountProofProvider::new(
-            Arc::new(MemoryStorage::new()),
+            Arc::clone(&storage),
+            KeyManager::new(storage),
             AccountProofConfig::default(),
         )
         .map(|_ignored| ())
@@ -809,8 +1004,10 @@ mod tests {
 
     #[test]
     fn a_malformed_node_key_is_refused_at_build_time() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         assert!(AccountProofProvider::new(
-            Arc::new(MemoryStorage::new()),
+            Arc::clone(&storage),
+            KeyManager::new(storage),
             AccountProofConfig {
                 node_key: Some("not-a-key".to_owned()),
                 ..AccountProofConfig::default()
