@@ -42,6 +42,7 @@ mod unsubscribe;
 // two transports cannot drift on the rule.
 pub(crate) use subscribe::{
     authorize_group_subscriptions, caller_may_observe_context, may_deliver_group_event,
+    revoke_lost_subscriptions,
 };
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
@@ -478,6 +479,18 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
             },
         };
 
+        // Captured before `event` is consumed by serialization below. A
+        // removal is the one event that can invalidate a subscription already
+        // granted, so it is what drives the prune after delivery.
+        let membership_revoked = matches!(
+            &event,
+            NodeEvent::GroupMembership(membership_event)
+                if matches!(
+                    membership_event.payload,
+                    calimero_primitives::events::MembershipChangePayload::MemberRemoved(_)
+                )
+        );
+
         debug!("Received node event: {:?}", event);
 
         let body = match to_json_value(event) {
@@ -538,9 +551,94 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
                 );
             }
         }
+
+        // AFTER delivery, deliberately: the removed member is told they were
+        // removed on the same stream the removal takes away from them. Pruning
+        // first would drop the one event that explains the silence.
+        if membership_revoked {
+            prune_revoked_subscriptions(&state).await;
+        }
     }
 
     debug!("Node event stream ended, stopping WS event fan-out");
+}
+
+/// Drop every subscription whose caller no longer passes the subscribe-time
+/// gate, across all connections.
+///
+/// Run when a membership REMOVAL is observed, not on every event: that is what
+/// makes this affordable. The cost is one re-authorization pass per removal —
+/// a rare, governance-paced event — rather than a membership lookup per event
+/// per subscriber, which is the same work on a path that carries video frames
+/// and document updates.
+///
+/// Every connection is re-authorized, not just the removed account's. The event
+/// names an account, but a connection's authority is not always a comparison
+/// against it: a key-anchored caller resolves to an account per context, and a
+/// removal from a parent group can revoke an inherited member of a descendant.
+/// Re-running the gate answers all of those without this function having to
+/// know which; getting that inference wrong fails OPEN, which is the direction
+/// that leaks.
+///
+/// Node-owner and no-auth connections are unaffected — the gates admit them
+/// unconditionally, so they never appear in a revocation.
+async fn prune_revoked_subscriptions(state: &ServiceState) {
+    // Snapshot under the read lock, re-authorize without it. The membership
+    // lookups touch the store, and holding either lock across them would stall
+    // the fan-out for every other subscriber.
+    let mut snapshots = Vec::new();
+    {
+        let connections = state.connections.read().await;
+        for (connection_id, connection) in &*connections {
+            let inner = connection.inner.read().await;
+            if inner.subscriptions.is_empty() && inner.group_subscriptions.is_empty() {
+                continue;
+            }
+            snapshots.push((
+                *connection_id,
+                connection.clone(),
+                inner.caller,
+                inner.node_owner,
+                inner.subscriptions.clone(),
+                inner.group_subscriptions.clone(),
+            ));
+        }
+    }
+
+    for (connection_id, connection, caller, node_owner, subscriptions, group_subscriptions) in
+        snapshots
+    {
+        let revocation = subscribe::revoke_lost_subscriptions(
+            &state.ctx_client,
+            state.auth_enabled,
+            node_owner,
+            caller.as_ref(),
+            &subscriptions,
+            &group_subscriptions,
+        );
+        if revocation.is_empty() {
+            continue;
+        }
+        let (contexts, denied_groups, demoted_groups) = revocation.lost();
+        warn!(
+            %connection_id,
+            contexts = contexts.len(),
+            groups = denied_groups.len(),
+            demoted = demoted_groups.len(),
+            "revoking subscriptions: the caller no longer passes the observation gate",
+        );
+        // Re-taken rather than held: a subscribe that raced this pass had to
+        // pass the same gate to add anything, so the worst case is that an id
+        // re-granted in between comes off and the client re-subscribes. Erring
+        // that way keeps a revocation from being lost to a race.
+        let mut guard = connection.inner.write().await;
+        let inner = &mut *guard;
+        revocation.apply(
+            &mut inner.subscriptions,
+            &mut inner.group_subscriptions,
+            &mut inner.admin_group_subscriptions,
+        );
+    }
 }
 
 async fn handle_commands(
@@ -1195,6 +1293,19 @@ mod tests {
         Message::Text(serde_json::to_string(&req).unwrap().into())
     }
 
+    fn member_removed_event(
+        group: Hash,
+        member: calimero_primitives::identity::AccountId,
+    ) -> NodeEvent {
+        NodeEvent::GroupMembership(GroupMembershipEvent {
+            group_id: group,
+            payload: MembershipChangePayload::MemberRemoved(MembershipChange {
+                member,
+                role: None,
+            }),
+        })
+    }
+
     fn group_membership_event(group: Hash) -> NodeEvent {
         NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: group,
@@ -1530,6 +1641,114 @@ mod tests {
         assert!(
             leaked.is_none(),
             "no further frame should reach a non-admin member: {leaked:?}"
+        );
+    }
+
+    /// #3942's third criterion: "An established stream stops delivering once
+    /// the account loses membership."
+    ///
+    /// Subscribing authorizes once, at subscribe time. Before the prune, a
+    /// stream opened while the caller was a member kept delivering that group's
+    /// events for as long as the socket stayed open — a removed member went on
+    /// reading the group they had been removed from.
+    ///
+    /// The ordering here is the assertion, not scaffolding. The removal frame
+    /// itself must still arrive (the member is told why the stream goes quiet),
+    /// and only the event AFTER it must not. Deterministic without a sleep: the
+    /// fan-out is a single task that prunes before it routes the next event, so
+    /// the third send is already gated by the time it is considered.
+    #[tokio::test]
+    async fn removal_stops_an_established_group_stream() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let member_pk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        )
+        .public_key();
+        let server = spawn_test_ws_authed(member_pk).await;
+        let store = server.state.ctx_client.datastore();
+        let (group, _subgroup, member) =
+            seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(
+            resp["result"]["groupIds"],
+            json!([hex::encode(group.as_bytes())]),
+            "precondition: the caller subscribes as a genuine member: {resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        // The stream is live: an ordinary group event reaches the member.
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("a member should receive its group's events");
+        assert_eq!(
+            pushed["result"]["type"], "MemberJoined",
+            "precondition: the established stream delivers: {pushed}"
+        );
+
+        // Membership goes away, exactly as an applied governance removal op
+        // would leave the store.
+        MembershipRepository::new(store)
+            .remove_member(&ns_gid, &member)
+            .unwrap();
+        assert!(
+            !MembershipRepository::new(store)
+                .is_member(&ns_gid, &member)
+                .unwrap(),
+            "precondition: the caller is no longer a member"
+        );
+
+        // The removal frame is what drives the prune, and is itself delivered.
+        server
+            .event_sender
+            .send(member_removed_event(group, member))
+            .unwrap();
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the removal itself must still reach the member it names");
+        assert_eq!(
+            pushed["result"]["type"], "MemberRemoved",
+            "the member must be told why the stream goes quiet: {pushed}"
+        );
+
+        // Everything after it is gone.
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a removed member must receive nothing further on the group: {leaked:?}"
+        );
+
+        // And the subscription itself is gone, not merely filtered — so a
+        // reconnectless re-subscribe has nothing to inherit.
+        let connections = server.state.connections.read().await;
+        let (_, connection) = connections.iter().next().expect("the connection is open");
+        let inner = connection.inner.read().await;
+        assert!(
+            inner.group_subscriptions.is_empty(),
+            "the revoked group subscription must be dropped, not just filtered",
         );
     }
 

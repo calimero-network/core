@@ -118,6 +118,29 @@ fn caller_principal(
     }
 }
 
+/// Resolve the identity a session's subscriptions are AUTHORIZED against, from
+/// the same injected extensions [`caller_principal`] reads.
+///
+/// Distinct from that function and not a refactor of it: a principal is an
+/// opaque string for comparing one caller against another (session ownership),
+/// while this is an identity the membership rows can be queried by. The node
+/// owner has a principal but no [`EventCaller`] — it is not a member of
+/// anything, it bypasses the gate — which is why the two cannot be one call.
+///
+/// A key wins over an account when both are present, matching the subscribe
+/// path's own precedence so the gate and the prune authorize as the same
+/// caller.
+fn event_caller(
+    auth_key: Option<&AuthenticatedKey>,
+    auth_account: Option<&AuthenticatedAccount>,
+) -> Option<EventCaller> {
+    match (auth_key, auth_account) {
+        (Some(AuthenticatedKey(pk)), _) => Some(EventCaller::Key(*pk)),
+        (None, Some(AuthenticatedAccount(account))) => Some(EventCaller::Account(*account)),
+        (None, None) => None,
+    }
+}
+
 /// Whether `caller` may access a session owned by `session_owner`.
 ///
 /// - `(Some, Some)` → allowed only when the principals match. A mismatch between
@@ -268,13 +291,7 @@ pub async fn handle_subscription(
                 // account through the binding rows; an account-anchored session
                 // already is one. Built once and used for both the context and
                 // the group gate, so the two cannot disagree about who is asking.
-                let event_caller = match (&auth_key, &auth_account) {
-                    (Some(Extension(AuthenticatedKey(pk))), _) => Some(EventCaller::Key(*pk)),
-                    (None, Some(Extension(AuthenticatedAccount(account)))) => {
-                        Some(EventCaller::Account(*account))
-                    }
-                    (None, None) => None,
-                };
+                let event_caller = event_caller(auth_key.as_deref(), auth_account.as_deref());
                 let subscribed: Vec<_> = ctxs
                     .context_ids
                     .iter()
@@ -320,6 +337,12 @@ pub async fn handle_subscription(
                         &mut inner.group_subscriptions,
                         &mut inner.admin_group_subscriptions,
                     );
+                    // Re-stamp the identity these subscriptions were authorized
+                    // as, so a later removal re-authorizes against the caller
+                    // that actually asked for them rather than whoever last
+                    // connected.
+                    inner.caller = event_caller;
+                    inner.node_owner = node_owner;
                     inner.touch();
                     inner.to_persisted()
                 };
@@ -488,6 +511,19 @@ pub async fn sse_handler(
         request.extensions().get::<AuthenticatedAccount>(),
         state.auth_enabled,
     );
+    // The identity this connection's subscriptions will be re-authorized
+    // against when a membership removal lands. Resolved here, from THIS
+    // request's proven auth, because the session record deliberately does not
+    // persist it (see `SessionStateInner::caller`) — a resumed session would
+    // otherwise re-authorize against an identity nobody re-proved.
+    let connection_caller = event_caller(
+        request.extensions().get::<AuthenticatedKey>(),
+        request.extensions().get::<AuthenticatedAccount>(),
+    );
+    let connection_node_owner = request
+        .extensions()
+        .get::<AuthenticatedNodeOwner>()
+        .is_some();
 
     let (commands_sender, commands_receiver) =
         mpsc::channel::<Command>(COMMAND_CHANNEL_BUFFER_SIZE);
@@ -661,6 +697,15 @@ pub async fn sse_handler(
     // `SessionState::connection`) at the same time, so the subscribe POST,
     // which is a different request entirely, can seed THIS connection with the
     // context's current presence without broadcasting it to every other client.
+    // Stamp the caller before the event task starts: the task prunes on a
+    // membership removal, and a prune that ran against an unstamped session
+    // would read it as "no caller" and revoke everything.
+    {
+        let mut inner = session_state.inner.write().await;
+        inner.caller = connection_caller;
+        inner.node_owner = connection_node_owner;
+    }
+
     let connection_sink = commands_sender.downgrade();
     let event_task = tokio::spawn(handle_node_events(
         session_id,

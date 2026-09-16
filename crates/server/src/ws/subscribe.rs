@@ -358,6 +358,94 @@ pub(crate) fn caller_group_access(
     }
 }
 
+/// What a connection loses when its authority is re-evaluated: the
+/// subscriptions it holds but would no longer be granted.
+///
+/// Produced by [`revoke_lost_subscriptions`] and folded back in by
+/// [`Self::apply`], so the caller never decides for itself what a revocation
+/// means.
+pub(crate) struct Revocation {
+    /// Contexts the caller may no longer observe.
+    contexts: Vec<calimero_primitives::context::ContextId>,
+    /// The group decisions, carrying `denied` (drop) and `demoted` (keep the
+    /// group, lose the admin-only payloads) alike. This is the subscribe path's
+    /// own type: re-authorizing is exactly what a subscribe does to the ids it
+    /// names, and a revocation is that with the connection's current set as the
+    /// input.
+    groups: GroupSubscriptions,
+}
+
+impl Revocation {
+    /// Nothing came off — the common case, and worth testing before taking a
+    /// write lock on a connection that has lost nothing.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.contexts.is_empty() && self.groups.denied.is_empty() && self.groups.demoted.is_empty()
+    }
+
+    /// Ids dropped, for the log line the caller writes.
+    pub(crate) fn lost(&self) -> (&[calimero_primitives::context::ContextId], &[Hash], &[Hash]) {
+        (&self.contexts, &self.groups.denied, &self.groups.demoted)
+    }
+
+    /// Fold the revocation into a connection's stored sets.
+    pub(crate) fn apply(
+        &self,
+        subscriptions: &mut HashSet<calimero_primitives::context::ContextId>,
+        groups: &mut HashSet<Hash>,
+        admin_groups: &mut HashSet<Hash>,
+    ) {
+        for id in &self.contexts {
+            let _ = subscriptions.remove(id);
+        }
+        self.groups.apply(groups, admin_groups);
+    }
+}
+
+/// Re-run the subscribe-time gates over a connection's CURRENT subscriptions
+/// and report what it may no longer hold.
+///
+/// This is how an established stream stops delivering once its caller loses
+/// membership. Subscribing authorizes once, at subscribe time; without this, a
+/// stream opened while the caller was a member keeps delivering that group's
+/// events for as long as the connection stays open — which for SSE is past the
+/// connection, because the session outlives it.
+///
+/// It runs the **same two predicates the subscribe path runs**
+/// ([`caller_may_observe_context`] and [`authorize_group_subscriptions`]),
+/// deliberately and not by coincidence: a revocation rule written separately
+/// would be free to drift from the grant rule, and the drift shows up as a
+/// stream that keeps delivering what a fresh subscribe would refuse — which is
+/// the whole bug this exists to close.
+///
+/// Both gates already fail closed on a store fault, so an outage revokes rather
+/// than grants. That is the safe direction here and the client's remedy is to
+/// re-subscribe, which re-authorizes.
+///
+/// Touches the store (one membership lookup per subscribed id), so the caller
+/// must not hold a connection lock across it.
+pub(crate) fn revoke_lost_subscriptions(
+    ctx_client: &ContextClient,
+    auth_enabled: bool,
+    node_owner: bool,
+    caller: Option<&EventCaller>,
+    subscriptions: &HashSet<calimero_primitives::context::ContextId>,
+    group_subscriptions: &HashSet<Hash>,
+) -> Revocation {
+    let contexts = subscriptions
+        .iter()
+        .copied()
+        .filter(|id| !caller_may_observe_context(ctx_client, auth_enabled, node_owner, caller, id))
+        .collect();
+    let groups = authorize_group_subscriptions(
+        ctx_client,
+        auth_enabled,
+        node_owner,
+        caller,
+        group_subscriptions.iter().copied(),
+    );
+    Revocation { contexts, groups }
+}
+
 /// Whether a group-keyed event may be delivered to a connection holding these
 /// subscription sets. Shared by the WS fan-out and the SSE per-session task so
 /// the per-variant rule cannot hold on one transport and not the other.
