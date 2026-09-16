@@ -1063,6 +1063,177 @@ mod tests {
         )
     }
 
+    /// #3942's third criterion on the SSE side: "An established stream stops
+    /// delivering once the account loses membership."
+    ///
+    /// SSE is the transport the issue is actually about, and the one where the
+    /// leak outlived the socket: its session persists its subscriptions, so
+    /// before this a removed member's revoked subscription came back on the
+    /// next reconnect even if the connection had been dropped. Hence the two
+    /// assertions at the end — the in-memory set AND the persisted record.
+    #[actix::test]
+    async fn removal_stops_an_established_sse_stream() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::events::{
+            GroupMembershipEvent, MembershipChange, MembershipChangePayload, NodeEvent,
+        };
+
+        let member_pk = PublicKey::from([0x7Au8; 32]);
+        let (state, events, _blob_dir) = sse_state_authed().await;
+        let store = &state.store;
+        let (group, _subgroup, member) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+
+        // A session subscribed to the group, stamped with the caller that was
+        // authorized for it — exactly what `sse_handler` and the subscribe POST
+        // leave behind.
+        let (session, _tx, mut rx) = session_with_connection();
+        let session_id: ConnectionId = 7;
+        {
+            let mut inner = session.inner.write().await;
+            inner.caller = Some(EventCaller::Key(member_pk));
+            inner.node_owner = false;
+            let _ = inner.group_subscriptions.insert(group);
+        }
+        drop(
+            state
+                .sessions
+                .write()
+                .await
+                .insert(session_id, session.clone()),
+        );
+
+        let (task_tx, task_rx) = mpsc::channel::<Command>(16);
+        let task = tokio::spawn(crate::sse::events::handle_node_events(
+            session_id,
+            Arc::clone(&state),
+            session.clone(),
+            task_tx,
+        ));
+        // `rx` stands in for the response stream of the bound connection; the
+        // task writes to its own sender, so read from that one.
+        drop(rx);
+        let mut rx = task_rx;
+
+        // The task subscribes to the broadcast on its first poll; sending
+        // before that fails outright (a broadcast send with no receivers is an
+        // error, not a drop).
+        let listening = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while events.receiver_count() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the session's event task should be listening");
+
+        let joined = |group| {
+            NodeEvent::GroupMembership(GroupMembershipEvent {
+                group_id: group,
+                payload: MembershipChangePayload::MemberJoined(MembershipChange {
+                    member: calimero_primitives::identity::AccountId::from([0x11u8; 32]),
+                    role: None,
+                }),
+            })
+        };
+
+        // The stream is live.
+        events.send(joined(group)).unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a subscribed member should receive its group's events")
+            .expect("channel open");
+        assert!(
+            matches!(first, Command::Send(_)),
+            "precondition: the established stream delivers",
+        );
+
+        // Membership goes away, as an applied governance removal would leave it.
+        MembershipRepository::new(store)
+            .remove_member(&ns_gid, &member)
+            .unwrap();
+
+        // The removal frame drives the prune and is itself delivered.
+        events
+            .send(NodeEvent::GroupMembership(GroupMembershipEvent {
+                group_id: group,
+                payload: MembershipChangePayload::MemberRemoved(MembershipChange {
+                    member,
+                    role: None,
+                }),
+            }))
+            .unwrap();
+        let removal = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the removal itself must still reach the member it names")
+            .expect("channel open");
+        assert!(
+            matches!(removal, Command::Send(_)),
+            "the member must be told why the stream goes quiet",
+        );
+
+        // Everything after it is gone.
+        events.send(joined(group)).unwrap();
+        let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
+        assert!(
+            leaked.is_err(),
+            "a removed member must receive nothing further on the group: {leaked:?}",
+        );
+
+        // Dropped from the live session...
+        assert!(
+            session.inner.read().await.group_subscriptions.is_empty(),
+            "the revoked group subscription must be dropped, not just filtered",
+        );
+        // ...and from the PERSISTED record, so a reconnect cannot restore it.
+        let persisted = crate::sse::storage::load_session(&state.store, session_id)
+            .expect("session record readable")
+            .expect("session was persisted");
+        assert!(
+            persisted.group_subscriptions.is_empty(),
+            "a reconnect must not restore a revoked subscription",
+        );
+
+        task.abort();
+    }
+
+    /// As [`sse_state_with`], but with the auth guard ACTIVE and the event
+    /// sender handed back.
+    ///
+    /// Both differences are what the revocation test needs and neither is
+    /// incidental: with auth disabled every observation gate returns true, so
+    /// nothing is ever revoked and the test would pass against no
+    /// implementation at all; and driving a prune means publishing a real
+    /// `MemberRemoved` onto the channel `handle_node_events` listens to.
+    async fn sse_state_authed() -> (
+        Arc<ServiceState>,
+        tokio::sync::broadcast::Sender<calimero_primitives::events::NodeEvent>,
+        TempDir,
+    ) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender.clone(),
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+
+        (
+            Arc::new(ServiceState::new(node_client, ctx_client, store, true)),
+            event_sender,
+            blob_dir,
+        )
+    }
+
     /// A session with a connection bound to a fresh command channel, as
     /// `sse_handler` does on a real connection.
     ///

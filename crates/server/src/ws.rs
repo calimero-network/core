@@ -1521,45 +1521,6 @@ mod tests {
         })
     }
 
-    /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
-    /// returning the namespace and subgroup ids as wire hashes plus the account
-    /// `caller`'s key resolves to - the principal every row below is keyed by,
-    /// and what the subscribe gate compares against.
-    fn seed_namespace_with_restricted_subgroup(
-        store: &Store,
-        caller: PublicKey,
-        role: calimero_primitives::context::GroupMemberRole,
-    ) -> (Hash, Hash, calimero_primitives::identity::AccountId) {
-        use calimero_context_config::types::ContextGroupId;
-        use calimero_context_config::VisibilityMode;
-        use calimero_governance_store::{
-            CapabilitiesRepository, MembershipRepository, NamespaceRepository,
-        };
-
-        let ns = ContextGroupId::from([0xC0u8; 32]);
-        let subgroup = ContextGroupId::from([0xC1u8; 32]);
-
-        // Enrolled at the namespace anchor, so the caller's key resolves there
-        // and every row below names the account it resolves to.
-        let account = calimero_context::test_support::enrol(store, &ns, &caller);
-
-        MembershipRepository::new(store)
-            .add_member(&ns, &account, role)
-            .unwrap();
-        NamespaceRepository::new(store)
-            .nest(&ns, &subgroup)
-            .unwrap();
-        CapabilitiesRepository::new(store)
-            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
-            .unwrap();
-
-        (
-            Hash::from(ns.to_bytes()),
-            Hash::from(subgroup.to_bytes()),
-            account,
-        )
-    }
-
     // `CascadeProgress` names a descendant subgroup id, so a plain member of the
     // namespace must not receive it while still receiving the counter-only
     // progress frames. The cascade frame is broadcast FIRST: if the gate were
@@ -1576,7 +1537,11 @@ mod tests {
         let server = spawn_test_ws_authed(member_pk).await;
         let store = server.state.ctx_client.datastore();
         let (group, subgroup, member) =
-            seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
 
         let membership = MembershipRepository::new(store);
         let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
@@ -1669,7 +1634,11 @@ mod tests {
         let server = spawn_test_ws_authed(member_pk).await;
         let store = server.state.ctx_client.datastore();
         let (group, _subgroup, member) =
-            seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
         let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
 
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
@@ -1767,8 +1736,11 @@ mod tests {
         .public_key();
         let server = spawn_test_ws_authed(admin_pk).await;
         let store = server.state.ctx_client.datastore();
-        let (group, subgroup, admin) =
-            seed_namespace_with_restricted_subgroup(store, admin_pk, GroupMemberRole::Admin);
+        let (group, subgroup, admin) = crate::test_support::seed_namespace_with_restricted_subgroup(
+            store,
+            admin_pk,
+            GroupMemberRole::Admin,
+        );
 
         let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
         assert!(
