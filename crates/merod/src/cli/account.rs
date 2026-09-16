@@ -51,6 +51,8 @@ enum AccountSubcommands {
     ImportCert(ImportCertCommand),
     /// Sign a warrant offline, authorising one relay to perform one intent
     Warrant(WarrantCommand),
+    /// Sign a session request offline, for a client that holds no node
+    LoginStatement(LoginStatementCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -128,6 +130,7 @@ impl AccountCommand {
             AccountSubcommands::SignCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
+            AccountSubcommands::LoginStatement(cmd) => cmd.run(),
         }
     }
 }
@@ -368,6 +371,134 @@ impl WarrantCommand {
             "{}",
             hex::encode(borsh::to_vec(&warrant).wrap_err("Failed to encode the warrant")?)
         );
+
+        Ok(())
+    }
+}
+
+/// Sign a [`LoginStatement`] offline, so a device holding no node can obtain a
+/// session on one.
+///
+/// The third of merod's offline signing commands, alongside `sign-cert` and
+/// `warrant`, and it exists for the same reason: the party that signs holds only
+/// a key, and the node it is signing *for* must not be asked to hold that key.
+///
+/// It also keeps one rule in one place. `LoginStatement::signing_payload`'s own
+/// docs say it is "assembled in one place so the client that mints a statement
+/// and the service that checks it cannot drift" — a test harness or an
+/// integrator re-deriving the domain hash and the borsh layout by hand is
+/// exactly that drift, and it fails in the direction where the copy passes its
+/// own checks and the product refuses the result.
+#[derive(Debug, Parser)]
+pub struct LoginStatementCommand {
+    /// The challenge this node issued, 64 hex chars.
+    ///
+    /// Obtained from the node's challenge endpoint immediately before signing:
+    /// it is single-use and short-lived, so a statement minted against a stale
+    /// one is refused before any signature is checked.
+    #[arg(long, value_name = "HEX")]
+    challenge: String,
+
+    /// The node this session is for, as the key a client pins, 64 hex chars.
+    ///
+    /// Signed over so a hostile relay cannot fetch a challenge from this node,
+    /// serve it as its own, and replay the statement it gets back.
+    #[arg(long, value_name = "HEX")]
+    node: String,
+
+    /// The ephemeral key the session will speak with, 64 hex chars.
+    ///
+    /// Distinct from the device key on purpose: the session key is what the
+    /// token authorises, so a leaked session cannot be escalated into use of the
+    /// device key itself.
+    #[arg(long, value_name = "HEX")]
+    session_key: String,
+
+    /// The device key that signs this, as a secret, 64 hex chars.
+    ///
+    /// The public half is derived rather than taken, for the reason
+    /// `Warrant::sign` does the same: a caller able to NAME a key it does not
+    /// hold could mint a statement it cannot sign, and the field would stop
+    /// meaning "who asked for this session".
+    #[arg(long, value_name = "HEX")]
+    device_secret: String,
+
+    /// The client surface this session is bound to: `cli`, a web origin, or a
+    /// code-signing identity.
+    ///
+    /// `cli` carries no payload deliberately — an attacker-chosen string there
+    /// would be an audience that binds nothing while looking like it binds
+    /// something. Spell a web origin exactly as the browser does
+    /// (`https://host:port`, no trailing slash); it is compared byte for byte.
+    #[arg(long, default_value = "cli")]
+    audience: String,
+
+    /// Seconds from now that the statement stays honourable.
+    #[arg(long, default_value_t = 300)]
+    valid_for: u64,
+}
+
+/// Map the `--audience` spelling onto the variant it names.
+///
+/// Split out because it is the only branching this command does, and each arm
+/// binds a session to a different surface: getting it wrong hands a token
+/// obtained by one client to another, which is the whole reason the field is
+/// signed over.
+///
+/// A web origin is passed through verbatim rather than normalized. The verifier
+/// compares it byte for byte against what the browser sends, so "helpfully"
+/// stripping a trailing slash here would produce a statement the browser's own
+/// origin no longer matches.
+fn parse_audience(spelling: &str) -> calimero_account::Audience {
+    match spelling.trim() {
+        "cli" => calimero_account::Audience::Cli,
+        other if other.starts_with("http://") || other.starts_with("https://") => {
+            calimero_account::Audience::WebOrigin(other.to_owned())
+        }
+        other => calimero_account::Audience::CodeSigningId(other.to_owned()),
+    }
+}
+
+impl LoginStatementCommand {
+    fn run(self) -> EyreResult<()> {
+        let challenge = parse_key(&self.challenge, "challenge")?;
+        let node = calimero_primitives::identity::PublicKey::from(parse_key(&self.node, "node")?);
+        let session_key = calimero_primitives::identity::PublicKey::from(parse_key(
+            &self.session_key,
+            "session-key",
+        )?);
+        let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
+
+        let audience = parse_audience(&self.audience);
+
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let expires_at = issued_at.saturating_add(self.valid_for);
+
+        let statement = calimero_account::LoginStatement::sign(
+            &secret,
+            node,
+            audience,
+            challenge,
+            session_key,
+            issued_at,
+            expires_at,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the login statement: {err}"))?;
+
+        // The statement first and alone on its line, so a caller can take it
+        // with `head -1` and a scenario can capture it by regex — the same shape
+        // `warrant` emits. The device key follows as a labelled line because a
+        // caller that did not derive it has no other way to name the signer.
+        println!(
+            "{}",
+            hex::encode(
+                borsh::to_vec(&statement).wrap_err("Failed to encode the login statement")?
+            )
+        );
+        println!("Device:  {}", hex::encode(secret.public_key()));
+        println!("Expires: {expires_at}");
 
         Ok(())
     }
@@ -807,7 +938,7 @@ fn parse_device(raw: &str) -> EyreResult<calimero_account::DeviceId> {
 
 #[cfg(test)]
 mod tests {
-    use calimero_account::DeviceId;
+    use calimero_account::{Audience, DeviceId};
 
     use super::*;
 
@@ -1126,6 +1257,51 @@ mod tests {
         assert_eq!(
             cmd.valid_for, 300,
             "the unused relative flag keeps its default"
+        );
+    }
+
+    /// `cli` carries no payload on purpose: an attacker-chosen string there
+    /// would be an audience that binds nothing while looking like it binds
+    /// something.
+    #[test]
+    fn cli_is_the_payload_free_variant() {
+        assert_eq!(parse_audience("cli"), Audience::Cli);
+        assert_eq!(parse_audience("  cli  "), Audience::Cli);
+    }
+
+    /// Both schemes, and the origin passed through EXACTLY as given — the
+    /// verifier compares it byte for byte against the browser's own origin, so
+    /// normalizing here would produce a statement that origin cannot match.
+    #[test]
+    fn a_web_origin_is_carried_verbatim() {
+        assert_eq!(
+            parse_audience("https://app.example.com:8443"),
+            Audience::WebOrigin("https://app.example.com:8443".to_owned()),
+        );
+        assert_eq!(
+            parse_audience("http://localhost:3000"),
+            Audience::WebOrigin("http://localhost:3000".to_owned()),
+        );
+        // A trailing slash is a DIFFERENT origin to the verifier, so it must
+        // survive rather than be tidied away.
+        assert_eq!(
+            parse_audience("https://app.example.com/"),
+            Audience::WebOrigin("https://app.example.com/".to_owned()),
+        );
+    }
+
+    /// Anything else names a signed native client. Notably this is where a
+    /// scheme-less host lands: it is not a web origin, and treating it as one
+    /// would let a token minted for a native client be presented by a page.
+    #[test]
+    fn anything_else_is_a_code_signing_id() {
+        assert_eq!(
+            parse_audience("com.example.desktop"),
+            Audience::CodeSigningId("com.example.desktop".to_owned()),
+        );
+        assert_eq!(
+            parse_audience("app.example.com"),
+            Audience::CodeSigningId("app.example.com".to_owned()),
         );
     }
 }
