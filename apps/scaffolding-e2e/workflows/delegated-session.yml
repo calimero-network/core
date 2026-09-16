@@ -61,7 +61,11 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: delegated-session-node-1
-    path: ./apps/kv-store/res/kv_store.wasm
+    # The same bundle `delegated-authorship.yml` installs, and the path is
+    # relative to THIS file, not the repo root. A raw `.wasm` is not what this
+    # step takes; the `app: scaffolding-e2e` matrix entry is what puts the
+    # bundle in `dist/`.
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
