@@ -71,7 +71,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SURFACE" ] || die "--surface is required (cargo|npm)"
+[ -n "$SURFACE" ] || die "--surface is required (cargo|npm|tauri|tee)"
 [ -n "$DIR" ] || die "--dir is required"
 [ -d "$DIR" ] || die "--dir '$DIR' is not a directory"
 
@@ -807,6 +807,19 @@ write_json_version() {
   ' "$1"
 }
 
+# Keyed variants of the two above. `tauri`'s files name the document's own
+# version `version`, so position is enough there; mero-tee's names two versions
+# in one object, so the key has to be part of the match.
+read_json_key() {
+  KEY="$2" perl -ne 'if (m{"$ENV{KEY}"\s*:\s*"([^"]*)"}) { print "$1\n"; exit }' "$1"
+}
+
+write_json_key() {
+  KEY="$2" NEW="$3" perl -i -pe '
+    if (!$done && s{("$ENV{KEY}"\s*:\s*")[^"]*(")}{$1$ENV{NEW}$2}) { $done = 1 }
+  ' "$1"
+}
+
 bump_tauri() {
   local cfg="$DIR/merod-config.json"
 
@@ -857,6 +870,163 @@ bump_tauri() {
     write_json_version "$DIR/$conf" "$next"; record_change "$conf"
   fi
   note "desktop app $top -> $next"
+}
+
+# ---------------------------------------------------------------------------
+# tee
+# ---------------------------------------------------------------------------
+#
+# mero-tee builds the confidential-VM image the hosted fleet runs, and that image
+# BUNDLES a merod binary. `mero-tee/versions.json` names both: `merodVersion` is
+# the binary it bundles, `imageVersion` is the image's own version.
+#
+# The same two-field shape as `tauri`, and handled the same way: a core release
+# moves the bundled binary, and the thing bundling it needs a version of its own
+# so the new bundle is distinguishable from the old. An image whose contents
+# changed under an unchanged `imageVersion` is indistinguishable from the one
+# already deployed, which is how a fleet silently keeps running the old merod.
+#
+# Why mero-tee was not in fleet.json until now: it was simply missed. It sat on
+# merod 0.11.0-rc.35 while core released rc.36, rc.37, rc.38 and rc.39 — 37
+# commits, and every one of the account/session/warrant changes the delegated
+# execution path is built out of. The fleet could not have run that path at all,
+# and nothing reported it, because no automation and no test covers a pin that
+# nobody bumps.
+bump_tee() {
+  local cfg="$DIR/mero-tee/versions.json"
+
+  if [ ! -f "$cfg" ]; then
+    note "no mero-tee/versions.json — this repository bundles no merod image"
+    exit 3
+  fi
+
+  local current
+  current=$(read_json_key "$cfg" merodVersion)
+  [ -n "$current" ] || die "versions.json carries no merodVersion field"
+
+  head_note "tee: bundled merod $current -> $VERSION"
+
+  if [ "$current" = "$VERSION" ]; then
+    note "already bundling $VERSION"
+    exit 4
+  fi
+
+  write_json_key "$cfg" merodVersion "$VERSION"
+  [ "$(read_json_key "$cfg" merodVersion)" = "$VERSION" ] \
+    || die "versions.json did not take the new merodVersion"
+
+  # The image's own version, patch-incremented — exactly what `tauri` does for
+  # the desktop app it rebuilds. Left alone, the rebuilt image would claim to be
+  # the one already running.
+  local image next
+  image=$(read_json_key "$cfg" imageVersion)
+  if [ -z "$image" ]; then
+    note "WARNING: no imageVersion to bump; the image will not be distinguishable from the last"
+  else
+    next=$(printf '%s' "$image" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')
+    write_json_key "$cfg" imageVersion "$next"
+    [ "$(read_json_key "$cfg" imageVersion)" = "$next" ] \
+      || die "versions.json did not take the new imageVersion"
+    note "image $image -> $next"
+  fi
+
+  record_change "mero-tee/versions.json"
+
+  # `imageVersion` is ONE version wearing three hats, and the consumer enforces
+  # it: scripts/policy/check_release_version_sync.sh refuses a versions.json
+  # whose imageVersion disagrees with mero-kms/Cargo.toml's package.version or
+  # with the mero-kms-phala entry in Cargo.lock. Moving only the JSON produces a
+  # pull request that cannot merge — which is what the first generated one would
+  # have done. The repository's own config-reference documents the rule; this
+  # honours it rather than rediscovering it in CI.
+  [ -n "${next:-}" ] && bump_tee_companions "$next"
+
+  # Anything under `mero-tee/` also trips that repository's docs guard, which
+  # demands a docs/** or README.md change alongside. That is not a formality
+  # here: the pinned versions are written out in the docs, and they had already
+  # drifted two releases behind the file they describe. Rewriting them keeps the
+  # documented values true AND satisfies the guard — one action, both reasons.
+  bump_tee_docs "$VERSION" "${next:-}"
+}
+
+# The two files that carry `imageVersion` under different names. Both optional:
+# a consumer shaped differently is not an error, it simply has nothing here.
+bump_tee_companions() {
+  local image_version="$1"
+
+  local cargo="$DIR/mero-kms/Cargo.toml"
+  if [ -f "$cargo" ]; then
+    # Only `version` inside `[package]`. A workspace or dependency table further
+    # down carries versions too, and a first-match rewrite would take whichever
+    # came first in the file rather than the package's own.
+    NEW="$image_version" perl -i -pe '
+      if (/^\s*\[/) { $in = /^\s*\[package\]/ ? 1 : 0 }
+      if ($in && !$done && s{^(version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2}) { $done = 1 }
+    ' "$cargo"
+    record_change "mero-kms/Cargo.toml"
+    note "mero-kms/Cargo.toml now $image_version"
+  else
+    note "no mero-kms/Cargo.toml — nothing to keep in sync with imageVersion"
+  fi
+
+  local lock="$DIR/Cargo.lock"
+  if [ -f "$lock" ]; then
+    # Only the version line of the `mero-kms-phala` package block. Matching on
+    # the name alone would rewrite the first version in the file; matching the
+    # pair keeps it to the one entry the guard reads.
+    NEW="$image_version" perl -0777 -i -pe '
+      s{(name = "mero-kms-phala"\nversion = ")[^"]*(")}{$1$ENV{NEW}$2}
+    ' "$lock"
+    record_change "Cargo.lock"
+    note "Cargo.lock mero-kms-phala now $image_version"
+  fi
+}
+
+# Rewrite the versions the docs state, so they stay true and the docs guard is
+# satisfied by the same edit.
+#
+# Scoped to lines that NAME the key. The docs also discuss versions in prose —
+# an EOL'd OS release, for one — and a blind search-and-replace of a version
+# string would rewrite history rather than the pin. A key and its value share a
+# line in both the JSON sample and the reference table, so requiring the key on
+# the line is both precise and enough.
+bump_tee_docs() {
+  local new_merod="$1" new_image="$2"
+  local found=0 f
+
+  # `docs/dist` is built output and `node_modules` is not ours; rewriting either
+  # would be noise in the diff and neither is what anybody reads.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # Rewrite whatever version the line currently states, rather than matching
+    # the one being replaced. The docs drift on their own — mero-tee's said
+    # 0.11.0-rc.33 while the file said rc.35, two releases apart — and a
+    # replace-the-old-value sweep silently does nothing precisely when the docs
+    # are most wrong. Anchoring on the KEY instead makes this self-healing.
+    NEW="$new_merod" perl -i -pe '
+      s{\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?}{$ENV{NEW}}g if /merodVersion/
+    ' "$f"
+    if [ -n "$new_image" ]; then
+      NEW="$new_image" perl -i -pe '
+        s{\d+\.\d+\.\d+}{$ENV{NEW}}g if /imageVersion/
+      ' "$f"
+    fi
+    if ! ( cd "$DIR" && git diff --quiet -- "${f#$DIR/}" ); then
+      record_change "${f#$DIR/}"
+      found=$((found + 1))
+    fi
+  done <<EOF
+$(find "$DIR/docs" -type f \( -name '*.mdx' -o -name '*.md' \) \
+    -not -path '*/dist/*' -not -path '*/node_modules/*' 2>/dev/null)
+EOF
+
+  if [ "$found" -eq 0 ]; then
+    note "WARNING: no documented version was updated — this repository's docs"
+    note "         guard requires a docs change alongside mero-tee/*, so the"
+    note "         generated pull request will fail it"
+  else
+    note "updated $found documentation file(s) that state the pinned versions"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1138,7 +1308,11 @@ case "$SURFACE" in
     [ -n "$VERSION" ] || die "--surface tauri needs --version"
     bump_tauri
     ;;
-  *) die "--surface must be cargo, npm or tauri (got '$SURFACE')" ;;
+  tee)
+    [ -n "$VERSION" ] || die "--surface tee needs --version"
+    bump_tee
+    ;;
+  *) die "--surface must be cargo, npm, tauri or tee (got '$SURFACE')" ;;
 esac
 
 # Hand the caller exactly the paths to stage; anything else the tooling left

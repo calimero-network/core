@@ -11381,6 +11381,46 @@ mod account_plane_apply {
     }
 
     #[test]
+    fn folding_its_own_withdrawal_releases_this_nodes_device() {
+        // The one moment a revoked node can act on its own revocation. Releasing
+        // it here rather than at a use site is what makes "speaks as its own
+        // account again" true before anything else happens to look.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        // What pairing leaves on this node: a device of somebody else's account,
+        // beside the root this node was initialised with.
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let held = devices
+            .ensure_enrolled_into(&[gid], AccountGenesis::new(key(9).public_key()))
+            .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account: held.account,
+                device: held.device(),
+                proof: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            devices.get().unwrap().is_none(),
+            "the withdrawn device must be released by the fold itself"
+        );
+        assert_eq!(
+            devices.account_namespace().unwrap(),
+            Some(devices.account_root().unwrap().unwrap().account_namespace()),
+            "and the node must follow its own account namespace again"
+        );
+    }
+
+    #[test]
     fn a_link_needs_a_member_endorsement_and_a_root_signed_cert() {
         // The gate is two questions and it takes both. The account root is a member
         // nowhere by design — that is what lets it stay offline and recover a device
