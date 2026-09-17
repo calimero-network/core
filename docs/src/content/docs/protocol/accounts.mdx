@@ -395,10 +395,10 @@ PUT /admin-api/account/devices/<DEVICE_ID>/scope
 { "scope": { "only": ["<APP_ID>"] } }   # or { "scope": "all" }
 ```
 
-It records the replacement in the account namespace first, so every other device judges the change against it, then publishes `AccountDeviceDescoped` into each namespace the new scope no longer reaches, then binds the device into the ones it now does.
+It records the replacement in the account namespace first, so every other device judges the change against it, then publishes `AccountDeviceDescoped` into every namespace this node takes part in that the new scope no longer reaches - whether or not the device was bound there, since that op is also what writes the scope floor - then binds the device into the ones it now does.
 The narrowing is **not** a revocation: it deletes the binding row and leaves no tombstone, so the `DeviceId` survives and a later widening re-binds the same device.
 A revocation would spend that id in every namespace at once, which is the difference between taking one application away and destroying the device.
-The rotation rides along where this node is an admin of the namespace and is left owed where it is not, exactly as a revocation's is, and the response says which.
+The rotation rides along where this node is an admin of the namespace *and* the device actually held a binding there, and is left owed otherwise; the response reports it per namespace, as `descoped`, `linkedIn` and `skipped` lists shaped like relink's.
 
 **A narrowing is ordered, because a root-signed statement is not a fresh op.**
 Every member of a namespace decrypts the ops published there, so any of them holds the statement a past narrowing carried and can re-publish it under their own signature and nonce - which is a genuinely new op, past both the signer check and the replay window.
