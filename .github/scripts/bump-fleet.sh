@@ -71,7 +71,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SURFACE" ] || die "--surface is required (cargo|npm)"
+[ -n "$SURFACE" ] || die "--surface is required (cargo|npm|tauri|tee)"
 [ -n "$DIR" ] || die "--dir is required"
 [ -d "$DIR" ] || die "--dir '$DIR' is not a directory"
 
@@ -807,6 +807,19 @@ write_json_version() {
   ' "$1"
 }
 
+# Keyed variants of the two above. `tauri`'s files name the document's own
+# version `version`, so position is enough there; mero-tee's names two versions
+# in one object, so the key has to be part of the match.
+read_json_key() {
+  KEY="$2" perl -ne 'if (m{"$ENV{KEY}"\s*:\s*"([^"]*)"}) { print "$1\n"; exit }' "$1"
+}
+
+write_json_key() {
+  KEY="$2" NEW="$3" perl -i -pe '
+    if (!$done && s{("$ENV{KEY}"\s*:\s*")[^"]*(")}{$1$ENV{NEW}$2}) { $done = 1 }
+  ' "$1"
+}
+
 bump_tauri() {
   local cfg="$DIR/merod-config.json"
 
@@ -857,6 +870,67 @@ bump_tauri() {
     write_json_version "$DIR/$conf" "$next"; record_change "$conf"
   fi
   note "desktop app $top -> $next"
+}
+
+# ---------------------------------------------------------------------------
+# tee
+# ---------------------------------------------------------------------------
+#
+# mero-tee builds the confidential-VM image the hosted fleet runs, and that image
+# BUNDLES a merod binary. `mero-tee/versions.json` names both: `merodVersion` is
+# the binary it bundles, `imageVersion` is the image's own version.
+#
+# The same two-field shape as `tauri`, and handled the same way: a core release
+# moves the bundled binary, and the thing bundling it needs a version of its own
+# so the new bundle is distinguishable from the old. An image whose contents
+# changed under an unchanged `imageVersion` is indistinguishable from the one
+# already deployed, which is how a fleet silently keeps running the old merod.
+#
+# Why mero-tee was not in fleet.json until now: it was simply missed. It sat on
+# merod 0.11.0-rc.35 while core released rc.36, rc.37, rc.38 and rc.39 — 37
+# commits, and every one of the account/session/warrant changes the delegated
+# execution path is built out of. The fleet could not have run that path at all,
+# and nothing reported it, because no automation and no test covers a pin that
+# nobody bumps.
+bump_tee() {
+  local cfg="$DIR/mero-tee/versions.json"
+
+  if [ ! -f "$cfg" ]; then
+    note "no mero-tee/versions.json — this repository bundles no merod image"
+    exit 3
+  fi
+
+  local current
+  current=$(read_json_key "$cfg" merodVersion)
+  [ -n "$current" ] || die "versions.json carries no merodVersion field"
+
+  head_note "tee: bundled merod $current -> $VERSION"
+
+  if [ "$current" = "$VERSION" ]; then
+    note "already bundling $VERSION"
+    exit 4
+  fi
+
+  write_json_key "$cfg" merodVersion "$VERSION"
+  [ "$(read_json_key "$cfg" merodVersion)" = "$VERSION" ] \
+    || die "versions.json did not take the new merodVersion"
+
+  # The image's own version, patch-incremented — exactly what `tauri` does for
+  # the desktop app it rebuilds. Left alone, the rebuilt image would claim to be
+  # the one already running.
+  local image next
+  image=$(read_json_key "$cfg" imageVersion)
+  if [ -z "$image" ]; then
+    note "WARNING: no imageVersion to bump; the image will not be distinguishable from the last"
+  else
+    next=$(printf '%s' "$image" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')
+    write_json_key "$cfg" imageVersion "$next"
+    [ "$(read_json_key "$cfg" imageVersion)" = "$next" ] \
+      || die "versions.json did not take the new imageVersion"
+    note "image $image -> $next"
+  fi
+
+  record_change "mero-tee/versions.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -1138,7 +1212,11 @@ case "$SURFACE" in
     [ -n "$VERSION" ] || die "--surface tauri needs --version"
     bump_tauri
     ;;
-  *) die "--surface must be cargo, npm or tauri (got '$SURFACE')" ;;
+  tee)
+    [ -n "$VERSION" ] || die "--surface tee needs --version"
+    bump_tee
+    ;;
+  *) die "--surface must be cargo, npm, tauri or tee (got '$SURFACE')" ;;
 esac
 
 # Hand the caller exactly the paths to stage; anything else the tooling left
