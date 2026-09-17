@@ -171,15 +171,22 @@ impl AclView {
     /// explicit per-member override if present, else the group default, else
     /// `0`.
     ///
-    /// The live twin is `CapabilitiesRepository::effective_member_capability`,
-    /// and the two are deliberately the same rule. This comment used to claim it
-    /// mirrored the live `member_capability` read, which it did not: that read
-    /// had no default fallback, because admission copied the default into a
-    /// per-member row instead of resolving it. So the at-cut answer and the live
-    /// answer could differ for a member admitted before the group's
-    /// `DefaultCapabilitiesSet` folded — a delegated write authorized here and
-    /// refused on the receive path, or the reverse. The live side now resolves
-    /// too, so the claim holds.
+    /// The live twin is `MembershipRepository::effective_member_capability`, and
+    /// the two share this fallback. This comment used to claim it mirrored the
+    /// live `member_capability` read, which it did not: that read had no default
+    /// fallback, because admission copied the default into a per-member row
+    /// instead of resolving it. So the at-cut answer and the live answer could
+    /// differ for a member admitted before the group's `DefaultCapabilitiesSet`
+    /// folded. The live side now resolves too.
+    ///
+    /// They are not identical, and the difference is deliberate: the live side
+    /// also excludes **admins** from the default, because it answers the
+    /// authorship question as well, and `CAN_AUTHOR_ON_BEHALF` is not implied by
+    /// admin. This function does not need that exclusion — its callers are the
+    /// inheritance climb and the scope projection, both of which resolve an
+    /// admin through `is_group_admin` before they ever ask for capability bits.
+    /// Adding the exclusion here would be dead weight; assuming it exists would
+    /// be a bug if a future caller used this to answer authorship.
     #[must_use]
     pub fn capability(&self, group: &ContextGroupId, member: &AccountId) -> u32 {
         self.member_caps

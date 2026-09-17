@@ -144,7 +144,7 @@ fn readd_with_defaults_seeds_defaults_not_stale_caps() {
     );
     // And what the re-added member actually gets is the group default.
     assert_eq!(
-        caps.effective_member_capability(&gid, &pk).unwrap(),
+        membership.effective_member_capability(&gid, &pk).unwrap(),
         defaults
     );
 }

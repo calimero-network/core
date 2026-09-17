@@ -295,8 +295,7 @@ impl<'a> MembershipRepository<'a> {
                 });
             }
             if has_direct_member(self.store, &parent, identity)? && anchor_decision.is_none() {
-                let caps = CapabilitiesRepository::new(self.store)
-                    .effective_member_capability(&parent, identity)?;
+                let caps = self.effective_member_capability(&parent, identity)?;
                 anchor_decision = Some(
                     if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                         MembershipPath::Inherited {
@@ -363,11 +362,41 @@ impl<'a> MembershipRepository<'a> {
             {
                 Ok(None)
             }
-            MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
-                CapabilitiesRepository::new(self.store)
-                    .effective_member_capability(group_id, identity)?,
-            )),
+            MembershipPath::Direct | MembershipPath::Inherited { .. } => {
+                Ok(Some(self.effective_member_capability(group_id, identity)?))
+            }
         }
+    }
+
+    /// `identity`'s effective capability bits in `group_id`, by the rule that
+    /// needs the role: the explicit per-member grant if one exists, else the
+    /// group default — **unless the member is an Admin, which gets neither.**
+    ///
+    /// The admin exclusion is not incidental. `add_member_with_keys` only ever
+    /// seeded a row for a non-admin role, so an admin's bits were always `0`
+    /// unless granted outright, and the capability is deliberately not implied
+    /// by admin: `delegated-authorship` proves the distinction by refusing the
+    /// namespace owner's own delegated write until `CAN_AUTHOR_ON_BEHALF` is
+    /// granted explicitly, then accepting the same bytes once it is.
+    ///
+    /// Resolving the default here rather than copying it at admission is what
+    /// makes a member's capabilities independent of the order two ops fold in
+    /// (see `CapabilitiesRepository::resolved_for_non_admin`). Applying that
+    /// fallback to admins as well would have widened every namespace owner to
+    /// its own default mask, which is what the first attempt did.
+    pub fn effective_member_capability(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<u32> {
+        let capabilities = CapabilitiesRepository::new(self.store);
+        if let Some(explicit) = capabilities.member_capability(group_id, identity)? {
+            return Ok(explicit);
+        }
+        if self.role_of(group_id, identity)? == Some(GroupMemberRole::Admin) {
+            return Ok(0);
+        }
+        capabilities.resolved_for_non_admin(group_id, identity)
     }
 
     /// Enumerate the accounts that are members of `group_id` purely by

@@ -55,8 +55,13 @@ impl<'a> CapabilitiesRepository<'a> {
         Ok(())
     }
 
-    /// `member`'s effective capability bits in `group_id`: the explicit
-    /// per-member grant if one exists, else the group's default, else `0`.
+    /// The group default, for a member with no explicit grant.
+    ///
+    /// **Role-blind, and therefore not the whole rule.** The default is for
+    /// MEMBERS: an admin's authority is its role, checked by role everywhere, and
+    /// the capability bits are deliberately not implied by it. Callers must go
+    /// through [`MembershipRepository::effective_member_capability`], which knows
+    /// the role; this exists so that function has one place to read from.
     ///
     /// **The row means "explicitly granted", and its absence means "take the
     /// group default" — it has never meant "no capabilities".** Reading
@@ -77,7 +82,7 @@ impl<'a> CapabilitiesRepository<'a> {
     /// two rules, which matters because `AtCutAuthorizer` decides with the
     /// former and the receive path with the latter — a disagreement between
     /// them is a write authorized at the cut and refused live, or the reverse.
-    pub fn effective_member_capability(
+    pub fn resolved_for_non_admin(
         &self,
         group_id: &ContextGroupId,
         member: &AccountId,

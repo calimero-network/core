@@ -1988,7 +1988,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // to read the raw row, because admission copied the seeded default into one;
     // it now resolves against the group default instead, so the bit no longer
     // depends on the default having been seeded before the admission applied.
-    let tee_root_caps = CapabilitiesRepository::new(&store)
+    let tee_root_caps = MembershipRepository::new(&store)
         .effective_member_capability(&ns_gid, &tee_member_account)
         .unwrap();
     assert_ne!(

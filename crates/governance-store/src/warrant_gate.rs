@@ -34,7 +34,6 @@ use calimero_store::{key, types, Store};
 use eyre::Result as EyreResult;
 
 use crate::account_bindings::AccountBindingRepository;
-use crate::capabilities::CapabilitiesRepository;
 use crate::membership::MembershipPath;
 use crate::MembershipRepository;
 
@@ -258,7 +257,7 @@ pub fn authorship_grant_source(
     else {
         return Ok(None);
     };
-    let bits = CapabilitiesRepository::new(store).effective_member_capability(&anchor, &account)?;
+    let bits = membership.effective_member_capability(&anchor, &account)?;
     Ok(MemberCapabilities::from_bits_truncate(bits)
         .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
         .then_some(anchor))
@@ -860,6 +859,64 @@ mod tests {
     /// Without this, that test would pass just as happily if `add_member` were
     /// granting authorship to every TEE node regardless of the default — which
     /// is the failure it is meant to rule out, not demonstrate.
+    /// The default reaches members, and never an admin.
+    ///
+    /// This is the rule `delegated-authorship` exists to prove — "the grant is
+    /// not implied by membership or by admin" — and the one a first attempt at
+    /// resolving the default broke. Admission only ever wrote a capability row
+    /// for a NON-admin role, so an admin's bits were `0` unless granted
+    /// outright; resolving the group default for everyone quietly handed every
+    /// namespace owner its own mask, and the scenario's refusal-before-the-grant
+    /// step stopped refusing.
+    ///
+    /// The E2E catches it end to end. This catches it in four seconds.
+    #[test]
+    fn the_group_default_never_reaches_an_admin() {
+        let w = seed(7);
+        let admin = enrol_member(&w.store, &w.group, &PublicKey::from([0x2A; 32]));
+        MembershipRepository::new(&w.store)
+            .add_member(&w.group, &admin, GroupMemberRole::Admin)
+            .expect("add an admin");
+
+        // A default that would confer authorship if it applied.
+        CapabilitiesRepository::new(&w.store)
+            .set_default_capabilities(
+                &w.group,
+                (MemberCapabilities::CAN_AUTHOR_ON_BEHALF
+                    | MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+                    .bits(),
+            )
+            .expect("set the namespace default");
+
+        assert_eq!(
+            MembershipRepository::new(&w.store)
+                .effective_member_capability(&w.group, &admin)
+                .expect("resolve the admin's capabilities"),
+            0,
+            "an admin holds no capability bits by default — its authority is its \
+             role, and the bits are deliberately not implied by it"
+        );
+        assert!(
+            !account_may_author(&w.store, &w.context, admin).expect("read the gate"),
+            "so the namespace owner's own delegated write is refused until \
+             CAN_AUTHOR_ON_BEHALF is granted outright"
+        );
+
+        // And the grant still works, so this is an exclusion from the DEFAULT and
+        // not a refusal to let an admin ever author.
+        CapabilitiesRepository::new(&w.store)
+            .set_member_capability(
+                &w.group,
+                &admin,
+                MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+            )
+            .expect("grant it explicitly");
+        assert!(
+            account_may_author(&w.store, &w.context, admin).expect("read the gate again"),
+            "an explicit grant is what changes the verdict — same account, same role"
+        );
+    }
+
     /// The order two ops fold in must not decide whether a relay may author.
     ///
     /// No peer controls that order. The key-delivery retry sorts buffered ops by
