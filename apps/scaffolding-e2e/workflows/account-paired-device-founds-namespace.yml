@@ -123,20 +123,24 @@ steps:
     outputs:
       alice_account: accountId
       alice_device: deviceId
+      alice_root: accountRootPublicKey
+      account_ns: accountNamespaceId
 
   # Scoped to app A, the application C targets, and following the account
-  # namespace as well as A. merobox's account_pair step names neither, and both
-  # are load-bearing: the account namespace is where the laptop's certificate
-  # is written down, and the scope is what lets the phone tell it has folded it.
+  # namespace as well as A. Both are load-bearing: the account namespace is where
+  # the laptop's certificate is written down, and the scope is what lets the phone
+  # tell it has folded it.
   - name: Pair node-2 onto Alice's account, listening on A and the account namespace
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - paired-founder-node-1
-      - paired-founder-node-2
+    type: account_pair
+    node: paired-founder-node-2
+    holder: paired-founder-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    namespaces:
       - '{{ns_a}}'
+    applications:
       - '{{app}}'
+    await_self: true
 
   - name: What node-2 speaks as
     type: node_identity
@@ -169,14 +173,14 @@ steps:
   # Scoped to app B, which no namespace targets. The account namespace is
   # always a fan-out target and always holds a key, so this pairs there alone.
   - name: Pair node-3, scoped to app B, following the account namespace
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - paired-founder-node-1
-      - paired-founder-node-3
-      - '-'
+    type: account_pair
+    node: paired-founder-node-3
+    holder: paired-founder-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    applications:
       - '{{app_b}}'
+    await_self: true
 
   - name: What node-3 speaks as
     type: node_identity
@@ -233,15 +237,18 @@ steps:
     retries: 30
     interval: 2
 
+  # A founder carries only the siblings whose scope covers what it founded.
   - name: The phone left the tablet in the account namespace
-    type: script
-    script: scripts/account-founder-carry-check.sh
-    target: local
-    args:
-      - paired-founder-node-2
-      - paired-founder-node-1
-      - '{{ns_c}}'
-      - '{{tablet_device}}'
+    type: account_devices
+    node: paired-founder-node-2
+    where:
+      deviceId: '{{tablet_device}}'
+    contains:
+      namespaces:
+        - '{{account_ns}}'
+    not_contains:
+      namespaces:
+        - '{{ns_c}}'
 
   # The assertion that catches the silent failure. Before the fix a node holding
   # its own root re-minted its device under that root to sign the founder

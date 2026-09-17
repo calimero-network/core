@@ -25,16 +25,52 @@ steps:
     username: dev
     password: dev-password
 
-  # A script, because merobox's account_pair step has no field for the account namespace id.
-  - name: Pair node-2 with only the account namespace, and check both sides agree
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-ns-node-1
-      - account-ns-node-2
-      - '-'
-      - '-'
+  - name: The laptop's account root
+    type: node_identity
+    node: account-ns-node-1
+    outputs:
+      root_key: accountRootPublicKey
+
+  - name: Pair node-2 with only the account namespace
+    type: account_pair
+    node: account-ns-node-2
+    holder: account-ns-node-1
+    root_key: '{{root_key}}'
+    account_namespace: auto
+    await_self: true
+    outputs:
+      phone_device: deviceId
+      account_ns: accountNamespace
+      key_delivered: keyDelivered
+
+  - name: The pairing delivered a key
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+
+  - name: The phone names the laptop's account namespace
+    type: assert_api_response
+    node: account-ns-node-2
+    path: /admin-api/identity
+    match:
+      data.accountNamespaceId: '{{account_ns}}'
+
+  - name: The laptop never lists the account namespace as a project
+    type: assert_api_response
+    node: account-ns-node-1
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{account_ns}}'
+    expect_no_match: true
+
+  - name: The laptop bound the phone in the account namespace
+    type: account_devices
+    node: account-ns-node-1
+    where:
+      deviceId: '{{phone_device}}'
+    contains:
+      namespaces:
+        - '{{account_ns}}'
 
   - name: The laptop's namespace listing stays empty
     type: assert_api_response

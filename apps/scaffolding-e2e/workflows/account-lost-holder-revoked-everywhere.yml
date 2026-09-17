@@ -99,38 +99,54 @@ steps:
     node: account-carry-node-1
     outputs:
       lost_device: deviceId
+      root_key: accountRootPublicKey
+      account_ns: accountNamespaceId
 
   # Scoped to app A and enrolled into A1 by name, so the phone's reach is A1 and
   # the account namespace and provably not B1.
   - name: Pair node-2 onto Alice's account, scoped to app A
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-carry-node-1
-      - account-carry-node-2
+    type: account_pair
+    node: account-carry-node-2
+    holder: account-carry-node-1
+    root_key: '{{root_key}}'
+    account_namespace: '{{account_ns}}'
+    namespaces:
       - '{{ns_a}}'
+    applications:
       - '{{app_a}}'
+    await_self: true
 
   - name: Pair node-3 onto Alice's account, scoped to app B
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-carry-node-1
-      - account-carry-node-3
+    type: account_pair
+    node: account-carry-node-3
+    holder: account-carry-node-1
+    root_key: '{{root_key}}'
+    account_namespace: '{{account_ns}}'
+    namespaces:
       - '{{ns_b}}'
+    applications:
       - '{{app_b}}'
+    await_self: true
 
   - name: Pair node-4 onto Alice's account, scoped to app B
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-carry-node-1
-      - account-carry-node-4
+    type: account_pair
+    node: account-carry-node-4
+    holder: account-carry-node-1
+    root_key: '{{root_key}}'
+    account_namespace: '{{account_ns}}'
+    namespaces:
       - '{{ns_b}}'
+    applications:
       - '{{app_b}}'
+    await_self: true
+
+  - name: The desktop sees the laptop's device
+    type: account_devices
+    node: account-carry-node-4
+    where:
+      deviceId: '{{lost_device}}'
+    retries: 45
+    interval: 2
 
   - name: The tablet converges on B1
     type: assert_api_response
@@ -152,7 +168,7 @@ steps:
     type: wait_for_sync
     description: >-
       lint-convergence: ok - the desktop joins no context, so no barrier covers
-      it; its pairing script returns folded and the read below carries `retries`.
+      it; its `account_pair` waits for the fold and the read below carries `retries`.
     nodes:
       - account-carry-node-1
       - account-carry-node-3
@@ -199,14 +215,36 @@ steps:
     type: stop_node
     nodes: account-carry-node-1
 
-  - name: The phone revokes the laptop from the phrase alone
-    type: script
-    script: scripts/account-carry-revocation.sh
-    target: local
+  - name: The laptop's recovery phrase, read off its disk
+    type: node_exec
+    node: account-carry-node-1
+    args: [account, export]
+    outputs:
+      phrase: stdout_first_line
+
+  # `--from` skips the datastore, so the phone can mint this while it runs.
+  - name: The phone mints the revocation from the phrase alone
+    type: node_exec
+    node: account-carry-node-2
+    allow_running: true
+    files:
+      /app/data/recovery.txt: '{{phrase}}'
     args:
-      - account-carry-node-1
-      - account-carry-node-2
+      - account
+      - revoke-proof
+      - --device
       - '{{lost_device}}'
+      - --from
+      - /app/data/recovery.txt
+    outputs:
+      proof: stdout_first_line
+
+  - name: The phone publishes it into the account namespace
+    type: account_revoke
+    node: account-carry-node-2
+    namespace_id: '{{account_ns}}'
+    device_id: '{{lost_device}}'
+    proof: '{{proof}}'
 
   # ── Phase 3: the tablet carries it where the phone could not ──────
 
@@ -263,6 +301,7 @@ steps:
     timeout: 120
     trigger_sync: true
 
+  # The laptop's own node accepts the write; its peers drop it, which the read below asserts.
   - name: The retired laptop can no longer write
     type: call
     node: account-carry-node-1
@@ -271,7 +310,7 @@ steps:
     args:
       key: from-the-laptop
       value: after-the-loss
-    expected_failure: true
+    allow_failure: true
 
   - name: Give the refused delta every chance to land
     type: wait

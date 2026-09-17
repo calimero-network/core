@@ -346,7 +346,7 @@ steps:
       key: "post_revoke_should_drop"
       value: "this_must_not_appear"
     executor_public_key: '{{node2_key}}'
-    expected_failure: true
+    allow_failure: true
 
   # Drain in-flight gossip from a possible local-success before the
   # cross-peer read. Without this, the read could race past any delta
