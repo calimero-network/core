@@ -241,8 +241,18 @@ jobs:
       # with a literal `/bin/sh`, and 0.6.75 a crash printing merobox's own
       # emoji banner to a cp1252 stdout. The last of those is why this step no
       # longer sets `PYTHONIOENCODING`.
+      #
+      # 0.6.76 is ported here from the branch that bumps it for merobox's native
+      # pairing steps, because that branch is the ONLY recent run in which
+      # `ephemeral-presence-e2e` passed while this one failed twice. The two runs
+      # differ in two things, not one -- this PR's commit AND the harness version
+      # -- and the container topology differs with them (0.6.75 starts `-init`
+      # containers, 0.6.76 does not), which is exactly the kind of difference a
+      # live-SSE delivery deadline is sensitive to. Bumping here removes the
+      # second variable so the next run attributes the failure honestly. It
+      # no-ops once master carries the same bump.
       - name: Install merobox
-        run: pip install merobox==0.6.75
+        run: pip install merobox==0.6.76
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         shell: bash
@@ -320,7 +330,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install merobox
-        run: pip install merobox==0.6.75
+        run: pip install merobox==0.6.76
 
       # `cd` into the app first, exactly as the Linux matrix above does. The
       # scenario's `path: ../../dist/...` is resolved against the CWD, not
