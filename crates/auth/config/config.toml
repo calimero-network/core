@@ -56,11 +56,39 @@ style_src = ["'self'", "'unsafe-inline'"]
 # Authentication providers configuration
 [providers]
 user_password = true
+# Device-key login for accounts that run no node. Off by default: it cannot be
+# enabled without `account_proof.node_key` below, and the provider refuses to
+# start rather than accept login statements minted for some other node.
+account_proof = false
 
 # Username/password configuration
 [user_password]
 min_password_length = 8
 max_password_length = 128
+
+# Account-proof (device-key) login configuration
+[account_proof]
+# Seconds an issued challenge stays valid. Short on purpose: it bounds both the
+# replay window and the size of the spent set.
+challenge_ttl_secs = 60
+# Hex of THIS node's namespace public key, as a client pins it. REQUIRED when the
+# provider is enabled -- it is what refuses a login statement minted for another
+# node and replayed here.
+# node_key = "<64 hex chars>"
+# Client surfaces a session may be minted for: a bare origin, "codesign:<id>", or
+# "cli". An EMPTY list accepts any audience and is warned about at startup.
+allowed_audiences = []
+# Permissions a session carries. Defaults to both halves of the delegated
+# surface and nothing above them: a write, which the warrant and
+# CAN_AUTHOR_ON_BEHALF gate, and a read, which the node gates by re-checking the
+# caller's membership on EVERY call (#3931) rather than trusting the session --
+# so a removed member stops being served when the governance op lands, not when
+# their token expires. That per-request check is what made it safe to mint reads
+# by default; before it, this was context:intent alone.
+# Nothing else belongs here. An admin or context:execute scope would be
+# authority the token confers by itself, where these two are each separately
+# gated.
+session_permissions = ["context:intent", "context:query"]
 
 # Development/testing configuration
 [development]

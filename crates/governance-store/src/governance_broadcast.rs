@@ -90,6 +90,12 @@ pub const OP_ACK_HEAVY_TIMEOUT: Duration = Duration::from_secs(10);
 ///     classification (e.g. `KeyDelivery` heavy via the rotation
 ///     envelope) requires accepting a wider tail. Member-change is the
 ///     conservative middle ground.
+///   * `RootSealed { .. }`: the same baseline, for the same reason — the wire
+///     form is an opaque blob. But unlike a group op, the PUBLISHER of a sealed
+///     root op holds the key by definition, so it can classify exactly; see
+///     [`NamespaceGovernance::ack_timeout_for`](crate::namespace::governance::NamespaceGovernance::ack_timeout_for).
+///     This function is the fallback for readers that hold no key, and its
+///     answer for a sealed op is a floor rather than a verdict.
 #[must_use]
 pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
     match op {

@@ -1,7 +1,7 @@
-//! Apply handlers for the account plane: device link, device revocation, and
-//! account root-key rotation.
+//! Apply handlers for the account plane: device link and certification, the
+//! account's namespace set, device revocation, and account root-key rotation.
 //!
-//! The three share a file because they share one invariant, and separating them
+//! They share a file because they share one invariant, and separating them
 //! would let it drift: **every one of them must be idempotent and
 //! order-independent**. The apply pipeline re-runs a mutation before the op-log
 //! dedup gate fires, and governance ops arrive in whatever order the DAG hands
@@ -14,11 +14,14 @@
 use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
-use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
+use crate::op_events::OpEvent;
+use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
 use calimero_account::{
-    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, RootKeyHandoff,
-    SignedDeviceRevocation,
+    AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
+    DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
@@ -125,7 +128,7 @@ pub(crate) fn apply_device_linked(
 
     match outcome {
         Ok(binding) => {
-            remember_if_this_accounts_own(ctx, genesis, chain, cert);
+            remember_own_link_if_ours(ctx, genesis, chain, cert);
             tracing::info!(
                 group_id = ?group_id,
                 account = %binding.account,
@@ -151,48 +154,162 @@ pub(crate) fn apply_device_linked(
     Ok(())
 }
 
-/// Cache a certificate this node's OWN account root signed, wherever it applied
-/// from.
-///
-/// The multi-holder case: a second holder device certified a third, and this node
-/// learns of it only here. Without the cache, a namespace this node gains later
-/// would have no way to bind that device - the replicated binding row drops the
-/// root signature, so the certificate cannot be rebuilt from folded state.
-///
-/// Read-only on the root, never `ensure_account_root`: an apply path must not
-/// mint a key as a side effect of folding somebody else's op. A node holding no
-/// root owns no account and so can own no certificate here.
-///
-/// Failures are logged rather than propagated. The cache is an optimisation over
-/// re-pairing; refusing an op the group accepted because a node-local row could
-/// not be written would diverge this replica from its peers.
-fn remember_if_this_accounts_own(
+/// Keep the proof if this link is about THIS node's device. Best-effort: a
+/// node-local write must never refuse an op the group accepted.
+fn remember_own_link_if_ours(
     ctx: &GroupApplyCtx<'_>,
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
 ) {
-    let devices = crate::NodeDeviceRepository::new(ctx.store());
-    let own = match devices.account_root() {
-        Ok(Some(root)) => root.account(),
-        Ok(None) => return,
-        Err(err) => {
-            tracing::warn!(%err, "could not read this node's account root while folding a link");
-            return;
-        }
-    };
-    if own != cert.account {
-        return;
-    }
-    let proof = calimero_account::AccountProof {
+    let proof = AccountProof {
         genesis: *genesis,
         chain: chain.to_vec(),
         statement: *cert,
     };
-    if let Err(err) = devices.remember_device_cert_if_new(&proof) {
+    if let Err(err) = crate::NodeDeviceRepository::new(ctx.store()).remember_own_link(&proof) {
         tracing::warn!(device = %cert.device, %err,
-                       "could not remember a certificate this account signed");
+                       "could not keep this device's own certificate");
     }
+}
+
+/// The account the signer of an account-namespace op speaks for, else `None`.
+///
+/// Admin AT THE CUT, never the live meta row, which moves under
+/// `TransferOwnership` and would split replicas by fold depth.
+fn owning_account_signer(ctx: &GroupApplyCtx<'_>, what: &str) -> EyreResult<Option<AccountId>> {
+    let group_id = *ctx.group_id();
+
+    // `?` rather than a swallowed `false`, as the unlink gate does: an
+    // unresolvable cut must park the op for retry, not read as "not an admin".
+    if !ctx.permissions().is_admin(ctx.signer())? {
+        tracing::warn!(group_id = ?group_id, what, signer = %ctx.signer(),
+                       "the signer is not an admin at this op's cut");
+        return Ok(None);
+    }
+    let Some(account) = ctx.signer_account()? else {
+        tracing::warn!(group_id = ?group_id, what, signer = %ctx.signer(),
+                       "the signer speaks for no account in this namespace");
+        return Ok(None);
+    };
+    Ok(Some(account))
+}
+
+/// `GroupOp::AccountDeviceCertified` - record a device of this namespace's own
+/// account in its registry.
+///
+/// A narrower gate than the link's, and deliberately: a link is admissible from
+/// any member endorsing any account, because it grants nothing the account did
+/// not already hold. The registry is different - it is what other devices bind
+/// FROM - so the signer must be an admin at the cut and speak for the account the
+/// statements name, and both statements must verify against that account.
+///
+/// Authority is read at the cut and never from the group's meta row, whose
+/// `admin_identity` moves under `TransferOwnership`: deciding from live meta
+/// would let two replicas at different fold depths settle one op differently,
+/// with no later op able to reconcile them.
+///
+/// A scope at or below the stored epoch is accepted as a no-op, the way a
+/// re-stated link is: the op still occupies its place in the DAG.
+pub(crate) fn apply_device_certified(
+    ctx: &mut GroupApplyCtx<'_>,
+    certificate: &AccountProof<DeviceCert>,
+    scope: &AccountProof<DeviceScope>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    let account = certificate.statement.account;
+
+    let Some(signer_account) = owning_account_signer(ctx, "account device certified")? else {
+        return Ok(());
+    };
+    if signer_account != account {
+        tracing::warn!(
+            group_id = ?group_id,
+            signer = %ctx.signer(),
+            %signer_account,
+            %account,
+            "account device certified: the signer does not speak for the account the \
+             statements name"
+        );
+        return Ok(());
+    }
+
+    if let Err(err) = certificate.verify(account) {
+        tracing::warn!(group_id = ?group_id, %account, %err,
+                       "account device certified: the certificate did not verify");
+        return Ok(());
+    }
+    // Narrowed to the certificate's device before verifying, so a valid scope for
+    // one device can never be presented as another's.
+    let device = certificate.statement.device;
+    if let Err(err) = scope.authorises(account, device) {
+        tracing::warn!(group_id = ?group_id, %device, %err,
+                       "account device certified: the scope did not authorise this device");
+        return Ok(());
+    }
+
+    let recorded = crate::AccountDeviceRegistry::new(ctx.store(), group_id).record(
+        certificate,
+        &scope.statement.applications,
+        scope.statement.scope_epoch,
+    )?;
+    if !recorded {
+        return Ok(());
+    }
+    ctx.queue_event(OpEvent::AccountDeviceCertified {
+        group_id: group_id.to_bytes(),
+        device,
+    });
+    tracing::info!(
+        group_id = ?group_id,
+        %device,
+        scope_epoch = scope.statement.scope_epoch,
+        applications = scope.statement.applications.len(),
+        "account device certified"
+    );
+    Ok(())
+}
+
+/// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
+/// A gain that read a target replaces the recorded one; one that read none keeps it.
+pub(crate) fn apply_namespace_gained(
+    ctx: &mut GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+    application: Option<ApplicationId>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    if owning_account_signer(ctx, "account namespace gained")?.is_none() {
+        return Ok(());
+    }
+
+    AccountNamespaceSet::new(ctx.store(), group_id).record(*namespace, application)?;
+    ctx.queue_event(OpEvent::AccountNamespaceGained {
+        group_id: group_id.to_bytes(),
+        namespace: *namespace,
+        application,
+    });
+    tracing::info!(group_id = ?group_id, ?namespace, ?application, "account namespace gained");
+    Ok(())
+}
+
+/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left. The
+/// event fires with or without a row: a device may follow it from its pair list.
+pub(crate) fn apply_namespace_left(
+    ctx: &mut GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    if owning_account_signer(ctx, "account namespace left")?.is_none() {
+        return Ok(());
+    }
+
+    AccountNamespaceSet::new(ctx.store(), group_id).forget(*namespace)?;
+    ctx.queue_event(OpEvent::AccountNamespaceLeft {
+        group_id: group_id.to_bytes(),
+        namespace: *namespace,
+    });
+    tracing::info!(group_id = ?group_id, ?namespace, "account namespace left");
+    Ok(())
 }
 
 /// `GroupOp::AccountDeviceUnlinked` — withdraw a device.
@@ -312,10 +429,15 @@ pub(crate) fn apply_device_unlinked(
     // once, but it keeps the key it already holds, so it can keep READING until
     // someone rotates for an unrelated reason.
     crate::PendingDeviceRotationRepository::new(ctx.store()).mark(&group_id, device)?;
-    ctx.queue_event(crate::op_events::OpEvent::DeviceRevoked {
+    ctx.queue_event(OpEvent::DeviceRevoked {
         group_id: group_id.to_bytes(),
         account: *account,
         device: *device,
+        // Only the proof that actually authorised this: one that did not verify
+        // authorises nothing elsewhere either, and the admin gate does not travel.
+        proof: self_service
+            .then(|| proof.map(|proof| Box::new(proof.clone())))
+            .flatten(),
     });
 
     tracing::info!(
@@ -446,11 +568,7 @@ pub(crate) fn apply_keys_rotated(
 /// Not an error: the op is validly signed and belongs in the DAG, it simply
 /// records nothing. Returning `Err` would stall the apply and burn no nonce,
 /// leaving the node retrying an op that can never succeed.
-fn log_refusal(
-    group_id: &calimero_context_config::types::ContextGroupId,
-    what: &str,
-    reason: &BindingRejected,
-) {
+fn log_refusal(group_id: &ContextGroupId, what: &str, reason: &BindingRejected) {
     tracing::warn!(
         group_id = ?group_id,
         %reason,

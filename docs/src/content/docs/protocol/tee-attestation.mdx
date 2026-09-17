@@ -284,3 +284,61 @@ The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (au
 | `POST /tee/fleet-join` (protected) | `{ group_id }` | Runs the full announce → admission → join loop above. |
 
 The admission policy is set separately via `PUT /admin-api/.../groups/:group_id/settings/tee-admission-policy`, which publishes `TeeAdmissionPolicySet`.
+
+## Verifying from outside Rust
+
+Everything above happens between nodes, where the verifier is `merod` and can
+call `verify_attestation` directly. A service written in something else cannot:
+it is a library function with no binary in front of it. `calimero-tee-verify`
+exists for that caller — the fleet manager verifying a quote that a node submits
+when it registers is the motivating case, and it is written in Python.
+
+Build it from the `calimero-tee-attestation` crate under the `cli` feature; a
+default build produces no binary and pulls no async runtime.
+
+```sh
+cargo build -p calimero-tee-attestation --features cli
+```
+
+It reads one JSON object on stdin and writes one on stdout, so there is no
+argument parsing to get wrong:
+
+```text
+{"quote_b64": "...", "nonce_hex": "<64 hex>", "app_hash_hex": "<64 hex>"}
+  -> {"valid": true, "quote_verified": true, "nonce_verified": true,
+      "application_hash_verified": true, "tcb_status": "UpToDate",
+      "advisory_ids": [], "tcb_evaluation_data_number": 17,
+      "measurements": {"mrtd": "...", "rtmr0": "...", "rtmr1": "...",
+                       "rtmr2": "...", "rtmr3": "..."}}
+```
+
+`quote_hex` may be given in place of `quote_b64`. The collateral endpoint is
+whatever `CALIMERO_TEE_COLLATERAL_URL` names, as for any other caller of this
+crate — see [config](/operate/config/).
+
+**The exit code separates a verdict from the absence of one**, which matters
+more here than it looks. Collateral is fetched from Intel PCS over the network,
+so if an outage and a rejection were reported the same way, an outage would
+become an open door.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | A verdict was reached. Read `valid` — it may be `false`. |
+| `1` | The input was unusable: bad JSON, bad hex, wrong lengths. |
+| `2` | **No verdict.** The quote could not be parsed, or collateral could not be fetched. This is not a rejection. |
+
+<Aside type="caution">
+`valid` mirrors `VerificationResult::is_valid()`, so it is **crypto and
+structural only**: signature and certificate chain, the nonce, and the app-hash
+binding. It deliberately says nothing about whether the platform's TCB is
+acceptable or whether the measurements are ones you allow. Both are *reported*
+— `tcb_status` and `measurements` — and both are the caller's to enforce. A
+`Revoked` platform still yields `valid: true`, so admitting on `valid` alone
+rebuilds exactly the gap [the admission policy](#the-admission-policy) exists to
+close.
+</Aside>
+
+The binary has no mock path under any feature combination. A mock quote is valid
+by construction, so accepting one would let an untrusted caller present
+something that verifies with no hardware behind it; here it simply fails the
+real parse and exits `2`.

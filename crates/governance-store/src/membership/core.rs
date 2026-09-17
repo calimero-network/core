@@ -7,7 +7,10 @@ use std::collections::BTreeSet;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_store::key::{AutoFollowFlags, GroupMember, GroupMemberValue, GROUP_MEMBER_PREFIX};
+use calimero_store::key::{
+    AutoFollowFlags, GroupMember, GroupMemberByAccount, GroupMemberIndexBackfilled,
+    GroupMemberValue, GROUP_MEMBER_BY_ACCOUNT_PREFIX, GROUP_MEMBER_PREFIX,
+};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
@@ -76,6 +79,20 @@ impl<'a> MembershipRepository<'a> {
                 sender_key,
                 auto_follow: existing_auto_follow,
             },
+        )?;
+        // The reverse index, written beside the row it indexes. This function is
+        // the single funnel every direct-row write goes through (see the doc
+        // comment above), which is what makes one line here enough — and what
+        // makes it break silently if a future path stops funnelling.
+        //
+        // Not atomic with the put above, for the same reason the capability
+        // write below is not: the store is write-through, so a shared handle
+        // would not make them atomic across a crash anyway. What covers the gap
+        // is that apply is replay-safe and `groups_for_account` heals a missing
+        // row on read.
+        handle.put(
+            &GroupMemberByAccount::new(*identity, group_id.to_bytes()),
+            &(),
         )?;
         drop(handle);
 
@@ -198,6 +215,10 @@ impl<'a> MembershipRepository<'a> {
         {
             let mut handle = self.store.handle();
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
+            // Both rows or neither: an index entry outliving its membership row
+            // would list a group the caller was removed from, which is the
+            // failure this index exists to prevent rather than cause.
+            handle.delete(&GroupMemberByAccount::new(*identity, group_id.to_bytes()))?;
         }
         MetadataRepository::new(self.store).delete_member(group_id, identity)?;
         // Clear the per-member capability row so a stale (possibly elevated)
@@ -753,6 +774,45 @@ impl<'a> MembershipRepository<'a> {
         Ok(anchors)
     }
 
+    /// The signing keys that speak for this group's trusted anchors.
+    ///
+    /// [`Self::trusted_anchors`] answers "who is authoritative here" against
+    /// ACCOUNTS, but an op is authenticated by the signing key of the DEVICE
+    /// that published it, so each anchor account is expanded to its live
+    /// bindings — an anchor running two machines must be recognised at both.
+    ///
+    /// Peer *selection* asks this same question and swallows a read failure
+    /// into an empty set, because there an empty set only costs preference.
+    /// An authorization caller cannot afford that, which is why this is
+    /// fallible: see the `# Errors` note.
+    ///
+    /// # Errors
+    ///
+    /// When the anchor set, the namespace resolution, or the live bindings
+    /// cannot be read. A store failure is NOT "not an anchor" — reading it
+    /// that way would refuse a legitimate publisher, so callers must let this
+    /// propagate rather than defaulting to a denial.
+    pub fn anchor_device_keys(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<BTreeSet<calimero_primitives::identity::PublicKey>> {
+        let anchors = self.trusted_anchors(group_id)?;
+        if anchors.is_empty() {
+            // No governance state names an authority for this group yet, so
+            // there is genuinely nobody to recognise. Returning early also
+            // skips a full `live_bindings` walk that could only be filtered
+            // down to nothing.
+            return Ok(BTreeSet::new());
+        }
+        let namespace = NamespaceRepository::new(self.store).resolve(group_id)?;
+        Ok(crate::AccountBindingRepository::new(self.store)
+            .live_bindings(&namespace)?
+            .iter()
+            .filter(|binding| anchors.contains(&binding.account))
+            .map(|binding| binding.sign_pk)
+            .collect())
+    }
+
     /// True if `identity` is the namespace owner, an admin, or an
     /// admitted TEE node. See original `is_authoritative_namespace_identity`.
     pub fn is_authoritative_namespace_identity(
@@ -773,6 +833,133 @@ impl<'a> MembershipRepository<'a> {
         }
 
         super::super::tee::is_tee_admitted_identity(self.store, &gid, identity)
+    }
+
+    /// The groups `account` holds a **direct** membership row in.
+    ///
+    /// The answer [`Self::is_member`] could not give: it takes a group and an
+    /// account, so asking "which groups?" meant asking it once per group on the
+    /// node. That is affordable for a membership check and not for a paginated
+    /// list endpoint, which is why `GET /admin-api/contexts` returned the node's
+    /// entire inventory rather than the caller's own (#3941).
+    ///
+    /// Each candidate from the index is confirmed against its authoritative
+    /// [`GroupMember`] row before being returned. The index is a derived view,
+    /// and confirming it means a stale entry — one left by a crash between the
+    /// two deletes in [`Self::remove_member`] — can only cost a point lookup,
+    /// never leak a group the caller was removed from. Getting that backwards is
+    /// the one way this index could widen access instead of narrowing it.
+    ///
+    /// Direct rows only; see [`GroupMemberByAccount`] for why. A caller wanting
+    /// the effective set expands each of these through [`Self::check_path`].
+    pub fn groups_for_account(&self, account: &AccountId) -> EyreResult<Vec<ContextGroupId>> {
+        self.ensure_member_index_backfilled()?;
+
+        let account_bytes = *account.as_bytes();
+        let candidates = collect_keys_with_prefix(
+            self.store,
+            GroupMemberByAccount::new(*account, [0u8; 32]),
+            GROUP_MEMBER_BY_ACCOUNT_PREFIX,
+            |k| *k.account().as_bytes() == account_bytes,
+        )?;
+
+        let handle = self.store.handle();
+        let mut groups = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let group_id = candidate.group_id();
+            if handle.has(&GroupMember::new(group_id, *account))? {
+                groups.push(ContextGroupId::from(group_id));
+            }
+        }
+        Ok(groups)
+    }
+
+    /// Every group `account` is **effectively** a member of — direct rows plus
+    /// the descendants those rows reach by inheritance.
+    ///
+    /// [`Self::groups_for_account`] answers only the direct half, because that
+    /// is all the index stores. Inheritance flows downward, so the groups a
+    /// direct row can reach are exactly the descendants of that group, and
+    /// [`Self::check_path`] decides which of them it actually reaches — an Open
+    /// chain, an admin grant, a deny-list entry are all its business, not this
+    /// function's. Re-deciding any of that here would be a second copy of the
+    /// rule able to disagree with `is_member`, which is the disagreement a list
+    /// endpoint would show as a context the caller cannot then open.
+    ///
+    /// Cost is O(the caller's groups and their descendants), never O(the node's)
+    /// — the property #3941 asks for. A caller in nothing pays one empty scan.
+    pub fn effective_groups_for_account(
+        &self,
+        account: &AccountId,
+    ) -> EyreResult<BTreeSet<ContextGroupId>> {
+        let namespaces = NamespaceRepository::new(self.store);
+
+        let mut candidates = BTreeSet::new();
+        for group in self.groups_for_account(account)? {
+            let _ignored = candidates.insert(group);
+            candidates.extend(namespaces.collect_descendants(&group)?);
+        }
+
+        let mut effective = BTreeSet::new();
+        for candidate in candidates {
+            if self.is_member(&candidate, account)? {
+                let _ignored = effective.insert(candidate);
+            }
+        }
+        Ok(effective)
+    }
+
+    /// Build [`GroupMemberByAccount`] from the membership rows that predate it,
+    /// once per node.
+    ///
+    /// Rows written by a build without the index have no reverse entry, so a
+    /// scan returns nothing and the caller is told they belong to no groups.
+    /// Under-reporting on a list endpoint is worse than the disclosure this
+    /// index exists to fix: it looks like data loss.
+    ///
+    /// One scan of the membership prefix, guarded by a marker, rather than a
+    /// startup hook — governance-store has no startup path of its own, and a
+    /// node that never lists pays nothing. A fresh node scans an empty range and
+    /// writes the marker, which is why the marker records *"has been built"*
+    /// rather than *"needed building"*.
+    ///
+    /// Crash-safe by being idempotent: the marker is written last, so a crash
+    /// mid-scan simply re-runs it, and re-writing an index row that already
+    /// exists is a no-op.
+    fn ensure_member_index_backfilled(&self) -> EyreResult<()> {
+        {
+            let handle = self.store.handle();
+            if handle.has(&GroupMemberIndexBackfilled::new())? {
+                return Ok(());
+            }
+        }
+
+        let rows = collect_keys_with_prefix(
+            self.store,
+            GroupMember::new([0u8; 32], [0u8; 32].into()),
+            GROUP_MEMBER_PREFIX,
+            |_k| true,
+        )?;
+
+        let mut handle = self.store.handle();
+        let mut written = 0usize;
+        for row in &rows {
+            let index_key = GroupMemberByAccount::new(row.account(), row.group_id());
+            if !handle.has(&index_key)? {
+                handle.put(&index_key, &())?;
+                written += 1;
+            }
+        }
+        handle.put(&GroupMemberIndexBackfilled::new(), &())?;
+
+        if written > 0 {
+            tracing::info!(
+                membership_rows = rows.len(),
+                index_rows_written = written,
+                "backfilled the account → group membership index"
+            );
+        }
+        Ok(())
     }
 
     pub fn count(&self, group_id: &ContextGroupId) -> EyreResult<usize> {

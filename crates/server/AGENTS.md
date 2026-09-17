@@ -100,12 +100,24 @@ primitives/                   # calimero-server-primitives
 
 ### Admin API
 
+Two of the three node-wide list endpoints are **caller-scoped** (#3941):
+`GET /admin-api/contexts` and `GET /admin-api/namespaces` return only what the
+caller's groups reach, resolved
+per request through `admin/caller_scope.rs`. A node-owner session, and a node
+running without the auth guard at all (`AuthMode::Proxy`, the default), keep the
+node-wide view — narrowing there would empty the endpoint on every
+default-configured node without closing anything, since the proxy is what decides
+who gets through. `GET /admin-api/blobs` is **not** scoped: `BlobMeta` carries no
+owner and blobs are deduplicated by content hash with a `refs` count, so
+ownership is many-to-many and needs a model rather than an index.
+
 ```
-GET  /admin-api/contexts              # List contexts
+GET  /admin-api/contexts              # List contexts (caller-scoped)
 POST /admin-api/contexts              # Create context
 GET  /admin-api/contexts/{id}          # Get context
 DELETE /admin-api/contexts/{id}        # Delete context
 
+GET  /admin-api/namespaces            # List namespaces (caller-scoped)
 GET  /admin-api/applications          # List apps
 POST /admin-api/install-application   # Install app by package@version
 GET  /admin-api/applications/{id}      # Get app
@@ -186,6 +198,7 @@ When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `
 | `src/admin/handlers/applications/install_application.rs` | App install             |
 | `src/jsonrpc/execute.rs`                                 | JSON-RPC execution      |
 | `src/ws/subscribe.rs`                                    | WS subscriptions        |
+| `src/subscription_grants.rs`                             | Keeping a subscription's authorization true |
 | `src/sse/handlers.rs`                                    | SSE handlers            |
 | `primitives/src/jsonrpc.rs`                              | JSON-RPC types          |
 | `primitives/src/admin/mod.rs`                            | Admin API types         |
@@ -214,11 +227,50 @@ Authentication handled via middleware in `src/auth.rs`:
 - Node authorization
 - Request signing verification
 
+## Subscription authority
+
+Subscribing is authorized once, at subscribe time, by the gates in
+`src/ws/subscribe.rs` (`caller_may_observe_context`,
+`authorize_group_subscriptions`). Keeping that decision true afterwards is
+`src/subscription_grants.rs`, and there are three rules worth knowing before
+touching either.
+
+**The gate is the only authority.** A grant never *grants* anything; it only
+records what a connection's subscriptions depend on, so a membership change can
+decide whether to ask the gate again. Revocation re-runs the same two
+predicates the subscribe path runs rather than restating the rule — a
+separately-written revocation rule drifts, and the drift reads as a stream still
+serving what a fresh subscribe would refuse.
+
+**A grant watches ancestors, not just its own group.** Membership is inherited,
+so a removal naming a parent revokes authority a descendant subscription holds.
+Narrowing re-authorization to "connections that watch the named group" is only
+sound because descendants watch their ancestors. If you change what `vouch`
+records, that is the invariant to preserve: watching too many groups costs a
+redundant re-derivation, watching too few is a leak.
+
+**Un-vouched means stale, never trusted.** `Grants::default()` is stale, which
+is what makes SSE session persistence safe: a resumed session's subscriptions
+come back from its record but its grant does not, so `handle_node_events`
+re-derives against live membership before serving anything, using the caller the
+resuming request proved rather than one remembered from the record. Anything
+`vouch` cannot resolve — an unreadable ancestry, a context whose owning group
+will not resolve — also leaves the grant stale rather than narrowing what it
+watches.
+
+The caller identity itself (`EventCaller`) is deliberately not persisted on an
+SSE session, for the same reason: a persisted identity would let a later
+connection re-authorize as whoever the record remembers. Every authenticated
+request re-stamps it.
+
 ## Common Gotchas
 
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
 - SSE streams are per-context
+- A membership event re-authorizes only connections whose grants it can reach;
+  if a subscription stops being revoked when it should be, suspect what `vouch`
+  recorded, not the gate
 - All responses use consistent error format
 - Every request body is `deny_unknown_fields`; add a new request type to the list in `primitives/tests/deny_unknown_fields.rs`

@@ -432,16 +432,54 @@ impl Storage for ContextPrivateStorage {
 ///
 /// Passed to [`calimero_runtime::Module::run`] in place of the normal mutable
 /// storage when the executing method holds a *shared* read guard on the
-/// per-context `RwLock`. The write methods (`set`, `remove`, `index_set`,
-/// `index_del`, `index_del_prefix`) return their "nothing happened" values so
-/// that storage-level WASM host calls fail gracefully rather than panicking.
-/// A post-execution assertion on `outcome.artifact` / `outcome.root_hash`
-/// catches any method that nonetheless tried to write and treats it as an error.
-pub struct ReadOnlyContextStorage<'a, S>(&'a mut S);
+/// per-context `RwLock`. The write methods return their "nothing happened"
+/// values so that storage-level WASM host calls fail gracefully rather than
+/// panicking. A post-execution assertion on `outcome.artifact` /
+/// `outcome.root_hash` catches any method that nonetheless tried to write and
+/// treats it as an error.
+///
+/// # Two kinds of write, and why they are not suppressed alike
+///
+/// What this wrapper exists to protect is *shared* state: the bytes the root
+/// hash is computed over and the artifact a delta carries. `set` and `remove`
+/// reach that, and are always suppressed.
+///
+/// The ordered secondary index is not that. It lives in its own node-local
+/// column, is never hashed, never gossiped, and is a pure function of the
+/// collection it indexes — `SortedMap`/`SortedSet` invalidate a marker on every
+/// mutation and *rebuild on the next ordered read*, which is a read performing
+/// writes by design. Suppressing those writes does not keep the read honest, it
+/// makes it wrong: `rebuild_index` sees every put dropped, leaves the marker
+/// stale, and `ensure_index` still reports the index usable, so the read scans
+/// an index that was never built and returns nothing. Hence
+/// [`with_local_index`](Self::with_local_index), which suppresses the shared
+/// plane and lets that materialization through.
+///
+/// [`new`](Self::new) suppresses both, for the one caller that needs it: the
+/// migration check runs against a staging buffer it may later commit, so
+/// nothing it does may reach the store at all.
+pub struct ReadOnlyContextStorage<'a, S> {
+    inner: &'a mut S,
+    /// Whether node-local index writes pass through. See the type docs.
+    allow_local_index: bool,
+}
 
 impl<'a, S: Storage> ReadOnlyContextStorage<'a, S> {
+    /// Suppress every write, node-local index included.
     pub fn new(inner: &'a mut S) -> Self {
-        Self(inner)
+        Self {
+            inner,
+            allow_local_index: false,
+        }
+    }
+
+    /// Suppress shared-state writes, but let the node-local ordered index be
+    /// materialized — what an ordered read needs to answer at all.
+    pub fn with_local_index(inner: &'a mut S) -> Self {
+        Self {
+            inner,
+            allow_local_index: true,
+        }
     }
 }
 
@@ -450,15 +488,15 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
     // still backs the ordered index (reads/`index_meta_get` pass through), so
     // the bridge must install for read-only #[app::view] executions too.
     fn supports_index(&self) -> bool {
-        self.0.supports_index()
+        self.inner.supports_index()
     }
 
     fn get(&self, key: &Key) -> Option<Value> {
-        self.0.get(key)
+        self.inner.get(key)
     }
 
     fn has(&self, key: &Key) -> bool {
-        self.0.has(key)
+        self.inner.has(key)
     }
 
     fn index_scan(
@@ -468,20 +506,21 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
         offset: usize,
         limit: Option<usize>,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.0.index_scan(lo, hi, offset, limit)
+        self.inner.index_scan(lo, hi, offset, limit)
     }
 
     fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-        self.0.index_last(lo, hi)
+        self.inner.index_last(lo, hi)
     }
 
     fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.0.index_meta_get(key)
+        self.inner.index_meta_get(key)
     }
 
-    // Write methods are suppressed — a read-only execution must not mutate state.
-    // A debug trace makes misbehaving #[app::view] methods observable; the post-exec
-    // assertion in `internal_execute` catches any that still produce a root_hash.
+    // Shared-state writes are always suppressed — a read-only execution must not
+    // mutate the state the root hash is computed over. A debug trace makes a
+    // misbehaving read-only method observable; the post-exec assertion in
+    // `internal_execute` catches any that still produce a root_hash.
     fn set(&mut self, _key: Key, _value: Value) -> Option<Value> {
         tracing::debug!("ReadOnlyContextStorage: write suppressed (set)");
         None
@@ -492,29 +531,46 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
         None
     }
 
-    fn index_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
-        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_set)");
-        false
+    // Index writes follow `allow_local_index`. See the type docs for why these
+    // are not the same question as `set`/`remove`.
+    fn index_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        if !self.allow_local_index {
+            tracing::debug!("ReadOnlyContextStorage: write suppressed (index_set)");
+            return false;
+        }
+        self.inner.index_set(key, value)
     }
 
-    fn index_del(&mut self, _key: &[u8]) -> bool {
-        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del)");
-        false
+    fn index_del(&mut self, key: &[u8]) -> bool {
+        if !self.allow_local_index {
+            tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del)");
+            return false;
+        }
+        self.inner.index_del(key)
     }
 
-    fn index_del_prefix(&mut self, _prefix: &[u8]) -> bool {
-        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
-        false
+    fn index_del_prefix(&mut self, prefix: &[u8]) -> bool {
+        if !self.allow_local_index {
+            tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
+            return false;
+        }
+        self.inner.index_del_prefix(prefix)
     }
 
-    fn index_meta_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
-        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_set)");
-        false
+    fn index_meta_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        if !self.allow_local_index {
+            tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_set)");
+            return false;
+        }
+        self.inner.index_meta_set(key, value)
     }
 
-    fn index_meta_del(&mut self, _key: &[u8]) -> bool {
-        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_del)");
-        false
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        if !self.allow_local_index {
+            tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_del)");
+            return false;
+        }
+        self.inner.index_meta_del(key)
     }
 }
 
@@ -527,7 +583,7 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::ContextStorage;
+    use super::{ContextStorage, ReadOnlyContextStorage};
 
     fn storage() -> ContextStorage {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -575,5 +631,77 @@ mod tests {
             "short key must not alias the padded key"
         );
         assert_eq!(s.get(&padded), Some(b"real".to_vec()));
+    }
+
+    /// The regression this file exists to hold.
+    ///
+    /// `#[app::view]` used to be worn by one method in the whole `apps/` tree,
+    /// so the read-only path was, in practice, never taken. Deriving the ABI's
+    /// `MethodIntent` from the receiver turned it on for every `&self` method at
+    /// once (#3936) and the suppression that had never been exercised showed
+    /// what it actually does: `SortedSet::elements()` rebuilds the node-local
+    /// ordered index on the first ordered read after a sync, every index write
+    /// in that rebuild was dropped, and the read then scanned an index that was
+    /// never built — `[]` on both nodes, with `contains()` (a point read needing
+    /// no index) still answering correctly.
+    ///
+    /// So: shared state stays suppressed in both views; the node-local index
+    /// passes through in exactly one of them.
+    #[test]
+    fn only_the_local_index_view_lets_index_writes_through() {
+        let mut inner = storage();
+        assert!(
+            inner.supports_index(),
+            "a ContextStorage backs the ordered index; without that this test proves nothing"
+        );
+
+        {
+            let mut suppressing = ReadOnlyContextStorage::new(&mut inner);
+            assert!(
+                !suppressing.index_set(b"k", b"v"),
+                "`new` must suppress index writes — the migration check commits its buffer"
+            );
+            assert!(!suppressing.index_meta_set(b"m", b"v"));
+        }
+        assert_eq!(
+            inner.index_meta_get(b"m"),
+            None,
+            "a suppressed index write must not reach the store"
+        );
+
+        {
+            let mut materializing = ReadOnlyContextStorage::with_local_index(&mut inner);
+            assert!(
+                materializing.index_set(b"k", b"v"),
+                "an ordered read must be able to rebuild the index it is about to scan"
+            );
+            assert!(materializing.index_meta_set(b"m", b"stamp"));
+        }
+        assert_eq!(
+            inner.index_meta_get(b"m"),
+            Some(b"stamp".to_vec()),
+            "the marker the rebuild stamps has to be readable, or every read rebuilds forever"
+        );
+    }
+
+    /// Shared state is the invariant the wrapper exists for, and neither view
+    /// relaxes it — including the one that lets the index through.
+    #[test]
+    fn neither_read_only_view_writes_shared_state() {
+        let mut inner = storage();
+        let key = vec![0x07u8; 32];
+
+        {
+            let mut view = ReadOnlyContextStorage::new(&mut inner);
+            assert!(view.set(key.clone(), b"nope".to_vec()).is_none());
+            assert!(view.remove(&key).is_none());
+        }
+        {
+            let mut view = ReadOnlyContextStorage::with_local_index(&mut inner);
+            assert!(view.set(key.clone(), b"nope".to_vec()).is_none());
+            assert!(view.remove(&key).is_none());
+        }
+
+        assert_eq!(inner.get(&key), None);
     }
 }

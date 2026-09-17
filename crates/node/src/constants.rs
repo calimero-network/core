@@ -48,6 +48,10 @@ pub const NS_SYNC_CHANNEL_SIZE: usize = 16;
 pub const NS_JOIN_CHANNEL_SIZE: usize = 16;
 /// Buffer for queued open-subgroup join requests.
 pub const OPEN_SUBGROUP_JOIN_CHANNEL_SIZE: usize = 16;
+/// Buffer for queued relay-sealed join requests. One per join by a joiner that
+/// holds no covering key, so it sizes with concurrent joins exactly as
+/// `NS_JOIN_CHANNEL_SIZE` does.
+pub const RELAY_SEALED_JOIN_CHANNEL_SIZE: usize = 16;
 /// Buffer for the execute path's locally-applied-delta notifications to the
 /// node's in-memory DeltaStore.
 pub const LOCAL_DELTA_CHANNEL_SIZE: usize = 256;

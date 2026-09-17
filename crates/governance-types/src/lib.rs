@@ -26,7 +26,7 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
+    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -171,7 +171,14 @@ id_newtype! {
 /// non-initiator's upgrade record can carry the target ABI state version the
 /// rollup compares against. v11 added mandatory coordinates to three variants,
 /// changing their content hash, so a v10 peer must reject rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 11;
+///
+/// v12: appends `GroupOp::AccountDeviceCertified`; no prior ordinal moves, so a
+/// v11 peer fails at the version gate rather than partway through a DAG.
+///
+/// v13: appends `GroupOp::AccountNamespaceGained` and
+/// `GroupOp::AccountNamespaceLeft`; no prior ordinal moves, so a v12 peer fails
+/// at the version gate rather than partway through a DAG.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 13;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -617,6 +624,44 @@ pub enum GroupOp {
         /// an exclusion: the device is already gone from the recipient list.
         device: DeviceId,
     },
+    /// Record a device of this namespace's account in its registry. The apply
+    /// admits only an admin writing about the account the statements name; the
+    /// publishers, not the apply, confine this op to the account namespace.
+    ///
+    /// Both statements are root-signed and self-contained, so a receiver checks
+    /// them without having folded anything about the account, and the full
+    /// certificate is here because a binding row drops the root signature.
+    /// Boxed like [`JoinAccountCredential`]: two proofs inline make the variant
+    /// too large.
+    AccountDeviceCertified {
+        /// The device's certificate, exactly as a link op carries it.
+        certificate: Box<AccountProof<DeviceCert>>,
+        /// What that device may speak for, at which scope epoch.
+        scope: Box<AccountProof<DeviceScope>>,
+    },
+    /// Record that this namespace's account is a member of `namespace`.
+    ///
+    /// Published by the node that gained it, at either gain site, after the
+    /// links it publishes there - so no device follows a namespace before the
+    /// authority it needs there exists. Never published for the account
+    /// namespace itself, which no device has to be told about.
+    ///
+    /// `application` is what the gainer read from the namespace's metadata at
+    /// that moment, and it decides which devices follow. A device learns the
+    /// authoritative target by folding the namespace itself.
+    AccountNamespaceGained {
+        /// The namespace the account is now a member of.
+        namespace: ContextGroupId,
+        /// The application it targeted when the gainer read it.
+        application: Option<ApplicationId>,
+    },
+    /// Record that this namespace's account is no longer a member of `namespace`.
+    ///
+    /// Published by the node that leaves, after its `MemberLeft` lands there.
+    AccountNamespaceLeft {
+        /// The namespace the account has left.
+        namespace: ContextGroupId,
+    },
 }
 
 impl GroupOp {
@@ -657,6 +702,9 @@ impl GroupOp {
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
             GroupOp::GroupKeyRotatedForDevice { .. } => "group_key_rotated_for_device",
+            GroupOp::AccountDeviceCertified { .. } => "account_device_certified",
+            GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
+            GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
         }
     }
 }
@@ -668,13 +716,17 @@ impl GroupOp {
 /// Top-level operation in the single namespace governance DAG.
 ///
 /// Every delta in the DAG carries exactly one `NamespaceOp`:
-/// - `Root` ops are cleartext and visible to all namespace members.
+/// - `Root` ops are cleartext and visible to anyone on the namespace topic.
+///   Only the three variants [`root_op_is_sealable`] cannot seal travel this
+///   way; everything else is a `RootSealed`.
+/// - `RootSealed` ops are the same root ops encrypted under the namespace key.
 /// - `Group` ops have a cleartext `group_id` tag (for topic routing and
 ///   skeleton storage) but the actual mutation is encrypted.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 pub enum NamespaceOp {
-    /// Cleartext namespace-wide administrative operation.
+    /// Cleartext namespace-wide administrative operation. Reserved for the
+    /// variants that cannot be sealed; see [`root_op_is_sealable`].
     Root(RootOp),
     /// Encrypted group-scoped operation. The `group_id` and `key_id` are
     /// cleartext so non-members can store the skeleton; the payload is only
@@ -701,9 +753,88 @@ pub enum NamespaceOp {
     /// rotation the receiver holds more than one namespace key, and resolving by
     /// id is the difference between decrypting the op and guessing.
     ///
-    /// Only the five admin-published variants reach here; see
+    /// Which root ops reach here is decided in one place; see
     /// [`root_op_is_sealable`].
     RootSealed {
+        key_id: KeyId,
+        encrypted: EncryptedRootOp,
+    },
+    /// A join an admitter relayed, sealed under the namespace key.
+    ///
+    /// The payload is the JOINER'S OWN [`SignedNamespaceOp`], verbatim — not a
+    /// bare [`RootOp`]. That is the whole point: the joiner signs its join in the
+    /// clear, exactly as it does today and with no change to any client, and the
+    /// admitter wraps that signed op rather than re-authoring it. On receive the
+    /// inner op is decrypted and applied through the ordinary path, so the join's
+    /// gates see the joiner as the signer and `join_op_proves_ownership` still
+    /// holds. An admitter cannot substitute a member: the inner signature covers
+    /// the join, and it does not hold the joiner's key.
+    ///
+    /// This exists because sealing these two joins any other way is impossible.
+    /// The signature covers `op` verbatim, the joiner holds no namespace key to
+    /// seal with, and the admitter may not re-sign — see
+    /// [`root_op_is_sealable`] for the full account.
+    ///
+    /// Keyless verification survives, which is why the payload is nested rather
+    /// than the signature moved. The OUTER envelope is signed by the admitter, so
+    /// a peer holding no namespace key authenticates what it stores exactly as it
+    /// does for [`NamespaceOp::RootSealed`]; only the inner join needs the key.
+    ///
+    /// Appended, for the reason [`NamespaceOp::RootSealed`] was: borsh numbers
+    /// variants by position, so every existing op still encodes byte-identically
+    /// and an older node rejects an unknown discriminant outright rather than
+    /// misreading one.
+    ///
+    /// `key_id` is carried for the same reason the other sealed variants carry
+    /// it: after a rotation the receiver holds more than one namespace key.
+    RootRelaySealed {
+        key_id: KeyId,
+        encrypted: EncryptedRelayedOp,
+    },
+    /// A join whose invitation targets a SUBGROUP, sealed under the key that
+    /// covers that subgroup.
+    ///
+    /// This is the one root op a joiner can seal itself, and the reason is the
+    /// key it ends up holding. A subgroup-targeted invitation's join bundle
+    /// carries the key for *that group* — `join_group` stores it before the
+    /// publish — so on a Restricted chain the joiner holds the subgroup key at
+    /// publish time. It never holds the namespace key, which is why
+    /// [`NamespaceOp::RootSealed`] cannot carry this op and why
+    /// [`root_op_is_sealable`] answers `false` for the variant.
+    ///
+    /// `group_id` is cleartext and load-bearing: the receiver has to know WHICH
+    /// keyring to resolve `key_id` in. [`NamespaceOp::RootSealed`] can omit it
+    /// because the namespace is implied by the topic the op arrived on; here the
+    /// encrypting group is one of many beneath that namespace, and trying each
+    /// keyring in turn is the guessing the `key_id` fields exist to avoid.
+    ///
+    /// The encrypting group is chosen by
+    /// [`calimero_governance_store::key_covering_group`], the same predicate
+    /// every publisher uses, so an Open-chain subgroup resolves to the namespace
+    /// key rather than to a key row nothing encrypts to (#3859). Combined with
+    /// the responder refusal added in #3860 an Open-chain invitation never
+    /// reaches this path at all, which keeps this variant about the Restricted
+    /// case it was designed for.
+    ///
+    /// Who can read it: the subgroup's own members — its admins and any admitted
+    /// TEE node, both of which hold the subgroup key. That set is sufficient to
+    /// authorize the join because every invariant a subgroup join touches is
+    /// already written by ops sealed to the same set: the deny-list and re-entry
+    /// rows come from `MemberRemoved` / `MemberLeft`, which are `GroupOp`s, and
+    /// `count_admins` is per-group and consulted only from those same ops. A
+    /// namespace admin outside the subgroup neither reads this op nor needs to.
+    ///
+    /// Appended, for the reason [`NamespaceOp::RootSealed`] and
+    /// [`NamespaceOp::RootRelaySealed`] were: borsh numbers variants by
+    /// position, so `Root`, `Group`, `RootSealed` and `RootRelaySealed` keep
+    /// discriminants 0-3 and every existing op still encodes byte-identically.
+    /// An older node rejects the unknown discriminant outright rather than
+    /// misreading it.
+    RootSealedForGroup {
+        /// The group whose key sealed this op — the invitation's target, or its
+        /// covering namespace when that target is on an Open chain.
+        group_id: ContextGroupId,
+        /// `sha256(group_key)` — which epoch of `group_id`'s key encrypted this.
         key_id: KeyId,
         encrypted: EncryptedRootOp,
     },
@@ -711,13 +842,19 @@ pub enum NamespaceOp {
 
 /// Whether a [`RootOp`] is published sealed.
 ///
-/// Six of the eleven variants are. The four `MemberJoined*` are published by a
-/// principal that does not hold the key yet; `NamespaceCreated` is genesis,
-/// before any key exists.
+/// Eight of the eleven variants are. Three are not, and the reasons differ:
 ///
-/// What remains is published by an admin who already holds the key and read by
-/// members who already hold it, so nothing about it needs to be legible to a
-/// non-member.
+/// * `MemberJoined` and `MemberJoinedAt` are published by the JOINER, which
+///   holds no namespace key yet and in fact obtains one *because* the op is
+///   published. See their arm.
+/// * `NamespaceCreated` is genesis. The namespace key does not exist until this
+///   op's own effect mints it, so there is nothing to seal under and no peer
+///   could ever open the result.
+///
+/// Everything else is published by a principal that already holds the namespace
+/// key -- an admin, an admitter, or a member joining inward from a group it is
+/// already in -- and read by members who hold it too, so none of it needs to be
+/// legible to a non-member.
 ///
 /// This is the single place that decision lives. A publisher that seals by its
 /// own judgement can disagree with the receiver about which ops are sealed, and
@@ -737,12 +874,73 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         | RootOp::GroupDeleted { .. }
         | RootOp::AdminChanged { .. }
         | RootOp::PolicyUpdated { .. } => true,
-        // Published by a principal that does not hold the key yet.
-        RootOp::MemberJoined { .. }
-        | RootOp::MemberJoinedAt { .. }
-        | RootOp::MemberJoinedOpen { .. }
-        | RootOp::MemberJoinedViaTeeAttestation { .. } => false,
-        // Published by an admin or member who holds the key, like the five
+        // The two joins whose PUBLISHER already holds the namespace key, which is
+        // what sealing needs. Their JOINER's key state is what makes them look
+        // like exceptions, and it is not the question.
+        //
+        // `MemberJoinedOpen` is published by an INHERITED member joining an Open
+        // subgroup (`join_context`, `join_subgroup_inheritance`). It lacks the
+        // SUBGROUP key -- that is what the op asks a peer for -- but it holds the
+        // namespace key, which is what the seal uses. `MemberJoinedViaTeeAttestation`
+        // is published by the ADMITTER (`admit_tee_node`), never by the TEE node.
+        RootOp::MemberJoinedOpen { .. } | RootOp::MemberJoinedViaTeeAttestation { .. } => true,
+        // The two joins that CANNOT be sealed, and not for want of trying.
+        //
+        // Both are published BY THE JOINER, and the joiner is the party that
+        // holds no namespace key. In `join_group` the line directly above the
+        // publish is
+        // `let needs_key_wait = GroupKeyring::new(..).load_current_key()?.is_none()`,
+        // which exists precisely because that is the normal case. Worse, the op
+        // is what CAUSES the key to arrive: an admin sees it and answers with a
+        // `KeyDelivery`. Sealing it under a key the publisher only obtains BY
+        // publishing it is a circular dependency, and the failure is not partial
+        // -- `seal_root_op_for_publish` refuses, nothing is published, no admin
+        // ever learns of the join, and nobody can join a namespace at all.
+        //
+        // `MemberJoined` is the same op without an expiry, and it is NOT
+        // publisher-less: `signMemberJoinOp` in mero-js emits it whenever the
+        // invitation's `expiration_timestamp` is 0, and `MemberJoinedAt` when it
+        // is not. A browser client holds no namespace key at that point either,
+        // so sealing this one locks out exactly the joiners with non-expiring
+        // invitations -- and only them, which is the kind of partial break that
+        // reads as a client bug.
+        //
+        // `false` here does NOT mean these two travel in the clear any more, and
+        // this is the arm most likely to be misread, so: they do not. Two things
+        // changed after this arm was written, and neither of them is a flip.
+        //
+        //   1. A joiner that DOES hold the covering key seals its own join,
+        //      because `join_group` asks the narrower question this function
+        //      cannot -- "do I hold the key right now" -- via
+        //      `seal_root_op_if_keyed` / `seal_root_op_for_group_if_keyed`
+        //      (#3857-#3859). This function has to answer per VARIANT and answer
+        //      identically on every node, and the variant has publishers that
+        //      hold no key (a browser client signing offline never does), so it
+        //      still answers `false`.
+        //   2. A joiner that does NOT hold it hands the signed op to the
+        //      admitter, which wraps it as `NamespaceOp::RootRelaySealed` and
+        //      publishes under its own envelope (#3904).
+        //
+        // The signature objection this comment used to end on is what
+        // `RootRelaySealed` answers, and the answer is the "wire break" version:
+        // it seals the whole `SignedNamespaceOp`, so the joiner's signature
+        // travels INSIDE the ciphertext and `open_relayed_join` verifies it after
+        // decrypting. The keyless-verification property is preserved because the
+        // OUTER envelope is the admitter's ordinary signature over the
+        // ciphertext -- a non-member still authenticates the skeleton it stores
+        // without holding a key; it simply learns nothing about who joined. And
+        // `join_op_proves_ownership` still runs on the inner op, so an admitter
+        // that substituted a different member would produce a join every peer
+        // rejects.
+        //
+        // Which is also why this arm must STAY `false`. The joiner's inner op is
+        // a cleartext `Root(..)` by construction -- the seal is the admitter's
+        // envelope around it -- so it is signed and applied locally in that
+        // form. Flipping this to `true` would make
+        // `refuse_unsealed_sealable_root` refuse the joiner's own local apply and
+        // break the relay route at its first step.
+        RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. } => false,
+        // Published by an admin or member who holds the key, like the ones
         // above. It reads as an exception because its RECIPIENT does not hold
         // the key -- but the recipient is no longer meant to read it from here.
         //
@@ -788,7 +986,11 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
     }
 }
 
-/// Cleartext administrative operations that affect the entire namespace.
+/// Administrative operations that affect the entire namespace.
+///
+/// Most are published SEALED under the namespace key, as
+/// [`NamespaceOp::RootSealed`]; [`root_op_is_sealable`] says which, and why the
+/// three that travel in the clear cannot.
 // Intentionally NOT #[non_exhaustive]: `RootOp` is dispatched by a central
 // exhaustive `match root` (governance op-apply) that must fail to compile when
 // a variant is added so the new op gets a handler, rather than silently
@@ -1071,9 +1273,16 @@ impl NamespaceOp {
         match self {
             // Sealed ops collapse to one label: the kind is inside the
             // ciphertext. Metrics broken down by root-op kind lose that
-            // breakdown for the five sealed variants, which is a real cost of
+            // breakdown for the sealed variants, which is a real cost of
             // sealing them and not an oversight here.
             NamespaceOp::RootSealed { .. } => "root_sealed",
+            // Likewise opaque, and distinct from `root_sealed` because the
+            // payload is a whole signed op rather than a bare root op.
+            NamespaceOp::RootRelaySealed { .. } => "root_relay_sealed",
+            // Opaque like the two above, and distinct from them because the
+            // sealing key is a subgroup's rather than the namespace's — which is
+            // the whole difference worth seeing in a metric.
+            NamespaceOp::RootSealedForGroup { .. } => "root_sealed_for_group",
             NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
             NamespaceOp::Root(RootOp::GroupReparented { .. }) => "group_reparented",
             NamespaceOp::Root(RootOp::GroupDeleted { .. }) => "group_deleted",
@@ -1103,18 +1312,33 @@ impl NamespaceOp {
 /// [`NamespaceOp::Group`] does for a group op, so rotation stays resolvable by
 /// `load_key_by_id` rather than by guessing the current key.
 ///
-/// **Not every root op can be sealed.** The four `MemberJoined*` variants are
-/// published by a principal that does not hold the key yet; `KeyDelivery` is how
-/// the key arrives, so sealing it under that key is unsatisfiable; and
-/// `NamespaceCreated` is genesis, before any key exists. What remains —
-/// `GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`,
-/// `PolicyUpdated` — is published by an admin who is already a member, so no
-/// non-member has any business reading it.
+/// **Three root ops still cannot be sealed**, and [`root_op_is_sealable`] is
+/// where that is decided: `MemberJoined` and `MemberJoinedAt` are published by
+/// the joiner, who obtains the namespace key *because* the op is published, and
+/// `NamespaceCreated` is genesis, before any key exists. Everything else is
+/// published by a principal that already holds the key, so no non-member has any
+/// business reading it.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct EncryptedRootOp {
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
     /// `AES-256-GCM(borsh(RootOp))` using the namespace key.
+    pub ciphertext: Vec<u8>,
+}
+
+/// A sealed relay payload: an entire [`SignedNamespaceOp`], encrypted under the
+/// namespace key.
+///
+/// A separate type from [`EncryptedRootOp`] on purpose, even though the shape is
+/// identical. The two carry different plaintexts — a bare [`RootOp`] there, a
+/// fully signed op here — and borsh will happily hand a `RootOp` decode a relay
+/// payload's bytes and fail somewhere less obvious. The type is the thing that
+/// says which decrypt to reach for.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct EncryptedRelayedOp {
+    /// 12-byte AES-GCM nonce.
+    pub nonce: [u8; 12],
+    /// `AES-256-GCM(borsh(SignedNamespaceOp))` using the namespace key.
     pub ciphertext: Vec<u8>,
 }
 
@@ -1584,7 +1808,14 @@ impl SignedNamespaceOp {
             // but not readably, and answering from the envelope would mean
             // answering `None` for an op that has one. Callers that need it must
             // decrypt first.
-            NamespaceOp::Root(_) | NamespaceOp::RootSealed { .. } => None,
+            // This one DOES name its group readably, and that is deliberate:
+            // the receiver cannot resolve `key_id` without knowing which
+            // keyring to look in. Answering it here is therefore honest rather
+            // than a leak of something the envelope was hiding.
+            NamespaceOp::RootSealedForGroup { group_id, .. } => Some(*group_id),
+            NamespaceOp::Root(_)
+            | NamespaceOp::RootSealed { .. }
+            | NamespaceOp::RootRelaySealed { .. } => None,
         }
     }
 }
@@ -1686,6 +1917,9 @@ pub mod bounds {
     /// against real use: an account rotating its root key once a day would take
     /// well over two years to reach it.
     pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
+    /// Max applications one device scope may name: a cap on what a hostile op
+    /// may claim, not on what a real one needs.
+    pub const MAX_DEVICE_SCOPE_APPLICATIONS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
     /// Admitters named in an invitation, and addresses offered for them.
     ///
@@ -1790,6 +2024,21 @@ impl EncryptedRootOp {
     }
 }
 
+impl EncryptedRelayedOp {
+    /// Bound the ciphertext, the only thing checkable without the key.
+    ///
+    /// The relayed op's own `validate` runs after decryption, in the same place
+    /// and for the same reason as a sealed root op's — see
+    /// [`EncryptedRootOp::validate`].
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "encrypted_relayed_op.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
 impl EncryptedGroupOp {
     /// Bound the ciphertext of an encrypted group op.
     pub fn validate(&self) -> Result<(), GovernanceError> {
@@ -1844,6 +2093,23 @@ impl GroupOp {
                 chain.len(),
                 bounds::MAX_ROOT_KEY_HANDOFFS,
             ),
+            Self::AccountDeviceCertified { certificate, scope } => {
+                check_bound(
+                    "group_op.account_device_certified.certificate.chain",
+                    certificate.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_certified.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_certified.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
             Self::GroupMetadataSet { name, data } => {
                 check_metadata("group_op.group_metadata", name.as_ref(), data)
             }
@@ -1971,6 +2237,13 @@ impl NamespaceOp {
             // Only the envelope. The inner op is validated after decryption —
             // see `EncryptedRootOp::validate`.
             Self::RootSealed { encrypted, .. } => encrypted.validate(),
+            // Same split for a relayed join: the envelope is bounded here, and
+            // the inner signed op is validated (and its signature verified)
+            // after decryption.
+            Self::RootRelaySealed { encrypted, .. } => encrypted.validate(),
+            // Envelope only, as for `RootSealed`. `group_id` and `key_id` are
+            // fixed-width and need no bounding.
+            Self::RootSealedForGroup { encrypted, .. } => encrypted.validate(),
             Self::Group {
                 encrypted,
                 key_rotation,

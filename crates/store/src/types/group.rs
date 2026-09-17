@@ -1,5 +1,7 @@
 #![allow(single_use_lifetimes, reason = "borsh shenanigans")]
 
+use calimero_primitives::application::ApplicationId;
+
 use crate::entry::Borsh;
 use crate::key;
 use crate::types::PredefinedEntry;
@@ -60,9 +62,26 @@ impl PredefinedEntry for key::NodeDeviceCertificate {
     type DataType<'a> = key::NodeDeviceCertificateValue;
 }
 
+impl PredefinedEntry for key::NodeAccountNamespace {
+    type Codec = Borsh;
+    type DataType<'a> = key::NodeAccountNamespaceValue;
+}
+
 impl PredefinedEntry for key::NodeAccountDeviceCert {
     type Codec = Borsh;
     type DataType<'a> = key::NodeAccountDeviceCertValue;
+}
+
+impl PredefinedEntry for key::GroupAccountDevice {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupAccountDeviceValue;
+}
+
+impl PredefinedEntry for key::GroupAccountNamespace {
+    type Codec = Borsh;
+    // The application the namespace targets; `None` is one whose target had not
+    // synced when the gainer read it, so only an unscoped device follows it.
+    type DataType<'a> = Option<ApplicationId>;
 }
 
 impl PredefinedEntry for key::GroupReentryBlock {
@@ -93,6 +112,19 @@ impl PredefinedEntry for key::GroupPendingDeviceRotation {
 }
 
 impl PredefinedEntry for key::GroupContextIndex {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
+/// `()`, like the other index rows here: the row's existence is the fact, and
+/// the role and capabilities stay authoritative on `GroupMember`. A value here
+/// would be a second copy able to disagree with them.
+impl PredefinedEntry for key::GroupMemberByAccount {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
+impl PredefinedEntry for key::GroupMemberIndexBackfilled {
     type Codec = Borsh;
     type DataType<'a> = ();
 }

@@ -42,6 +42,7 @@ mod unsubscribe;
 // two transports cannot drift on the rule.
 pub(crate) use subscribe::{
     authorize_group_subscriptions, caller_may_observe_context, may_deliver_group_event,
+    revoke_lost_subscriptions,
 };
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
@@ -106,16 +107,21 @@ pub(crate) struct ConnectionStateInner {
     /// connection, or `None` when the auth method does not provide a
     /// cryptographic key (e.g. embedded username/password auth). Set once at
     /// upgrade time; immutable for the life of the connection.
-    pub(crate) caller: Option<calimero_primitives::identity::PublicKey>,
+    pub(crate) caller: Option<crate::caller_account::EventCaller>,
     /// `true` when the auth layer positively confirmed this connection as the
     /// node owner via a non-key method (e.g. embedded username/password).
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
     /// when `caller` is `None`.
     pub(crate) node_owner: bool,
+    /// What this connection's subscriptions depend on, and whether that has
+    /// been checked since it last could have changed. See
+    /// [`crate::subscription_grants`] for why authority is vouched for rather
+    /// than re-derived on every event.
+    pub(crate) grants: crate::subscription_grants::Grants,
 }
 
 impl ConnectionStateInner {
-    fn new(caller: Option<calimero_primitives::identity::PublicKey>, node_owner: bool) -> Self {
+    fn new(caller: Option<crate::caller_account::EventCaller>, node_owner: bool) -> Self {
         Self {
             subscriptions: HashSet::default(),
             group_subscriptions: HashSet::default(),
@@ -123,6 +129,7 @@ impl ConnectionStateInner {
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
+            grants: crate::subscription_grants::Grants::default(),
         }
     }
 }
@@ -237,6 +244,7 @@ async fn ws_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -276,10 +284,19 @@ async fn ws_handler(
     //                               warn loudly (misconfiguration signal)
     //                             - auth_enabled=false → intentional no-auth deployment;
     //                               proceed silently at debug level
-    let (caller, node_owner) = match (auth_key, auth_node_owner) {
-        (Some(ext), _) => (Some(ext.0 .0), false),
-        (None, Some(_)) => (None, true),
-        (None, None) => {
+    let (caller, node_owner) = match (auth_key, auth_node_owner, auth_account) {
+        (Some(ext), _, _) => (Some(EventCaller::Key(ext.0 .0)), false),
+        (None, Some(_), _) => (None, true),
+        // An account-anchored session (#3930). Emphatically NOT the node owner
+        // — it may be one tenant among many on a relay — so it carries its own
+        // identity and is authorized per subscription like any other caller.
+        //
+        // Before #3942 this fell into the arm below and was answered with 401:
+        // a delegated device could not open a WebSocket at all, which is a
+        // harder failure than the SSE one (where it connected and then resolved
+        // to nobody).
+        (None, None, Some(ext)) => (Some(EventCaller::Account(ext.0 .0)), false),
+        (None, None, None) => {
             if state.auth_enabled {
                 warn!(
                     "No auth extensions present on WebSocket upgrade — auth guard may not be running"
@@ -304,7 +321,7 @@ async fn ws_handler(
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<ServiceState>,
-    caller: Option<calimero_primitives::identity::PublicKey>,
+    caller: Option<crate::caller_account::EventCaller>,
     node_owner: bool,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
@@ -468,6 +485,18 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
             },
         };
 
+        // Captured before `event` is consumed by serialization below. ANY
+        // membership change to a group advances that group's generation, not
+        // just a removal: a removal is the obvious way to lose authority, but a
+        // re-add at a lower role demotes the admin-only payloads a subscription
+        // was granted, and the payload tags do not distinguish the two. The
+        // bump costs an integer and one subtree read; only connections whose
+        // grants actually go stale pay to re-derive.
+        let membership_changed = match &event {
+            NodeEvent::GroupMembership(membership_event) => Some(membership_event.group_id),
+            NodeEvent::Context(_) | NodeEvent::GroupMigration(_) => None,
+        };
+
         debug!("Received node event: {:?}", event);
 
         let body = match to_json_value(event) {
@@ -528,9 +557,108 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
                 );
             }
         }
+
+        // AFTER delivery, deliberately: the removed member is told they were
+        // removed on the same stream the removal takes away from them. Pruning
+        // first would drop the one event that explains the silence.
+        if let Some(group_id) = membership_changed {
+            prune_stale_grants(&state, &group_id).await;
+        }
     }
 
     debug!("Node event stream ended, stopping WS event fan-out");
+}
+
+/// Re-derive authority for the connections whose grants just went stale, and
+/// drop whatever no longer passes the subscribe-time gate.
+///
+/// Run after a membership change on `group_id`. The narrowing is the point: a
+/// connection whose subscriptions do not depend on that group answers with one
+/// hash-set lookup and is skipped, so the store-touching re-derivation below
+/// runs only for connections the change could genuinely have affected. This
+/// function previously re-authorized *every* connection against the store on
+/// *every* removal.
+///
+/// The set a connection is tested against includes each governing group's
+/// ANCESTORS, so an inherited member of a descendant is caught by a removal
+/// that names only the parent.
+///
+/// Node-owner and no-auth connections are unaffected — the gates admit them
+/// unconditionally, so they never appear in a revocation.
+async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
+    // Snapshot under the read lock, re-authorize without it. The membership
+    // lookups touch the store, and holding either lock across them would stall
+    // the fan-out for every other subscriber.
+    let mut snapshots = Vec::new();
+    {
+        let connections = state.connections.read().await;
+        for (connection_id, connection) in &*connections {
+            let inner = connection.inner.read().await;
+            if inner.subscriptions.is_empty() && inner.group_subscriptions.is_empty() {
+                continue;
+            }
+            // The cheap filter, and the only thing most connections do: a
+            // hash-set lookup under the read lock deciding whether this change
+            // can touch them. Everything below this line reaches the store.
+            if !inner.grants.is_affected_by(group_id) {
+                continue;
+            }
+            snapshots.push((
+                *connection_id,
+                connection.clone(),
+                inner.caller,
+                inner.node_owner,
+                inner.subscriptions.clone(),
+                inner.group_subscriptions.clone(),
+            ));
+        }
+    }
+
+    for (connection_id, connection, caller, node_owner, subscriptions, group_subscriptions) in
+        snapshots
+    {
+        let revocation = subscribe::revoke_lost_subscriptions(
+            &state.ctx_client,
+            state.auth_enabled,
+            node_owner,
+            caller.as_ref(),
+            &subscriptions,
+            &group_subscriptions,
+        );
+        let (contexts, denied_groups, demoted_groups) = revocation.lost();
+        if !revocation.is_empty() {
+            warn!(
+                %connection_id,
+                contexts = contexts.len(),
+                groups = denied_groups.len(),
+                demoted = demoted_groups.len(),
+                "revoking subscriptions: the caller no longer passes the observation gate",
+            );
+        }
+        // Re-taken rather than held: a subscribe that raced this pass had to
+        // pass the same gate to add anything, so the worst case is that an id
+        // re-granted in between comes off and the client re-subscribes. Erring
+        // that way keeps a revocation from being lost to a race.
+        let mut guard = connection.inner.write().await;
+        let inner = &mut *guard;
+        revocation.apply(
+            &mut inner.subscriptions,
+            &mut inner.group_subscriptions,
+            &mut inner.admin_group_subscriptions,
+        );
+        // Re-vouch for what survived: the subscriptions changed, so what
+        // governs them may have too, and without this the connection stays
+        // stale and re-derives on every subsequent membership change.
+        let (subscriptions, group_subscriptions) = (
+            inner.subscriptions.clone(),
+            inner.group_subscriptions.clone(),
+        );
+        inner.grants.vouch(
+            state.ctx_client.datastore(),
+            &subscriptions,
+            &group_subscriptions,
+        );
+    }
 }
 
 async fn handle_commands(
@@ -920,7 +1048,8 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
 
 /// WebSocket command channel buffer size
@@ -1078,8 +1207,14 @@ mod tests {
         let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(64);
         let (ns_join_tx, _ns_join_rx) = mpsc::channel(16);
         let (open_subgroup_join_tx, _open_subgroup_join_rx) = mpsc::channel(16);
-        let sync_client =
-            SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+        let (relay_sealed_join_tx, _relay_sealed_join_rx) = mpsc::channel(16);
+        let sync_client = SyncClient::new(
+            ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
+            open_subgroup_join_tx,
+            relay_sealed_join_tx,
+        );
 
         let node_client = NodeClient::new(
             store.clone(),
@@ -1176,6 +1311,19 @@ mod tests {
             }),
         };
         Message::Text(serde_json::to_string(&req).unwrap().into())
+    }
+
+    fn member_removed_event(
+        group: Hash,
+        member: calimero_primitives::identity::AccountId,
+    ) -> NodeEvent {
+        NodeEvent::GroupMembership(GroupMembershipEvent {
+            group_id: group,
+            payload: MembershipChangePayload::MemberRemoved(MembershipChange {
+                member,
+                role: None,
+            }),
+        })
     }
 
     fn group_membership_event(group: Hash) -> NodeEvent {
@@ -1393,45 +1541,6 @@ mod tests {
         })
     }
 
-    /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
-    /// returning the namespace and subgroup ids as wire hashes plus the account
-    /// `caller`'s key resolves to - the principal every row below is keyed by,
-    /// and what the subscribe gate compares against.
-    fn seed_namespace_with_restricted_subgroup(
-        store: &Store,
-        caller: PublicKey,
-        role: calimero_primitives::context::GroupMemberRole,
-    ) -> (Hash, Hash, calimero_primitives::identity::AccountId) {
-        use calimero_context_config::types::ContextGroupId;
-        use calimero_context_config::VisibilityMode;
-        use calimero_governance_store::{
-            CapabilitiesRepository, MembershipRepository, NamespaceRepository,
-        };
-
-        let ns = ContextGroupId::from([0xC0u8; 32]);
-        let subgroup = ContextGroupId::from([0xC1u8; 32]);
-
-        // Enrolled at the namespace anchor, so the caller's key resolves there
-        // and every row below names the account it resolves to.
-        let account = calimero_context::test_support::enrol(store, &ns, &caller);
-
-        MembershipRepository::new(store)
-            .add_member(&ns, &account, role)
-            .unwrap();
-        NamespaceRepository::new(store)
-            .nest(&ns, &subgroup)
-            .unwrap();
-        CapabilitiesRepository::new(store)
-            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
-            .unwrap();
-
-        (
-            Hash::from(ns.to_bytes()),
-            Hash::from(subgroup.to_bytes()),
-            account,
-        )
-    }
-
     // `CascadeProgress` names a descendant subgroup id, so a plain member of the
     // namespace must not receive it while still receiving the counter-only
     // progress frames. The cascade frame is broadcast FIRST: if the gate were
@@ -1448,7 +1557,11 @@ mod tests {
         let server = spawn_test_ws_authed(member_pk).await;
         let store = server.state.ctx_client.datastore();
         let (group, subgroup, member) =
-            seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
 
         let membership = MembershipRepository::new(store);
         let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
@@ -1516,6 +1629,118 @@ mod tests {
         );
     }
 
+    /// #3942's third criterion: "An established stream stops delivering once
+    /// the account loses membership."
+    ///
+    /// Subscribing authorizes once, at subscribe time. Before the prune, a
+    /// stream opened while the caller was a member kept delivering that group's
+    /// events for as long as the socket stayed open — a removed member went on
+    /// reading the group they had been removed from.
+    ///
+    /// The ordering here is the assertion, not scaffolding. The removal frame
+    /// itself must still arrive (the member is told why the stream goes quiet),
+    /// and only the event AFTER it must not. Deterministic without a sleep: the
+    /// fan-out is a single task that prunes before it routes the next event, so
+    /// the third send is already gated by the time it is considered.
+    #[tokio::test]
+    async fn removal_stops_an_established_group_stream() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let member_pk = calimero_primitives::identity::PrivateKey::random(
+            &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        )
+        .public_key();
+        let server = spawn_test_ws_authed(member_pk).await;
+        let store = server.state.ctx_client.datastore();
+        let (group, _subgroup, member) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(
+            resp["result"]["groupIds"],
+            json!([hex::encode(group.as_bytes())]),
+            "precondition: the caller subscribes as a genuine member: {resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        // The stream is live: an ordinary group event reaches the member.
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("a member should receive its group's events");
+        assert_eq!(
+            pushed["result"]["type"], "MemberJoined",
+            "precondition: the established stream delivers: {pushed}"
+        );
+
+        // Membership goes away, exactly as an applied governance removal op
+        // would leave the store.
+        MembershipRepository::new(store)
+            .remove_member(&ns_gid, &member)
+            .unwrap();
+        assert!(
+            !MembershipRepository::new(store)
+                .is_member(&ns_gid, &member)
+                .unwrap(),
+            "precondition: the caller is no longer a member"
+        );
+
+        // The removal frame is what drives the prune, and is itself delivered.
+        server
+            .event_sender
+            .send(member_removed_event(group, member))
+            .unwrap();
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the removal itself must still reach the member it names");
+        assert_eq!(
+            pushed["result"]["type"], "MemberRemoved",
+            "the member must be told why the stream goes quiet: {pushed}"
+        );
+
+        // Everything after it is gone.
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a removed member must receive nothing further on the group: {leaked:?}"
+        );
+
+        // And the subscription itself is gone, not merely filtered — so a
+        // reconnectless re-subscribe has nothing to inherit.
+        let connections = server.state.connections.read().await;
+        let (_, connection) = connections.iter().next().expect("the connection is open");
+        let inner = connection.inner.read().await;
+        assert!(
+            inner.group_subscriptions.is_empty(),
+            "the revoked group subscription must be dropped, not just filtered",
+        );
+    }
+
     // The other half of the gate: an admin of the namespace root does receive
     // the cascade frame. Re-keying the event to the Restricted subgroup would
     // fail here - `check_path` bails on visibility before its ancestor-admin
@@ -1531,8 +1756,11 @@ mod tests {
         .public_key();
         let server = spawn_test_ws_authed(admin_pk).await;
         let store = server.state.ctx_client.datastore();
-        let (group, subgroup, admin) =
-            seed_namespace_with_restricted_subgroup(store, admin_pk, GroupMemberRole::Admin);
+        let (group, subgroup, admin) = crate::test_support::seed_namespace_with_restricted_subgroup(
+            store,
+            admin_pk,
+            GroupMemberRole::Admin,
+        );
 
         let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
         assert!(

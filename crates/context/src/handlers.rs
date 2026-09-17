@@ -18,7 +18,9 @@ pub mod delete_context;
 pub mod delete_group;
 pub mod delete_namespace;
 pub mod detach_context_from_group;
+pub mod ensure_account_namespace;
 pub mod execute;
+pub mod follow_namespace;
 pub mod get_cascade_status;
 pub mod get_context_metadata;
 pub mod get_group_for_context;
@@ -44,6 +46,7 @@ pub mod list_namespaces_for_application;
 pub mod namespace_pending_op_count;
 pub mod pair_device_complete;
 pub mod pair_device_init;
+pub mod relay_signed_join;
 pub mod relink_device;
 pub mod remove_group_members;
 pub mod resync_context;
@@ -111,6 +114,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ApplySignedNamespaceOp { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RelaySignedJoin { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::NamespacePendingOpCount { request, outcome } => {

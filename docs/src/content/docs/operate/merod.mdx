@@ -142,11 +142,11 @@ The account-root command family. These are the operations whose whole point is t
 a machine with no node at all.
 
 ```sh
-merod --node node1 account <export|import|sign-cert|revoke-proof|warrant>
+merod --node node1 account <export|import|device|sign-cert|revoke-proof|warrant>
 ```
 
-<Aside type="caution" title="export and import need the node stopped">
-Both open the datastore directly, and RocksDB's lock is exclusive. A KMS-encrypted
+<Aside type="caution" title="export, import and device need the node stopped">
+They open the datastore directly, and RocksDB's lock is exclusive. A KMS-encrypted
 store is refused rather than misread. `sign-cert`, `revoke-proof` and `warrant` avoid
 this entirely when given `--from`, because they open no store.
 </Aside>
@@ -334,6 +334,40 @@ all.
 
 ```sh
 merod account revoke-proof --device <64-hex DeviceId> --from ./phrase.txt
+```
+
+### device
+
+Print this node's device id and public keys.
+
+`--reset` drops the stored device row so the next pairing or namespace join mints
+a fresh one.
+It drops a row that is revoked in any namespace this node takes part in, or that
+no namespace ever certified: neither can ever serve again, because revocation is
+terminal and an uncertified id authorises nobody.
+It refuses a row that is certified somewhere and that no revocation has reached,
+because as far as this store can tell that device is live, and its id is the
+replica lineage the node's CRDT state is held under - dropping it would strand
+that state with nothing able to author there again.
+
+An online node normally never needs the command.
+When its device is revoked the group key rotates, the node strands on the new
+epoch, and the key-recovery pull releases the spent row and mints a fresh device
+on its own; pair-init releases a revoked or uncertified row the same way.
+
+`--force` overrides the one refusal, and exists for a device revoked while its
+node was offline: the tombstone never reached this store, so the guard sees a
+live device and the operator has to say otherwise.
+
+Like `export` and `import` it opens the datastore directly, so the node must be
+stopped.
+
+```sh
+merod --node node1 account device --reset
+```
+
+```sh
+merod --node node1 account device --reset --force
 ```
 
 ### warrant

@@ -60,6 +60,7 @@ just points the `default` alias at a chosen target.
 
 | Group         | Purpose                                                          |
 | ------------- | ---------------------------------------------------------------- |
+| `account`     | Manage accounts and their devices: pairing, revocation, sealing. |
 | `app`         | Manage applications (install, list, versions, watch).            |
 | `context`     | Manage contexts, identities, aliases, and sync.                  |
 | `group`       | Manage groups: members, contexts, metadata, upgrades, settings.  |
@@ -71,6 +72,60 @@ just points the `default` alias at a chosen target.
 | `peers`       | Return the number of connected peers.                            |
 | `tee`         | TEE fleet-node commands.                                          |
 | `node`        | Manage node connections used by `meroctl` (local config).        |
+
+---
+
+## account
+
+An **account** is a person or agent; a **device** is one installation of theirs.
+Neither is a public key — both are content addresses, so keys rotate without the
+identity changing. One grant to the account lets any number of its devices
+write, each as a distinct CRDT replica, and any one of them can be revoked
+without touching the others.
+
+| Subcommand (aliases)                              | Purpose                                                        | Key args |
+| ------------------------------------------------- | -------------------------------------------------------------- | -------- |
+| `show`                                            | Show this node's account, device and signing key.               | — |
+| `device-init <ACCOUNT_ID>`                        | Mint a device for an account on this machine, holding no node.  | `ACCOUNT_ID` |
+| `pair-init <NAMESPACE_ID>... --root-key <HEX>`    | Mint a device on this node for an existing account.             | namespace IDs, the account's epoch-0 root key |
+| `pair-complete`                                   | Certify and link a device minted by `pair-init`.                | the device ID, KEM key, signing key, pairing statement and confirmation code printed by `pair-init` |
+| `revoke <NAMESPACE_ID> --device-id <HEX>`         | Withdraw a device from an account.                              | `NAMESPACE_ID`, `--device-id`; optional `--proof <HEX\|@PATH>` from `merod account revoke-proof` |
+| `seal-to <GROUP_ID> <ACCOUNT>`                    | Seal stdin so only that account's **root key** can open it.     | `GROUP_ID`, `ACCOUNT` |
+| `alias add\|remove\|get\|list`                     | Manage device aliases.                                          | alias name, device |
+
+### account seal-to
+
+Reads raw bytes on **stdin** and prints the sealed envelope. The node resolves
+the account's current root key itself, which is why the command never takes a
+key.
+
+```sh
+printf '%s' "$SECRET" | meroctl --node node1 account seal-to <GROUP_ID> <ACCOUNT>
+```
+
+The envelope it prints carries `accountRootEpoch`, `ephemeralPublicKey`, `nonce`
+and `ciphertext`. At most 64 KiB may be sealed in one call, and an empty payload
+is refused rather than sealed — an envelope over nothing is valid and carries no
+information, which downstream is indistinguishable from a real one.
+
+<Aside type="caution">
+Two properties decide whether this command is the right tool.
+
+**It seals to the account root, never to a device key.** A device is precisely
+what is gone in the case worth sealing for — device loss — so an envelope
+addressed to one is unopenable exactly when it is needed, and looks correct
+until then.
+
+**It proves confidentiality, not authorship.** The sender key is ephemeral and
+unauthenticated, so anyone who knows an account's root public key can produce an
+envelope for it. Whatever decides that a stored envelope is *legitimate* has to
+live in the service that accepted the write.
+</Aside>
+
+Both the caller and the target must be members of `GROUP_ID`: the caller so the
+surface does not widen past someone who already holds the group's key, and the
+target so the route cannot be used to probe whether an arbitrary account exists
+on this node. A non-member and an unknown account are refused identically.
 
 ---
 

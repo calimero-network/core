@@ -33,6 +33,22 @@ pub struct JoinBundle {
     /// Borsh bytes rather than the type, to keep this crate off
     /// `calimero-governance-types`.
     pub admitter_endorsement_bytes: Option<Vec<u8>>,
+    /// The peer that served the exchange and endorsed the join.
+    ///
+    /// Recorded because a joiner that holds no covering key cannot seal its own
+    /// join and must ask a keyholder to wrap and publish it. This peer is where
+    /// that request goes first — not because it is guaranteed to hold the key
+    /// (an admitter still awaiting its own delivery endorses and serves an empty
+    /// envelope, which is one of the ways a joiner ends up unkeyed) but because
+    /// it is the one peer known reachable: the endorsement arrived over a stream
+    /// to it. A refusal moves on to the other namespace peers.
+    ///
+    /// `None` only when no peer answered at all, and such a bundle carries no
+    /// endorsement either, so the join fails before there is anything to relay.
+    ///
+    /// Not part of the wire response — it is who answered, which the requester
+    /// knows and the responder cannot assert.
+    pub admitter_peer: Option<libp2p::PeerId>,
 }
 
 impl JoinBundle {
@@ -63,6 +79,7 @@ impl JoinBundle {
             governance_ops: Vec::new(),
             default_capabilities: 0,
             admitter_endorsement_bytes: None,
+            admitter_peer: None,
         }
     }
 }

@@ -28,7 +28,9 @@ use eyre::Result as EyreResult;
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
-use crate::readiness::{ApplyBeaconLocal, EmitOutOfCycleBeacon, MAX_BEACON_CLOCK_DRIFT_MS};
+use crate::readiness::{
+    read_local_applied_through, ApplyBeaconLocal, EmitOutOfCycleBeacon, MAX_BEACON_CLOCK_DRIFT_MS,
+};
 use crate::NodeManager;
 
 /// Per-namespace debounce window for beacon-triggered governance syncs.
@@ -64,13 +66,18 @@ const NS_BEACON_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 ///   sync towards an empty DAG.
 /// - `head_op_present_locally` — the peer's advertised head op is already
 ///   in our DAG; we are caught up (or ahead).
+/// - `peer_applied_more` - `dag_head` is the lex-min of the peer's head SET, so
+///   a forked DAG advertises the branch we share and hides the one we lack.
 fn beacon_indicates_divergence(
     local_has_state: bool,
     is_namespace_member: bool,
     dag_head: [u8; 32],
     head_op_present_locally: bool,
+    peer_applied_more: bool,
 ) -> bool {
-    (local_has_state || is_namespace_member) && dag_head != [0u8; 32] && !head_op_present_locally
+    (local_has_state || is_namespace_member)
+        && dag_head != [0u8; 32]
+        && (!head_op_present_locally || peer_applied_more)
 }
 
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
@@ -238,7 +245,14 @@ pub(super) fn handle_readiness_beacon(
         "readiness beacon received"
     );
 
-    spawn_beacon_divergence_sync(manager, ctx, namespace_id, beacon.dag_head, peer_id);
+    spawn_beacon_divergence_sync(
+        manager,
+        ctx,
+        namespace_id,
+        beacon.dag_head,
+        applied_through,
+        peer_id,
+    );
 
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(ApplyBeaconLocal { namespace_id });
@@ -263,6 +277,7 @@ fn spawn_beacon_divergence_sync(
     ctx: &mut actix::Context<NodeManager>,
     namespace_id: [u8; 32],
     dag_head: [u8; 32],
+    peer_applied_through: u64,
     beacon_peer: PeerId,
 ) {
     let datastore = manager.datastore.clone();
@@ -312,11 +327,16 @@ fn spawn_beacon_divergence_sync(
                 .identity_record(&ContextGroupId::from(namespace_id))
                 .map(|record| record.is_some())
                 .unwrap_or(false);
+            // A failed read falls back to the peer's own count, so it reads as
+            // "not ahead": never sync on state we could not read.
+            let peer_applied_more = peer_applied_through
+                > read_local_applied_through(&datastore, namespace_id, peer_applied_through);
             if !beacon_indicates_divergence(
                 local_has_state,
                 is_namespace_member,
                 dag_head,
                 head_op_present,
+                peer_applied_more,
             ) {
                 return;
             }
@@ -337,31 +357,20 @@ fn spawn_beacon_divergence_sync(
                 namespace_id = %hex::encode(namespace_id),
                 dag_head = %hex::encode(dag_head),
                 %beacon_peer,
-                "beacon advertises an unknown namespace DAG head; \
+                peer_applied_more,
+                "beacon shows the peer holds namespace governance we do not; \
                  triggering governance sync"
             );
-            // Prefer a subscriber, because any member that applied the op can
-            // serve it. But name the beacon's own signer as the fallback, because
-            // discovery can come up empty while that signer is demonstrably
-            // reachable — its beacon just verified, which is proof of membership,
-            // of being caught up, and of being able to reach us, all at once.
-            // Asking an empty subscriber table and giving up is how a node stays
-            // stranded with the answer talking to it every few seconds.
+            // Ask the beacon's own signer: it just advertised state we lack, while
+            // a discovered subscriber may be exactly as far behind as we are.
             //
-            // Run inline rather than queueing through `NodeClient::sync_namespace`,
-            // because the queue carries a namespace id and nothing else — there is
-            // nowhere to put the fallback peer without widening that channel and
-            // every constructor of it.
+            // Run inline rather than queueing through `NodeClient::sync_namespace`:
+            // that queue carries only a namespace id, with nowhere to name the peer.
             //
-            // The slot is deliberately NOT released on a zero-op pull. This pull
-            // usually goes to whichever subscriber discovery picked, so an empty
-            // result says nothing about the beacon's signer, and releasing on it
-            // would let every beacon re-trigger a pull. The debounce window IS the
-            // retry interval here: the next beacon after it re-evaluates from
-            // scratch.
-
+            // The slot is deliberately NOT released on a zero-op pull, or every
+            // beacon would re-trigger one; the debounce window IS the retry interval.
             let ops = sync_manager
-                .sync_namespace_from_peer(namespace_id, None, Some(beacon_peer))
+                .sync_namespace_from_peer(namespace_id, Some(beacon_peer), None)
                 .await;
             debug!(
                 namespace_id = %hex::encode(namespace_id),
@@ -422,25 +431,42 @@ mod tests {
     #[test]
     fn divergence_true_when_head_op_absent() {
         // Established member (has local state), peer's head op missing.
-        assert!(beacon_indicates_divergence(true, false, [7u8; 32], false));
+        assert!(beacon_indicates_divergence(
+            true, false, [7u8; 32], false, false
+        ));
     }
 
     #[test]
     fn divergence_false_when_head_op_present() {
-        assert!(!beacon_indicates_divergence(true, true, [7u8; 32], true));
+        assert!(!beacon_indicates_divergence(
+            true, true, [7u8; 32], true, false
+        ));
+    }
+
+    /// **A forked peer advertises the branch we share.** Its beacon names the
+    /// lex-min of its head set, so only the applied count shows it holds more.
+    #[test]
+    fn divergence_true_when_the_peer_applied_more_behind_a_shared_head() {
+        assert!(beacon_indicates_divergence(
+            true, true, [7u8; 32], true, true
+        ));
     }
 
     #[test]
     fn divergence_false_for_zero_head() {
         // A peer that has applied nothing advertises a zero head; never
         // sync towards an empty DAG even though the op is "absent".
-        assert!(!beacon_indicates_divergence(true, true, [0u8; 32], false));
+        assert!(!beacon_indicates_divergence(
+            true, true, [0u8; 32], false, true
+        ));
     }
 
     #[test]
     fn divergence_false_for_a_stranger_to_this_namespace() {
         // No local state AND not a member: someone else's namespace. Ignore it.
-        assert!(!beacon_indicates_divergence(false, false, [7u8; 32], false));
+        assert!(!beacon_indicates_divergence(
+            false, false, [7u8; 32], false, true
+        ));
     }
 
     /// **A member stranded with no state still pulls.**
@@ -454,13 +480,17 @@ mod tests {
     /// was not subscribed to a context topic it had no key to join.
     #[test]
     fn divergence_true_for_a_member_with_no_state_yet() {
-        assert!(beacon_indicates_divergence(false, true, [7u8; 32], false));
+        assert!(beacon_indicates_divergence(
+            false, true, [7u8; 32], false, false
+        ));
     }
 
     #[test]
     fn divergence_false_for_a_stateless_member_when_the_peer_has_nothing() {
         // Still never sync towards an empty DAG, member or not.
-        assert!(!beacon_indicates_divergence(false, true, [0u8; 32], false));
+        assert!(!beacon_indicates_divergence(
+            false, true, [0u8; 32], false, false
+        ));
     }
 
     #[test]

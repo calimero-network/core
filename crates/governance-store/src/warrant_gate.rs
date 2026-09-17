@@ -372,9 +372,10 @@ mod tests {
     };
     use crate::{CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository};
     use calimero_account::AccountId;
-    use calimero_account::{Delegation, Warrant};
+    use calimero_account::{Delegation, Warrant, WarrantTerms};
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::VisibilityMode;
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
 
     const GROUP: [u8; 32] = [0xC0; 32];
@@ -428,12 +429,18 @@ mod tests {
         let author_device_sk = PrivateKey::from(AUTHOR_KEY);
         let warrant = Warrant::sign(
             &author_device_sk,
-            context,
-            author,
-            relay,
-            Warrant::intent_hash("send_message", b"{}"),
-            nonce,
-            u64::MAX,
+            WarrantTerms {
+                context,
+                author_account: author,
+                executor: relay,
+                app_version: ApplicationId::from([0u8; 32]),
+                method: "send_message".to_owned(),
+                intent_hash: Warrant::intent_hash("send_message", b"{}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce,
+                not_after: u64::MAX,
+            },
         )
         .expect("warrant must sign");
 
@@ -930,12 +937,18 @@ mod tests {
         let author_device_sk = PrivateKey::from(AUTHOR_KEY);
         let next_warrant = Warrant::sign(
             &author_device_sk,
-            first.context,
-            first.delegation.warrant.author_account,
-            first.delegation.warrant.executor,
-            Warrant::intent_hash("send_message", b"{\"n\":2}"),
-            8,
-            u64::MAX,
+            WarrantTerms {
+                context: first.context,
+                author_account: first.delegation.warrant.author_account,
+                executor: first.delegation.warrant.executor,
+                app_version: ApplicationId::from([0u8; 32]),
+                method: "send_message".to_owned(),
+                intent_hash: Warrant::intent_hash("send_message", b"{\"n\":2}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 8,
+                not_after: u64::MAX,
+            },
         )
         .expect("warrant must sign");
         let next = Delegation {

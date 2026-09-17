@@ -33,6 +33,10 @@ pub struct AuthConfig {
     #[serde(default)]
     pub user_password: UserPasswordConfig,
 
+    /// Account-proof (device-key login) configuration
+    #[serde(default)]
+    pub account_proof: AccountProofConfig,
+
     /// Development/testing configuration
     #[serde(default)]
     pub development: DevelopmentConfig,
@@ -330,6 +334,110 @@ fn default_min_password_length() -> usize {
 
 fn default_max_password_length() -> usize {
     128
+}
+
+/// Account-proof provider configuration.
+///
+/// Only [`Self::node_key`] has no usable default: it is this node's identity,
+/// and a wrong value is not a misconfiguration that fails loudly but one that
+/// accepts login statements minted for somebody else's node. The provider
+/// refuses to start without it rather than guess.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountProofConfig {
+    /// Seconds an issued challenge stays valid.
+    ///
+    /// Short on purpose: it bounds both the replay window and the size of the
+    /// spent set, which is swept by expiry. Long enough for a human-confirmed
+    /// signature on a slow device, not long enough to be worth harvesting.
+    #[serde(default = "default_challenge_ttl_secs")]
+    pub challenge_ttl_secs: u64,
+
+    /// Hex of this node's **device signing key**, as a client pins it.
+    ///
+    /// The key this node signs ops with, and the one its device certificate
+    /// certifies — not a namespace key, and not its libp2p identity. That is
+    /// what the client contract means by learning the node's identity "from a
+    /// pinned certificate": a libp2p key is a network address certified by
+    /// nothing, and a node belongs to many namespaces so no single namespace key
+    /// identifies it. (This doc previously said "namespace public key", which is
+    /// how a first implementation came to fill it with the libp2p key.)
+    ///
+    /// Required when the provider is enabled. Without it a malicious relay could
+    /// fetch a challenge from this node, serve it to a user as its own, and
+    /// replay the resulting statement here — the `node` field in the statement
+    /// is what refuses that, and it can only be checked against a value this
+    /// service already knows.
+    ///
+    /// Left unset, the embedded server fills it from the node's own signing key
+    /// at startup. A node that has not yet taken part in a namespace has no such
+    /// key, and the provider stays disabled until it does.
+    #[serde(default)]
+    pub node_key: Option<String>,
+
+    /// Client surfaces a session may be minted for.
+    ///
+    /// Each entry is an audience in its config spelling: a bare origin
+    /// (`https://app.example`), `codesign:<id>`, or `cli`. An **empty list
+    /// accepts any audience** and is logged as a warning at startup — that is
+    /// the right default for a single-tenant node and the wrong one for a relay,
+    /// and saying so at startup is cheaper than a silent policy nobody set.
+    #[serde(default)]
+    pub allowed_audiences: Vec<String>,
+
+    /// Permissions granted to a session minted by this provider.
+    ///
+    /// Defaults to `context:intent` and `context:query` — both halves of the
+    /// delegated surface, and deliberately nothing above them.
+    ///
+    /// Each half is gated again past this point, so a session carrying them
+    /// grants no authority of its own. A write: the warrant proves the author
+    /// consented and `CAN_AUTHOR_ON_BEHALF` proves the relay may act for them.
+    /// A read: the node re-checks the caller's membership on **every call**
+    /// rather than trusting the session, so a removed member stops being served
+    /// when the governance op lands, not when their token expires.
+    ///
+    /// That per-request check is why reads are here at all. This used to be
+    /// `context:intent` alone with a note to widen it once such a check existed
+    /// — a session-scoped read right on a multi-tenant relay would have kept
+    /// serving a member after they were removed. The check exists now
+    /// (`query_context`, through `MembershipRepository::is_member`), so the
+    /// note is satisfied rather than overruled.
+    ///
+    /// `context:subscribe` (#3942) joins them on the same terms. A delegated
+    /// device that can read and write but receives no events shows a UI that
+    /// looks frozen, and the subscription is gated the same way the other two
+    /// are: membership is re-evaluated per subscription against the group that
+    /// owns each context, so the scope decides who may ASK for a stream and
+    /// never what that stream carries.
+    ///
+    /// Do not add anything else. `admin`, `context:execute` or an alias scope
+    /// would be authority this token confers by itself, which none of these
+    /// three is.
+    #[serde(default = "default_account_proof_permissions")]
+    pub session_permissions: Vec<String>,
+}
+
+fn default_challenge_ttl_secs() -> u64 {
+    60
+}
+
+fn default_account_proof_permissions() -> Vec<String> {
+    vec![
+        "context:intent".to_owned(),
+        "context:query".to_owned(),
+        "context:subscribe".to_owned(),
+    ]
+}
+
+impl Default for AccountProofConfig {
+    fn default() -> Self {
+        Self {
+            challenge_ttl_secs: default_challenge_ttl_secs(),
+            node_key: None,
+            allowed_audiences: Vec::new(),
+            session_permissions: default_account_proof_permissions(),
+        }
+    }
 }
 
 /// Development and testing configuration

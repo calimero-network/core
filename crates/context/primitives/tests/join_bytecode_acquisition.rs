@@ -9,6 +9,7 @@ use actix::{Actor, Addr, Context as ActorContext, Handler};
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::ContextMessage;
+use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_node_primitives::client::NodeClient;
@@ -44,8 +45,20 @@ impl Handler<NetworkMessage> for BlobPeer {
 
     fn handle(&mut self, msg: NetworkMessage, _ctx: &mut ActorContext<Self>) -> Self::Result {
         match msg {
-            NetworkMessage::QueryBlob { outcome, .. } => {
+            // Discovery no longer reads a provider record: the joiner resolves
+            // the context's subscribers and asks each one directly. `queries`
+            // therefore counts probes — still "how often it asked a peer",
+            // which is what these tests assert on.
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ignored = outcome.send(vec![self.peer_id]);
+            }
+            NetworkMessage::ProbeBlob { outcome, .. } => {
                 let _previous = self.queries.fetch_add(1, Ordering::SeqCst);
+                let _ignored = outcome.send(Ok(BlobProbe::Held {
+                    size: Some(WASM.len() as u64),
+                }));
+            }
+            NetworkMessage::QueryBlob { outcome, .. } => {
                 let _ignored = outcome.send(Ok(vec![self.peer_id]));
             }
             NetworkMessage::RequestBlob { outcome, .. } => {

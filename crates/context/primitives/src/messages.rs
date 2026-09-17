@@ -98,6 +98,30 @@ pub struct ExecuteRequest {
     /// run observes is derived from this bundle after it verifies, not read from
     /// a field a caller could set.
     pub delegation: Option<Box<calimero_account::Delegation>>,
+    /// The authenticated caller's account, when this is a **read** performed on
+    /// behalf of somebody who runs no node.
+    ///
+    /// `None` is every other call, self-authored or delegated.
+    ///
+    /// This is the one principal input that arrives as a plain account with no
+    /// signature over it, so why it does not break
+    /// [`principal::Principal`](../../../context/src/handlers/execute/principal.rs)'s
+    /// "never deserialized from a request" invariant is worth stating:
+    ///
+    /// * It is set by the server from the **authenticated session** (the JWT's
+    ///   subject, surfaced as `X-Auth-User`), never read from a request body. A
+    ///   caller can choose which account it authenticates as and nothing more.
+    /// * It is refused unless the method's ABI intent is
+    ///   [`MethodIntent::ReadOnly`](calimero_wasm_abi::schema::MethodIntent),
+    ///   failing closed on `Unspecified`. So it cannot reach a path that writes.
+    /// * Membership of the target context's owning group is re-checked against
+    ///   it on every call, never cached from the session — a relay serves
+    ///   several tenants.
+    ///
+    /// A write still needs a warrant, and that is not an oversight: a warrant
+    /// proves to peers who never saw the HTTP request that the author consented.
+    /// A read has no peer to convince, because it publishes nothing.
+    pub read_as: Option<calimero_account::AccountId>,
 }
 
 #[derive(Debug)]
@@ -227,6 +251,35 @@ pub enum ExecuteError {
         "xcall on context '{context_id}' denied: target method is not an #[app::xcall] entry point"
     )]
     XCallNotPermitted { context_id: ContextId },
+    /// A delegated **read** named a method the ABI does not declare read-only.
+    ///
+    /// Covers both causes — a `Mutating` method, and one that declares nothing
+    /// (`Unspecified`, e.g. no receiver or an `#[app::init]`). The second is
+    /// **refused rather than guessed at**: the gate fails closed, because a
+    /// wrong guess runs an unreviewed method under a caller's identity with no
+    /// warrant behind it.
+    ///
+    /// Carries no method name because [`ExecuteError`] is `Copy` and a `String`
+    /// would cost that for every caller of a widely-used type. The name is not
+    /// lost: the HTTP layer names the method it was asked for, and the handler
+    /// logs it alongside the context.
+    #[error(
+        "method is not declared read-only on context '{context_id}'; a session \
+         authorizes reads only, so this call needs a warrant"
+    )]
+    NotReadOnly { context_id: ContextId },
+    /// A delegated read named a context whose owning group the caller's account
+    /// is not a member of.
+    ///
+    /// Evaluated **per call**, never cached from the session: one relay serves
+    /// several tenants, so a session that carried a standing right to read would
+    /// keep serving a member after they were removed.
+    ///
+    /// Deliberately distinct from [`Self::Unauthorized`], which names a
+    /// `PublicKey` — this is about an account, and the two are not the same
+    /// question.
+    #[error("account is not a member of the group owning context '{context_id}'")]
+    NotAMember { context_id: ContextId },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -305,6 +358,22 @@ pub struct ApplySignedNamespaceOpRequest {
 
 impl Message for ApplySignedNamespaceOpRequest {
     type Result = eyre::Result<NamespaceApplyOutcome>;
+}
+
+/// Seal a joiner's already-signed join under the namespace key and publish it
+/// under this node's own signature.
+///
+/// The joiner signs its join and hands it over; this node only wraps it. Sealing
+/// here rather than in the caller is not a layering nicety — it needs the
+/// namespace key and this node's signing key, and the actor is where both live.
+#[derive(Debug, Clone)]
+pub struct RelaySignedJoinRequest {
+    /// The joiner's op, endorsed by the admitter, exactly as it will be sealed.
+    pub op: crate::local_governance::SignedNamespaceOp,
+}
+
+impl Message for RelaySignedJoinRequest {
+    type Result = eyre::Result<()>;
 }
 
 /// Query the number of pending (not-yet-applied) ops in a namespace's
@@ -394,6 +463,10 @@ pub enum ContextMessage {
     ApplySignedNamespaceOp {
         request: ApplySignedNamespaceOpRequest,
         outcome: oneshot::Sender<<ApplySignedNamespaceOpRequest as Message>::Result>,
+    },
+    RelaySignedJoin {
+        request: RelaySignedJoinRequest,
+        outcome: oneshot::Sender<<RelaySignedJoinRequest as Message>::Result>,
     },
     NamespacePendingOpCount {
         request: NamespacePendingOpCountRequest,

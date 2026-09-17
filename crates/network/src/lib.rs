@@ -15,7 +15,9 @@ use calimero_store::Store;
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_network_primitives::messages::NetworkEventDispatcher;
-use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREAM_PROTOCOL};
+use calimero_network_primitives::stream::{
+    CALIMERO_BLOB_ANNOUNCE_PROTOCOL, CALIMERO_BLOB_PROTOCOL, CALIMERO_STREAM_PROTOCOL,
+};
 use calimero_utils_actix::actor;
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
@@ -232,6 +234,21 @@ impl Actor for NetworkManager {
             }
             Err(err) => {
                 error!("Failed to setup control for blob protocol: {:?}", err);
+            }
+        }
+
+        match control.accept(CALIMERO_BLOB_ANNOUNCE_PROTOCOL) {
+            Ok(incoming_announce_streams) => {
+                let _incoming_announce_streams_handle =
+                    ctx.add_stream(incoming_announce_streams.map(|(peer_id, stream)| {
+                        FromIncoming::from_stream(peer_id, stream, CALIMERO_BLOB_ANNOUNCE_PROTOCOL)
+                    }));
+            }
+            Err(err) => {
+                error!(
+                    "Failed to setup control for blob announce protocol: {:?}",
+                    err
+                );
             }
         }
 

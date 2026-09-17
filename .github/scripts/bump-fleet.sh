@@ -109,10 +109,12 @@ fi
 # others, so the matcher tolerates both.
 
 # The monorepo lays the same surface out differently, so `cargo` means one of
-# two shapes and the script decides which by looking rather than by being told.
+# three shapes and the script decides which by looking rather than by being told.
 #
 #   standalone   logic/Cargo.toml            one contract, its own pins
 #   workspace    Cargo.toml [workspace]      apps/*/logic, one shared pin
+#   nested       neither, but some Cargo.toml
+#                deeper in the tree pins core  calimero-studio
 #
 # calimero-network/apps is the second: nine contracts whose SDK tag lives once,
 # in [workspace.dependencies]. That is the whole reason the monorepo exists —
@@ -151,6 +153,44 @@ app_manifests() {
 scenario_files() {
   find "$DIR/apps" -type f -path '*/logic/workflows/*' \
        \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort
+}
+
+# Every Cargo.toml anywhere in the tree that pins core by git tag, for a repo
+# whose manifests sit at neither of the two known paths. calimero-studio is the
+# case: its pins are workspace roots at foundation-app/base/logic/Cargo.toml (the
+# scaffold template every generated app is built from) and
+# foundation-app/recipes/Cargo.toml (compiler-checked CRDT idioms the build agent
+# reads), and it had drifted TWELVE releases behind before anything noticed,
+# because no release opened a pull request here.
+#
+# Only workspace roots and standalone crates match: a member crate says
+# `calimero-sdk = { workspace = true }` and carries no git URL, so the grep
+# excludes it and the tag stays in exactly one place per workspace.
+#
+# `target/` and `node_modules/` are excluded because a vendored or built copy of
+# someone else's manifest is not this repository's pin.
+nested_core_manifests() {
+  find "$DIR" -type f -name 'Cargo.toml' \
+       -not -path '*/target/*' \
+       -not -path '*/node_modules/*' \
+    2>/dev/null | sort | while IFS= read -r m; do
+      # `if`, not `[ ... ] &&`: a false test as the loop's last command makes the
+      # loop — and so this function — exit 1, which under `set -e` kills the
+      # assignment that captured its output. Silently, with no diagnostic.
+      if [ -n "$(core_tag_in "$m")" ]; then printf '%s\n' "$m"; fi
+    done
+}
+
+# Every merobox scenario / workflow document in the tree, for the nested shape.
+# The exclusions mirror `tooling_files`: a recorded measurement or a committed
+# log states the conditions it ran under, and rewriting those rewrites history.
+nested_scenario_files() {
+  find "$DIR" -type f \( -name '*.workflow.yml' -o -name '*.workflow.yaml' \) \
+       -not -path '*/target/*' \
+       -not -path '*/node_modules/*' \
+       -not -path '*/logs/*' \
+       -not -path '*/test/perf/*' \
+    2>/dev/null | sort
 }
 
 bump_cargo_workspace() {
@@ -555,10 +595,115 @@ bump_cargo() {
     bump_cargo_app
   elif [ -f "$DIR/Cargo.toml" ] && grep -q 'calimero-network/core' "$DIR/Cargo.toml"; then
     bump_cargo_workspace
+  elif [ -n "$(nested_core_manifests)" ]; then
+    bump_cargo_nested
   else
-    note "no logic/Cargo.toml, and no workspace root pinning calimero-network/core"
+    note "no logic/Cargo.toml, no workspace root pinning calimero-network/core,"
+    note "and no Cargo.toml anywhere in the tree that pins it either"
     exit 3
   fi
+}
+
+# ---------------------------------------------------------------------------
+# nested: the pins are somewhere else entirely
+# ---------------------------------------------------------------------------
+#
+# One or more workspace roots deeper in the tree, each with its own lockfile,
+# plus the merod images that have to move with them. Unlike the workspace shape
+# there is no derived-value contract to re-assert afterwards: nothing here
+# declares min-runtime-version (it is rewritten where present, and its absence
+# is not an error), and no check-app-metadata.sh equivalent exists to be kept
+# happy. So the verification is the narrow, honest one — every manifest touched
+# now pins the new tag, and none still pins another.
+bump_cargo_nested() {
+  local manifests
+  manifests=$(nested_core_manifests)
+
+  local first current
+  first=$(printf '%s\n' "$manifests" | head -1)
+  current=$(core_tag_in "$first")
+
+  head_note "cargo (nested): $current -> $VERSION"
+
+  # Every manifest already there means nothing to do. Checked across all of
+  # them, not just the first: two roots at different tags IS the drift, and
+  # exiting 4 off the first one would hide it.
+  local stale_any=0 m
+  for m in $manifests; do
+    [ "$(core_tag_in "$m")" = "$VERSION" ] || stale_any=1
+  done
+  if [ "$stale_any" -eq 0 ]; then
+    note "already pinned to $VERSION in every manifest"
+    exit 4
+  fi
+
+  local roots="" touched=0
+  for m in $manifests; do
+    local before
+    before=$(core_tag_in "$m")
+    NEW="$VERSION" perl -i -pe '
+      if (m{git\s*=\s*"https://github\.com/calimero-network/core(?:\.git)?"}
+          && m{tag\s*=\s*"}) {
+        s{(tag\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
+      }
+      s{^(\s*min-runtime-version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
+    ' "$m"
+
+    local n
+    n=$(NEW="$VERSION" perl -ne '
+      if (m{git\s*=\s*"https://github\.com/calimero-network/core(?:\.git)?"}
+          && m{tag\s*=\s*"\Q$ENV{NEW}\E"}) { $n++ }
+      END { print $n + 0 }
+    ' "$m")
+    [ "$n" -gt 0 ] || die "${m#$DIR/}: rewrote no dependency lines — not shaped as expected"
+
+    local left
+    left=$(NEW="$VERSION" perl -ne '
+      if (m{git\s*=\s*"https://github\.com/calimero-network/core(?:\.git)?"}
+          && m{tag\s*=\s*"([^"]*)"} && $1 ne $ENV{NEW}) { print "    line $.: $_" }
+    ' "$m")
+    [ -z "$left" ] || die "${m#$DIR/} still pins another core tag after the rewrite:
+$left"
+
+    record_change "${m#$DIR/}"
+    note "${m#$DIR/}: $before -> $VERSION ($n dependency line(s))"
+    touched=$((touched + 1))
+
+    # A lockfile beside the manifest marks a workspace root worth resolving.
+    if [ -f "$(dirname "$m")/Cargo.lock" ]; then roots="$roots $(dirname "$m")"; fi
+  done
+  note "$touched manifest(s) rewritten"
+
+  # The node image has to move with the tag or the scenario boots a merod older
+  # than the runtime the WASM was built for. calimero-studio's own smoke runs
+  # --no-docker against a merod derived from the SDK tag, so the image is a
+  # mirror of the pin there rather than an independent choice — which is exactly
+  # why it must not be left behind.
+  local scen=0 f
+  for f in $(nested_scenario_files); do
+    grep -q 'ghcr\.io/calimero-network/merod:' "$f" || continue
+    NEW="$VERSION" perl -i -pe '
+      s{(ghcr\.io/calimero-network/merod:)[A-Za-z0-9._-]+}{$1$ENV{NEW}}g;
+    ' "$f"
+    record_change "${f#$DIR/}"
+    scen=$((scen + 1))
+  done
+  note "merod image rewritten in $scen scenario file(s)"
+
+  if [ "$NO_LOCK" -eq 1 ]; then
+    note "skipping Cargo.lock refresh (--no-lock)"
+    return 0
+  fi
+
+  command -v cargo >/dev/null 2>&1 || die "cargo is not installed; re-run with --no-lock to edit manifests only"
+
+  # Per workspace root: each has its own lockfile and its own dependency graph.
+  local r
+  for r in $roots; do
+    note "refreshing ${r#$DIR/}/Cargo.lock"
+    ( cd "$r" && cargo update --quiet )
+    record_change "${r#$DIR/}/Cargo.lock"
+  done
 }
 
 bump_cargo_app() {

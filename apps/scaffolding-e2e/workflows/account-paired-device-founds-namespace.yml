@@ -1,0 +1,269 @@
+name: E2E Account - A Paired Device Founds A Namespace
+description: >
+  A paired device is a device of the account, so it must be able to start a
+  project as the account and put the devices that belong there on that project's
+  guest list. A node with no root of its own failed `create_namespace` at the
+  credential build, while a node initialised normally, which is what the
+  desktop ships, re-minted its device under its own root, founded the
+  namespace as a stranger account, and destroyed its pairing without a word.
+
+  The other half of the rule is the one that says no: a sibling scoped to an
+  application the new namespace does not serve is left where the holder put it.
+
+  The cast:
+
+    * node-1 - Alice's laptop. Holds the account root, installs both
+      applications, creates namespace A and certifies the other two devices.
+    * node-2 - Alice's phone. Paired into namespace A, scoped to app A, a
+      member of nothing. It then founds namespace C as Alice's account.
+    * node-3 - Alice's tablet. Paired scoped to app B, and no namespace targets
+      app B - so the account namespace is the only place it is bound, which is
+      what pairing into a scope the account serves nowhere yet leaves behind.
+
+  What each step is load-bearing for:
+
+    1. The phone resolves its own binding in A. That is the proof it folded its
+       own link, which is the op that hands it its certificate and names its
+       certifier.
+    2. The phone waits until it can read the tablet's scope back. That value
+       exists nowhere but the replicated registry, so it is the proof the phone
+       folded what the laptop published there - and the barrier that keeps the
+       founding below from racing the fold.
+    3. `create_namespace` on node-2 succeeds and the phone lists C with its
+       target.
+    4. The phone still speaks as Alice's account and as the same device after
+       founding C. This is the assertion that goes red before the fix: the
+       creation succeeds, but as a fresh device of node-2's own account.
+    5. The laptop is bound in C, published by the phone. A founder that is not
+       the holder carries every sibling whose scope covers what it founded.
+    6. The tablet is NOT bound in C. Its scope names app B alone, so it stays
+       in the account namespace, which is where it started.
+
+  node-2 is initialised the default way, root and all, because that is the
+  posture the desktop ships and the one where the failure is silent.
+
+  Not asserted here: node-1 listing C, which is the account namespace's job and
+  is pinned by its own scenario, and what the laptop or the tablet make of C.
+  What IS asserted, as of the registry, is step 5: the phone carries the laptop
+  into C. The phone signed no certificate for the laptop and never could - only
+  the account root can - so the certificate it publishes there can only have
+  been read out of the account namespace.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: paired-founder-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: paired-founder-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: paired-founder-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: paired-founder-node-3
+    username: dev
+    password: dev-password
+
+  # App A is the raw wasm and app B the two-service bundle: two applications
+  # that differ in kind as well as in id.
+  - name: Install app A on node-1
+    type: install_application
+    node: paired-founder-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Install app B on node-1
+    type: install_application
+    node: paired-founder-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_b: applicationId
+
+  # Installed on the phone too: a creation resolves the application locally to
+  # derive the namespace's bytecode id, so it needs app A before it can found.
+  - name: Install app A on node-2
+    type: install_application
+    node: paired-founder-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Two applications, not one installed twice
+    type: assert
+    statements:
+      - 'is_set({{app}})'
+      - 'is_set({{app_b}})'
+      - '{{app}} != {{app_b}}'
+
+  - name: Node-1 creates namespace A
+    type: create_namespace
+    node: paired-founder-node-1
+    application_id: '{{app}}'
+    outputs:
+      ns_a: namespaceId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: paired-founder-node-1
+    outputs:
+      alice_account: accountId
+      alice_device: deviceId
+      alice_root: accountRootPublicKey
+      account_ns: accountNamespaceId
+
+  # Scoped to app A, the application C targets, and following the account
+  # namespace as well as A. Both are load-bearing: the account namespace is where
+  # the laptop's certificate is written down, and the scope is what lets the phone
+  # tell it has folded it.
+  - name: Pair node-2 onto Alice's account, listening on A and the account namespace
+    type: account_pair
+    node: paired-founder-node-2
+    holder: paired-founder-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    namespaces:
+      - '{{ns_a}}'
+    applications:
+      - '{{app}}'
+    await_self: true
+
+  - name: What node-2 speaks as
+    type: node_identity
+    node: paired-founder-node-2
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+
+  - name: The phone is a device of Alice's account
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+      - 'json_not_equal({{paired_device}}, {{alice_device}})'
+
+  # Polled: node-2 is a member of nothing, so no barrier can wait on it.
+  - name: The phone resolves its own binding in A
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{ns_a}}'
+    retries: 45
+    interval: 2
+
+  # Scoped to app B, which no namespace targets. The account namespace is
+  # always a fan-out target and always holds a key, so this pairs there alone.
+  - name: Pair node-3, scoped to app B, following the account namespace
+    type: account_pair
+    node: paired-founder-node-3
+    holder: paired-founder-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    applications:
+      - '{{app_b}}'
+    await_self: true
+
+  - name: What node-3 speaks as
+    type: node_identity
+    node: paired-founder-node-3
+    outputs:
+      tablet_device: deviceId
+
+  # The barrier. The tablet's scope is registry-only, and its statement is the
+  # last one the laptop published, so the phone seeing it has folded every
+  # earlier one - the laptop's own certificate among them.
+  - name: The phone reads the tablet's scope out of the registry
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{tablet_device}}'
+    match:
+      applications.0: '{{app_b}}'
+    retries: 45
+    interval: 2
+
+  # The step under test. Succeeds before the fix too - the identity check
+  # below is what catches the silent re-mint.
+  - name: Node-2 founds namespace C as Alice's account
+    type: create_namespace
+    node: paired-founder-node-2
+    application_id: '{{app}}'
+    outputs:
+      ns_c: namespaceId
+
+  - name: The phone lists C with its target
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_c}}'
+    match:
+      targetApplicationId: '{{app}}'
+
+  # The assertion this PR exists for. The phone founded C, so the phone is the
+  # only node that can bind the laptop there - and the only thing that can tell
+  # it the laptop's certificate is the account namespace's registry. Before
+  # this, a founder that was not the holder had an empty certificate cache and
+  # carried nobody.
+  - name: The phone carried the laptop into C
+    type: assert_api_response
+    node: paired-founder-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{alice_device}}'
+    contains:
+      namespaces:
+        - '{{ns_c}}'
+    retries: 30
+    interval: 2
+
+  # A founder carries only the siblings whose scope covers what it founded.
+  - name: The phone left the tablet in the account namespace
+    type: account_devices
+    node: paired-founder-node-2
+    where:
+      deviceId: '{{tablet_device}}'
+    contains:
+      namespaces:
+        - '{{account_ns}}'
+    not_contains:
+      namespaces:
+        - '{{ns_c}}'
+
+  # The assertion that catches the silent failure. Before the fix a node holding
+  # its own root re-minted its device under that root to sign the founder
+  # credential, so C was founded by a stranger and the pairing was gone.
+  - name: What node-2 speaks as after founding C
+    type: node_identity
+    node: paired-founder-node-2
+    outputs:
+      founder_account: accountId
+      founder_device: deviceId
+
+  - name: Founding C did not change what the phone speaks as
+    type: json_assert
+    statements:
+      - 'json_equal({{founder_account}}, {{alice_account}})'
+      - 'json_equal({{founder_device}}, {{paired_device}})'
+
+stop_all_nodes: true

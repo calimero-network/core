@@ -62,14 +62,6 @@ wasm_imports! {
         fn private_storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn private_storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>) -> Bool;
         // --
-        fn fetch(
-            url: Ref<Buffer<'_>>,
-            method: Ref<Buffer<'_>>,
-            headers: Ref<Buffer<'_>>,
-            body: Ref<Buffer<'_>>,
-            register_id: RegisterId
-        ) -> Bool;
-        // --
         fn random_bytes(buf: Ref<BufferMut<'_>>);
         fn time_now(buf: Ref<BufferMut<'_>>);
         // --
@@ -85,6 +77,9 @@ wasm_imports! {
         // --
         // Network blob functions
         fn blob_announce_to_context(blob_id: Ref<Buffer<'_>>, context_id: Ref<Buffer<'_>>) -> Bool;
+        // Like `blob_open`, but consults the context's peers when the blob is
+        // not held locally.
+        fn blob_open_in_context(blob_id: Ref<Buffer<'_>>, context_id: Ref<Buffer<'_>>) -> PtrSizedInt;
         // --
     }
 }

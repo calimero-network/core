@@ -2,11 +2,10 @@
 
 use calimero_server_primitives::admin::Quote;
 use dcap_qvl::collateral::{CollateralClient, INTEL_PCS_URL};
+use dcap_qvl::tcb_info::TcbInfo as DcapTcbInfo;
 use dcap_qvl::verify::verify;
 use tdx_quote::Quote as TdxQuote;
-#[cfg(feature = "mock-attestation")]
-use tracing::warn;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::error::AttestationError;
 #[cfg(feature = "mock-attestation")]
@@ -38,6 +37,31 @@ pub struct VerificationResult {
     ///
     /// NOT consulted by [`Self::is_valid`]; provided for caller-side policy.
     pub advisory_ids: Vec<String>,
+    /// Intel's `tcbEvaluationDataNumber` for the collateral this verdict was
+    /// computed against — i.e. *which* baseline decided `tcb_status`.
+    ///
+    /// `tcb_status` is meaningless without it. `OutOfDate` does not say "this
+    /// host is unpatched"; it says "this host is behind whichever TCB
+    /// evaluation data the verifier happened to fetch". Intel publishes at
+    /// least two concurrently (`update=early` runs ahead of `update=standard`),
+    /// so two verifiers appraising the *same* host at the *same* moment can
+    /// legitimately disagree.
+    ///
+    /// That matters here because a node is judged twice by different code:
+    /// this crate (dcap-qvl against Intel PCS) decides admission, and the
+    /// mero-tee KMS (Intel Trust Authority) decides key release. The invariant
+    /// those two must preserve is `policy_core ⊆ policy_kms` — anything core
+    /// admits, the KMS must be willing to serve a key to. Neither side pins its
+    /// baseline, so the invariant currently holds only because the KMS
+    /// allowlist is the wider of the two. Tighten the KMS to `UpToDate` alone
+    /// while core is evaluating against older collateral and the failure is a
+    /// node that joins its group and then silently never receives a key.
+    ///
+    /// Recorded so that divergence is visible in logs and to callers rather
+    /// than inferred from a stuck node. `None` when collateral was not fetched
+    /// (mock quotes) or the TCB info could not be parsed — it is diagnostic,
+    /// never a gate.
+    pub tcb_evaluation_data_number: Option<u32>,
     /// The parsed quote structure.
     ///
     /// Its `body` carries the measurement registers (`mrtd` / `rtmr0..3` /
@@ -96,6 +120,76 @@ impl VerificationResult {
     }
 }
 
+/// Environment variable naming the endpoint collateral is fetched from.
+///
+/// Deliberately namespaced rather than reusing dcap-qvl's own `PCCS_URL`: that
+/// name already means something slightly different upstream (see
+/// [`collateral_source`]), and a variable that silently means two things is
+/// worse than a second name.
+const COLLATERAL_URL_ENV: &str = "CALIMERO_TEE_COLLATERAL_URL";
+
+/// Resolve the collateral endpoint from an optional configured value.
+///
+/// Split from [`collateral_source`] so the precedence is testable without
+/// mutating process environment, which is racy across threads.
+///
+/// Blank or whitespace-only is treated as unset: an env var exported empty by
+/// a shell or container runtime means "not configured", never "fetch from the
+/// empty string".
+fn collateral_source_from(configured: Option<&str>) -> String {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(INTEL_PCS_URL)
+        .to_owned()
+}
+
+/// The endpoint this node fetches attestation collateral from.
+///
+/// Defaults to Intel PCS, which is what this crate has always used. The default
+/// is deliberately *not* dcap-qvl's [`CollateralClient::from_env`]: that helper
+/// reads the same class of setting but falls back to Phala's PCCS, so adopting
+/// it would silently redirect every node's collateral source — and the source
+/// decides `tcb_status`, hence admission.
+///
+/// Why this is worth configuring at all: `tcb_status` is only meaningful
+/// against the TCB evaluation data that produced it (see
+/// [`VerificationResult::tcb_evaluation_data_number`]). Intel publishes
+/// several baselines concurrently, and dcap-qvl 0.5.3 sends no `update`
+/// parameter on the TCB request, so a node takes whatever the endpoint's
+/// default happens to be. Pointing a fleet at one PCCS is the supported way to
+/// make every node evaluate against the *same* collateral, rather than hoping
+/// the upstream default is stable.
+///
+/// Pointing at a PCCS also changes one thing inside dcap-qvl: it tries the
+/// `rootcacrl` endpoint first and hex-decodes the result, because a PCCS
+/// returns that CRL hex-encoded rather than as binary DER. That path falls back
+/// cleanly, so it is safe either way — but it is a real behavioural difference,
+/// not just a different hostname.
+fn collateral_source() -> String {
+    collateral_source_from(std::env::var(COLLATERAL_URL_ENV).ok().as_deref())
+}
+
+/// Read Intel's `tcbEvaluationDataNumber` out of fetched collateral.
+///
+/// Parses the same string dcap-qvl itself deserializes: the collateral carries
+/// the *unwrapped* `tcbInfo` object, not the signed `{tcbInfo, signature}`
+/// envelope the PCS returns, so this decodes straight into [`DcapTcbInfo`].
+///
+/// Diagnostic only. A parse failure degrades to `None` and is logged rather
+/// than surfaced as an error: the number qualifies a verdict, it never gates
+/// one, and failing an otherwise-good attestation over an unreadable
+/// diagnostic would trade a real security check for a cosmetic one.
+fn tcb_evaluation_data_number_of(tcb_info_json: &str) -> Option<u32> {
+    match serde_json::from_str::<DcapTcbInfo>(tcb_info_json) {
+        Ok(info) => Some(info.tcb_evaluation_data_number),
+        Err(err) => {
+            warn!(error=?err, "Could not read tcbEvaluationDataNumber from collateral");
+            None
+        }
+    }
+}
+
 /// Verify a TDX attestation quote.
 ///
 /// This performs **crypto/structural verification only**: it checks the DCAP
@@ -147,15 +241,24 @@ pub async fn verify_attestation(
     let report_data_hex = hex::encode(report_data);
     info!(report_data=%report_data_hex, "Extracted report data from quote");
 
-    // Fetch collateral from Intel PCS
-    let client = CollateralClient::with_default_http(INTEL_PCS_URL)
-        .map_err(|err| AttestationError::CollateralFetchFailed(format!("{err:?}")))?;
+    // Fetch collateral from the configured source (Intel PCS unless overridden).
+    let collateral_source = collateral_source();
+    let client = CollateralClient::with_default_http(collateral_source.clone()).map_err(|err| {
+        error!(error=?err, source=%collateral_source, "Collateral endpoint is not usable");
+        AttestationError::CollateralFetchFailed(format!(
+            "collateral source {collateral_source:?}: {err:?}"
+        ))
+    })?;
     let collateral = client.fetch(quote_bytes).await.map_err(|err| {
-        error!(error=?err, "Failed to fetch collateral from Intel PCS");
-        AttestationError::CollateralFetchFailed(format!("{err:?}"))
+        error!(error=?err, source=%collateral_source, "Failed to fetch collateral");
+        AttestationError::CollateralFetchFailed(format!(
+            "collateral source {collateral_source:?}: {err:?}"
+        ))
     })?;
 
-    info!("Collateral fetched from Intel PCS");
+    // Named, because which endpoint served the collateral decides `tcb_status`
+    // and `tcb_evaluation_data_number` below.
+    info!(source=%collateral_source, "Collateral fetched");
 
     // Verify quote signature and certificate chain
     let now = std::time::SystemTime::now()
@@ -165,6 +268,8 @@ pub async fn verify_attestation(
             AttestationError::SystemTimeError(err.to_string())
         })?
         .as_secs();
+
+    let tcb_evaluation_data_number = tcb_evaluation_data_number_of(&collateral.tcb_info);
 
     let (quote_verified, tcb_status, advisory_ids) = match verify(quote_bytes, &collateral, now) {
         Ok(verified_report) => {
@@ -223,8 +328,17 @@ pub async fn verify_attestation(
         application_hash_verified,
         tcb_status,
         advisory_ids,
+        tcb_evaluation_data_number,
         quote,
     };
+
+    // Logged next to the status it qualifies: a bare `OutOfDate` in a log is
+    // not actionable without knowing which baseline produced it.
+    info!(
+        tcb_status = ?result.tcb_status,
+        tcb_evaluation_data_number = ?result.tcb_evaluation_data_number,
+        "TCB verdict and the collateral baseline it was measured against"
+    );
 
     if result.is_valid() {
         info!("Overall verification: PASSED");
@@ -319,6 +433,8 @@ pub fn verify_mock_attestation(
         application_hash_verified,
         tcb_status: Some("Mock".to_owned()),
         advisory_ids: Vec::new(),
+        // No collateral is fetched for a mock quote, so there is no baseline.
+        tcb_evaluation_data_number: None,
         quote,
     };
 
@@ -329,4 +445,111 @@ pub fn verify_mock_attestation(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use dcap_qvl::collateral::INTEL_PCS_URL;
+
+    use super::{collateral_source_from, tcb_evaluation_data_number_of};
+
+    /// The default must stay Intel PCS. Changing it changes which collateral a
+    /// node is judged against, and therefore which hosts it admits.
+    #[test]
+    fn defaults_to_intel_pcs_when_unconfigured() {
+        assert_eq!(collateral_source_from(None), INTEL_PCS_URL);
+    }
+
+    /// An env var exported empty by a shell or container runtime means "not
+    /// configured" -- never "fetch from the empty string", which would turn a
+    /// blank setting into a fetch failure on every attestation.
+    #[test]
+    fn blank_configuration_is_treated_as_unset() {
+        for blank in ["", "   ", "\t", "\n", " \t\n "] {
+            assert_eq!(
+                collateral_source_from(Some(blank)),
+                INTEL_PCS_URL,
+                "blank value {blank:?} should fall back to the default"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_endpoint_wins() {
+        assert_eq!(
+            collateral_source_from(Some("https://pccs.example.test")),
+            "https://pccs.example.test"
+        );
+    }
+
+    /// Surrounding whitespace is stripped rather than passed through: a URL
+    /// with a stray newline from a config file or secret mount would otherwise
+    /// fail to parse, and the error would name the endpoint rather than the
+    /// whitespace.
+    #[test]
+    fn surrounding_whitespace_is_stripped() {
+        assert_eq!(
+            collateral_source_from(Some("  https://pccs.example.test\n")),
+            "https://pccs.example.test"
+        );
+    }
+
+    /// Shaped like the `tcbInfo` object Intel's PCS returns (and like what
+    /// dcap-qvl stores after unwrapping the signed envelope), trimmed to the
+    /// fields `TcbInfo` requires. The number is the one Intel began serving to
+    /// `update=early` callers on 2026-08-11, and the one Intel Trust Authority
+    /// reported for a Calimero node on 2026-09-11.
+    fn tcb_info_json(evaluation_data_number: u32) -> String {
+        format!(
+            r#"{{
+              "id": "TDX",
+              "version": 3,
+              "issueDate": "2026-08-11T00:00:00Z",
+              "nextUpdate": "2026-09-10T00:00:00Z",
+              "fmspc": "B0C06F000000",
+              "pceId": "0000",
+              "tcbType": 0,
+              "tcbEvaluationDataNumber": {evaluation_data_number},
+              "tcbLevels": []
+            }}"#
+        )
+    }
+
+    #[test]
+    fn reads_the_evaluation_data_number_from_collateral() {
+        assert_eq!(tcb_evaluation_data_number_of(&tcb_info_json(22)), Some(22));
+    }
+
+    /// The whole point of recording it: `early` (22) and `standard` (20) are
+    /// live at the same time, so the number is what distinguishes two verifiers
+    /// that disagree about one host from two that were asked different
+    /// questions.
+    #[test]
+    fn distinguishes_the_early_and_standard_baselines() {
+        let early = tcb_evaluation_data_number_of(&tcb_info_json(22));
+        let standard = tcb_evaluation_data_number_of(&tcb_info_json(20));
+
+        assert_eq!(early, Some(22));
+        assert_eq!(standard, Some(20));
+        assert_ne!(early, standard);
+    }
+
+    /// Diagnostic, never a gate: unreadable collateral must not fail an
+    /// otherwise-good attestation.
+    #[test]
+    fn unparseable_collateral_degrades_to_none() {
+        assert_eq!(tcb_evaluation_data_number_of("not json"), None);
+        assert_eq!(tcb_evaluation_data_number_of("{}"), None);
+        assert_eq!(tcb_evaluation_data_number_of(""), None);
+    }
+
+    /// Guards the envelope-vs-inner-object distinction. dcap-qvl stores the
+    /// unwrapped `tcbInfo`; if a future version stored the signed envelope
+    /// instead, this parse would silently start returning `None` and the
+    /// divergence signal would go quiet without anything failing.
+    #[test]
+    fn does_not_accept_the_signed_envelope() {
+        let envelope = format!(r#"{{"tcbInfo": {}, "signature": "ab"}}"#, tcb_info_json(22));
+        assert_eq!(tcb_evaluation_data_number_of(&envelope), None);
+    }
 }

@@ -12,6 +12,7 @@ use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_primitives::events::NodeEvent;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -131,7 +132,14 @@ pub(crate) async fn test_node_client(
     let (ns_sync_tx, _r1) = mpsc::channel(8);
     let (ns_join_tx, _r2) = mpsc::channel(8);
     let (open_subgroup_join_tx, _r3) = mpsc::channel(8);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, _r4) = mpsc::channel(8);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     let node_client = NodeClient::new(
         store.clone(),
@@ -144,4 +152,43 @@ pub(crate) async fn test_node_client(
     );
 
     (node_client, blob_dir)
+}
+
+/// Seed a namespace with one Restricted subgroup and `caller` in `role`,
+/// returning the namespace and subgroup ids as wire hashes plus the account
+/// `caller`'s key resolves to - the principal every row below is keyed by,
+/// and what the subscribe gate compares against.
+pub(crate) fn seed_namespace_with_restricted_subgroup(
+    store: &Store,
+    caller: PublicKey,
+    role: calimero_primitives::context::GroupMemberRole,
+) -> (Hash, Hash, calimero_primitives::identity::AccountId) {
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
+    use calimero_governance_store::{
+        CapabilitiesRepository, MembershipRepository, NamespaceRepository,
+    };
+
+    let ns = ContextGroupId::from([0xC0u8; 32]);
+    let subgroup = ContextGroupId::from([0xC1u8; 32]);
+
+    // Enrolled at the namespace anchor, so the caller's key resolves there
+    // and every row below names the account it resolves to.
+    let account = calimero_context::test_support::enrol(store, &ns, &caller);
+
+    MembershipRepository::new(store)
+        .add_member(&ns, &account, role)
+        .unwrap();
+    NamespaceRepository::new(store)
+        .nest(&ns, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+        .unwrap();
+
+    (
+        Hash::from(ns.to_bytes()),
+        Hash::from(subgroup.to_bytes()),
+        account,
+    )
 }

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 use super::config::SESSION_EXPIRY_SECS;
+use crate::caller_account::EventCaller;
 
 /// Persistable session data (stored in database)
 ///
@@ -57,6 +58,34 @@ pub struct SessionStateInner {
     /// never mutated; reconnects and session lookups compare the caller's
     /// principal against it to prevent cross-principal session access (IDOR).
     pub owner: Option<String>,
+    /// The authenticated caller this session currently acts as, for
+    /// re-authorizing its subscriptions when a membership removal lands
+    /// (`ws::subscribe::revoke_lost_subscriptions`). `owner` cannot serve that
+    /// purpose: it is an opaque principal STRING for comparing one caller
+    /// against another, not an identity the membership rows can be queried by.
+    ///
+    /// Deliberately **not** persisted, and so absent until a request sets it.
+    /// Persisting it would mean a later connection re-authorized against an
+    /// identity read back from the store rather than one proven by the token on
+    /// the request in hand — a session record that grants what it remembers.
+    /// Instead every authenticated request (connect and subscribe alike)
+    /// re-stamps it from its own auth extensions.
+    pub caller: Option<EventCaller>,
+    /// Whether the request that last stamped [`Self::caller`] was the node
+    /// owner. Carried for the same reason and on the same terms: the
+    /// observation gates admit the node owner unconditionally, so a prune that
+    /// did not know this would revoke the owner's own subscriptions.
+    pub node_owner: bool,
+    /// What this session's subscriptions depend on, and whether that has been
+    /// checked since it last could have changed.
+    ///
+    /// Not persisted, and that is the point: the subscriptions come back from
+    /// the store on a resume, the grant does not, so a resumed session starts
+    /// STALE and is re-derived against live membership before it is served —
+    /// using the caller proven by the token on the resuming request, never an
+    /// authorization remembered from the record. See
+    /// [`crate::subscription_grants`].
+    pub grants: crate::subscription_grants::Grants,
 }
 
 impl Default for SessionStateInner {
@@ -73,6 +102,9 @@ impl Default for SessionStateInner {
             event_counter: AtomicU64::new(1),
             last_activity: AtomicU64::new(now_secs()),
             owner: None,
+            caller: None,
+            node_owner: false,
+            grants: crate::subscription_grants::Grants::default(),
         }
     }
 }
@@ -97,6 +129,14 @@ impl SessionStateInner {
             event_counter: AtomicU64::new(data.event_counter),
             last_activity: AtomicU64::new(data.last_activity),
             owner: data.owner,
+            // Never persisted; the connect that resumed this session stamps it
+            // from its own authenticated request.
+            caller: None,
+            node_owner: false,
+            // Default is STALE: the subscriptions above came back from the
+            // record, so they are re-derived against live membership before
+            // this session is served again.
+            grants: crate::subscription_grants::Grants::default(),
         }
     }
 

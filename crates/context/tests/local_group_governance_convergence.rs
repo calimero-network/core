@@ -862,7 +862,7 @@ fn member_joined_at_ignores_zero_expiration() {
 
 #[test]
 fn recursive_invite_joins_all_descendant_groups() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     let mut rng = UnwrapErr(SysRng);
     let ns_id = sample_group_id();
@@ -955,12 +955,21 @@ fn recursive_invite_joins_all_descendant_groups() {
             ns_id.to_bytes().into(),
             vec![],
             (i + 1) as u64,
-            NamespaceOp::Root(RootOp::MemberJoinedAt {
-                member: calimero_context::test_support::account_for(&joiner_pk),
-                signed_invitation: signed_inv.clone(),
-                joined_at: 1,
-                account: calimero_context::test_support::credential(&joiner_pk),
-            }),
+            // Recursive invitations target the namespace root AND each
+            // descendant subgroup. A subgroup-targeted join travels sealed
+            // (#3858) and the apply refuses a cleartext one, so this has to
+            // publish each invitation the way production does rather than
+            // wrapping them all in `NamespaceOp::Root`.
+            calimero_context::test_support::published_join(
+                &store,
+                &ns_id,
+                RootOp::MemberJoinedAt {
+                    member: calimero_context::test_support::account_for(&joiner_pk),
+                    signed_invitation: signed_inv.clone(),
+                    joined_at: 1,
+                    account: calimero_context::test_support::credential(&joiner_pk),
+                },
+            ),
         )
         .expect("sign MemberJoinedAt");
         ns_op.admitter_endorsement = Some(admitter_endorsement);

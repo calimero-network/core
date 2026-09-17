@@ -93,6 +93,16 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             proof,
         } => account_ops::apply_device_unlinked(ctx, account, device, proof.as_ref())?,
         GroupOp::AccountKeysRotated { handoff } => account_ops::apply_keys_rotated(ctx, handoff)?,
+        GroupOp::AccountDeviceCertified { certificate, scope } => {
+            account_ops::apply_device_certified(ctx, certificate, scope)?
+        }
+        GroupOp::AccountNamespaceGained {
+            namespace,
+            application,
+        } => account_ops::apply_namespace_gained(ctx, namespace, *application)?,
+        GroupOp::AccountNamespaceLeft { namespace } => {
+            account_ops::apply_namespace_left(ctx, namespace)?
+        }
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,

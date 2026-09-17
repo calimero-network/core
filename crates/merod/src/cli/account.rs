@@ -51,6 +51,8 @@ enum AccountSubcommands {
     ImportCert(ImportCertCommand),
     /// Sign a warrant offline, authorising one relay to perform one intent
     Warrant(WarrantCommand),
+    /// Sign a session request offline, for a client that holds no node
+    LoginStatement(LoginStatementCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -128,6 +130,7 @@ impl AccountCommand {
             AccountSubcommands::SignCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
+            AccountSubcommands::LoginStatement(cmd) => cmd.run(),
         }
     }
 }
@@ -245,6 +248,23 @@ pub struct WarrantCommand {
     #[arg(long, value_name = "HEX")]
     executor: String,
 
+    /// The application build this warrant is signed against, 64 hex chars.
+    ///
+    /// Pins the code rather than a version string, so a relay cannot wait for an
+    /// upgrade that widens what `--method` does and then spend a warrant signed
+    /// against the narrower one. Read it from the context
+    /// (`meroctl context get <id>`); `meroctl context intent` reads it for you,
+    /// which is the reason to prefer that command where a node is reachable.
+    ///
+    /// Defaults to all-zeros because this command is deliberately offline and
+    /// has nothing to read it from. Nothing verifies the field yet (#3933 lands
+    /// the field set ahead of its enforcement, so a client builds against the
+    /// final signed bytes once) — but a warrant minted with the default will be
+    /// refused once pinning lands, so pass the real value for anything meant to
+    /// outlive this release.
+    #[arg(long, value_name = "HEX", default_value_t = String::new())]
+    app_version: String,
+
     /// Monotonic per device.
     #[arg(long)]
     nonce: u64,
@@ -319,14 +339,31 @@ impl WarrantCommand {
                 .saturating_add(self.valid_for)
         });
 
+        let app_version = if self.app_version.trim().is_empty() {
+            calimero_primitives::application::ApplicationId::from([0u8; 32])
+        } else {
+            calimero_primitives::application::ApplicationId::from(parse_key(
+                &self.app_version,
+                "app-version",
+            )?)
+        };
+
         let warrant = calimero_account::Warrant::sign(
             &secret,
-            context,
-            credential.statement.account,
-            executor,
-            calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
-            self.nonce,
-            not_after,
+            calimero_account::WarrantTerms {
+                context,
+                author_account: credential.statement.account,
+                executor,
+                app_version,
+                method: self.method.clone(),
+                intent_hash: calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
+                // An offline minter cites nothing: it has no log to read heads
+                // from, and inventing them would be worse than saying so.
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: self.nonce,
+                not_after,
+            },
         )
         .map_err(|err| eyre::eyre!("failed to sign the warrant: {err}"))?;
 
@@ -334,6 +371,187 @@ impl WarrantCommand {
             "{}",
             hex::encode(borsh::to_vec(&warrant).wrap_err("Failed to encode the warrant")?)
         );
+
+        Ok(())
+    }
+}
+
+/// Sign a [`LoginStatement`] offline, so a device holding no node can obtain a
+/// session on one.
+///
+/// The third of merod's offline signing commands, alongside `sign-cert` and
+/// `warrant`, and it exists for the same reason: the party that signs holds only
+/// a key, and the node it is signing *for* must not be asked to hold that key.
+///
+/// It also keeps one rule in one place. `LoginStatement::signing_payload`'s own
+/// docs say it is "assembled in one place so the client that mints a statement
+/// and the service that checks it cannot drift" — a test harness or an
+/// integrator re-deriving the domain hash and the borsh layout by hand is
+/// exactly that drift, and it fails in the direction where the copy passes its
+/// own checks and the product refuses the result.
+#[derive(Debug, Parser)]
+pub struct LoginStatementCommand {
+    /// The challenge this node issued, 64 hex chars.
+    ///
+    /// Obtained from the node's challenge endpoint immediately before signing:
+    /// it is single-use and short-lived, so a statement minted against a stale
+    /// one is refused before any signature is checked.
+    #[arg(long, value_name = "HEX")]
+    challenge: String,
+
+    /// The node this session is for, as the key a client pins, 64 hex chars.
+    ///
+    /// Signed over so a hostile relay cannot fetch a challenge from this node,
+    /// serve it as its own, and replay the statement it gets back.
+    #[arg(long, value_name = "HEX")]
+    node: String,
+
+    /// The ephemeral key the session will speak with, 64 hex chars.
+    ///
+    /// Distinct from the device key on purpose: the session key is what the
+    /// token authorises, so a leaked session cannot be escalated into use of the
+    /// device key itself.
+    ///
+    /// This is the PUBLIC half. Use `--generate-session-key` to mint a pair
+    /// instead: a caller with only a secret has no way to derive the public half
+    /// without a tool, which is the same wall this command exists to remove.
+    #[arg(
+        long,
+        value_name = "HEX",
+        required_unless_present = "generate_session_key"
+    )]
+    session_key: Option<String>,
+
+    /// Mint the session keypair here and print both halves.
+    ///
+    /// The statement names the public half; the secret is printed so the caller
+    /// can speak with it afterwards. Mutually exclusive with `--session-key`.
+    #[arg(long, default_value_t = false, conflicts_with = "session_key")]
+    generate_session_key: bool,
+
+    /// The device key that signs this, as a secret, 64 hex chars.
+    ///
+    /// The public half is derived rather than taken, for the reason
+    /// `Warrant::sign` does the same: a caller able to NAME a key it does not
+    /// hold could mint a statement it cannot sign, and the field would stop
+    /// meaning "who asked for this session".
+    #[arg(long, value_name = "HEX")]
+    device_secret: String,
+
+    /// The client surface this session is bound to: `cli`, a web origin, or a
+    /// code-signing identity.
+    ///
+    /// `cli` carries no payload deliberately — an attacker-chosen string there
+    /// would be an audience that binds nothing while looking like it binds
+    /// something. Spell a web origin exactly as the browser does
+    /// (`https://host:port`, no trailing slash); it is compared byte for byte.
+    #[arg(long, default_value = "cli")]
+    audience: String,
+
+    /// The device's credential, as printed by `sign-cert`. Optional.
+    ///
+    /// Not carried in the statement — the login POSTs it alongside as the
+    /// account proof. Accepted here only so the pair can be checked before the
+    /// node sees it, for the reason `warrant` does the same: a server's refusal
+    /// reads as a credential problem when it is really a key that the
+    /// certificate does not certify, and that is a slow thing to work out from
+    /// a 401.
+    #[arg(long, value_name = "HEX")]
+    credential: Option<String>,
+
+    /// Seconds from now that the statement stays honourable.
+    #[arg(long, default_value_t = 300)]
+    valid_for: u64,
+}
+
+/// Map the `--audience` spelling onto the variant it names.
+///
+/// Split out because it is the only branching this command does, and each arm
+/// binds a session to a different surface: getting it wrong hands a token
+/// obtained by one client to another, which is the whole reason the field is
+/// signed over.
+///
+/// A web origin is passed through verbatim rather than normalized. The verifier
+/// compares it byte for byte against what the browser sends, so "helpfully"
+/// stripping a trailing slash here would produce a statement the browser's own
+/// origin no longer matches.
+fn parse_audience(spelling: &str) -> calimero_account::Audience {
+    match spelling.trim() {
+        "cli" => calimero_account::Audience::Cli,
+        other if other.starts_with("http://") || other.starts_with("https://") => {
+            calimero_account::Audience::WebOrigin(other.to_owned())
+        }
+        other => calimero_account::Audience::CodeSigningId(other.to_owned()),
+    }
+}
+
+impl LoginStatementCommand {
+    fn run(self) -> EyreResult<()> {
+        let challenge = parse_key(&self.challenge, "challenge")?;
+        let node = calimero_primitives::identity::PublicKey::from(parse_key(&self.node, "node")?);
+        let (session_key, generated_session_secret) = if self.generate_session_key {
+            let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+            (sk.public_key(), Some(hex::encode(sk.as_bytes())))
+        } else {
+            let spelled = self.session_key.as_deref().unwrap_or_default();
+            (
+                calimero_primitives::identity::PublicKey::from(parse_key(spelled, "session-key")?),
+                None,
+            )
+        };
+        let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
+
+        let audience = parse_audience(&self.audience);
+
+        // Refused here rather than by the node, because the node's refusal is a
+        // 401 that looks like a permission problem.
+        if let Some(credential) = self.credential.as_deref() {
+            let bytes = hex::decode(credential.trim()).wrap_err("--credential is not hex")?;
+            let credential: calimero_account::AccountProof<calimero_account::DeviceCert> =
+                borsh::from_slice(&bytes)
+                    .wrap_err("--credential is not a valid device credential")?;
+            if credential.statement.sign_pk != secret.public_key() {
+                eyre::bail!(
+                    "the credential certifies a different key than --device-secret holds, so \
+                     the session it asks for would be refused"
+                );
+            }
+        }
+
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let expires_at = issued_at.saturating_add(self.valid_for);
+
+        let statement = calimero_account::LoginStatement::sign(
+            &secret,
+            node,
+            audience,
+            challenge,
+            session_key,
+            issued_at,
+            expires_at,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the login statement: {err}"))?;
+
+        // The statement first and alone on its line, so a caller can take it
+        // with `head -1` and a scenario can capture it by regex — the same shape
+        // `warrant` emits. The device key follows as a labelled line because a
+        // caller that did not derive it has no other way to name the signer.
+        println!(
+            "{}",
+            hex::encode(
+                borsh::to_vec(&statement).wrap_err("Failed to encode the login statement")?
+            )
+        );
+        println!("Device:  {}", hex::encode(secret.public_key()));
+        println!("Session: {}", hex::encode(session_key));
+        if let Some(session_secret) = generated_session_secret {
+            // Last, and labelled, so a caller taking the statement with `head -1`
+            // never picks this up by accident.
+            println!("Session-Secret: {session_secret}");
+        }
+        println!("Expires: {expires_at}");
 
         Ok(())
     }
@@ -773,7 +991,7 @@ fn parse_device(raw: &str) -> EyreResult<calimero_account::DeviceId> {
 
 #[cfg(test)]
 mod tests {
-    use calimero_account::DeviceId;
+    use calimero_account::{Audience, DeviceId};
 
     use super::*;
 
@@ -1094,6 +1312,51 @@ mod tests {
             "the unused relative flag keeps its default"
         );
     }
+
+    /// `cli` carries no payload on purpose: an attacker-chosen string there
+    /// would be an audience that binds nothing while looking like it binds
+    /// something.
+    #[test]
+    fn cli_is_the_payload_free_variant() {
+        assert_eq!(parse_audience("cli"), Audience::Cli);
+        assert_eq!(parse_audience("  cli  "), Audience::Cli);
+    }
+
+    /// Both schemes, and the origin passed through EXACTLY as given — the
+    /// verifier compares it byte for byte against the browser's own origin, so
+    /// normalizing here would produce a statement that origin cannot match.
+    #[test]
+    fn a_web_origin_is_carried_verbatim() {
+        assert_eq!(
+            parse_audience("https://app.example.com:8443"),
+            Audience::WebOrigin("https://app.example.com:8443".to_owned()),
+        );
+        assert_eq!(
+            parse_audience("http://localhost:3000"),
+            Audience::WebOrigin("http://localhost:3000".to_owned()),
+        );
+        // A trailing slash is a DIFFERENT origin to the verifier, so it must
+        // survive rather than be tidied away.
+        assert_eq!(
+            parse_audience("https://app.example.com/"),
+            Audience::WebOrigin("https://app.example.com/".to_owned()),
+        );
+    }
+
+    /// Anything else names a signed native client. Notably this is where a
+    /// scheme-less host lands: it is not a web origin, and treating it as one
+    /// would let a token minted for a native client be presented by a page.
+    #[test]
+    fn anything_else_is_a_code_signing_id() {
+        assert_eq!(
+            parse_audience("com.example.desktop"),
+            Audience::CodeSigningId("com.example.desktop".to_owned()),
+        );
+        assert_eq!(
+            parse_audience("app.example.com"),
+            Audience::CodeSigningId("app.example.com".to_owned()),
+        );
+    }
 }
 
 /// Adopt a device certificate this account's root signed somewhere else.
@@ -1262,7 +1525,21 @@ impl RootCommand {
 /// the agreement key is what wrapped scope keys are addressed to. The secrets that
 /// match the latter two are reachable from no command and no route.
 #[derive(Debug, Parser)]
-pub struct DeviceCommand {}
+pub struct DeviceCommand {
+    /// Drop this node's device identity so the next pairing mints a fresh one.
+    ///
+    /// A revoked row is spent everywhere and a row nobody certified holds no
+    /// replica state, so both drop. A certified row that no revocation has reached
+    /// is refused: it is live as far as this node can tell, and its id is the
+    /// replica the node's CRDT state is held under.
+    #[arg(long, default_value_t = false)]
+    reset: bool,
+
+    /// With `--reset`: drop the row even though it is certified and no revocation
+    /// has reached this node. For a device revoked while this node was offline.
+    #[arg(long, requires = "reset", default_value_t = false)]
+    force: bool,
+}
 
 impl DeviceCommand {
     #[expect(
@@ -1272,6 +1549,13 @@ impl DeviceCommand {
     )]
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         let store = open_store(root_args).await?;
+
+        if self.reset {
+            let dropped = NodeDeviceRepository::new(&store).reset_device(self.force)?;
+            println!("Reset device {}", hex::encode(dropped.as_bytes()));
+            println!("The next pairing or namespace join mints a fresh identity.");
+            return Ok(());
+        }
 
         let device = NodeDeviceRepository::new(&store)
             .get()

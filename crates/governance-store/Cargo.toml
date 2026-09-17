@@ -9,6 +9,11 @@ description.workspace = true
 publish = true
 
 [dependencies]
+# Optional, and only for the `testing` feature below: `test_fixtures` builds a
+# real `NodeClient` (which needs a `BlobManager`) and a temp-dir store. They are
+# also dev-dependencies, for the crate's own `cfg(test)` build.
+tempfile = { workspace = true, optional = true }
+calimero-blobstore = { workspace = true, optional = true }
 actix.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
@@ -54,3 +59,12 @@ serial_test.workspace = true
 # (unused by the publish path itself, but a required constructor field).
 calimero-blobstore.workspace = true
 tempfile.workspace = true
+
+[features]
+default = []
+# Exposes `test_fixtures` across crate boundaries so a dependent crate's tests
+# can build the same enrolled-member governance state these fixtures already
+# build correctly — membership rows AND the binding rows that make an account's
+# own ops verify. Reimplementing that setup per crate is how a test ends up
+# asserting against a member whose ops would be refused in production.
+testing = ["dep:tempfile", "dep:calimero-blobstore"]

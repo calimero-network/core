@@ -235,10 +235,21 @@ Which path a joiner takes is decided by one thing: whether it runs a node.
 1. It receives the invitation out of band (the inviter sends it however it likes).
 2. It signs its own `MemberJoinedAt` op — the invitation authorises the join, but
    the joiner authors it, so no admitter ever signs on its behalf.
-3. It publishes that op on the namespace topic.
+3. It publishes that op on the namespace topic, **sealed**: under the key covering
+   the invitation's group when it holds one, and otherwise by handing the signed
+   op back to the admitter it just talked to, which wraps it as
+   `NamespaceOp::RootRelaySealed` and publishes under its own envelope. Either
+   way the account, the group and the join time stay off the topic. There is no
+   cleartext third option — a join with nowhere to be sealed fails instead of
+   being broadcast in the open.
 4. Any node in the signed `admitters` list that sees it applies it. Every peer
    re-checks `join_op_proves_ownership` at apply, so an admitter relays a join, it
    never grants one.
+
+That the unkeyed case can route through the admitter at all is a consequence of
+step 2's endorsement requirement rather than a new dependency: a joiner that
+reached no admitter has already failed, so the peer it asks to seal is one it has
+completed an exchange with.
 
 A joiner that runs a node obtains its endorsement during the join exchange: the
 peer serving the join signs one if the invitation names it, and answers without

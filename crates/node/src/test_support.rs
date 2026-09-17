@@ -76,7 +76,14 @@ pub(crate) async fn delta_store_over_with_manager(
     let (ns_sync_tx, ns_sync_rx) = mpsc::channel(1);
     let (ns_join_tx, ns_join_rx) = mpsc::channel(1);
     let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(1);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+    let (relay_sealed_join_tx, relay_sealed_join_rx) = mpsc::channel(1);
+    let sync_client = SyncClient::new(
+        ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
+        open_subgroup_join_tx,
+        relay_sealed_join_tx,
+    );
 
     // Handed back to the caller so the senders inside the clients keep live
     // receivers for the duration of the test (see `KeepAlive`).
@@ -86,6 +93,7 @@ pub(crate) async fn delta_store_over_with_manager(
         ns_sync_rx,
         ns_join_rx,
         open_subgroup_join_rx,
+        relay_sealed_join_rx,
     )));
 
     let node_client = NodeClient::new(

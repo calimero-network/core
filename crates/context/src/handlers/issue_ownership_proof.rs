@@ -988,4 +988,66 @@ mod tests {
         .expect_err("short nonce must be rejected");
         assert!(err.to_string().contains("nonce"));
     }
+
+    /// The exact envelope mdma verifies, pinned from this side.
+    ///
+    /// mdma holds the same vector (`tests/test_ownership_proof_contract_vector.py`)
+    /// and runs it through its verifier. The other tests here check that a proof
+    /// verifies against *this* crate's key type, which stays true whatever the key
+    /// renders as; mdma parses the rendering. Changing the payload's fields, their
+    /// order, or an id's spelling breaks HA enable in the cloud, and turns this red.
+    #[test]
+    fn namespace_proof_matches_the_mdma_contract_vector() {
+        const SIGNER_PUBLIC_KEY: &str =
+            "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce";
+        const SIGNED_PAYLOAD: &str = concat!(
+            r#"{"v":1,"audience":"mdma:enable-ha-namespace","#,
+            r#""group_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","#,
+            r#""issuer_identity":"17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce","#,
+            r#""context_id":"","subject":"owner@example.com","#,
+            r#""nonce":"deadbeefcafebabe1122334455667788","#,
+            r#""issued_at_ms":1700000000000,"expires_at_ms":1700000060000}"#,
+        );
+        const SIGNATURE: &str = concat!(
+            "6424b5b3b22d66c44297bcd7dc02d97b14b6111c54c9a25734c7c5883f076ba9",
+            "39ebef31f4652371e36e54f65acff50ac971aa32730486b2019f95b5a83fac00",
+        );
+
+        let store = test_store();
+        let group_id = ContextGroupId::from([0xAA; 32]);
+        let signing_priv = PrivateKey::from([0x33; 32]);
+        let signing_pub = signing_priv.public_key();
+        MembershipRepository::new(&store)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &signing_pub),
+                GroupMemberRole::Admin,
+            )
+            .expect("add admin");
+        NamespaceRepository::new(&store)
+            .replace_identity(&group_id, &signing_pub, signing_priv.as_bytes())
+            .expect("seed node identity");
+
+        let out = build_namespace_ownership_proof(
+            &store,
+            signing_pub,
+            group_id,
+            ProofClaim {
+                audience: "mdma:enable-ha-namespace",
+                subject: "owner@example.com",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
+            NOW_MS + 60_000,
+            NOW_MS,
+        )
+        .expect("namespace proof");
+
+        // What the admin API reports as `signerPublicKey`.
+        assert_eq!(out.signer_public_key.to_string(), SIGNER_PUBLIC_KEY);
+        assert_eq!(
+            std::str::from_utf8(&out.signed_payload).expect("payload is UTF-8"),
+            SIGNED_PAYLOAD
+        );
+        assert_eq!(hex::encode(out.signature), SIGNATURE);
+    }
 }

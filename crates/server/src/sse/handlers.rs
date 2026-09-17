@@ -60,7 +60,8 @@ use super::events::handle_node_events;
 use super::session::{now_secs, SessionState, SessionStateInner};
 use super::state::ServiceState;
 use super::storage::{delete_session, load_session, save_session};
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::caller_account::EventCaller;
 
 /// Sentinel principal for sessions owned by the node owner (non-key auth, e.g.
 /// embedded username/password). All node-owner requests share one principal —
@@ -82,6 +83,17 @@ const UNAUTHENTICATED_PRINCIPAL: &str = "<unauthenticated>";
 ///
 /// - A verified Ed25519 key → that key's string form.
 /// - Non-key auth (`AuthenticatedNodeOwner`) → the shared [`NODE_OWNER_PRINCIPAL`].
+/// - An account-anchored session (`AuthenticatedAccount`, #3930) → that
+///   **account's** string form, which is distinct per account.
+///
+///   This arm closes a hole rather than merely adding a case. Without it such a
+///   session matched none of the arms above and fell through to
+///   [`UNAUTHENTICATED_PRINCIPAL`] — a *constant*. Every account-anchored
+///   session therefore carried the same owner string, so `owner_allows_access`
+///   compared two of them equal and handed one account's session to another.
+///   The sentinel is documented below as fail-closed for owned sessions, and it
+///   is — but only against a caller who does not also carry it. Once #3930 made
+///   more than one such caller possible, it stopped separating tenants.
 /// - Neither, auth **enabled** → [`UNAUTHENTICATED_PRINCIPAL`]: the guard is
 ///   running but injected no principal (bypassed / mounted elsewhere). Fail
 ///   closed rather than silently granting access.
@@ -90,16 +102,42 @@ const UNAUTHENTICATED_PRINCIPAL: &str = "<unauthenticated>";
 fn caller_principal(
     auth_key: Option<&AuthenticatedKey>,
     auth_node_owner: Option<&AuthenticatedNodeOwner>,
+    auth_account: Option<&AuthenticatedAccount>,
     auth_enabled: bool,
 ) -> Option<String> {
     if let Some(AuthenticatedKey(pk)) = auth_key {
         Some(pk.to_string())
     } else if auth_node_owner.is_some() {
         Some(NODE_OWNER_PRINCIPAL.to_owned())
+    } else if let Some(AuthenticatedAccount(account)) = auth_account {
+        Some(account.to_string())
     } else if auth_enabled {
         Some(UNAUTHENTICATED_PRINCIPAL.to_owned())
     } else {
         None
+    }
+}
+
+/// Resolve the identity a session's subscriptions are AUTHORIZED against, from
+/// the same injected extensions [`caller_principal`] reads.
+///
+/// Distinct from that function and not a refactor of it: a principal is an
+/// opaque string for comparing one caller against another (session ownership),
+/// while this is an identity the membership rows can be queried by. The node
+/// owner has a principal but no [`EventCaller`] — it is not a member of
+/// anything, it bypasses the gate — which is why the two cannot be one call.
+///
+/// A key wins over an account when both are present, matching the subscribe
+/// path's own precedence so the gate and the prune authorize as the same
+/// caller.
+fn event_caller(
+    auth_key: Option<&AuthenticatedKey>,
+    auth_account: Option<&AuthenticatedAccount>,
+) -> Option<EventCaller> {
+    match (auth_key, auth_account) {
+        (Some(AuthenticatedKey(pk)), _) => Some(EventCaller::Key(*pk)),
+        (None, Some(AuthenticatedAccount(account))) => Some(EventCaller::Account(*account)),
+        (None, None) => None,
     }
 }
 
@@ -189,11 +227,13 @@ pub async fn handle_subscription(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
     let caller = caller_principal(
         auth_key.as_deref(),
         auth_node_owner.as_deref(),
+        auth_account.as_deref(),
         state.auth_enabled,
     );
     let session_id = match request.id.parse::<ConnectionId>() {
@@ -247,17 +287,21 @@ pub async fn handle_subscription(
                 // carry state, so a non-member must not receive them. Unauthorized
                 // ids are dropped and the response reflects only what was subscribed.
                 let node_owner = auth_node_owner.is_some();
+                // Who this subscribe authorizes as. A client key resolves to an
+                // account through the binding rows; an account-anchored session
+                // already is one. Built once and used for both the context and
+                // the group gate, so the two cannot disagree about who is asking.
+                let event_caller = event_caller(auth_key.as_deref(), auth_account.as_deref());
                 let subscribed: Vec<_> = ctxs
                     .context_ids
                     .iter()
                     .copied()
                     .filter(|ctx| {
-                        let caller = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                         let authorized = crate::ws::caller_may_observe_context(
                             &state.ctx_client,
                             state.auth_enabled,
                             node_owner,
-                            caller,
+                            event_caller.as_ref(),
                             ctx,
                         );
                         if !authorized {
@@ -272,12 +316,11 @@ pub async fn handle_subscription(
                 // Subscribe-time only, like may_observe_context. Admin authority
                 // is resolved in the same pass, since admin-only payloads ride
                 // the same subscription.
-                let caller_key = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                 let groups = crate::ws::authorize_group_subscriptions(
                     &state.ctx_client,
                     state.auth_enabled,
                     node_owner,
-                    caller_key,
+                    event_caller.as_ref(),
                     ctxs.group_ids.iter().copied(),
                 );
                 for group_id in &groups.denied {
@@ -293,6 +336,25 @@ pub async fn handle_subscription(
                     groups.apply(
                         &mut inner.group_subscriptions,
                         &mut inner.admin_group_subscriptions,
+                    );
+                    // Re-stamp the identity these subscriptions were authorized
+                    // as, so a later removal re-authorizes against the caller
+                    // that actually asked for them rather than whoever last
+                    // connected.
+                    inner.caller = event_caller;
+                    inner.node_owner = node_owner;
+                    // Vouch for what was just granted. Until a membership event
+                    // names one of the groups these subscriptions depend on,
+                    // the event task will not ask the store about this session
+                    // again.
+                    let (subscriptions, group_subscriptions) = (
+                        inner.subscriptions.clone(),
+                        inner.group_subscriptions.clone(),
+                    );
+                    inner.grants.vouch(
+                        state.ctx_client.datastore(),
+                        &subscriptions,
+                        &group_subscriptions,
                     );
                     inner.touch();
                     inner.to_persisted()
@@ -459,8 +521,22 @@ pub async fn sse_handler(
     let caller = caller_principal(
         request.extensions().get::<AuthenticatedKey>(),
         request.extensions().get::<AuthenticatedNodeOwner>(),
+        request.extensions().get::<AuthenticatedAccount>(),
         state.auth_enabled,
     );
+    // The identity this connection's subscriptions will be re-authorized
+    // against when a membership removal lands. Resolved here, from THIS
+    // request's proven auth, because the session record deliberately does not
+    // persist it (see `SessionStateInner::caller`) — a resumed session would
+    // otherwise re-authorize against an identity nobody re-proved.
+    let connection_caller = event_caller(
+        request.extensions().get::<AuthenticatedKey>(),
+        request.extensions().get::<AuthenticatedAccount>(),
+    );
+    let connection_node_owner = request
+        .extensions()
+        .get::<AuthenticatedNodeOwner>()
+        .is_some();
 
     let (commands_sender, commands_receiver) =
         mpsc::channel::<Command>(COMMAND_CHANNEL_BUFFER_SIZE);
@@ -634,6 +710,15 @@ pub async fn sse_handler(
     // `SessionState::connection`) at the same time, so the subscribe POST,
     // which is a different request entirely, can seed THIS connection with the
     // context's current presence without broadcasting it to every other client.
+    // Stamp the caller before the event task starts: the task prunes on a
+    // membership removal, and a prune that ran against an unstamped session
+    // would read it as "no caller" and revoke everything.
+    {
+        let mut inner = session_state.inner.write().await;
+        inner.caller = connection_caller;
+        inner.node_owner = connection_node_owner;
+    }
+
     let connection_sink = commands_sender.downgrade();
     let event_task = tokio::spawn(handle_node_events(
         session_id,
@@ -681,12 +766,14 @@ pub async fn get_session_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
     Path(session_id): Path<ConnectionId>,
 ) -> impl IntoResponse {
     debug!(%session_id, "GET session info request");
     let caller = caller_principal(
         auth_key.as_deref(),
         auth_node_owner.as_deref(),
+        auth_account.as_deref(),
         state.auth_enabled,
     );
 
@@ -830,39 +917,92 @@ mod tests {
         PublicKey::from([b; 32])
     }
 
+    fn account(b: u8) -> calimero_account::AccountId {
+        calimero_account::AccountId::from([b; 32])
+    }
+
     #[test]
     fn caller_principal_prefers_key_then_node_owner_then_none() {
         // A verified key wins and maps to its string form.
         let key = AuthenticatedKey(pk(1));
         assert_eq!(
-            caller_principal(Some(&key), None, true),
+            caller_principal(Some(&key), None, None, true),
             Some(pk(1).to_string()),
         );
         // A key takes precedence even if the node-owner marker is also present.
         assert_eq!(
-            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner), true),
+            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner), None, true),
             Some(pk(1).to_string()),
         );
         // Non-key auth collapses to the shared node-owner principal.
         assert_eq!(
-            caller_principal(None, Some(&AuthenticatedNodeOwner), true),
+            caller_principal(None, Some(&AuthenticatedNodeOwner), None, true),
             Some(NODE_OWNER_PRINCIPAL.to_owned()),
         );
         // Auth enabled but no principal → fail-closed sentinel (never matches a
         // real owner).
         assert_eq!(
-            caller_principal(None, None, true),
+            caller_principal(None, None, None, true),
             Some(UNAUTHENTICATED_PRINCIPAL.to_owned()),
         );
         // Auth disabled: no principal to bind to (single-tenant allowance).
-        assert_eq!(caller_principal(None, None, false), None);
+        assert_eq!(caller_principal(None, None, None, false), None);
+    }
+
+    #[test]
+    fn each_account_session_is_its_own_principal() {
+        // The arm this covers is why the sentinel stopped separating tenants.
+        //
+        // An `account_proof` session carries neither a key nor the node-owner
+        // marker, so before #3942 it fell through to UNAUTHENTICATED_PRINCIPAL
+        // — a constant. Two accounts then produced the SAME owner string, and
+        // `owner_allows_access` compares owner to caller for equality, so one
+        // account could reach the other's session.
+        let a = AuthenticatedAccount(account(1));
+        let b = AuthenticatedAccount(account(2));
+
+        let principal_a = caller_principal(None, None, Some(&a), true);
+        let principal_b = caller_principal(None, None, Some(&b), true);
+
+        assert_eq!(principal_a, Some(account(1).to_string()));
+        assert_ne!(
+            principal_a, principal_b,
+            "two accounts must not share one session-owner principal",
+        );
+        assert_ne!(
+            principal_a,
+            Some(UNAUTHENTICATED_PRINCIPAL.to_owned()),
+            "an authenticated account must not land on the fail-closed sentinel",
+        );
+
+        // The property that matters, stated as the access decision rather than
+        // as string inequality: B cannot reach a session A owns, and A can.
+        assert!(!owner_allows_access(&principal_a, &principal_b));
+        assert!(owner_allows_access(&principal_a, &principal_a));
+    }
+
+    #[test]
+    fn a_key_outranks_an_account_and_the_node_owner_outranks_both() {
+        // Precedence is asserted rather than assumed because the arms are an
+        // if/else chain: a caller presenting two extensions must resolve the
+        // same way every time, or session ownership depends on header order.
+        let key = AuthenticatedKey(pk(1));
+        let acct = AuthenticatedAccount(account(1));
+        assert_eq!(
+            caller_principal(Some(&key), None, Some(&acct), true),
+            Some(pk(1).to_string()),
+        );
+        assert_eq!(
+            caller_principal(None, Some(&AuthenticatedNodeOwner), Some(&acct), true),
+            Some(NODE_OWNER_PRINCIPAL.to_owned()),
+        );
     }
 
     #[test]
     fn auth_enabled_request_without_principal_is_denied_on_owned_session() {
         // The fail-closed sentinel must not be able to read an owned session.
         let owner = Some(pk(7).to_string());
-        let unauth = caller_principal(None, None, true);
+        let unauth = caller_principal(None, None, None, true);
         assert_eq!(unauth, Some(UNAUTHENTICATED_PRINCIPAL.to_owned()));
         assert!(
             !owner_allows_access(&owner, &unauth),
@@ -932,6 +1072,289 @@ mod tests {
 
         (
             Arc::new(ServiceState::new(node_client, ctx_client, store, false)),
+            blob_dir,
+        )
+    }
+
+    /// #3942's third criterion on the SSE side: "An established stream stops
+    /// delivering once the account loses membership."
+    ///
+    /// SSE is the transport the issue is actually about, and the one where the
+    /// leak outlived the socket: its session persists its subscriptions, so
+    /// before this a removed member's revoked subscription came back on the
+    /// next reconnect even if the connection had been dropped. Hence the two
+    /// assertions at the end — the in-memory set AND the persisted record.
+    #[actix::test]
+    async fn removal_stops_an_established_sse_stream() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::events::{
+            GroupMembershipEvent, MembershipChange, MembershipChangePayload, NodeEvent,
+        };
+
+        let member_pk = PublicKey::from([0x7Au8; 32]);
+        let (state, events, _blob_dir) = sse_state_authed().await;
+        let store = &state.store;
+        let (group, _subgroup, member) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+
+        // A session subscribed to the group, stamped with the caller that was
+        // authorized for it — exactly what `sse_handler` and the subscribe POST
+        // leave behind.
+        let (session, _tx, _rx) = session_with_connection();
+        let session_id: ConnectionId = 7;
+        {
+            let mut inner = session.inner.write().await;
+            inner.caller = Some(EventCaller::Key(member_pk));
+            inner.node_owner = false;
+            let _ = inner.group_subscriptions.insert(group);
+        }
+        drop(
+            state
+                .sessions
+                .write()
+                .await
+                .insert(session_id, session.clone()),
+        );
+
+        // `_rx` above keeps the session's BOUND connection alive (its sink is
+        // weak, so dropping the receiver would kill it); this second channel is
+        // the one the event task itself writes to, and the one delivery is
+        // asserted on.
+        let (task_tx, mut rx) = mpsc::channel::<Command>(16);
+        let task = tokio::spawn(crate::sse::events::handle_node_events(
+            session_id,
+            Arc::clone(&state),
+            session.clone(),
+            task_tx,
+        ));
+
+        // The task subscribes to the broadcast on its first poll; sending
+        // before that fails outright (a broadcast send with no receivers is an
+        // error, not a drop).
+        let listening = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while events.receiver_count() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the session's event task should be listening");
+
+        let joined = |group| {
+            NodeEvent::GroupMembership(GroupMembershipEvent {
+                group_id: group,
+                payload: MembershipChangePayload::MemberJoined(MembershipChange {
+                    member: calimero_primitives::identity::AccountId::from([0x11u8; 32]),
+                    role: None,
+                }),
+            })
+        };
+
+        // The stream is live.
+        events.send(joined(group)).unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a subscribed member should receive its group's events")
+            .expect("channel open");
+        assert!(
+            matches!(first, Command::Send(_)),
+            "precondition: the established stream delivers",
+        );
+
+        // Membership goes away, as an applied governance removal would leave it.
+        MembershipRepository::new(store)
+            .remove_member(&ns_gid, &member)
+            .unwrap();
+
+        // The removal frame drives the prune and is itself delivered.
+        events
+            .send(NodeEvent::GroupMembership(GroupMembershipEvent {
+                group_id: group,
+                payload: MembershipChangePayload::MemberRemoved(MembershipChange {
+                    member,
+                    role: None,
+                }),
+            }))
+            .unwrap();
+        let removal = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the removal itself must still reach the member it names")
+            .expect("channel open");
+        assert!(
+            matches!(removal, Command::Send(_)),
+            "the member must be told why the stream goes quiet",
+        );
+
+        // Everything after it is gone.
+        events.send(joined(group)).unwrap();
+        let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
+        assert!(
+            leaked.is_err(),
+            "a removed member must receive nothing further on the group: {leaked:?}",
+        );
+
+        // Dropped from the live session...
+        assert!(
+            session.inner.read().await.group_subscriptions.is_empty(),
+            "the revoked group subscription must be dropped, not just filtered",
+        );
+        // ...and from the PERSISTED record, so a reconnect cannot restore it.
+        let persisted = crate::sse::storage::load_session(&state.store, session_id)
+            .expect("session record readable")
+            .expect("session was persisted");
+        assert!(
+            persisted.group_subscriptions.is_empty(),
+            "a reconnect must not restore a revoked subscription",
+        );
+
+        task.abort();
+    }
+
+    /// A session resumed from a persisted record is re-derived BEFORE it is
+    /// served — with no membership event arriving to prompt it.
+    ///
+    /// This is what makes persisting a session safe. The record restores the
+    /// subscriptions but carries no grant and no caller, so the resumed session
+    /// is stale by construction and `handle_node_events` validates it against
+    /// live membership on the way in, using the caller the resuming request
+    /// proved. Without that, a session persisted while its owner was a member
+    /// comes back subscribed after the removal and serves the group's events
+    /// from its first poll.
+    ///
+    /// Note what is deliberately absent: nothing is published on the event
+    /// channel before the assertion. The revocation here is the resume's own
+    /// doing.
+    #[actix::test]
+    async fn a_resumed_session_is_re_derived_before_it_is_served() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let member_pk = PublicKey::from([0x6Bu8; 32]);
+        let (state, _events, _blob_dir) = sse_state_authed().await;
+        let store = &state.store;
+        let (group, _subgroup, member) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                store,
+                member_pk,
+                GroupMemberRole::Member,
+            );
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+
+        // Persist a session subscribed to the group, as one left by a client
+        // that subscribed while it was still a member.
+        let session_id: ConnectionId = 11;
+        let (session, _tx, _rx) = session_with_connection();
+        {
+            let mut inner = session.inner.write().await;
+            let _ = inner.group_subscriptions.insert(group);
+        }
+        let persisted = session.inner.read().await.to_persisted();
+        let mut save_store = state.store.clone();
+        crate::sse::storage::save_session(&mut save_store, session_id, &persisted)
+            .expect("session persists");
+
+        // Membership goes away while the session is disconnected.
+        MembershipRepository::new(store)
+            .remove_member(&ns_gid, &member)
+            .unwrap();
+
+        // The client reconnects: the record is restored, and the resuming
+        // request stamps the caller it proved.
+        let restored = crate::sse::storage::load_session(&state.store, session_id)
+            .expect("record readable")
+            .expect("record present");
+        assert!(
+            restored.group_subscriptions.contains(&group),
+            "precondition: the persisted record still carries the subscription",
+        );
+        let resumed = SessionState::new(SessionStateInner::from_persisted(restored));
+        {
+            let mut inner = resumed.inner.write().await;
+            inner.caller = Some(EventCaller::Key(member_pk));
+            inner.node_owner = false;
+        }
+        assert!(
+            resumed.inner.read().await.grants.is_stale(),
+            "a resumed session must start un-vouched",
+        );
+        drop(
+            state
+                .sessions
+                .write()
+                .await
+                .insert(session_id, resumed.clone()),
+        );
+
+        let (task_tx, _task_rx) = mpsc::channel::<Command>(16);
+        let task = tokio::spawn(crate::sse::events::handle_node_events(
+            session_id,
+            Arc::clone(&state),
+            resumed.clone(),
+            task_tx,
+        ));
+
+        // Give the task its first poll. No event is published — the resume
+        // itself is what must revoke.
+        let revoked = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if resumed.inner.read().await.group_subscriptions.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            revoked.is_ok(),
+            "the resume must re-derive and drop the subscription without waiting for an event",
+        );
+
+        // ...and the reduced set is written back, so a second reconnect cannot
+        // restore it either.
+        let after = crate::sse::storage::load_session(&state.store, session_id)
+            .expect("record readable")
+            .expect("record present");
+        assert!(
+            after.group_subscriptions.is_empty(),
+            "the revocation must be persisted, not only applied in memory",
+        );
+
+        task.abort();
+    }
+
+    /// As [`sse_state_with`], but with the auth guard ACTIVE and the event
+    /// sender handed back.
+    ///
+    /// Both differences are what the revocation test needs and neither is
+    /// incidental: with auth disabled every observation gate returns true, so
+    /// nothing is ever revoked and the test would pass against no
+    /// implementation at all; and driving a prune means publishing a real
+    /// `MemberRemoved` onto the channel `handle_node_events` listens to.
+    async fn sse_state_authed() -> (
+        Arc<ServiceState>,
+        tokio::sync::broadcast::Sender<calimero_primitives::events::NodeEvent>,
+        TempDir,
+    ) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender.clone(),
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+
+        (
+            Arc::new(ServiceState::new(node_client, ctx_client, store, true)),
+            event_sender,
             blob_dir,
         )
     }
@@ -1067,6 +1490,7 @@ mod tests {
         let subscribe = || {
             handle_subscription(
                 Extension(Arc::clone(&state)),
+                None,
                 None,
                 None,
                 Json(

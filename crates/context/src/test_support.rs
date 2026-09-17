@@ -94,8 +94,8 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
 }
 
 /// A second device of this node's account, certified by its root exactly as
-/// `pair_device_complete` would, and scoped to `applications` (empty is every
-/// application).
+/// `pair_device_complete` would, recorded in the account namespace's registry
+/// and scoped to `applications` (empty is every application).
 ///
 /// The id is `seed` repeated rather than minted, so the store's key-ordered scan
 /// visits these devices in a known order.
@@ -128,10 +128,179 @@ pub fn certify_device(
         )
         .expect("the account root signs its own device cert"),
     };
-    devices
-        .remember_device_cert(&proof, applications)
-        .expect("remember the device");
+    // The registry lives in the account namespace, which a node holding a root
+    // names from that root before anything has created it.
+    let namespace = devices
+        .account_namespace()
+        .expect("read the account namespace")
+        .expect("a store with an account root names one");
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
+        .record(&proof, applications, 0)
+        .expect("record the device in the account namespace");
     device
+}
+
+/// Wrap a root op the way its publisher does: sealed under the namespace key
+/// when [`calimero_governance_types::root_op_is_sealable`] says the variant
+/// travels that way, cleartext when it does not.
+///
+/// Apply refuses a sealable root op that arrives in the clear, so a test that
+/// hand-builds `NamespaceOp::Root(..)` for one of those variants is constructing
+/// something no peer accepts — and it fails for that reason rather than the one
+/// the test is about.
+///
+/// Mints the namespace key when the fixture has not. Production keys a namespace
+/// at creation (its root is a group, and `create_group` keys whatever group it
+/// creates), so a fixture without one is under-built rather than exercising a
+/// real state.
+///
+/// # Panics
+///
+/// Panics if the keyring cannot be read or written, or if the op cannot be
+/// sealed — in a test that means the fixture is wrong.
+#[must_use]
+pub fn published_root(
+    store: &Store,
+    namespace: &ContextGroupId,
+    op: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    let keyring = calimero_governance_store::GroupKeyring::new(store, *namespace);
+    if keyring
+        .load_current_key()
+        .expect("read the namespace keyring")
+        .is_none()
+    {
+        let _ = keyring
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omitted");
+    }
+    calimero_governance_store::seal_root_op_for_publish(store, namespace.to_bytes().into(), op)
+        .expect("seal a root op for a test")
+}
+
+/// The wire form production publishes for a JOIN, given the group its
+/// invitation targets, **as a joiner that holds the covering key publishes it**.
+///
+/// [`published_root`] is not the helper for this: `seal_root_op_for_publish`
+/// answers `Root(op)` for `MemberJoined` / `MemberJoinedAt`, because
+/// `root_op_is_sealable` says those two are not sealable under the NAMESPACE
+/// key — a namespace-root joiner holds no key, and its key arrives only in
+/// answer to the join it is publishing.
+///
+/// That cleartext answer is what a RECEIVER accepts, and it is the right fixture
+/// for an apply-path test. It is no longer what an unkeyed joiner puts on the
+/// wire: since #3904 such a joiner hands its signed op to the admitter, which
+/// publishes it as `NamespaceOp::RootRelaySealed`. A test about that route wants
+/// `relay_seal_for_test`-shaped state, not this.
+///
+/// A **subgroup**-targeted join is different: its bundle delivers that group's
+/// key, `join_group` stores it before publishing, and the apply refuses a
+/// cleartext one (#3858). So a fixture that publishes it in the clear is
+/// under-building the state rather than exercising a real one, and its test
+/// fails on the fixture instead of on its subject.
+///
+/// The covering key is minted when the store has none, which is what the join
+/// bundle would have delivered.
+///
+/// # Panics
+///
+/// Panics if the keyring cannot be read or written, or if the op cannot be
+/// sealed — in a test that means the fixture is wrong.
+#[must_use]
+pub fn published_join(
+    store: &Store,
+    namespace: &ContextGroupId,
+    op: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let target = match &op {
+        RootOp::MemberJoined {
+            signed_invitation, ..
+        }
+        | RootOp::MemberJoinedAt {
+            signed_invitation, ..
+        } => signed_invitation.invitation.group_id,
+        // Not a join; nothing here applies.
+        _ => return NamespaceOp::Root(op),
+    };
+    if target.to_bytes() == namespace.to_bytes() {
+        return NamespaceOp::Root(op);
+    }
+
+    let covering = calimero_governance_store::key_covering_group(store, &target)
+        .expect("resolve the covering group");
+    let keyring = calimero_governance_store::GroupKeyring::new(store, covering);
+    if keyring
+        .load_current_key()
+        .expect("read the covering keyring")
+        .is_none()
+    {
+        let _ = keyring
+            .store_key(&[0x5Bu8; 32])
+            .expect("mint the key the join bundle would have delivered");
+    }
+    calimero_governance_store::seal_root_op_for_group_if_keyed(store, target, &op)
+        .expect("seal a subgroup-targeted join for a test")
+        .expect("the covering key was just ensured, so the seal must produce a sealed op")
+}
+
+/// The [`RootOp`] a signed namespace op carries, opened if it arrived sealed.
+///
+/// The projection folds the OPENED root — `scope_projection` decrypts a
+/// `NamespaceOp::RootSealed` and hands the inner op to
+/// `op_from_namespace_op_with_binding` — so a test that feeds the sealed
+/// envelope alone folds a `Noop` and proves nothing about the op it built.
+///
+/// `None` for a cleartext root op (which needs no opening) and for a group op.
+///
+/// # Panics
+///
+/// Panics if the keyring cannot be read or the sealed op will not open, which in
+/// a test means the fixture sealed under a key it then did not keep.
+#[must_use]
+pub fn opened_root(
+    store: &Store,
+    namespace: &ContextGroupId,
+    signed: &calimero_context_client::local_governance::SignedNamespaceOp,
+) -> Option<calimero_context_client::local_governance::RootOp> {
+    // Both sealed shapes, each resolved in the keyring that can open it. A
+    // subgroup-sealed join resolves in the group the envelope names, not the
+    // namespace's — reading it there would miss the key and panic on a fixture
+    // that is in fact correct.
+    let (keyring_group, key_id, encrypted) = match &signed.op {
+        calimero_context_client::local_governance::NamespaceOp::RootSealed {
+            key_id,
+            encrypted,
+        } => (*namespace, key_id, encrypted),
+        calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup {
+            group_id,
+            key_id,
+            encrypted,
+        } => (*group_id, key_id, encrypted),
+        _ => return None,
+    };
+    let key = calimero_governance_store::GroupKeyring::new(store, keyring_group)
+        .load_key_by_id(key_id.as_bytes())
+        .expect("read the keyring the envelope names")
+        .expect("the fixture kept the key it sealed under");
+    Some(
+        calimero_governance_store::GroupKeyring::decrypt_root_op(&key, encrypted)
+            .expect("open a root op this fixture sealed"),
+    )
+}
+
+/// Poll `read` until it answers true, bounded: a gain with no target yet is
+/// announced off the caller, so reading straight after is a race.
+#[cfg(test)]
+pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if read() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
 }
 
 /// A live [`ContextManager`](crate::ContextManager) over a caller-supplied
@@ -148,6 +317,7 @@ pub(crate) mod actor {
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_node_primitives::client::NodeClient;
     use calimero_node_primitives::test_fixtures::node_client_over;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -156,12 +326,12 @@ pub(crate) mod actor {
 
     use crate::ContextManager;
 
-    /// Answers the three commands the pairing and governance paths issue, and
-    /// records the topics. Any other command is dropped, which fails the
-    /// caller's `rx.await` rather than hanging it: add the variant when a path
-    /// under test starts issuing one.
+    /// Answers the four commands the pairing and governance paths issue, and
+    /// records the topics. Any other is dropped, which panics its caller.
     struct StubNetwork {
         subscribed: UnboundedSender<String>,
+        unsubscribed: UnboundedSender<String>,
+        broadcast: UnboundedSender<String>,
     }
 
     impl Actor for StubNetwork {
@@ -177,10 +347,16 @@ pub(crate) mod actor {
                     let _ignored = self.subscribed.send(request.0.to_string());
                     let _ignored = outcome.send(Ok(request.0));
                 }
-                NetworkMessage::MeshPeerCount { outcome, .. } => {
+                NetworkMessage::Unsubscribe { request, outcome } => {
+                    let _ignored = self.unsubscribed.send(request.0.to_string());
+                    let _ignored = outcome.send(Ok(request.0));
+                }
+                NetworkMessage::MeshPeerCount { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.0.to_string());
                     let _ignored = outcome.send(0);
                 }
-                NetworkMessage::Publish { outcome, .. } => {
+                NetworkMessage::Publish { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
                 _ => {}
@@ -188,11 +364,16 @@ pub(crate) mod actor {
         }
     }
 
-    /// A started `ContextManager` and the store it reads. Seed the store, send
-    /// the request, then assert on the rows the handler wrote.
+    /// A started `ContextManager`, and a client routed to it for the paths that
+    /// are plain functions. Seed the store, drive the path, then assert on the
+    /// rows it wrote.
     pub(crate) struct Harness {
         pub manager: Addr<ContextManager>,
+        pub node_client: NodeClient,
+        pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
+        unsubscribed: UnboundedReceiver<String>,
+        broadcast: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
@@ -202,12 +383,29 @@ pub(crate) mod actor {
         /// Every topic subscribed so far, in the order the handler asked for
         /// them.
         pub(crate) fn subscribed(&mut self) -> Vec<String> {
-            let mut topics = Vec::new();
-            while let Ok(topic) = self.subscribed.try_recv() {
-                topics.push(topic);
-            }
-            topics
+            drain(&mut self.subscribed)
         }
+
+        /// Every topic unsubscribed from so far. Drains, so a caller polling
+        /// for one has to accumulate what it takes.
+        pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
+            drain(&mut self.unsubscribed)
+        }
+
+        /// Every topic a governance broadcast reached. The mesh-count probe counts,
+        /// so an op that only got as far as trying still shows up.
+        pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
+            drain(&mut self.broadcast)
+        }
+    }
+
+    /// Everything a recorder holds, in the order it arrived.
+    fn drain(rx: &mut UnboundedReceiver<String>) -> Vec<String> {
+        let mut topics = Vec::new();
+        while let Ok(topic) = rx.try_recv() {
+            topics.push(topic);
+        }
+        topics
     }
 
     /// Start a manager over `store`, with no peer answering join requests.
@@ -226,12 +424,16 @@ pub(crate) mod actor {
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
+        let (unsubscribed_tx, unsubscribed) = unbounded_channel();
+        let (broadcast_tx, broadcast) = unbounded_channel();
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
         let stub = StubNetwork::create(move |ctx| {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
+                unsubscribed: unsubscribed_tx,
+                broadcast: broadcast_tx,
             }
         });
 
@@ -253,7 +455,7 @@ pub(crate) mod actor {
         let context = LazyRecipient::new();
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
-        let manager = ContextManager::new(store, node_client, context_client, None);
+        let manager = ContextManager::new(store, node_client.clone(), context_client.clone(), None);
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager
@@ -261,7 +463,11 @@ pub(crate) mod actor {
 
         Harness {
             manager,
+            node_client,
+            context_client,
             subscribed,
+            unsubscribed,
+            broadcast,
             _dirs: (data_dir, blob_dir),
             _network: stub,
         }

@@ -39,6 +39,13 @@ pub struct BundleMetadata {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    /// Primary storefront category, from the registry's closed vocabulary
+    /// (`cargo_mero::meta::CATEGORIES`). Optional on the wire so bundles
+    /// published before it existed still deserialize, and so an older node
+    /// reading a newer bundle is unaffected — this struct has no
+    /// `deny_unknown_fields`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 /// Declarative interfaces (intents) implemented or required by the application
@@ -78,6 +85,47 @@ pub struct BundleLinks {
 pub struct BundleHandlers {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+}
+
+/// How the bundle's `calimero-sdk` dependency resolved at build time — i.e.
+/// which node release the wasm was actually compiled against.
+///
+/// Distinct from `min_runtime_version`, which is a hand-declared floor ("refuse
+/// to run below this") and defaults to `0.1.0` for anyone who never sets it.
+/// This block is derived, not declared: `cargo mero bundle` reads it off the
+/// resolve graph, so it cannot drift from the bytecode it ships beside.
+///
+/// A sibling of `metadata`, like `handlers`, and for the same reason: stamping
+/// it must not move any app's raw-wasm application id
+/// (`hash(bytecode, size, source, metadata)`).
+///
+/// Every field is optional on the wire, and the struct has no
+/// `deny_unknown_fields`: bundles published before this existed carry no
+/// `buildInfo` at all, and an older node reading a newer bundle is unaffected.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleBuildInfo {
+    /// Where the dependency resolved from: `"git"`, `"registry"`, or `"path"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_source: Option<String>,
+
+    /// The node version the wasm was built against, when the resolution names
+    /// one: the git `tag=`, or the crate version for a registry dependency.
+    ///
+    /// ⚠️ NEVER the git dependency's own crate version. Core's in-git
+    /// `[workspace.package] version` is the literal `0.0.0` placeholder that
+    /// cargo-workspaces rewrites only when publishing, so every git-resolved
+    /// `calimero-sdk` reports `0.0.0` — a tagged checkout of rc.34 included.
+    /// A branch or rev dependency names no version at all; both leave this
+    /// `None` rather than publish a number that is not a release. `sdk_rev`
+    /// still identifies the build exactly in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_version: Option<String>,
+
+    /// The exact git commit the dependency resolved to. `None` for a registry
+    /// or path dependency, which have no commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_rev: Option<String>,
 }
 
 /// Cryptographic signature of the manifest
@@ -133,6 +181,11 @@ pub struct BundleManifest {
     /// participate in the raw-wasm application-id derivation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handlers: Option<BundleHandlers>,
+
+    /// Build provenance: which `calimero-sdk` the wasm was compiled against.
+    /// Sibling of `metadata`, so it stays out of application-id derivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_info: Option<BundleBuildInfo>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<BundleInterfaces>,
@@ -220,6 +273,7 @@ impl BundleManifest {
             min_runtime_version: _,
             metadata: _,
             handlers: _,
+            build_info: _,
             interfaces: _,
             links: _,
             signature: _,
@@ -392,6 +446,69 @@ mod tests {
         assert_eq!(
             meta_with, meta_without,
             "handlers must not change the display metadata bytes"
+        );
+    }
+
+    /// `buildInfo` is a sibling of `metadata` for the same reason `handlers`
+    /// is: every published app would change identity if it were nested inside.
+    #[test]
+    fn build_info_does_not_affect_metadata() {
+        let with_build_info: BundleManifest = serde_json::from_str(&manifest_json(
+            r#""buildInfo": { "sdkSource": "git", "sdkVersion": "0.11.0-rc.34" },"#,
+        ))
+        .unwrap();
+        let without: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+
+        assert_eq!(
+            with_build_info.to_metadata_json().unwrap(),
+            without.to_metadata_json().unwrap(),
+            "buildInfo must not change the display metadata bytes"
+        );
+    }
+
+    #[test]
+    fn deserializes_build_info() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(
+            r#""buildInfo": {
+                "sdkSource": "git",
+                "sdkVersion": "0.11.0-rc.34",
+                "sdkRev": "6c6fb4ab4fe02500ab1262c643f52dcc6d6278bf"
+            },"#,
+        ))
+        .expect("manifest with buildInfo should deserialize");
+
+        let build_info = manifest.build_info.expect("buildInfo should be present");
+        assert_eq!(build_info.sdk_source.as_deref(), Some("git"));
+        assert_eq!(build_info.sdk_version.as_deref(), Some("0.11.0-rc.34"));
+        assert_eq!(
+            build_info.sdk_rev.as_deref(),
+            Some("6c6fb4ab4fe02500ab1262c643f52dcc6d6278bf")
+        );
+    }
+
+    /// Every bundle published before `buildInfo` existed has none. Reading one
+    /// must stay a plain `None`, not an error — this is the whole reason the
+    /// field is optional.
+    #[test]
+    fn build_info_defaults_to_none_when_absent() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(""))
+            .expect("manifest without buildInfo should deserialize");
+
+        assert!(manifest.build_info.is_none());
+    }
+
+    /// A manifest that carries no `buildInfo` must serialize without the key
+    /// at all: an emitted `"buildInfo": null` would change the canonical bytes
+    /// every existing signature was computed over.
+    #[test]
+    fn absent_build_info_is_not_serialized() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+
+        let json = serde_json::to_string(&manifest).expect("serialize");
+
+        assert!(
+            !json.contains("buildInfo"),
+            "absent buildInfo must not appear in the serialized manifest: {json}"
         );
     }
 

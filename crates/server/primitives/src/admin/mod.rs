@@ -316,10 +316,39 @@ impl GetContextStorageResponse {
     }
 }
 
+/// Whose identities a `GetContextIdentitiesResponse` is listing.
+///
+/// `identities-owned` answers a different question depending on who asks — the
+/// node's own signing identities for a node-owner session, the calling
+/// account's certified devices for a delegated one. Carried explicitly so a
+/// response says which reading it is rather than leaving the caller to infer it
+/// from its own token.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentitiesOf {
+    /// Every identity that is a member of the context — the `/identities`
+    /// roster, the same for every caller.
+    Members,
+    /// The identities this NODE holds a signing key for.
+    Node,
+    /// The calling account's certified, unrevoked devices in the group owning
+    /// this context. These are keys the CLIENT holds, not the node.
+    Caller,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextIdentitiesResponseData {
     pub identities: Vec<PublicKey>,
+    /// Which reading of the request this list is.
+    ///
+    /// `Option` for reading a response from a node predating the field, which
+    /// said nothing about it; this server always sets it. Defaulting it to a
+    /// concrete variant would be worse than absent — the honest answer for an
+    /// older node is "it did not say", not a guess that could be wrong in the
+    /// direction that matters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identities_of: Option<IdentitiesOf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -329,9 +358,12 @@ pub struct GetContextIdentitiesResponse {
 }
 
 impl GetContextIdentitiesResponse {
-    pub const fn new(identities: Vec<PublicKey>) -> Self {
+    pub const fn new(identities: Vec<PublicKey>, identities_of: IdentitiesOf) -> Self {
         Self {
-            data: ContextIdentitiesResponseData { identities },
+            data: ContextIdentitiesResponseData {
+                identities,
+                identities_of: Some(identities_of),
+            },
         }
     }
 }
@@ -1319,6 +1351,46 @@ impl Validate for PerformIntentApiRequest {
     }
 }
 
+/// An authenticated account's request to read a context it is a member of.
+///
+/// Deliberately not a `PerformIntentApiRequest` with the warrant fields made
+/// optional. A warrant is what proves to peers who never saw this request that
+/// the author consented to an operation; a read has no peer to convince, because
+/// it publishes nothing. Sharing a type would put an optional warrant on a
+/// surface where supplying one means nothing, and a caller reasonably reads an
+/// optional field as "sometimes required" rather than "never used here".
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryContextApiRequest {
+    /// The method to call. Must be declared read-only in the application's ABI;
+    /// one that declares nothing is refused rather than guessed at.
+    pub method: String,
+    /// Its arguments, as the JSON the guest will receive.
+    pub args_json: serde_json::Value,
+}
+
+impl Validate for QueryContextApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.method.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "method" });
+        }
+        errors
+    }
+}
+
+/// What a read returned.
+///
+/// No `rootHash`, unlike the intent response. That field answers "did this
+/// change anything?", and for a read the answer is structurally no — offering it
+/// would invite a caller to watch it for changes that can never come.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryContextApiResponseData {
+    /// The method's own return value.
+    pub returns: Option<serde_json::Value>,
+}
+
 /// Where the accepted intent landed, so a client can wait for it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1350,6 +1422,12 @@ pub struct PerformIntentApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct PerformIntentApiResponse {
     pub data: PerformIntentApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryContextApiResponse {
+    pub data: QueryContextApiResponseData,
 }
 
 /// What a keyholder needs to know before it mints a warrant for this node.
@@ -1532,6 +1610,93 @@ pub struct MemberDevicesApiEntry {
 #[serde(rename_all = "camelCase")]
 pub struct ListMemberDevicesApiResponse {
     pub members: Vec<MemberDevicesApiEntry>,
+}
+
+/// The largest plaintext this route will seal, in bytes before hex-encoding.
+///
+/// What the route exists for is a list of namespace ids — 32 bytes each, plus
+/// framing — so 64 KiB is generous by orders of magnitude. It is here so that a
+/// caller cannot make a node allocate arbitrarily by POSTing a large body, not
+/// to express a protocol limit.
+pub const MAX_SEALABLE_PLAINTEXT_BYTES: usize = 64 * 1024;
+
+/// Seal a payload so that one account's **root key** can open it.
+///
+/// The root, never a device key: a device is exactly what is gone in the case
+/// worth sealing for, and an envelope addressed to one looks correct in every
+/// respect until the moment it is needed. The route resolves the root itself so
+/// a caller cannot get that wrong.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SealToAccountApiRequest {
+    /// Hex-encoded plaintext. Hex rather than base64 to match every other
+    /// bytes-on-the-wire field in this API; payloads here are small enough that
+    /// the 2x is not worth a second encoding for a reader to get wrong.
+    pub plaintext: String,
+}
+
+impl Validate for SealToAccountApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // Sealing nothing produces a valid envelope carrying no information,
+        // which downstream is indistinguishable from a real one. Refuse it here
+        // rather than let a half-configured caller write it.
+        if self.plaintext.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "plaintext" });
+            return errors;
+        }
+        if self.plaintext.len() > MAX_SEALABLE_PLAINTEXT_BYTES * 2 {
+            errors.push(ValidationError::StringTooLong {
+                field: "plaintext",
+                max: MAX_SEALABLE_PLAINTEXT_BYTES * 2,
+                actual: self.plaintext.len(),
+            });
+        }
+        if !self.plaintext.len().is_multiple_of(2) {
+            errors.push(ValidationError::InvalidFormat {
+                field: "plaintext",
+                reason: "hex string has an odd number of characters".to_owned(),
+            });
+        } else if !self.plaintext.chars().all(|c| c.is_ascii_hexdigit()) {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "plaintext",
+                reason: "contains non-hexadecimal characters".to_owned(),
+            });
+        }
+
+        errors
+    }
+}
+
+/// An envelope that only the named account's root key opens.
+///
+/// Confidentiality, **not authorship**: the sender key is ephemeral and
+/// unauthenticated, so a recipient learns that *someone* sealed this to them
+/// and nothing more. Whatever decides an envelope is legitimate belongs in the
+/// service that accepts it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SealedEnvelopeApiData {
+    /// The root-key epoch this was sealed under. An account that rotates its
+    /// root moves to the next epoch, and an envelope sealed under the old one
+    /// still opens with the old root — so a recipient holding several needs to
+    /// know which. Carried rather than assumed to be current.
+    pub account_root_epoch: u32,
+    /// Hex-encoded one-shot sender public key (32 bytes). Useless alone; it is
+    /// what makes the envelope openable by the root without knowing which node
+    /// sealed it.
+    pub ephemeral_public_key: String,
+    /// Hex-encoded AES-256-GCM nonce (12 bytes).
+    pub nonce: String,
+    /// Hex-encoded ciphertext with the 16-byte tag appended.
+    pub ciphertext: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SealToAccountApiResponse {
+    pub data: SealedEnvelopeApiData,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1891,10 +2056,14 @@ pub struct AccountPairInitApiRequest {
     /// carries: private and public are both 32 hex bytes, and the private root
     /// leaves the node only via `merod account export`.
     pub account_root_public_key: String,
-    /// Hex-encoded namespace ids to enroll into (32 bytes each). The caller must
-    /// name them: this node is a member of nothing, so it can neither read the
-    /// account's namespace set off a DAG nor derive it.
+    /// Hex-encoded namespace ids to enroll into (32 bytes each). May be empty
+    /// when `accountNamespace` is set.
+    #[serde(default)]
     pub namespaces: Vec<String>,
+    /// Hex-encoded id of the account namespace, as the holder's identity reports
+    /// it. Recorded and followed like one more namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_namespace: Option<String>,
 }
 
 impl Validate for AccountPairInitApiRequest {
@@ -1908,7 +2077,7 @@ impl Validate for AccountPairInitApiRequest {
         }
         // Refused here rather than deeper, where "enroll into nothing" is a
         // device that is certified and then listens on no topic at all.
-        if self.namespaces.is_empty() {
+        if self.namespaces.is_empty() && self.account_namespace.is_none() {
             errors.push(ValidationError::EmptyField {
                 field: "namespaces",
             });
@@ -1917,6 +2086,11 @@ impl Validate for AccountPairInitApiRequest {
             self.namespaces
                 .iter()
                 .filter_map(|id| validate_hex_string(id, "namespaces[]", 32)),
+        );
+        errors.extend(
+            self.account_namespace
+                .as_deref()
+                .and_then(|id| validate_hex_string(id, "accountNamespace", 32)),
         );
 
         errors
@@ -3253,6 +3427,7 @@ mod tests {
         AccountPairInitApiRequest {
             account_root_public_key: hex::encode([0x11; 32]),
             namespaces,
+            account_namespace: None,
         }
     }
 
@@ -3327,6 +3502,7 @@ mod tests {
         let errors = AccountPairInitApiRequest {
             account_root_public_key: hex::encode([0x11; 31]),
             namespaces: vec![hex::encode([0x22; 32])],
+            account_namespace: None,
         }
         .validate();
 
@@ -3341,6 +3517,26 @@ mod tests {
             )),
             "a 31-byte root key must be refused, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn pair_init_accepts_the_account_namespace_alone() {
+        let req = AccountPairInitApiRequest {
+            account_root_public_key: "ab".repeat(32),
+            namespaces: vec![],
+            account_namespace: Some("4e".repeat(32)),
+        };
+        assert!(req.validate().is_empty(), "{:?}", req.validate());
+    }
+
+    #[test]
+    fn pair_init_checks_the_account_namespace_is_an_id() {
+        let req = AccountPairInitApiRequest {
+            account_root_public_key: "ab".repeat(32),
+            namespaces: vec![],
+            account_namespace: Some("not-hex".to_owned()),
+        };
+        assert_eq!(req.validate().len(), 1);
     }
 
     #[test]
@@ -3537,6 +3733,11 @@ pub struct NodeIdentityApiResponseData {
     /// Defaulted, so a response from a node predating the field still deserializes.
     #[serde(default)]
     pub device_certified: bool,
+
+    /// Hex-encoded id of the account namespace this node follows: derived on the
+    /// holder before it exists, so an invite can carry it; recorded at pair-init.
+    #[serde(default)]
+    pub account_namespace_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

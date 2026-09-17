@@ -8,6 +8,14 @@
     "  npm   — declares @calimero-network/* packages in some package.json",
     "  tauri — links no SDK; ships a merod BINARY named in merod-config.json",
     "",
+    "A consumer's manifests need not sit at either known path. calimero-studio's",
+    "pins are workspace roots at foundation-app/base/logic/Cargo.toml — the",
+    "scaffold template every generated app is built from — and",
+    "foundation-app/recipes/Cargo.toml, the compiler-checked CRDT idioms the build",
+    "agent reads. bump-fleet.sh calls that the `nested` shape and finds them by",
+    "looking for any Cargo.toml in the tree that pins core, so a repository does",
+    "not have to be reshaped to be bumpable.",
+    "",
     "A core release moves `cargo` and `tauri`. `npm` is recorded because the same",
     "shape of file is read by the equivalent workflow in mero-js, mero-react and",
     "design-system; fleet-bump.yml here selects cargo and tauri only.",
@@ -34,7 +42,21 @@
     "so bump_cargo_workspace re-reads what it wrote and asserts the same two",
     "invariants the repo's own scripts/check-app-metadata.sh asserts in CI, plus",
     "the toolchain pins that CI does NOT check and which had already drifted three",
-    "releases by the time this was written."
+    "releases by the time this was written.",
+    "",
+    "WHAT A CORE RELEASE DOES NOT MOVE, AND MUST NOT PRETEND TO.",
+    "calimero-studio also pins merobox (foundation-app/base/scripts/install-merobox.sh)",
+    "and carries a cargo-mero FLOOR_VERSION. Neither tracks a core tag: the floor",
+    "is the oldest release shipping a cargo-mero asset, and merobox has its own",
+    "release train whose compatible pair with a given core is evidence, not",
+    "arithmetic. This script leaves both alone rather than guessing.",
+    "",
+    "And a bump pull request only moves PINS. When a release is a source-level",
+    "break — rc.32's #3807 required every Mergeable type to declare how it merges —",
+    "the pull request it opens is red until someone writes the code. That is the",
+    "signal working, not the automation failing: before calimero-studio was listed",
+    "here nothing opened a pull request at all, and its pin sat twelve releases",
+    "behind until a weekly cron caught it."
   ],
 
   "consumers": [
@@ -43,7 +65,8 @@
     { "repo": "mero-ar", "surfaces": ["cargo"] },
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "tauri-app", "surfaces": ["npm", "tauri"] },
-    { "repo": "app-registry", "surfaces": ["npm"] }
+    { "repo": "app-registry", "surfaces": ["npm"] },
+    { "repo": "calimero-studio", "surfaces": ["cargo"] }
   ],
 
   "_migrated_note": [

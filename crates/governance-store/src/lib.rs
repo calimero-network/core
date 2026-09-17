@@ -40,6 +40,8 @@ pub mod registration_notify;
 pub mod absorb;
 pub mod absorb_record;
 mod account_bindings;
+mod account_devices;
+mod account_namespaces;
 pub mod authorizer;
 mod capabilities;
 pub mod cascade;
@@ -86,6 +88,8 @@ pub use self::account_bindings::{
     member_account_for_device_key, member_account_in_namespace, AccountBindingRepository,
     BindingRejected, DeviceBinding,
 };
+pub use self::account_devices::AccountDeviceRegistry;
+pub use self::account_namespaces::AccountNamespaceSet;
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
@@ -95,7 +99,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices};
+pub use self::device_link::{bind_device_everywhere, bind_known_devices, revoke_device_in};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -103,7 +107,7 @@ pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 
 pub use self::group_keys::{
-    EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
+    key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
@@ -128,8 +132,10 @@ pub use self::namespace::{
     build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
     known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
-    open_sealed_root_op, redrive_buffered_ops_for_group, retry_encrypted_ops_for_group,
-    seal_root_op_for_publish, sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
+    open_relayed_join_for_read, open_sealed_root_op, open_sealed_root_op_for_group,
+    redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed,
+    seal_root_op_for_publish, seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
     KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
     NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
@@ -1637,8 +1643,13 @@ pub fn get_context_service_name(
     Ok(handle.get(&key)?.map(|v| v.service_name.to_string()))
 }
 
-#[cfg(test)]
-mod test_fixtures;
+// Gated `any(test, feature = "testing")` rather than plain `test`, matching
+// `calimero-storage`: a dependent crate's tests cannot see another crate's
+// `cfg(test)` items, and `calimero-server`'s authorization tests for
+// `seal_to_account` need the same enrolled-member setup rather than a second,
+// subtly different copy of it. Off by default, so a normal build is unchanged.
+#[cfg(any(test, feature = "testing"))]
+pub mod test_fixtures;
 
 #[cfg(test)]
 mod tests;

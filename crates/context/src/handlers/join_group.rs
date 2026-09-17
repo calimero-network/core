@@ -262,13 +262,22 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 };
 
                 // Unwrap and store the group key.
+                //
+                // The join response wins over whatever the keyring already
+                // holds, and that is a deliberate reversal (#3891). This used to
+                // skip on "a key is already present", which reads as harmless
+                // caution and is the step that makes a wrong key PERMANENT: the
+                // response is authenticated and addressed to this joiner for
+                // this group, so it is better evidence of the group's key than
+                // an entry of unknown provenance that happens to be in the
+                // keyring. Preferring the local one meant a key planted before
+                // the join could never be corrected — the membership-driven pull
+                // reports only *keyless* groups, so nothing re-drives a node
+                // holding the wrong key, and a delivery may no longer replace a
+                // held key (#3887). This was the last correction path and it was
+                // declining to correct.
                 if !join_result.has_key() {
                     warn!("join response contained no group key");
-                } else if GroupKeyring::new(&datastore, group_id).load_current_key()?.is_some() {
-                    info!(
-                        ?group_id,
-                        "group key already present locally, skipping store from join response"
-                    );
                 } else {
                     let envelope: calimero_context_client::local_governance::KeyEnvelope =
                         borsh::from_slice(&join_result.key_envelope_bytes)
@@ -280,13 +289,46 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         None,
                         &envelope,
                     )?;
-                    crate::group_key_pull::adopt_pulled_group_key(
-                        &datastore,
-                        namespace_id.into(),
-                        group_id,
-                        &group_key,
-                    )?;
-                    info!("received group key via direct join response");
+                    let offered_key_id = GroupKeyring::key_id_for(&group_key);
+                    let held_key_id = GroupKeyring::new(&datastore, group_id)
+                        .load_current_key()?
+                        .map(|(key_id, _)| key_id);
+
+                    match join_key_action(held_key_id, offered_key_id) {
+                        JoinKeyAction::AlreadyHeld => {
+                            info!(?group_id, "join response carried the group key already held");
+                        }
+                        // Worth shouting about. Either something planted a key
+                        // for this group before the join, or the group rotated
+                        // and this node is behind. Both resolve the same way --
+                        // take the authenticated one -- but an operator should
+                        // see that a displacement happened.
+                        JoinKeyAction::Displace { held_key_id } => {
+                            warn!(
+                                ?group_id,
+                                held_key_id = %hex::encode(held_key_id),
+                                adopted_key_id = %hex::encode(offered_key_id),
+                                "the join response's group key differs from the one already held; \
+                                 adopting the join response's key and displacing the local one, \
+                                 which was not attested by this join"
+                            );
+                            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                                &datastore,
+                                namespace_id.into(),
+                                group_id,
+                                &group_key,
+                            )?;
+                        }
+                        JoinKeyAction::Seed => {
+                            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                                &datastore,
+                                namespace_id.into(),
+                                group_id,
+                                &group_key,
+                            )?;
+                            info!("received group key via direct join response");
+                        }
+                    }
                 }
 
                 // Issue #2256 / PR #2368: write the namespace's
@@ -514,32 +556,165 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .map_err(|e| eyre::eyre!("admitter endorsement did not decode: {e}"))?,
                 );
 
-                let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
+                let join_root = RootOp::MemberJoinedAt {
                     member: join_account.statement.account,
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,
-                });
-                // Handed in rather than embedded: the endorsement rides the
-                // envelope, outside this node's signature, so it is attached
-                // after signing and before the local apply.
-                match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
-                    &datastore,
-                    &node_client,
-                    &ack_router,
-                    namespace_id.into(),
-                    &sk,
-                    member_joined_op,
-                    Some(admitter_endorsement),
-                )
-                .await
-                {
-                    Ok((report, signed)) if report.acked_by.is_empty() => {
-                        // Reached no peer; retry when a namespace peer next subscribes.
-                        node_client.queue_membership_republish(namespace_id, signed);
+                };
+
+                // Sealed when this node already holds the namespace key, which on
+                // the ordinary path it does: the bundle above carried the key and
+                // it was stored before we got here (see the unwrap near the top of
+                // this handler). Sealing keeps off the namespace topic the one
+                // thing a cleartext join tells every non-member — which account
+                // joined which group, and when.
+                //
+                // `root_op_is_sealable` still says no for this variant, and that
+                // is not a contradiction: it answers for the variant, which has
+                // publishers that hold no key (a browser client signing offline
+                // never does), and it has to answer the same on every node. This
+                // asks the narrower question the publisher can actually answer,
+                // "do I hold the key right now", so a keyed joiner seals and an
+                // unkeyed one still joins.
+                //
+                // The unkeyed joiner is no longer answered with a cleartext
+                // publish. Its key does arrive from a `KeyDelivery` an admin
+                // publishes on SEEING this op, so it genuinely cannot seal for
+                // itself -- but the admitter can, and since #3804 the joiner has
+                // already reached one to get the endorsement above. So the
+                // fallback is the relay below, not the disclosure (#3904).
+                // Which key seals it depends on what this joiner was actually
+                // given. A namespace-root invitation delivers the namespace key,
+                // so the namespace-key seal applies. A SUBGROUP-targeted one
+                // delivers that subgroup's key and never the namespace's — so
+                // the namespace-key seal finds nothing, and before #3858 the
+                // join went out in the clear, telling every peer on the
+                // namespace topic which account joined which group and when.
+                //
+                // `seal_root_op_for_group_if_keyed` resolves the covering group
+                // through `key_covering_group`, so a Restricted chain seals
+                // under the subgroup and an Open chain under the namespace —
+                // never under a key row nothing encrypts to (#3859).
+                let seal_attempt = if group_id.to_bytes() == namespace_id {
+                    calimero_governance_store::seal_root_op_if_keyed(
+                        &datastore,
+                        namespace_id.into(),
+                        &join_root,
+                    )
+                } else {
+                    calimero_governance_store::seal_root_op_for_group_if_keyed(
+                        &datastore,
+                        group_id,
+                        &join_root,
+                    )
+                };
+                let sealed_op = match seal_attempt {
+                    Ok(Some(sealed)) => Some(sealed),
+                    Ok(None) => None,
+                    Err(e) => {
+                        // Not a reason to publish in the clear. A seal this node
+                        // could not perform is exactly the case the relay below
+                        // handles, and the alternative is the disclosure.
+                        warn!(?e, ?group_id, "could not seal the join locally; relaying it instead");
+                        None
                     }
-                    Ok(_) => {}
-                    Err(e) => warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)"),
+                };
+
+                match sealed_op {
+                    // Handed in rather than embedded: the endorsement rides the
+                    // envelope, outside this node's signature, so it is attached
+                    // after signing and before the local apply.
+                    Some(member_joined_op) => {
+                        match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            namespace_id.into(),
+                            &sk,
+                            member_joined_op,
+                            Some(admitter_endorsement),
+                        )
+                        .await
+                        {
+                            Ok((report, signed)) if report.acked_by.is_empty() => {
+                                // Reached no peer; retry when a namespace peer next subscribes.
+                                node_client.queue_membership_republish(namespace_id, signed);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)")
+                            }
+                        }
+                    }
+                    // No key to seal under, so this node cannot publish the join
+                    // itself without putting it on the namespace topic in the
+                    // clear — telling every peer which account joined which
+                    // group and when. Hand it to a keyholder instead, starting
+                    // with the admitter that endorsed this very join, since that
+                    // is the one peer already known reachable. The seal it
+                    // applies carries the joiner's own signature inside, which is
+                    // what peers check at apply, so relaying grants nothing
+                    // (#3904).
+                    //
+                    // Applied locally first and NOT published: governance ops are
+                    // locally authoritative, and a later `MemberJoinedOpen` needs
+                    // this op on the local DAG to parent onto.
+                    None => {
+                        info!(
+                            ?group_id,
+                            "no key to seal this join under; relaying it to the admitter to be \
+                             sealed and published"
+                        );
+                        let signed =
+                            calimero_governance_store::sign_and_apply_namespace_op_without_publish(
+                                &datastore,
+                                &node_client,
+                                namespace_id.into(),
+                                &sk,
+                                NamespaceOp::Root(join_root),
+                                Some(admitter_endorsement),
+                            )
+                            .map_err(|e| {
+                                // Fatal, unlike the publish path's warn above,
+                                // because there is nothing to relay if the op was
+                                // never signed. The reachable case is a
+                                // SUBGROUP-targeted invitation whose subgroup key
+                                // never arrived: the apply refuses that join in
+                                // the clear (#3858), and it used to surface two
+                                // steps later as a key-delivery timeout.
+                                eyre::eyre!(
+                                    "could not sign and apply this join locally, so there is \
+                                     nothing to relay: {e:#}"
+                                )
+                            })?;
+
+                        let signed_op_bytes = borsh::to_vec(&signed).map_err(|e| {
+                            eyre::eyre!("could not encode the join for relay: {e}")
+                        })?;
+
+                        // An `Err` fails the join. Falling back to a cleartext
+                        // publish is what this path removes, and a fallback that
+                        // quietly re-opens the disclosure would make "sealed" and
+                        // "leaked" the same silence.
+                        node_client
+                            .relay_sealed_join(
+                                calimero_node_primitives::client::RelaySealedJoinParams {
+                                    namespace_id,
+                                    admitter_peer: join_result.admitter_peer,
+                                    joiner_public_key: joiner_identity,
+                                    signed_op_bytes,
+                                },
+                            )
+                            .await
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "join could not be published: this node holds no key to seal \
+                                     it under and no admitter would relay it, and publishing it \
+                                     in the clear would disclose the membership: {e:#}"
+                                )
+                            })?;
+                    }
                 }
 
                 if let Some(rx) = op_event_rx.as_mut() {
@@ -659,6 +834,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &ack_router,
                     &namespace_id.into(),
                     &sk,
+                )
+                .await;
+
+                // Tell the account's other devices, after the bind: no device may follow
+                // a namespace before the authority it needs there exists.
+                crate::account_namespace::announce(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    namespace_id.into(),
+                    crate::account_namespace::AccountNamespaceChange::Gained,
+                    "join_group",
                 )
                 .await;
 
@@ -803,6 +990,43 @@ impl Handler<JoinGroupRequest> for ContextManager {
     }
 }
 
+/// What to do with the group key a join response carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinKeyAction {
+    /// Nothing held for this group: store it.
+    Seed,
+    /// The key held is the one offered. Storing it again is a no-op.
+    AlreadyHeld,
+    /// A DIFFERENT key is held. Take the join response's and displace it.
+    Displace { held_key_id: [u8; 32] },
+}
+
+/// Decide between the key a join response carried and the one already held.
+///
+/// The join response wins, and that is a deliberate reversal (#3891). This
+/// decision used to be "if any key is present, skip" — which reads as harmless
+/// caution and is the step that makes a wrong key PERMANENT. The response is
+/// authenticated and addressed to this joiner for this group, so it is better
+/// evidence of the group's key than an entry of unknown provenance that happens
+/// to be in the keyring.
+///
+/// It was also the last correction path left. The membership-driven pull reports
+/// only *keyless* groups (`groups_member_but_keyless`), so nothing re-drives a
+/// node holding the wrong key; and a delivery may no longer replace a held key
+/// (#3887). So a key planted before the join could never be corrected, and this
+/// function was the thing declining to correct it.
+///
+/// Split out from the handler so the decision is testable without mocking the
+/// join transport: it is the security-relevant half, and the rest of that block
+/// is unwrapping and storing.
+fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> JoinKeyAction {
+    match held_key_id {
+        None => JoinKeyAction::Seed,
+        Some(held) if held == offered_key_id => JoinKeyAction::AlreadyHeld,
+        Some(held) => JoinKeyAction::Displace { held_key_id: held },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -810,13 +1034,57 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
-    use calimero_governance_store::AccountBindingRepository;
+    use calimero_governance_store::{AccountBindingRepository, AccountNamespaceSet};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
+
+    /// A join response's key displaces an unattested held key (#3891).
+    ///
+    /// The reversal, and the case a poisoned node depends on. Before this,
+    /// holding *any* key meant the join response's was skipped — so a key
+    /// planted before the join stayed, and nothing else could correct it: the
+    /// membership-driven pull enumerates only keyless groups, and #3887 stopped
+    /// a delivery from replacing a held key. The join response is authenticated
+    /// and addressed to this joiner for this group, so it is the better
+    /// evidence.
+    #[test]
+    fn a_join_responses_key_displaces_a_different_held_key() {
+        let planted = [0xAA; 32];
+        let authentic = [0xBB; 32];
+        assert_eq!(
+            join_key_action(Some(planted), authentic),
+            JoinKeyAction::Displace {
+                held_key_id: planted
+            },
+            "the join response wins over a key of unknown provenance, and the displaced \
+             id is carried out so the log can name it"
+        );
+    }
+
+    /// Re-joining is idempotent and quiet.
+    ///
+    /// This is what keeps the reversal from being noisy: a retry, or a second
+    /// join of a group whose key is already correct, must not report a
+    /// displacement, because storing the same key again changes nothing.
+    #[test]
+    fn a_join_response_carrying_the_held_key_is_a_no_op() {
+        let key_id = [0xCC; 32];
+        assert_eq!(
+            join_key_action(Some(key_id), key_id),
+            JoinKeyAction::AlreadyHeld
+        );
+    }
+
+    /// The ordinary first join: nothing held, so seed it.
+    #[test]
+    fn a_join_response_seeds_when_no_key_is_held() {
+        assert_eq!(join_key_action(None, [0xDD; 32]), JoinKeyAction::Seed);
+    }
 
     const APP: [u8; 32] = [0xD1; 32];
     const GROUP: [u8; 32] = [0xD2; 32];
@@ -850,24 +1118,9 @@ mod tests {
         }
     }
 
-    /// The sibling of the creation's auto-bind: a namespace joined after a
-    /// pairing is one the paired device was never bound in, so without this the
-    /// join succeeds and that device silently never sees the group.
-    #[actix::test]
-    async fn joining_a_namespace_carries_this_accounts_devices_into_it() {
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let group = ContextGroupId::from(GROUP);
-        // The scope key a join normally takes from its bundle. Seeded because
-        // there is no peer to serve one here, and the auto-bind runs after the
-        // key wait precisely so it can wrap the delivery from it.
-        let _key_id = GroupKeyring::new(&store, group)
-            .store_key(&[0x42; 32])
-            .expect("hold the scope key");
-        let device = certify_device(&store, 0xD6, &[]);
-
-        // A peer that answers the join, because the endorsement it carries is
-        // what authorises the membership — the auto-bind asserted below runs
-        // only on a join that got that far.
+    /// The bundle a peer answers a join with. Its endorsement authorises the
+    /// membership, so without one nothing a successful join writes exists to assert on.
+    fn an_endorsing_bundle() -> calimero_node_primitives::join_bundle::JoinBundle {
         let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
         bundle.admitter_endorsement_bytes = Some(
             borsh::to_vec(
@@ -881,8 +1134,28 @@ mod tests {
             )
             .expect("borsh the endorsement"),
         );
+        bundle
+    }
 
-        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+    /// The sibling of the creation's auto-bind: a namespace joined after a
+    /// pairing is one the paired device was never bound in, so without this the
+    /// join succeeds and that device silently never sees the group.
+    ///
+    /// The devices come from the account namespace's registry, so this holds on
+    /// any device of the account, not only the one that did the certifying.
+    #[actix::test]
+    async fn joining_a_namespace_carries_this_accounts_devices_into_it() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        // The scope key a join normally takes from its bundle. Seeded because
+        // there is no peer to serve one here, and the auto-bind runs after the
+        // key wait precisely so it can wrap the delivery from it.
+        let _key_id = GroupKeyring::new(&store, group)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        let device = certify_device(&store, 0xD6, &[]);
+
+        let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
         let _joined = harness
             .manager
             .send(JoinGroupRequest {
@@ -899,6 +1172,43 @@ mod tests {
                 .expect("read the bindings"),
             "the device this account already certified has to be bound in the \
              namespace the join just gained"
+        );
+    }
+
+    /// The sibling of the creation's announcement: a namespace joined after a
+    /// pairing is one the other devices of the account have never heard of.
+    #[actix::test]
+    async fn joining_a_namespace_records_it_in_the_account_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let _key_id = GroupKeyring::new(&store, group)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let _joined = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the join runs");
+
+        assert!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(group)
+                .expect("read the set")
+                .is_some(),
+            "the namespace the join gained has to reach the account's other devices"
         );
     }
 }

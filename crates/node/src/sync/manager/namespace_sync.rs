@@ -5,6 +5,7 @@
 //! block, driven by the stream dispatcher and the `SyncDriverDispatch` trait.
 //! Methods that stay in `mod.rs` remain reachable here via ancestor privacy.
 
+use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
@@ -45,7 +46,14 @@ fn backfill_op_kinds(deltas: &[([u8; 32], Vec<u8>)]) -> String {
                         .to_owned()
                 }
                 // Encrypted; the inner kind is not readable without the key,
-                // which is frequently the very thing that is missing.
+                // which is frequently the very thing that is missing. Most root
+                // ops are sealed too, so without this arm a backfill of ordinary
+                // governance reads as a list of "Unknown" — which is what this
+                // whole function exists to avoid.
+                NamespaceOp::RootSealed { .. } => "Root(sealed)".to_owned(),
+                NamespaceOp::RootSealedForGroup { group_id, .. } => {
+                    format!("Root(sealed for {})", hex::encode(group_id.to_bytes()))
+                }
                 NamespaceOp::Group { .. } => "Group(encrypted)".to_owned(),
                 _ => "Unknown".to_owned(),
             },
@@ -729,7 +737,72 @@ impl SyncManager {
             return Ok(());
         }
 
-        let key_envelope_bytes = match GroupKeyring::new(&store, group_id).load_current_key()? {
+        // WHICH key covers the group being joined, not "the group's own row".
+        //
+        // A subgroup is minted a key row at birth regardless of visibility, and
+        // for a group on an Open chain that row is a key nothing is ever
+        // encrypted under — everything in such a group is namespace-keyed. So
+        // serving it would hand the joiner a key that opens nothing, and because
+        // a key DID arrive, neither side logs a thing: the join reports success
+        // and every op and delta afterwards fails to decrypt. `key_covering_group`
+        // is the same mapping every writer uses.
+        let key_group_id = calimero_governance_store::key_covering_group(&store, &group_id)?;
+
+        let covered_by_namespace = key_group_id != group_id;
+
+        // An invitation ADMITTING someone new into an Open-chain subgroup is
+        // refused here rather than answered with a key.
+        //
+        // The key that covers it is the NAMESPACE key, and this joiner is being
+        // admitted to the subgroup alone — it is not a member of the root, so it
+        // may not hold a key that reads all namespace-level governance and every
+        // Open subgroup's application state (and would keep reading it after
+        // leaving, unless rotated). There is no key it may have, so the join
+        // cannot succeed, and saying so is the whole fix: the alternative is the
+        // silent admission above.
+        //
+        // The joiner's route in is an invitation to the namespace root, after
+        // which inheritance carries it into the Open subgroup for free
+        // (`MemberJoinedOpen`).
+        //
+        // Gated on `already_member` for the same reason the re-entry check above
+        // is: this governs ADMISSION, and a current member is not being admitted.
+        // They land here on an ordinary re-sync or a retried join round and still
+        // need the backfill and context rows below — refusing those would turn a
+        // key question they have already settled (an inherited member holds the
+        // namespace key; a subgroup-only one is not entitled to it either way)
+        // into a broken re-sync. They get no key envelope; that is all.
+        if covered_by_namespace && !already_member {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                group_id = %hex::encode(group_id.to_bytes()),
+                %joiner_public_key,
+                "rejecting namespace join: an Open-chain subgroup is covered by the \
+                 namespace key, which a subgroup-only member may not hold"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "group is on an Open chain to its namespace and is covered by the \
+                             namespace key; invite this member into the namespace root instead, \
+                             and inheritance will carry them into this subgroup"
+                        .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // `None` for a namespace-covered group: an already-member re-syncing gets
+        // the backfill without a key envelope, never the subgroup's unused birth
+        // row. A new joiner never reaches this line.
+        let covering_key = if covered_by_namespace {
+            None
+        } else {
+            GroupKeyring::new(&store, key_group_id).load_current_key()?
+        };
+        let key_envelope_bytes = match covering_key {
             Some((_key_id, group_key)) => {
                 let ns_identity =
                     NamespaceRepository::new(&store).resolve_identity_record(&namespace)?;
@@ -740,7 +813,7 @@ impl SyncManager {
                         match GroupKeyring::wrap_for_member(
                             &sender_sk,
                             &joiner_public_key,
-                            &group_id.to_bytes(),
+                            &key_group_id.to_bytes(),
                             &group_key,
                         ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
@@ -964,6 +1037,38 @@ impl SyncManager {
             }
         }
 
+        // Same mapping as the invitation responder above: serve the key that
+        // COVERS the subgroup, never its birth row.
+        //
+        // On an Open chain there is no subgroup key to serve — the requester
+        // reached this subgroup by inheritance, so it is a namespace member and
+        // the namespace key it already holds (or pulls) covers the subgroup
+        // outright. Answering with the birth row instead would have it adopt a
+        // key nothing is encrypted under, and record that as "key present".
+        // `join_subgroup_inheritance` skips the request entirely in that case;
+        // this arm is what makes a stray one diagnosable rather than silently
+        // wrong.
+        let key_group_id = calimero_governance_store::key_covering_group(&store, &subgroup_gid)?;
+        if key_group_id != subgroup_gid {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                subgroup_id = %hex::encode(subgroup_id),
+                %joiner_public_key,
+                "refusing open-subgroup key request: subgroup is covered by the namespace key"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "subgroup is on an Open chain to its namespace and holds no key of \
+                             its own; the namespace key covers it"
+                        .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
         let key_envelope_bytes = match GroupKeyring::new(&store, subgroup_gid).load_current_key()? {
             Some((_key_id, group_key)) => {
                 let ns_gid = ContextGroupId::from(namespace_id);
@@ -1030,7 +1135,7 @@ impl SyncManager {
     /// carries — plus `joiner_public_key` and this node's transport `PeerId`,
     /// so the responder can confirm the caller controls the identity it is
     /// about to pre-register. See [`InitProof`].
-    async fn build_join_init_pop(
+    pub(super) async fn build_join_init_pop(
         &self,
         namespace_id: [u8; 32],
         joiner_public_key: PublicKey,
@@ -1443,6 +1548,11 @@ impl SyncManager {
                         governance_ops,
                         default_capabilities,
                         admitter_endorsement_bytes,
+                        // Who answered. The joiner may need to come back to
+                        // this exact peer to have an unsealable join wrapped
+                        // and published, and only the requester knows which
+                        // peer that was.
+                        admitter_peer: Some(peer),
                     });
                 }
                 Ok(Some(StreamMessage::Message {
@@ -1669,6 +1779,12 @@ impl SyncManager {
                                     let op_kind = match &op.op {
                                         calimero_context_client::local_governance::NamespaceOp::Root(r) => {
                                             format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                        }
+                                        calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
+                                            "RootSealed".to_owned()
+                                        }
+                                        calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup { .. } => {
+                                            "RootSealedForGroup".to_owned()
                                         }
                                         calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
                                             "Group".to_owned()
@@ -1931,47 +2047,32 @@ impl SyncManager {
                 &*self.state_access,
                 &anchors,
             );
-            // How many of those may actually serve this request. Anchor-only
-            // when the key cannot be checked; any candidate when it can.
-            let Some(allowed) = crate::sync::peers::key_servers_allowed(
-                ordered.len(),
-                anchor_count,
-                !anchors.is_empty(),
-                key_id.is_some(),
-            ) else {
-                if anchors.is_empty() {
-                    warn!(
-                        group_id = %hex::encode(group_id),
-                        candidate_count = ordered.len(),
-                        "group-key recovery refused: this key cannot be verified \
-                         against a signed op and no trusted anchor can be \
-                         identified for the group, so there is nobody it is safe \
-                         to accept it from; retrying once governance state names \
-                         an Admin or ReadOnlyTee"
-                    );
-                } else {
-                    warn!(
-                        group_id = %hex::encode(group_id),
-                        candidate_count = ordered.len(),
-                        "group-key recovery refused: this key cannot be verified \
-                         against a signed op and no trusted anchor is reachable; \
-                         retrying rather than accepting an unverifiable key from \
-                         a non-anchor peer"
-                    );
-                }
-                continue;
-            };
-            ordered.truncate(allowed);
+            // Anchor-first ordering above is a PREFERENCE. Who may actually
+            // serve is decided per response, below, because one of the two
+            // grounds for accepting a key cannot be known until the answer is
+            // in hand: a proof that the responder is a device of this node's
+            // own account.
+            //
+            // #3892 first pruned to anchors here and refused when none could be
+            // identified. That starves the node that most needs a key:
+            // `trusted_anchors` reads group meta, so a node holding no
+            // governance state identifies NO anchor, and a freshly paired device
+            // is exactly that node. The `account-device-*` E2E scenarios failed
+            // that way -- two steps removed, as "context does not belong to any
+            // group", because without the namespace key the encrypted GroupOps
+            // that map a context to its group never fold.
+            let anchor_peers: std::collections::HashSet<libp2p::PeerId> =
+                ordered.iter().take(anchor_count).copied().collect();
             debug!(
                 group_id = %hex::encode(group_id),
                 anchor_peer_count = anchor_count,
-                allowed_servers = allowed,
-                verifiable = key_id.is_some(),
-                "group-key recovery: candidate peers selected"
+                candidate_count = ordered.len(),
+                awaits_key_id = key_id.is_some(),
+                "group-key recovery: candidate peers selected, acceptance decided per response"
             );
 
             for peer in &ordered {
-                let Some((envelope_bytes, responder_identity)) = self
+                let Some((envelope_bytes, responder_identity, responder_device_proof)) = self
                     .request_group_key_from_peer(*peer, namespace_id, group_id, requester, key_id)
                     .await
                 else {
@@ -1981,25 +2082,66 @@ impl SyncManager {
                     // This peer doesn't hold the key — try the next one.
                     continue;
                 }
+                // **The gate.** An unwrapped key is just bytes: a node that
+                // stores a key an insider chose seals its own later writes under
+                // it. Two grounds, and nothing else, make a responder acceptable.
+                let is_anchor = anchor_peers.contains(peer);
+                let own_account_device = !responder_device_proof.is_empty()
+                    && self.responder_is_own_account_device(
+                        &responder_device_proof,
+                        responder_identity,
+                    );
+                if !crate::sync::peers::key_server_accepted(is_anchor, own_account_device) {
+                    warn!(
+                        group_id = %hex::encode(group_id),
+                        %peer,
+                        carried_proof = !responder_device_proof.is_empty(),
+                        "group-key recovery refused this responder: it is not a trusted \
+                         anchor of the group and did not prove it is a device of this \
+                         node's own account; trying the next candidate rather than \
+                         accepting a key from it"
+                    );
+                    continue;
+                }
                 let store = self.context_client.datastore_handle().into_inner();
+                // What we asked this peer for, as a set: a group stranded
+                // across a rotation awaits more than one id, and the apply now
+                // accepts any of them rather than one picked arbitrarily. Empty
+                // means no governance op names a key for this group, so the
+                // hash check cannot bound the content and the responder gate
+                // above is all that stands between this node and a chosen key.
+                let expected_key_ids = key_id.as_slice();
                 let outcome = calimero_governance_store::apply_received_group_key(
                     &store,
                     namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
-                    // What we asked this peer for. `Some` whenever a governance
-                    // op is awaiting a specific key, which is what makes the
-                    // responder untrusted for content rather than merely
-                    // less-preferred.
-                    key_id,
+                    expected_key_ids,
                 );
                 drop(store);
                 match outcome {
                     Ok(divergence) => {
+                        // `key_recovery_authorized_by` names WHICH of the two
+                        // grounds let this responder serve, because "a key was
+                        // recovered" and "the ground added by #3892 was the
+                        // reason" are not the same claim. Every scenario that
+                        // exercises this path passed before that ground existed,
+                        // so a green run is not evidence the own-account path
+                        // works -- and it shipped inert once already, for a node
+                        // that had no certificate for its own device to attach.
+                        // Emitted as a marker so the suite can report which
+                        // grounds real traffic actually uses; observe first,
+                        // assert once that distribution is known, which is how
+                        // the projection and op-store gates were built.
                         info!(
                             namespace_id = %hex::encode(namespace_id),
                             group_id = %hex::encode(group_id),
+                            key_recovery_authorized_by = if is_anchor {
+                                "anchor"
+                            } else {
+                                "own_account_device"
+                            },
                             "recovered group key via direct delivery"
                         );
                         if let Some(report) = divergence {
@@ -2068,7 +2210,35 @@ impl SyncManager {
         group_id: [u8; 32],
         requester: calimero_governance_store::KeyRequester,
         key_id: Option<[u8; 32]>,
-    ) -> Option<(Vec<u8>, PublicKey)> {
+    ) -> Option<(Vec<u8>, PublicKey, Vec<u8>)> {
+        // Ask for the responder's device proof first. An older responder cannot
+        // decode that variant and drops the stream, so a failure here is not
+        // necessarily a peer without the key -- retry with the plain request,
+        // whose answer carries no proof and is therefore only acceptable from an
+        // anchor. That keeps a mixed-version mesh working without loosening the
+        // gate for either version.
+        if let Some(answer) = self
+            .try_group_key_request(peer, namespace_id, group_id, requester, key_id, true)
+            .await
+        {
+            return Some(answer);
+        }
+        self.try_group_key_request(peer, namespace_id, group_id, requester, key_id, false)
+            .await
+    }
+
+    /// One round of the group-key request, either asking for the responder's
+    /// device proof or not. `Some` only when the peer answered with a key-share
+    /// response; the envelope inside may still be empty, meaning it holds no key.
+    async fn try_group_key_request(
+        &self,
+        peer: PeerId,
+        namespace_id: [u8; 32],
+        group_id: [u8; 32],
+        requester: calimero_governance_store::KeyRequester,
+        key_id: Option<[u8; 32]>,
+        with_responder_proof: bool,
+    ) -> Option<(Vec<u8>, PublicKey, Vec<u8>)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
         let mut stream = match self.sync_network.open_stream(peer).await {
@@ -2082,12 +2252,22 @@ impl SyncManager {
         let msg = StreamMessage::Init {
             context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
             party_id: requester.identity,
-            payload: InitPayload::GroupKeyRequest {
-                namespace_id,
-                group_id,
-                requester_public_key: requester.identity,
-                requester_device: requester.device,
-                key_id,
+            payload: if with_responder_proof {
+                InitPayload::GroupKeyRequestWithResponderProof {
+                    namespace_id,
+                    group_id,
+                    requester_public_key: requester.identity,
+                    requester_device: requester.device,
+                    key_id,
+                }
+            } else {
+                InitPayload::GroupKeyRequest {
+                    namespace_id,
+                    group_id,
+                    requester_public_key: requester.identity,
+                    requester_device: requester.device,
+                    key_id,
+                }
             },
             next_nonce: {
                 use rand::RngExt;
@@ -2110,12 +2290,25 @@ impl SyncManager {
         match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
             Ok(Some(StreamMessage::Message {
                 payload:
+                    MessagePayload::GroupKeyResponseWithResponderProof {
+                        key_envelope_bytes,
+                        responder_identity,
+                        responder_device_proof,
+                    },
+                ..
+            })) => Some((
+                key_envelope_bytes,
+                responder_identity,
+                responder_device_proof,
+            )),
+            Ok(Some(StreamMessage::Message {
+                payload:
                     MessagePayload::GroupKeyResponse {
                         key_envelope_bytes,
                         responder_identity,
                     },
                 ..
-            })) => Some((key_envelope_bytes, responder_identity)),
+            })) => Some((key_envelope_bytes, responder_identity, Vec::new())),
             Ok(other) => {
                 debug!(
                     "unexpected response to GroupKeyRequest: {:?}",
@@ -2136,12 +2329,142 @@ impl SyncManager {
     /// ECDH-wrap the key (`build_group_key_delivery`), and reply. Every
     /// non-deliverable case replies with an empty envelope (the requester
     /// tries another peer; no membership oracle leak).
+    /// Does `proof_bytes` prove that **the peer that answered** is a device of
+    /// **this node's own account**?
+    ///
+    /// Both halves are load-bearing, and each closes a distinct hole.
+    ///
+    /// **This node's own account.** Read from the local device row, which
+    /// carries `account` outright. NOT from `account_root()`: a paired device
+    /// holds no account root at all -- `require_account_root` says as much, "for
+    /// a node meant to hold none" -- and a freshly paired device is exactly the
+    /// caller this exists for, so reading the root would have made the check
+    /// always false on the one node that needs it. Passing our own account id as
+    /// the claimed account means a proof for any OTHER account fails by
+    /// construction; `AccountProof::verify` is explicit about why that argument
+    /// exists: "without it a caller would happily verify a perfectly well-formed
+    /// credential for an account nobody asked about."
+    ///
+    /// **The peer that answered.** A certificate is public: it travels in every
+    /// device-link op. So verifying only that it chains to our account would let
+    /// ANY peer that has seen one of our certificates replay it and be believed
+    /// -- it would prove that the certificate is genuine, not that the sender
+    /// holds it. Requiring `sign_pk` to be the identity that wrapped this
+    /// envelope closes that: the wrap is ECDH from that identity's secret, so an
+    /// envelope this node can open is proof the sender held it. A node's
+    /// namespace signing identity IS its certified device key -- that is the map
+    /// `binding_for_sign_pk` resolves authors through -- so the two are
+    /// comparable.
+    ///
+    /// False on every failure: no device row, an undecodable proof, a chain that
+    /// does not verify, a valid proof for another account, or a valid proof
+    /// naming a key this responder did not answer with. A claim that cannot be
+    /// checked is not a claim.
+    fn responder_is_own_account_device(
+        &self,
+        proof_bytes: &[u8],
+        responder_identity: PublicKey,
+    ) -> bool {
+        let store = self.context_client.datastore_handle().into_inner();
+        let Ok(Some(device_row)) =
+            calimero_governance_store::NodeDeviceRepository::new(&store).get()
+        else {
+            return false;
+        };
+        let Ok(proof) = borsh::from_slice::<
+            calimero_account::AccountProof<calimero_account::DeviceCert>,
+        >(proof_bytes) else {
+            return false;
+        };
+        if proof.verify(device_row.account).is_err() {
+            return false;
+        }
+        proof.statement.sign_pk == responder_identity
+    }
+
+    /// A certificate proving this node's device speaks for its account as the
+    /// answering identity, borsh-encoded for
+    /// [`MessagePayload::GroupKeyResponseWithResponderProof`]. `Ok(vec![])` means
+    /// this node can prove nothing and is claiming nothing -- the requester then
+    /// falls back to the anchor rule. Not a failure.
+    ///
+    /// Two places hold a node's own certificate: the link that paired it, kept
+    /// verbatim as the imported certificate, and its row in the account
+    /// namespace's registry. Either is accepted only when it names
+    /// `answering_identity`, because the requester requires the proof to name the
+    /// key that wrapped the envelope, so one for another key of ours would be sent
+    /// only to be rejected.
+    ///
+    /// A node that provisioned its own root has neither and mints one instead, at
+    /// the same epochs as every other minting site -- a device certificate is
+    /// precisely what that root signs to say "this key speaks for my account". Not
+    /// persisted: serving a key is not the place to write a certificate.
+    fn own_device_proof_bytes(
+        store: &calimero_store::Store,
+        answering_identity: PublicKey,
+    ) -> eyre::Result<Vec<u8>> {
+        let devices = calimero_governance_store::NodeDeviceRepository::new(store);
+        let Some(device_row) = devices.get()? else {
+            return Ok(Vec::new());
+        };
+        let device = device_row.device();
+
+        if let Some(bytes) = devices.imported_certificate()? {
+            let proof: AccountProof<DeviceCert> = borsh::from_slice(&bytes)?;
+            if proof.statement.sign_pk == answering_identity {
+                return Ok(bytes);
+            }
+        }
+
+        if let Some(namespace) = devices.account_namespace()? {
+            let registry = calimero_governance_store::AccountDeviceRegistry::new(store, namespace);
+            if let Some((known, _epoch)) = registry.device(device)? {
+                if known.proof.statement.sign_pk == answering_identity {
+                    return Ok(borsh::to_vec(&known.proof)?);
+                }
+            }
+        }
+
+        let Some(root) = devices.account_root()? else {
+            // A paired device holds no root to certify itself with. It can still
+            // RECEIVE a key this way; it just cannot serve one.
+            return Ok(Vec::new());
+        };
+        let genesis = root.genesis();
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            genesis.account_id(),
+            device,
+            &answering_identity,
+            &device_row.kem_public_key(),
+            0,
+            0,
+        )?;
+        Ok(borsh::to_vec(&AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        })?)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one responder for one request: the request's five fields, the \
+                  reply shape, and the stream and nonce to answer on"
+    )]
     pub(super) async fn handle_group_key_request(
         &self,
         namespace_id: [u8; 32],
         group_id: [u8; 32],
         requester: calimero_governance_store::KeyRequester,
         requested_key_id: Option<[u8; 32]>,
+        // Attach this node's own device certificate to the reply, because the
+        // requester asked for it (#3888). It lets a requester holding no
+        // governance state -- which can identify no anchor -- accept this key
+        // after checking the proof against its own account root. Attaching it
+        // grants nothing: the requester verifies the chain and accepts only a
+        // proof naming ITS OWN account.
+        with_responder_proof: bool,
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
@@ -2176,12 +2499,34 @@ impl SyncManager {
             "Sending GroupKeyResponse"
         );
 
-        let msg = StreamMessage::Message {
-            sequence_id: 0,
-            payload: MessagePayload::GroupKeyResponse {
+        let payload = if with_responder_proof {
+            // Our own device's certificate, exactly as a link op carries it.
+            // Absent (no certificate for this node, or the read failed) means we
+            // claim nothing and the requester falls back to the anchor rule --
+            // never an error, since the key itself is still being served.
+            let responder_device_proof = Self::own_device_proof_bytes(
+                &self.context_client.datastore_handle().into_inner(),
+                responder_identity,
+            )
+            .unwrap_or_else(|err| {
+                debug!(%err, "no own-device proof to attach to a group-key response");
+                Vec::new()
+            });
+            MessagePayload::GroupKeyResponseWithResponderProof {
                 key_envelope_bytes,
                 responder_identity,
-            },
+                responder_device_proof,
+            }
+        } else {
+            MessagePayload::GroupKeyResponse {
+                key_envelope_bytes,
+                responder_identity,
+            }
+        };
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload,
             next_nonce: nonce,
         };
         crate::sync::stream::send(stream, &msg, None).await?;
@@ -2850,6 +3195,125 @@ mod joiner_credential_tests {
     fn an_absent_credential_is_refused() {
         let joiner = PublicKey::from([0x11; 32]);
         assert!(SyncManager::verified_joiner_account(&[], &joiner).is_err());
+    }
+}
+
+#[cfg(test)]
+mod own_device_proof_tests {
+    //! Where this node's OWN certificate comes from when it serves a group key.
+    //!
+    //! Both fixtures adopt an account rather than provisioning one, so the node
+    //! holds no root and the mint fallback yields nothing - an empty answer here
+    //! means the read under test found nothing, not that a mint covered for it.
+
+    use std::sync::Arc;
+
+    use calimero_account::{AccountGenesis, AccountProof, DeviceCert};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{AccountDeviceRegistry, NodeDevice, NodeDeviceRepository};
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::SyncManager;
+
+    /// The account namespace the adopted node follows.
+    fn ns() -> ContextGroupId {
+        ContextGroupId::from([0x5c; 32])
+    }
+
+    /// A node that adopted `root_sk`'s account, and the device row it minted.
+    fn adopted_node(root_sk: &PrivateKey) -> (Store, NodeDevice) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let held = NodeDeviceRepository::new(&store)
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt the account");
+        (store, held)
+    }
+
+    /// The link the account root signed for `held` naming `sign_pk`.
+    fn certify(
+        root_sk: &PrivateKey,
+        held: &NodeDevice,
+        sign_pk: PublicKey,
+    ) -> AccountProof<DeviceCert> {
+        let statement = DeviceCert::sign(
+            root_sk,
+            held.account,
+            held.device(),
+            &sign_pk,
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("the account root signs the device cert");
+        AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement,
+        }
+    }
+
+    fn decoded(bytes: &[u8]) -> AccountProof<DeviceCert> {
+        borsh::from_slice(bytes).expect("the served proof must decode")
+    }
+
+    #[test]
+    fn the_imported_certificate_proves_this_device() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let (store, held) = adopted_node(&root_sk);
+        let answering = PrivateKey::from([0x42; 32]).public_key();
+        let proof = certify(&root_sk, &held, answering);
+        NodeDeviceRepository::new(&store)
+            .store_imported_certificate(&borsh::to_vec(&proof).expect("encode"))
+            .expect("import");
+
+        let bytes =
+            SyncManager::own_device_proof_bytes(&store, answering).expect("build the proof");
+
+        assert_eq!(decoded(&bytes), proof);
+    }
+
+    #[test]
+    fn the_account_registry_row_proves_this_device() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let (store, held) = adopted_node(&root_sk);
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&ns())
+            .expect("follow the account namespace");
+        let answering = PrivateKey::from([0x42; 32]).public_key();
+        let proof = certify(&root_sk, &held, answering);
+        assert!(AccountDeviceRegistry::new(&store, ns())
+            .record(&proof, &[], 0)
+            .expect("record the row"));
+
+        let bytes =
+            SyncManager::own_device_proof_bytes(&store, answering).expect("build the proof");
+
+        assert_eq!(decoded(&bytes), proof);
+    }
+
+    /// The replay guard: a certificate for another key of ours would be sent
+    /// only to be rejected, so it is not sent at all.
+    #[test]
+    fn a_certificate_naming_another_key_is_not_served() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let (store, held) = adopted_node(&root_sk);
+        let other = PrivateKey::from([0x43; 32]).public_key();
+        NodeDeviceRepository::new(&store)
+            .store_imported_certificate(
+                &borsh::to_vec(&certify(&root_sk, &held, other)).expect("encode"),
+            )
+            .expect("import");
+
+        let bytes =
+            SyncManager::own_device_proof_bytes(&store, PrivateKey::from([0x42; 32]).public_key())
+                .expect("build the proof");
+
+        assert!(
+            bytes.is_empty(),
+            "a proof for another key must not be attached"
+        );
     }
 }
 

@@ -41,6 +41,8 @@ pub mod fugue_text_simple;
 pub use fugue_text_simple::FugueTextSimple;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
+pub mod blob_ref;
+pub use blob_ref::BlobRef;
 pub mod crdt_meta;
 pub use crdt_meta::{
     CrdtMeta, CrdtType, Decomposable, MergeStrategy, Mergeable, StorageKey, StorageStrategy,

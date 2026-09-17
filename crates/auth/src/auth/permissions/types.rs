@@ -168,6 +168,34 @@ pub enum ContextPermission {
     /// that: this token only decides who may *ask*, and a request without a
     /// warrant the author signed is refused regardless.
     PerformIntent(ResourceScope),
+    /// Read a context's state through `POST /contexts/:id/query`.
+    ///
+    /// Separate from both [`Self::Execute`] and [`Self::PerformIntent`], for the
+    /// same reason those are separate from each other: they are different
+    /// authorities and a holder of one should not get the others. `Execute`
+    /// carries join/leave/resync; `PerformIntent` submits writes. A token minted
+    /// so a client can *render* should carry neither.
+    ///
+    /// Like `PerformIntent`, it decides who may ASK. Whether this caller may see
+    /// this context is re-checked per call against the group that owns it, and a
+    /// token cannot substitute for membership.
+    Query(ResourceScope),
+    /// May open an event stream and subscribe it to contexts and groups.
+    ///
+    /// Its own authority rather than a share of another's, because the three
+    /// nearby ones each carry something a subscriber must not get: `Execute`
+    /// carries join/leave/resync, `PerformIntent` submits writes, and `Query`
+    /// runs a read-only method — a subscriber runs nothing at all. Before this
+    /// existed, `/ws` and `/sse` required *no* permission, so a token minted
+    /// for one narrow purpose could open a stream; now the right to listen is
+    /// something a token either carries or does not.
+    ///
+    /// Scoped `Global` at the route, because the caller names its contexts in
+    /// the request body rather than in the path — the same shape as `/jsonrpc`.
+    /// Like the others it decides who may ASK: membership is re-checked per
+    /// subscription against the group that owns each context, and a token is
+    /// never a substitute for it.
+    Subscribe(ResourceScope),
     Capabilities(CapabilityPermission),
     Application(ContextApplicationPermission),
     Alias(AliasPermission),
@@ -454,6 +482,8 @@ impl FromStr for Permission {
                         scope, user_scope, method,
                     ))),
                     "intent" => Ok(Permission::Context(ContextPermission::PerformIntent(scope))),
+                    "query" => Ok(Permission::Context(ContextPermission::Query(scope))),
+                    "subscribe" => Ok(Permission::Context(ContextPermission::Subscribe(scope))),
                     "capabilities" => match *subaction {
                         "grant" => Ok(Permission::Context(ContextPermission::Capabilities(
                             CapabilityPermission::Grant(scope),
@@ -683,6 +713,14 @@ impl fmt::Display for Permission {
                     let params = format_simple_params(scope);
                     write!(f, "context:intent{params}")
                 }
+                ContextPermission::Query(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "context:query{params}")
+                }
+                ContextPermission::Subscribe(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "context:subscribe{params}")
+                }
                 ContextPermission::Alias(alias_perm) => match alias_perm {
                     AliasPermission::All(scope) => {
                         let params = format_simple_params(scope);
@@ -862,6 +900,12 @@ impl Permission {
                     ContextPermission::PerformIntent(h_scope),
                     ContextPermission::PerformIntent(r_scope),
                 ) => matches_scope(h_scope, r_scope),
+                (ContextPermission::Query(h_scope), ContextPermission::Query(r_scope)) => {
+                    matches_scope(h_scope, r_scope)
+                }
+                (ContextPermission::Subscribe(h_scope), ContextPermission::Subscribe(r_scope)) => {
+                    matches_scope(h_scope, r_scope)
+                }
                 (ContextPermission::Alias(held), ContextPermission::Alias(required)) => {
                     matches_alias(held, required)
                 }

@@ -132,14 +132,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     return ActorResponse::reply(Err(err));
                 }
             }
-            parent_meta.target.application_id
+            Some(parent_meta.target.application_id)
         } else {
             application_id
-        };
-
-        let app_meta = match load_app_meta(&self.datastore, &effective_application_id) {
-            Ok(m) => m,
-            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
         // Derive bytecode_id from the resolved application's bytecode blob_id
@@ -154,9 +149,20 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // A caller-provided bytecode_id pins the group to a specific version;
         // it is verified inside the async block below (blob present locally
         // + manifest package matches the row's package).
-        let row_blob = *app_meta.bytecode.blob_id().as_ref();
-        let app_package = app_meta.package.clone();
-        let app_version = app_meta.version.clone();
+        //
+        // A root that targets nothing, the account namespace, keeps the unset target.
+        let target = match effective_application_id {
+            Some(application_id) => match load_app_meta(&self.datastore, &application_id) {
+                Ok(app_meta) => GroupTarget {
+                    application_id,
+                    bytecode_id: *app_meta.bytecode.blob_id().as_ref(),
+                    package: app_meta.package,
+                    version: app_meta.version,
+                },
+                Err(err) => return ActorResponse::reply(Err(err)),
+            },
+            None => GroupTarget::default(),
+        };
         let requested_bytecode_id = bytecode_id;
 
         let datastore = self.datastore.clone();
@@ -192,12 +198,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // application-row blob, never the caller's still-unverified
             // `requested_bytecode_id`. The async body overwrites this with the
             // final, verified target on success.
-            target: GroupTarget {
-                application_id: effective_application_id,
-                bytecode_id: row_blob,
-                package: app_package.clone(),
-                version: app_version.clone(),
-            },
+            target: target.clone(),
             created_at: reservation_now,
             admin_identity: admin_account,
             owner_identity: admin_account,
@@ -212,11 +213,16 @@ impl Handler<CreateGroupRequest> for ContextManager {
             async move {
                 let bytecode_id = match requested_bytecode_id {
                     Some(requested) => {
-                        verify_requested_bytecode_id(&node_client, &requested, row_blob, &app_package)
-                            .await?;
+                        verify_requested_bytecode_id(
+                            &node_client,
+                            &requested,
+                            target.bytecode_id,
+                            &target.package,
+                        )
+                        .await?;
                         requested
                     }
-                    None => BytecodeId::from(row_blob),
+                    None => BytecodeId::from(target.bytecode_id),
                 };
 
                 // Reuse the timestamp resolved (and warned-on-error) for the
@@ -225,10 +231,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // reservation it replaces then carry the same `created_at`.
                 let meta = GroupMetaValue {
                     target: GroupTarget {
-                        application_id: effective_application_id,
                         bytecode_id: bytecode_id.to_bytes(),
-                        package: app_package.clone(),
-                        version: app_version.clone(),
+                        ..target.clone()
                     },
                     created_at: reservation_now,
                     admin_identity: admin_account,
@@ -263,14 +267,23 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         GroupMemberRole::Admin,
                     )?;
 
-                    // Set default capabilities so new members can be inherited
-                    // into Open subgroups beneath this group.
                     CapabilitiesRepository::new(&datastore).set_default_capabilities(
                         &group_id,
-                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                        initial_default_capabilities(parent_group_id.is_none()),
                     )?;
 
                     // Generate and store the group encryption key.
+                    //
+                    // Minted for every group whatever its visibility: it is the
+                    // key this group uses if it is ever `Restricted`. An
+                    // Open-chain subgroup is encrypted under the NAMESPACE key
+                    // instead (`calimero_governance_store::key_covering_group`),
+                    // leaving this row unused until a
+                    // `SubgroupVisibilitySet -> Restricted` makes it the group's
+                    // real key — that flip establishes no key of its own, and an
+                    // apply handler could not mint one consistently across peers.
+                    // Unused is not the same as free to hand out: no reader may
+                    // serve or adopt this row while the chain is Open.
                     let group_key: [u8; 32] = rand::rng().random();
                     let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     group_key_id = Some(key_id);
@@ -569,27 +582,29 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // Put the target on the DAG so a node that only backfills
                     // (a paired device) learns it too. Best effort: it is applied
                     // locally before the publish.
-                    match calimero_governance_store::sign_apply_and_publish(
-                        &datastore,
-                        &node_client,
-                        &ack_router,
-                        &group_id,
-                        &signer_sk,
-                        GroupOp::TargetApplicationSet {
-                            bytecode_id,
-                            target_application_id: effective_application_id,
-                            package: app_package.to_string(),
-                            version: app_version.to_string(),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(report) => report.observe("create_group", "TargetApplicationSet"),
-                        Err(e) => warn!(
-                            ?e,
-                            ?group_id,
-                            "failed to publish the namespace's target application"
-                        ),
+                    if let Some(target_application_id) = effective_application_id {
+                        match calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            &group_id,
+                            &signer_sk,
+                            GroupOp::TargetApplicationSet {
+                                bytecode_id,
+                                target_application_id,
+                                package: target.package.to_string(),
+                                version: target.version.to_string(),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(report) => report.observe("create_group", "TargetApplicationSet"),
+                            Err(e) => warn!(
+                                ?e,
+                                ?group_id,
+                                "failed to publish the namespace's target application"
+                            ),
+                        }
                     }
                 }
 
@@ -610,6 +625,20 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     &signer_sk,
                 )
                 .await;
+
+                // A root this node created is a namespace its account has gained; a
+                // subgroup was covered when the account gained its namespace.
+                if parent_group_id.is_none() {
+                    crate::account_namespace::announce(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        namespace_id,
+                        crate::account_namespace::AccountNamespaceChange::Gained,
+                        "create_group",
+                    )
+                    .await;
+                }
 
                 info!(
                     ?group_id,
@@ -657,6 +686,74 @@ impl Handler<CreateGroupRequest> for ContextManager {
 /// DELIBERATELY not deleted (see the genesis-failure comment above): it is
 /// derived idempotently from the stable group id, so reusing it on retry keeps
 /// the founder deterministic (#2474).
+/// The capability mask a newly created group seeds every NON-ADMIN member's
+/// row from at admission.
+///
+/// `CAN_JOIN_OPEN_SUBGROUPS` is in both arms and always was: it is what lets a
+/// member of this group be inherited into an Open subgroup beneath it, so
+/// dropping it strands every later member at the group it joined.
+///
+/// # Why a namespace also opens to delegated authorship
+///
+/// `CAN_AUTHOR_ON_BEHALF` is implied by nothing — not membership, not admin,
+/// not the subgroup-admit cascade — so a namespace created without it is
+/// authorship-closed, and every attested relay admitted to it afterwards needs
+/// its own admin-signed op. For a namespace that keeps admitting fleet nodes
+/// that is one governance op per admission, published at the moment a node is
+/// assigned and the admin is not watching. The grant then reliably arrives
+/// late, or not at all, and the symptom is a write refused at
+/// `POST .../intents` after the author has already spent a warrant nonce on it.
+///
+/// Setting it here is the one point that needs no backfill: the mask is COPIED
+/// into a member's capability row when that member is admitted
+/// (`MembershipRepository::add_member`), so it reaches every member admitted
+/// after creation and no member admitted before — and at creation there are
+/// none.
+///
+/// # Namespaces only, and what that costs
+///
+/// A subgroup keeps the old mask. A grant resolves through the membership
+/// anchor, so one on the namespace root already reaches every Open subgroup
+/// beneath it — which is where contexts live — and a `Restricted` subgroup is a
+/// deliberate membership boundary whose admin should decide its own posture
+/// rather than inherit one from a parent it was created to be separate from.
+///
+/// The cost is stated rather than hidden: this reaches every non-admin member
+/// of the namespace, not only attested TEE nodes, so any of them may be named
+/// as a warrant's `executor`. What it does NOT confer is the ability to forge
+/// one. A delegated write is authorized by the AUTHOR's warrant — signed by
+/// their device key, committed to this context, this method and these exact
+/// arguments, with its nonce checked unspent and every peer re-verifying both
+/// signature layers at the cut — so a holder can only spend a warrant it was
+/// deliberately handed. What it gains is the arguments in cleartext and the
+/// choice of when, or whether, to publish.
+///
+/// Admins never receive this at all: `add_member` seeds the default for
+/// non-admin roles only, and the capability is not implied by admin. So a
+/// namespace creator's own node is the one member this does not cover, and
+/// still needs an explicit grant.
+///
+/// # This is the initial value, not a rule
+///
+/// It is a plain local row, changed afterwards by `GroupOp::DefaultCapabilitiesSet`
+/// (`meroctl group settings set-default-capabilities`). An admin who wants a
+/// closed namespace clears the bit; nothing here re-asserts it.
+///
+/// It is also not recomputed on any other peer. A joiner adopts the namespace's
+/// `default_capabilities` verbatim from the join bundle, so two peers cannot
+/// disagree about the mask by having been built at different times — which is
+/// what would make one peer seed a member row the other would not, and split
+/// the answer `account_may_author` gives about the same relay.
+fn initial_default_capabilities(is_namespace: bool) -> u32 {
+    use calimero_context_config::MemberCapabilities;
+
+    let mut caps = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+    if is_namespace {
+        caps |= MemberCapabilities::CAN_AUTHOR_ON_BEHALF;
+    }
+    caps.bits()
+}
+
 fn rollback_local_group_rows(
     datastore: &Store,
     group_id: &ContextGroupId,
@@ -747,8 +844,9 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        now_millis, AccountBindingRepository, CapabilitiesRepository, GroupKeyring,
-        MembershipRepository, MetaRepository, MetadataRepository,
+        governance_broadcast, now_millis, AccountBindingRepository, AccountNamespaceSet,
+        CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
+        MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -758,7 +856,8 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::{key, types, Store};
 
-    use super::rollback_local_group_rows;
+    use super::{initial_default_capabilities, rollback_local_group_rows};
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
     const APP: [u8; 32] = [0xC1; 32];
@@ -986,6 +1085,9 @@ mod tests {
     /// A namespace this node creates is a namespace it has just gained, and the
     /// devices it already certified belong there. Without the auto-bind the
     /// creation succeeds and the paired device silently never sees the group.
+    ///
+    /// The devices come from the account namespace's registry, so this holds on
+    /// any device of the account, not only the one that did the certifying.
     #[actix::test]
     async fn creating_a_namespace_carries_this_accounts_devices_into_it() {
         let store = store();
@@ -998,7 +1100,7 @@ mod tests {
             .send(CreateGroupRequest {
                 group_id: Some(GROUP.into()),
                 bytecode_id: None,
-                application_id: ApplicationId::from(APP),
+                application_id: Some(ApplicationId::from(APP)),
                 name: None,
                 parent_group_id: None,
                 restricted: false,
@@ -1031,7 +1133,7 @@ mod tests {
             .send(CreateGroupRequest {
                 group_id: Some(GROUP.into()),
                 bytecode_id: None,
-                application_id: ApplicationId::from(APP),
+                application_id: Some(ApplicationId::from(APP)),
                 name: None,
                 parent_group_id: None,
                 restricted: false,
@@ -1055,5 +1157,288 @@ mod tests {
             rung.bytecode_id, [0x01; 32],
             "the rung names the bytecode blob the application row resolves to"
         );
+    }
+
+    /// A namespace this node creates is one its account gained, and the other
+    /// devices learn it from the DAG, the only thing that reaches them.
+    #[actix::test]
+    async fn creating_a_namespace_records_it_in_the_account_namespace() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            Some(Some(ApplicationId::from(APP))),
+            "the namespace the creation gained, with the target it was created for"
+        );
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(account_namespace)
+                .expect("read the set"),
+            None,
+            "and never the account namespace itself"
+        );
+    }
+
+    /// The derived id names the account namespace long before one exists, so
+    /// announcing into it would write to a DAG that is not there.
+    #[actix::test]
+    async fn a_gain_before_the_account_namespace_exists_announces_nothing() {
+        let store = store();
+        // The root and no ensure call: the id resolves, the
+        // namespace it names does not exist.
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("the holder's root");
+        let account_namespace = devices
+            .account_namespace()
+            .expect("read the account namespace")
+            .expect("the holder names one");
+        // Targeted, so the announce takes the synchronous path: an app-less one
+        // defers instead, and the guard below would never be reached at all.
+        install_application(&store, ApplicationId::from(APP));
+
+        let mut harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(created.group_id)
+                .expect("read the set"),
+            None,
+            "nothing may be recorded under a namespace this node does not take part in"
+        );
+        assert!(
+            calimero_governance_store::get_op_head(&store, &account_namespace)
+                .expect("read the op head")
+                .is_none(),
+            "and no op may be applied to the account namespace"
+        );
+        // The load-bearing one: the two above also hold when a publish is
+        // attempted and refused a layer down, so the topic is what pins the guard.
+        let topic = governance_broadcast::ns_topic(account_namespace.to_bytes().into()).to_string();
+        assert!(
+            !harness.broadcast_topics().contains(&topic),
+            "no governance broadcast may be attempted on a namespace this node \
+             does not take part in"
+        );
+    }
+
+    /// A leave published while a gain still waits for its target must win, or
+    /// the pending gain re-names a namespace the sweep can no longer drop.
+    #[actix::test]
+    async fn a_gain_still_waiting_is_dropped_when_the_account_leaves_the_namespace() {
+        let store = store();
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("the holder's root");
+
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+
+        let create = |group: [u8; 32]| CreateGroupRequest {
+            group_id: Some(group.into()),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        };
+        // App-less, so both gains defer. The left one is created FIRST, so the
+        // control's publish proves the left one's chance to publish has passed.
+        let left = harness
+            .manager
+            .send(create(GROUP))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+        let control = harness
+            .manager
+            .send(create([0xC4; 32]))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let account = devices
+            .get()
+            .expect("read this node's device")
+            .expect("it has one")
+            .account;
+        MembershipRepository::new(&store)
+            .remove_member(&left.group_id, &account)
+            .expect("the account leaves it while the gain is still waiting");
+
+        let metas = MetaRepository::new(&store);
+        for group in [left.group_id, control.group_id] {
+            let mut meta = metas.load(&group).expect("read the meta").expect("one row");
+            meta.target.application_id = ApplicationId::from(APP);
+            metas.save(&group, &meta).expect("the target folds");
+        }
+
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        assert!(
+            crate::test_support::eventually(|| set
+                .contains(control.group_id)
+                .expect("read the set")
+                == Some(Some(ApplicationId::from(APP))))
+            .await,
+            "the control gain has to land, and with the target it folded late"
+        );
+        assert_eq!(
+            set.contains(left.group_id).expect("read the set"),
+            None,
+            "a gain whose namespace the account has left must not be published"
+        );
+    }
+
+    /// An app-less root keeps the unset target and publishes no target op, the only
+    /// writer of a ladder rung.
+    #[actix::test]
+    async fn an_app_less_root_group_writes_an_unset_target_and_publishes_no_target_op() {
+        let store = store();
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("an app-less root is created");
+
+        let meta = MetaRepository::new(&store)
+            .load(&created.group_id)
+            .expect("read the meta")
+            .expect("the group has a meta row");
+        assert_eq!(meta.target, GroupTarget::default());
+        assert!(
+            calimero_governance_store::UpgradeLadderRepository::new(&store)
+                .load(&created.group_id)
+                .expect("read the ladder")
+                .is_empty(),
+            "no target op may be published for a group that targets nothing"
+        );
+    }
+
+    /// A namespace is created able to host a relay fleet; a subgroup is not.
+    ///
+    /// The asymmetry is the decision, so it is pinned from both sides: a test
+    /// that only checked the namespace would pass just as happily if every
+    /// group were opened, which is the widening this is scoped to avoid.
+    #[test]
+    fn a_namespace_is_created_open_to_delegated_authorship() {
+        let namespace = initial_default_capabilities(true);
+        let subgroup = initial_default_capabilities(false);
+
+        assert_eq!(
+            namespace,
+            (MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+                | MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
+                .bits(),
+            "a namespace must seed the authorship grant, or every fleet relay \
+             admitted to it needs its own admin-signed op"
+        );
+        assert_eq!(
+            subgroup,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            "a subgroup keeps the old mask: a root grant already reaches every \
+             Open subgroup through the membership anchor, and a Restricted one \
+             is a boundary whose admin decides its own posture"
+        );
+    }
+
+    /// The bit that was always there, and must survive the one being added.
+    ///
+    /// Losing it is silent and late: members still join the group, and only
+    /// inheritance into Open subgroups — where contexts actually live — stops
+    /// working, for every member admitted from then on.
+    #[test]
+    fn open_subgroup_inheritance_survives_in_both_arms() {
+        for is_namespace in [true, false] {
+            let caps =
+                MemberCapabilities::from_bits_truncate(initial_default_capabilities(is_namespace));
+            assert!(
+                caps.contains(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+                "is_namespace={is_namespace}"
+            );
+        }
+    }
+
+    /// Nothing else rides along.
+    ///
+    /// The mask is copied verbatim into every non-admin member's row, so an
+    /// extra bit here is a capability silently granted to every member of every
+    /// namespace — the failure mode this test exists to catch early.
+    #[test]
+    fn no_other_capability_is_seeded() {
+        let namespace = initial_default_capabilities(true);
+
+        assert_eq!(
+            namespace.count_ones(),
+            2,
+            "exactly CAN_JOIN_OPEN_SUBGROUPS and CAN_AUTHOR_ON_BEHALF"
+        );
+        for unexpected in [
+            MemberCapabilities::CAN_CREATE_CONTEXT,
+            MemberCapabilities::CAN_INVITE_MEMBERS,
+            MemberCapabilities::MANAGE_MEMBERS,
+            MemberCapabilities::MANAGE_APPLICATION,
+            MemberCapabilities::CAN_CREATE_SUBGROUP,
+            MemberCapabilities::CAN_DELETE_SUBGROUP,
+            MemberCapabilities::CAN_MANAGE_VISIBILITY,
+            MemberCapabilities::CAN_MANAGE_METADATA,
+        ] {
+            assert_eq!(
+                namespace & unexpected.bits(),
+                0,
+                "{unexpected:?} must not be seeded by default"
+            );
+        }
     }
 }

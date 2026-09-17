@@ -9,7 +9,7 @@
 //! ignores every stop including `SIGTERM` - which `the_node_stops_on_sigterm` is
 //! here to distinguish from a fault in the watchdogs themselves.
 
-use std::net::TcpListener;
+use std::net::{TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -18,6 +18,12 @@ use std::time::{Duration, Instant};
 /// bound a hang, they do not measure latency.
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// How many ports [`free_swarm_port`] draws before giving up. Excluded ranges are
+/// a small slice of the ephemeral range, so a handful of draws clears one with
+/// room to spare; the cap exists so a genuinely unusable environment fails with a
+/// message rather than spinning.
+const SWARM_PORT_PROBES: usize = 32;
 
 /// Kills the node even when an assertion unwinds, and keeps its log so a timeout
 /// can say what the node was doing rather than only that it was doing something.
@@ -61,12 +67,46 @@ fn scratch(tag: &str) -> PathBuf {
 
 /// Asked of the OS rather than hardcoded, so parallel jobs on one runner cannot
 /// collide on a port.
+///
+/// For a TCP-only port, which the server port is. A SWARM port is not TCP-only —
+/// use [`free_swarm_port`], and see the trap documented there.
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
         .local_addr()
         .expect("addr")
         .port()
+}
+
+/// A port free for UDP as well as TCP, which is what a swarm port has to be.
+///
+/// `--swarm-port` becomes TWO listeners rather than one: `init` pushes both
+/// `/tcp/<port>` and `/udp/<port>/quic-v1` (see `cli/init.rs`). A port the OS
+/// hands out for TCP says nothing about its UDP half, and on Windows a UDP bind
+/// inside a Hyper-V / WinNAT *excluded* port range fails with `WSAEACCES` (os
+/// error 10013) although the TCP probe a line earlier succeeded. The node then
+/// dies with `failed to listen on '/ip4/0.0.0.0/udp/<port>/quic-v1'`, and the
+/// test reports only that readiness never arrived — which reads as a broken
+/// watchdog rather than as a port that was never usable. Excluded ranges are
+/// reserved per boot, so it is intermittent and Windows-only.
+///
+/// Probing loopback rather than `0.0.0.0` is deliberate: an exclusion is
+/// system-wide rather than per-interface, so loopback detects it, and it keeps
+/// this probe on the same host the TCP one already uses instead of introducing a
+/// bind that a restrictive sandbox might refuse for unrelated reasons.
+///
+/// This narrows the window; it does not close it. Another process can still take
+/// the port between the probe and the node's own bind — a race the TCP-only
+/// version always had. What it removes is the deterministic case, where the port
+/// could never have worked no matter when it was tried.
+fn free_swarm_port() -> u16 {
+    for _ in 0..SWARM_PORT_PROBES {
+        let port = free_port();
+        if UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no port was free for both TCP and UDP after {SWARM_PORT_PROBES} attempts");
 }
 
 /// The node only reaches the select that watches for a stop once every subsystem
@@ -110,7 +150,7 @@ fn init_returning_port(home: &Path, node: &str) -> u16 {
             "--server-port",
             &server_port.to_string(),
             "--swarm-port",
-            &free_port().to_string(),
+            &free_swarm_port().to_string(),
         ])
         .output()
         .expect("run merod init");

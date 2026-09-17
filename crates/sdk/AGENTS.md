@@ -30,7 +30,8 @@ src/
 ├── state.rs                  # State management
 ├── env.rs                    # Environment access
 ├── env/
-│   └── ext.rs                # External functions
+│   ├── host.rs               # Native mock host (non-wasm32 test harness)
+│   └── subscriber.rs         # Host-backed `tracing` subscriber (feature-gated)
 ├── event.rs                  # Event handling
 ├── returns.rs                # Return types
 ├── types.rs                  # SDK types

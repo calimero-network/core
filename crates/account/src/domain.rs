@@ -27,6 +27,9 @@ pub(crate) const ACCOUNT_ENDORSEMENT_SIGN_DOMAIN: &[u8] = b"calimero.account.end
 /// Domain for a root-signed device revocation.
 pub(crate) const DEVICE_REVOCATION_SIGN_DOMAIN: &[u8] = b"calimero.device.revocation.v1";
 
+/// Domain for a root-signed device scope.
+pub(crate) const DEVICE_SCOPE_SIGN_DOMAIN: &[u8] = b"calimero.device.scope.v1";
+
 /// Domain for a pairing device's statement over the key material it minted.
 pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v1";
 
@@ -42,7 +45,7 @@ pub(crate) const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.
 /// [`DEVICE_CERT_SIGN_DOMAIN`] for a sharper one: a warrant is signed by a
 /// DEVICE key while a certificate is signed by a ROOT key, so a shared domain
 /// would let a device that holds neither role sign bytes the other would accept.
-pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v1";
+pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v2";
 
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.
@@ -56,6 +59,15 @@ pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
 /// something signs.
 pub(crate) const WARRANT_INTENT_DOMAIN: &[u8] = b"calimero.warrant.intent.v1";
 
+/// Domain for a device key's request for a session on a node.
+///
+/// Distinct from [`WARRANT_SIGN_DOMAIN`] for the sharpest reason in this file:
+/// both are signed by the same DEVICE key, so a shared domain would let a
+/// statement minted to log in be presented as a warrant authorizing a write, or
+/// the reverse. The two are the only device-signed domains here, which is
+/// exactly why they must not collide.
+pub(crate) const AUTH_LOGIN_SIGN_DOMAIN: &[u8] = b"calimero.auth.login.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -67,8 +79,10 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     DEVICE_CERT_SIGN_DOMAIN,
     ACCOUNT_ENDORSEMENT_SIGN_DOMAIN,
     DEVICE_REVOCATION_SIGN_DOMAIN,
+    DEVICE_SCOPE_SIGN_DOMAIN,
     PAIRING_STATEMENT_SIGN_DOMAIN,
     PAIRING_CONFIRMATION_DOMAIN,
     WARRANT_SIGN_DOMAIN,
     WARRANT_INTENT_DOMAIN,
+    AUTH_LOGIN_SIGN_DOMAIN,
 ];

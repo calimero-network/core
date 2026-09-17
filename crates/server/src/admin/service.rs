@@ -28,7 +28,7 @@ use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, intent_relay, join_context, leave_context,
-    perform_intent, resync_context, sync, update_context_application,
+    perform_intent, query_context, resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -216,6 +216,15 @@ pub(crate) fn setup(
             "/contexts/{context_id}/group",
             get(get_context_group::handler),
         )
+        // A delegated read: an account-authenticated caller reads a context it
+        // is a member of. Protected rather than public, unlike the intent pair
+        // — an intent carries a warrant that stands on its own, while this
+        // carries only a session, so the auth layer is what identifies the
+        // caller at all.
+        .route(
+            "/contexts/{context_id}/query",
+            post(query_context::handler),
+        )
         // Identity management
         .route(
             "/identity/context",
@@ -271,6 +280,10 @@ pub(crate) fn setup(
         .route(
             "/groups/{group_id}/member-devices",
             get(groups::list_member_devices::handler),
+        )
+        .route(
+            "/groups/{group_id}/accounts/{account}/seal",
+            post(groups::seal_to_account::handler),
         )
         .route(
             "/groups/{group_id}/leave",

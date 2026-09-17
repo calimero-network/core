@@ -15,6 +15,9 @@ fn full_meta() -> BundleMeta {
         icon: Some("data:image/png;base64,iVBORw0KGgo=".into()),
         slug: Some("com.example.demo".into()),
         license: Some("MIT".into()),
+        // Populated, not None: this fixture exists to prove every field
+        // survives a manifest round-trip, and a None would skip the new one.
+        category: Some("social".into()),
         tags: vec!["social".into()],
         github: Some("https://github.com/acme/demo".into()),
         docs: Some("https://docs.acme.com".into()),
@@ -51,6 +54,7 @@ fn sparse_meta() -> BundleMeta {
         icon: None,
         slug: None,
         license: None,
+        category: None,
         tags: vec![],
         github: None,
         docs: None,
@@ -83,7 +87,7 @@ fn assert_no_nulls(value: &serde_json::Value, path: &str) {
 
 #[test]
 fn omitted_optional_fields_serialize_without_nulls() {
-    let json = cargo_mero::manifest::render(&sparse_meta(), &staged()).expect("render");
+    let json = cargo_mero::manifest::render(&sparse_meta(), &staged(), None).expect("render");
     assert_no_nulls(&json, "$");
 
     // Still deserializes back into the node's type with the sparse fields
@@ -96,7 +100,7 @@ fn omitted_optional_fields_serialize_without_nulls() {
 
 #[test]
 fn every_field_survives_a_round_trip_through_the_node_type() {
-    let json = cargo_mero::manifest::render(&full_meta(), &staged()).expect("render");
+    let json = cargo_mero::manifest::render(&full_meta(), &staged(), None).expect("render");
     let m: BundleManifest = serde_json::from_value(json).expect("node accepts it");
 
     let meta = m.metadata.expect("metadata");
@@ -151,7 +155,8 @@ fn old_manifest_with_explicit_nulls_still_parses() {
 
 #[test]
 fn no_abi_omits_the_artifact_entirely() {
-    let json = cargo_mero::manifest::render(&full_meta(), &staged_without_abi()).expect("render");
+    let json =
+        cargo_mero::manifest::render(&full_meta(), &staged_without_abi(), None).expect("render");
     assert!(
         json.get("abi").is_none(),
         "an omitted abi must not serialize as null"

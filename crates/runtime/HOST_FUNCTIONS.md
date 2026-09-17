@@ -433,7 +433,6 @@ Large binary object streaming.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fetch` | `(url_ptr: u64, method_ptr: u64, headers_ptr: u64, body_ptr: u64, register_id: u64) -> u32` | HTTP fetch. **BLOCKED** — wired into the runtime but disabled; always returns `1` (failure) without performing a request. |
 | `random_bytes` | `(dest_ptr: u64)` | Fills buffer with cryptographically random bytes. |
 | `time_now` | `(dest_ptr: u64)` | Writes current Unix timestamp (nanoseconds) as `u64` to 8-byte buffer. |
 | `ed25519_verify` | `(sig_ptr: u64, pk_ptr: u64, msg_ptr: u64) -> u32` | Verifies Ed25519 signature. Returns `1` if valid, `0` if invalid. |

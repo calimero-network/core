@@ -7,6 +7,8 @@ use axum::extract::OriginalUri;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use calimero_governance_store::NamespaceRepository;
+use calimero_store::Store;
 use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
@@ -68,6 +70,24 @@ pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedNodeOwner;
 
+/// The authenticated requester's **account**, injected by [`AuthGuardService`]
+/// when the session is anchored to an account rather than to a key row in this
+/// node's auth store — today, an `account_proof` login.
+///
+/// Separate from [`AuthenticatedNodeOwner`] because such a caller is precisely
+/// not the node owner: they hold a device certified under their own account
+/// root and may well be a tenant on a relay somebody else runs. Before this
+/// existed they landed in the node-owner arm, because the store lookup
+/// collapsed "no row" into the same answer as "a client key with no public
+/// key".
+///
+/// Holding one of these says the auth layer authenticated *this account*. It
+/// says nothing about what the account may do: membership and capabilities are
+/// at-cut questions, answered per request against the target context's group,
+/// never cached from the session.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedAccount(pub calimero_account::AccountId);
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -84,12 +104,69 @@ impl BundledAuth {
     }
 }
 
+/// Name this node in the auth config, so `account_proof` can tell a login
+/// statement minted for it from one minted elsewhere.
+///
+/// `account_proof` refuses to start without `auth.account_proof.node_key`,
+/// deliberately: a guessed value would accept statements addressed to a
+/// different node. Nothing set it, so the provider could not start anywhere.
+///
+/// **Which key.** The node's *device signing key* — the one it signs ops with,
+/// and the one its device certificate certifies. That is what the client
+/// contract means by learning the node's identity "from a pinned certificate":
+/// a libp2p identity key is a network address, certified by nothing, and
+/// pinning it would pin something no certificate attests to.
+///
+/// Resolved here rather than in `merod run` because it lives in the datastore,
+/// which `run` never opens — it hands the config to the node, which opens it
+/// later. This is the first point that holds both the auth config and a store.
+///
+/// Read once at startup, so a device minted or rotated afterwards is picked up
+/// on the next restart. That matches the field being configuration: a value
+/// clients have pinned should not change under them mid-session.
+///
+/// Filled **only when unset**, so an operator who pinned a value keeps it, and
+/// a node answering on several identities can name the one its clients pinned.
+fn name_this_node(config: &mut mero_auth::config::AuthConfig, datastore: &Store) {
+    if config.account_proof.node_key.is_some() {
+        return;
+    }
+
+    match NamespaceRepository::new(datastore).node_identity() {
+        Ok(Some(identity)) => {
+            let key = identity.public_key.to_string();
+            info!(
+                node_key = %key,
+                "embedded auth: naming this node for account-proof logins",
+            );
+            config.account_proof.node_key = Some(key);
+        }
+        // Not an error: a node mints its signing key the first time it takes
+        // part in a namespace, so a fresh one legitimately has none yet. Leaving
+        // the field unset keeps `account_proof` refusing to start on its own
+        // terms rather than starting with a key it invented.
+        Ok(None) => info!(
+            "embedded auth: this node has no signing key yet, so account-proof logins stay \
+             disabled; it mints one the first time it takes part in a namespace",
+        ),
+        // A failed read is not a missing row, and treating them alike would say
+        // "not enrolled" when the truth is "could not look".
+        Err(err) => warn!(
+            %err,
+            "embedded auth: could not read this node's signing key, so account-proof logins \
+             stay disabled",
+        ),
+    }
+}
+
 /// Initialise the embedded authentication service according to the server configuration.
-pub async fn initialise(server_config: &ServerConfig) -> Result<BundledAuth> {
-    let auth_config = server_config
+pub async fn initialise(server_config: &ServerConfig, datastore: &Store) -> Result<BundledAuth> {
+    let mut auth_config = server_config
         .embedded_auth_config()
         .cloned()
         .unwrap_or_else(default_config);
+
+    name_this_node(&mut auth_config, datastore);
 
     // Path resolution is handled by merod run.rs before passing config here
     let app = build_app(auth_config).await?;
@@ -244,7 +321,35 @@ where
                 // Attempt to resolve the authenticated public key and inject it so
                 // handlers can use it as the effective requester without trusting the
                 // caller-supplied value.
-                match service.get_key_public_key(&auth_response.key_id).await {
+                // Ask FIRST whether the subject is an account. An
+                // `account_proof` login records its account on first use, so it
+                // now has a row here AND that row carries the account in its
+                // `public_key` field -- which parses as a `PublicKey` (that
+                // `FromStr` is hex, while `Display` is bs58) and would otherwise
+                // be injected as `AuthenticatedKey`, an identity no member holds.
+                // The delegated read then refuses a perfectly good session for
+                // want of an account.
+                //
+                // Neither inference below can answer this: presence says only
+                // that something was provisioned, and a parseable `public_key`
+                // says only that 32 bytes were stored. The record's own
+                // `auth_method` says which provider minted it, so that is what
+                // decides.
+                match service.is_account_anchored_key(&auth_response.key_id).await {
+                    Ok(true) => match auth_response.key_id.parse::<calimero_account::AccountId>() {
+                        Ok(account) => {
+                            debug!(%account, "account-anchored session: granting AuthenticatedAccount");
+                            parts.extensions.insert(AuthenticatedAccount(account));
+                        }
+                        Err(_) => {
+                            // Minted by the account provider yet not a parseable
+                            // account: grant nothing rather than fall through to
+                            // an inference that would read it as the node owner.
+                            warn!(key_id=%auth_response.key_id, "account-anchored record whose id is not an account; granting no identity");
+                        }
+                    },
+                    Ok(false) => {
+                        match service.get_key_public_key(&auth_response.key_id).await {
                     Ok(Some(pk_hex)) => {
                         use std::str::FromStr as _;
                         match calimero_primitives::identity::PublicKey::from_str(&pk_hex) {
@@ -265,27 +370,59 @@ where
                         }
                     }
                     Ok(None) => {
-                        // No Ed25519 public key is stored for this key_id. The only
-                        // legitimate case is a client key (`KeyType::Client`): created
-                        // via the `/auth/client-keys` API by the node owner for their
-                        // own applications and provisioned with `public_key: None` by
-                        // design (see `Key::new_client_key`). Client keys are always
-                        // issued by and to the node owner; treating them as NodeOwner
-                        // matches the intended access model.
+                        // No Ed25519 public key came back, which covers two callers
+                        // the store lookup cannot tell apart on its own — it ends in
+                        // `key.and_then(|k| k.public_key)`, so "no row" and "a row
+                        // whose public_key is None" both arrive here. Ask which:
                         //
-                        // Note: username/password root keys do NOT reach this arm.
-                        // The `user_password` provider stores the username as a
-                        // non-hex string in `public_key`, so `get_key_public_key`
+                        // * A ROW EXISTS → a client key (`KeyType::Client`), created
+                        //   via `/auth/client-keys` by the node owner for their own
+                        //   applications and provisioned with `public_key: None` by
+                        //   design. Issued by and to the node owner, so NodeOwner
+                        //   matches the intended access model. Unchanged.
+                        //
+                        // * NO ROW → a session anchored outside this store: an
+                        //   `account_proof` login, whose account is its own
+                        //   cryptographic anchor and which deliberately persists
+                        //   nothing here. Emphatically NOT the node owner — they may
+                        //   be one tenant among many on a relay. Before this split
+                        //   they were granted NodeOwner, on a comment asserting that
+                        //   no such key could exist; adding the provider made that
+                        //   assertion false.
+                        //
+                        // Note: username/password root keys reach neither arm. That
+                        // provider stores the username in `public_key`, so the lookup
                         // returns `Ok(Some(username))` and `PublicKey::from_str` fails
-                        // → that path is handled by the `Err(_)` arm above.
-                        //
-                        // No other key type with `public_key = None` should exist in
-                        // the store. This is a schema guarantee in the auth crate:
-                        // `new_root_key_with_permissions` always sets `public_key` to
-                        // a non-empty string, and `new_client_key` is the only other
-                        // constructor.
-                        warn!(key_id=%auth_response.key_id, "non-key auth (absent public key): granting NodeOwner");
-                        parts.extensions.insert(AuthenticatedNodeOwner);
+                        // → handled by the `Err(_)` arm above.
+                        match service.key_row_exists(&auth_response.key_id).await {
+                            Ok(true) => {
+                                debug!(key_id=%auth_response.key_id, "client key (row present, no public key): granting NodeOwner");
+                                parts.extensions.insert(AuthenticatedNodeOwner);
+                            }
+                            Ok(false) => {
+                                match auth_response.key_id.parse::<calimero_account::AccountId>() {
+                                    Ok(account) => {
+                                        debug!(%account, "account-anchored session: granting AuthenticatedAccount");
+                                        parts.extensions.insert(AuthenticatedAccount(account));
+                                    }
+                                    Err(_) => {
+                                        // Authenticated, but the subject names
+                                        // neither a stored key nor a parseable
+                                        // account. Grant nothing rather than guess:
+                                        // the permission check has already run, and
+                                        // no handler should treat an unidentifiable
+                                        // subject as anybody in particular.
+                                        warn!(key_id=%auth_response.key_id, "authenticated subject is neither a stored key nor an account; granting no identity");
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                // Same posture as the lookup error below: an
+                                // infrastructure failure must not decide an identity.
+                                warn!(key_id=%auth_response.key_id, %err, "failed to determine whether a key row exists; rejecting request");
+                                return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                            }
+                        }
                     }
                     Err(err) => {
                         // A store or network error during key lookup is an
@@ -293,6 +430,17 @@ where
                         // closed rather than failing open: do NOT grant
                         // node-owner access on a transient error.
                         warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id; rejecting request");
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                }
+                    }
+                    Err(err) => {
+                        // Whether the subject is an account decides WHICH
+                        // identity a handler sees, so a failure here must not
+                        // fall through to the inferences above: those would
+                        // read an account-anchored session as the node owner,
+                        // which on a relay is another tenant entirely.
+                        warn!(key_id=%auth_response.key_id, %err, "failed to classify the authenticated subject; rejecting request");
                         return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 }

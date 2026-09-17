@@ -1,0 +1,209 @@
+name: E2E Scaffolding - No Join Is Ever Published In The Clear
+description: >
+  End-to-end coverage for #3904 / #3910: an invitation join must never reach
+  the namespace gossip topic as a cleartext `NamespaceOp::Root`.
+
+  `RootOp::MemberJoined` / `MemberJoinedAt` name an account, the group it
+  joined and when. Topic subscription is not authorization-gated, so a
+  cleartext join lets anyone who knows a namespace id watch a private group's
+  membership assemble in real time. Every other root op is sealed; these two
+  were the remaining hole, and #3910 closed it — a joiner holding the covering
+  key seals its own join, and one that does not hands the signed op to a
+  keyholder that publishes it as `root_relay_sealed`.
+
+  WHY THIS MARKER
+
+  The decisive signal is the `op_kind` field on governance-store's
+  "namespace governance op published" line, because that label comes from
+  `NamespaceOp::op_kind_label` — i.e. from the wire variant actually handed to
+  the publisher. A sealed join publishes as `root_sealed`,
+  `root_sealed_for_group` or `root_relay_sealed`; the labels `member_joined` /
+  `member_joined_at` are emitted ONLY for a cleartext
+  `NamespaceOp::Root(RootOp::MemberJoined*)`. Asserting those two are absent is
+  therefore a direct test of the wire form, and it fails the moment anyone
+  reintroduces a cleartext-publish fallback in `join_group`.
+
+  Deliberately NOT asserted on the log line #3910 removed. That PR deleted the
+  `"publishing this join in the clear"` arm outright, so an `assert_log_absent`
+  on that string would pass while testing nothing. The failure mode worth
+  guarding is a FUTURE fallback, which would carry a new message but the same
+  `op_kind`.
+
+  WHY THE PATTERNS MATCH THE QUOTED VALUE AND NOT `op_kind="..."`
+
+  Because a raw node log carries ANSI escapes BETWEEN a field name and its
+  value, so `op_kind="member_joined_at"` matches nothing at all — and for an
+  `assert_log_absent` that is not a loud failure, it is a silently vacuous
+  pass, which is precisely the shape of gate this scenario exists to avoid
+  becoming. The projection-coverage gate in `e2e-rust-apps.yml` hit this and
+  now `sed`s the escapes out before grepping; merobox's log asserts grep the
+  container output as-is, so the pattern has to stay inside one token. The
+  Debug-rendered value `"member_joined_at"` — quotes included — is contiguous,
+  and the quotes are what keep it from also matching `"member_joined_at_..."`
+  or `"root_sealed"` from matching `"root_sealed_for_group"`.
+
+  The positive assertion is on the JOINER, not on node-1, and that distinction
+  is easy to get wrong: these labels exist on the PUBLISH path only. A
+  receiving node logs a different `op_kind` entirely — `add` / `join` /
+  `remove`, from `MembershipOpKind::label` in `apply_signed_namespace_op.rs`.
+  So node-1 has no `root_sealed*` line for a join it merely received, and
+  asserting there would have matched node-1's own `GroupCreated` /
+  `KeyDelivery` publishes instead — passing without ever testing a join.
+
+  TWO THINGS THIS DOES NOT COVER, stated rather than left to be discovered.
+
+  1. The RELAY path itself. Reaching it needs an admitter that endorses a join
+     while holding no key for the covering group, and merobox has no
+     declarative way to produce a keyless-but-endorsing responder — every node
+     here is keyed by the time it answers. So `root_relay_sealed` is not
+     asserted present. What is asserted is the property that has to hold on
+     every path, relay included: no join is ever in the clear. The relay
+     branch's own gate is covered by the unit tests in
+     `crates/node/src/sync/manager/relay_sealed_join.rs`.
+  2. The SUBGROUP-targeted invitation join (`root_sealed_for_group`, #3858 /
+     #3859). `POST /admin-api/namespaces/:id/invite` refuses a non-root group
+     — *"namespace_id must reference a root group (namespace)"* — so a
+     subgroup invitation is only reachable through the `recursive` flag, which
+     the merobox `create_namespace_invitation` step does not expose. An
+     admin-push `add_group_members` is not a substitute: that publishes a
+     `MemberAdded` GroupOp, not a join, so it would exercise none of this.
+
+force_pull_image: false
+
+# Passed verbatim to each node container as RUST_LOG. The publish line this
+# scenario greps for is `tracing::debug!` in
+# `governance-store/src/namespace/governance.rs`, so that one target is raised
+# to `debug`; everything else stays at `info` to keep the log readable and the
+# match unambiguous.
+log_level: "info,calimero_governance_store=debug"
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  # --- Setup: app + namespace on node-1 (the namespace owner / admitter) ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- The join under test ---
+  #
+  # node-2 joins the namespace root by invitation. Its bundle carries the
+  # namespace key and `join_group` stores it before publishing, so this join
+  # seals itself under that key rather than taking the relay route. That is the
+  # ordinary path, and it is the one a regression would most likely re-open:
+  # the `Ok(None)` arm that used to publish cleartext sat directly beside it.
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+      # The membership list is `Vec<AccountId>`, so the convergence assert
+      # below compares against the ACCOUNT rather than the signing identity.
+      account_node2: memberAccount
+
+  - name: Assert node-2 was admitted
+    type: assert
+    statements:
+      - "is_set({{identity_node2}})"
+      - "is_set({{account_node2}})"
+
+  # The join has to have actually landed, or every assertion below is about a
+  # namespace with one member and proves nothing. `list_group_members` on the
+  # namespace root is the direct read.
+  - name: Wait for namespace governance to settle
+    type: wait
+    seconds: 15
+
+  - name: List namespace members from node-1
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      ns_members: members
+
+  - name: Assert the join converged on the admitter
+    type: assert
+    statements:
+      - "is_set({{ns_members}})"
+      - "contains({{ns_members}}, {{account_node2}})"
+
+  # --- HEADLINE: the join was sealed, and no cleartext join exists anywhere ---
+
+  - name: Assert node-2 published its join sealed
+    type: assert_log_present
+    nodes:
+      - e2e-node-2
+    patterns:
+      - '"root_sealed"'
+
+  - name: Assert node-2 never published a join in the clear
+    type: assert_log_absent
+    nodes:
+      - e2e-node-2
+    patterns:
+      - '"member_joined_at"'
+      - '"member_joined"'
+
+  # node-1 authors no join here, so this guards the other publisher of one:
+  # the admitter-side relay endpoint (`admit_join.rs` → `relay_signed_join`),
+  # which must also never downgrade to cleartext.
+  - name: Assert node-1 never published a join in the clear
+    type: assert_log_absent
+    nodes:
+      - e2e-node-1
+    patterns:
+      - '"member_joined_at"'
+      - '"member_joined"'
+
+stop_all_nodes: true

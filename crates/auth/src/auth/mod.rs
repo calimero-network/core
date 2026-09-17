@@ -1,3 +1,4 @@
+pub mod challenge;
 pub mod middleware;
 pub mod permissions;
 pub mod rate_limit;

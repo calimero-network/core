@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
-use calimero_governance_store::NodeDeviceRepository;
+use calimero_governance_store::{AccountDeviceRegistry, NodeDeviceRepository};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{NodeIdentityApiResponse, NodeIdentityApiResponseData};
 use calimero_store::Store;
@@ -58,11 +58,16 @@ pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityPart
         let holds_root = devices
             .account_root()?
             .is_some_and(|root| root.account() == held.account);
-        // Certified either by a link this node applied, or by a certificate an
-        // offline root signed and an operator imported. A device minted by
-        // pair-init has neither until the holder completes the pairing.
-        let certified = devices.device_cert(held.device())?.is_some()
-            || devices.imported_certificate()?.is_some();
+        let in_registry = match devices.account_namespace()? {
+            Some(namespace) => AccountDeviceRegistry::new(store, namespace)
+                .device(held.device())?
+                .is_some(),
+            None => false,
+        };
+        // Certified either by the account namespace's registry - which every
+        // device of the account holds - or by a certificate an offline root
+        // signed and an operator imported.
+        let certified = in_registry || devices.imported_certificate()?.is_some();
         return Ok(Some((
             held.account,
             held.genesis.root_sign_pk,
@@ -160,6 +165,18 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
             }
         };
 
+    let account_namespace_id = match NodeDeviceRepository::new(store).account_namespace() {
+        Ok(namespace) => namespace.map(|namespace| hex::encode(namespace.to_bytes())),
+        Err(err) => {
+            error!(error = ?err, "Failed to read this node's account namespace");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read this node's account namespace".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: NodeIdentityApiResponse {
             data: NodeIdentityApiResponseData {
@@ -178,6 +195,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 device_agreement_key: agreement_key,
                 holds_account_root,
                 device_certified,
+                account_namespace_id,
             },
         },
     }
@@ -374,16 +392,22 @@ mod tests {
             0,
         )
         .expect("the account root certifies the device");
+        // What pair-init recorded, and what folding the certified op writes.
+        let namespace = ContextGroupId::from([0x4E; 32]);
         devices
-            .remember_device_cert(
+            .store_account_namespace(&namespace)
+            .expect("pair-init records the account namespace");
+        let _recorded = calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
+            .record(
                 &AccountProof {
                     genesis: adopted.genesis,
                     chain: vec![],
                     statement: cert,
                 },
                 &[],
+                0,
             )
-            .expect("apply the link");
+            .expect("fold the certified op");
 
         let (.., certified) = node_identity(&store).expect("read").expect("present");
         assert!(certified);

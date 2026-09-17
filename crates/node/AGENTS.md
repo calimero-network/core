@@ -38,6 +38,7 @@ src/
 │   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, store_setup.rs, verify.rs)
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
+│   ├── blob_announce.rs      # Availability prefetch on an inbound blob announcement
 │   └── get_blob_bytes.rs     # Get blob bytes handler
 ├── readiness.rs              # ReadinessTier FSM + ReadinessCache + ReadinessManager actor
 ├── readiness/
@@ -45,7 +46,7 @@ src/
 ├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
-│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, tests.rs)
+│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, relay_sealed_join.rs, tests.rs)
 │   ├── stream.rs             # Sync streams
 │   ├── config.rs             # Sync configuration
 │   ├── tracking.rs           # Sync tracking
@@ -234,9 +235,16 @@ cargo test -p calimero-node --test network_simulation
 - `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
   mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
   directly on those fields
+- **Only two things make a peer acceptable to serve a group key** (`key_server_accepted`): it is a trusted anchor of that group, or it proved with a certificate chaining to this node's own account root that it is a device of this node's own account. Decided **per response**, never by pruning the candidate list first — the second ground cannot be known until the answer is in hand. An awaited `key_id` is NOT a ground and the predicate deliberately takes no such argument: that id is read from a cleartext field no gate checks, so whoever mints it can then satisfy its own hash check (#3888). Anchor-first ordering decides who is *asked* first, never who is *believed*. And do not reduce this to anchors alone: `trusted_anchors` reads group meta, so a node holding no governance state identifies NO anchor, and that is exactly the freshly paired device the pull exists for — the `account-device-*` scenarios fail on it, surfacing two steps away as "context does not belong to any group" because without the key the GroupOps mapping a context to its group never fold (#3892).
 - `ReadinessCache::insert` does NOT verify signatures or membership -
   the receiver-side gate `verify_readiness_beacon` is the choke point;
   callers from outside the receiver path must verify first
+- A beacon's `dag_head` is the lex-min of the sender's head SET, so it cannot
+  represent a fork: a peer holding `{L, G}` advertises whichever sorts lower,
+  and if we already hold that one we look caught up. `applied_through` is what
+  detects the fork, hence `peer_applied_more` in `beacon_indicates_divergence`.
+  The repair pull then goes to the beacon's own signer, the one node
+  demonstrably holding what we lack, not a subscriber that may be as far behind
 - `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
   `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
   parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side
@@ -288,6 +296,25 @@ cargo test -p calimero-node --test network_simulation
   afterwards would leave the artifact's own (legitimate, possibly
   unrelated) application row pointing at a blob the failure path then
   deletes
+- A joiner that holds no key to seal its own join does NOT publish it in
+  the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
+  the exchange that replaced that fallback (#3904): the joiner sends
+  `InitPayload::RelaySealedJoinRequest` with its own signed op, and the
+  admitter wraps it as `NamespaceOp::RootRelaySealed` and publishes.
+  Three things about it are load-bearing. The responder does **no**
+  membership or authority check on the requester — the authority is the
+  endorsement sealed inside the op, which is self-authenticating, so a
+  gate there would only reject legitimate relays. The initiator tries the
+  endorsing admitter first because it is known reachable (the endorsement
+  arrived over a stream to it), which is why `JoinBundle` carries
+  `admitter_peer` at all; it is filled by the requester, never asserted by
+  the responder — and it then falls through to the rest of the namespace
+  topic, because an admitter is NOT guaranteed to hold the key: one still
+  awaiting its own `KeyDelivery` endorses the join and serves an empty
+  envelope, which is precisely how a joiner ends up unkeyed. And a relay that finds no keyholder **fails the join**:
+  falling back to a cleartext publish would make "sealed" and "leaked" the
+  same silence, and an older responder that cannot decode the payload
+  lands in exactly that branch.
 - `add_blob`'s `expected_size` asserts a length the caller already
   knows; it is never a ceiling. Passing a cap through it rejects every
   correct blob under that cap. Bound a stream where the bytes arrive

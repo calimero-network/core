@@ -1,5 +1,6 @@
 use crate::{
-    AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository, NamespaceRepository,
+    AccountBindingRepository, CapabilitiesRepository, DeviceSecret, KeyringError,
+    MembershipRepository, NamespaceRepository,
 };
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
@@ -422,10 +423,10 @@ impl<'a> GroupKeyring<'a> {
     /// a strict subset of the members entitled to read it, and would look correct
     /// at every step until some member could not fold namespace structure.
     ///
-    /// Only the five admin-published variants are sealable; see
-    /// [`EncryptedRootOp`] for why the joins, `KeyDelivery` and
-    /// `NamespaceCreated` are not. This function does not enforce that: E1 gates
-    /// it at the publisher, where the decision belongs, and sealing a join here
+    /// Which variants are sealable is decided by `root_op_is_sealable`; see
+    /// [`EncryptedRootOp`] for why `MemberJoinedAt` and `NamespaceCreated` are
+    /// not. This function does not enforce that: the gate lives at the
+    /// publisher, where the decision belongs, and sealing an unsealable op here
     /// would fail later at a point far from the cause.
     ///
     /// # Errors
@@ -443,6 +444,55 @@ impl<'a> GroupKeyring<'a> {
             .ok_or(KeyringError::EncryptionFailed)?;
 
         Ok(EncryptedRootOp { nonce, ciphertext })
+    }
+
+    /// Seal a joiner's already-signed op for relay by an admitter.
+    ///
+    /// Encrypts the whole `SignedNamespaceOp` rather than its inner `RootOp`, so
+    /// the joiner's signature travels inside the seal and is verified after
+    /// decryption. See [`NamespaceOp::RootRelaySealed`].
+    pub fn encrypt_relayed_op(
+        namespace_key: &[u8; 32],
+        op: &calimero_context_client::local_governance::SignedNamespaceOp,
+    ) -> EyreResult<calimero_governance_types::EncryptedRelayedOp> {
+        use calimero_crypto::SharedKey;
+
+        let plaintext =
+            borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh encode SignedNamespaceOp: {e}"))?;
+        let sk = PrivateKey::from(*namespace_key);
+        let shared_key = SharedKey::from_sk(&sk);
+
+        let (nonce, ciphertext) = shared_key
+            .encrypt(plaintext)
+            .ok_or(KeyringError::EncryptionFailed)?;
+
+        Ok(calimero_governance_types::EncryptedRelayedOp { nonce, ciphertext })
+    }
+
+    /// Open a relayed join sealed by [`Self::encrypt_relayed_op`].
+    ///
+    /// Yields the joiner's signed op. The caller must still verify its signature
+    /// — decryption proves only that a namespace keyholder sealed it, which is
+    /// the admitter, not the joiner.
+    pub fn decrypt_relayed_op(
+        namespace_key: &[u8; 32],
+        encrypted: &calimero_governance_types::EncryptedRelayedOp,
+    ) -> EyreResult<calimero_context_client::local_governance::SignedNamespaceOp> {
+        use calimero_crypto::SharedKey;
+
+        let sk = PrivateKey::from(*namespace_key);
+        let shared_key = SharedKey::from_sk(&sk);
+        let plaintext = shared_key
+            .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
+            .ok_or(KeyringError::DecryptionFailed)?;
+        borsh::from_slice(&plaintext).map_err(|e| {
+            tracing::warn!(
+                plaintext_len = plaintext.len(),
+                prefix = ?plaintext.first(),
+                "decrypted relay payload does not match the current SignedNamespaceOp schema"
+            );
+            eyre::eyre!("borsh decode SignedNamespaceOp: {e}")
+        })
     }
 
     /// Prepare a root op for publishing: sealed if policy says so, cleartext if
@@ -1030,6 +1080,39 @@ impl<'a> GroupKeyring<'a> {
             new_key_id: new_key_id.into(),
             envelopes,
         })
+    }
+}
+
+/// The group whose keyring holds the key that covers `group_id` — the key its
+/// governance ops and state deltas are encrypted under.
+///
+/// For a group on an **Open chain** to its namespace this is the **namespace**:
+/// an Open subgroup's contents are namespace-scoped by construction, so every
+/// writer encrypts them under the namespace key. For anything else — a group
+/// behind a `Restricted` ancestor, and the namespace root itself, which
+/// [`CapabilitiesRepository::is_open_chain_to_namespace`] answers `false` for
+/// against itself — it is the group's own keyring.
+///
+/// This is the single place that mapping lives, and every site that *reads* a
+/// keyring for a group should go through it. A reader that assumes the group's
+/// own keyring instead can serve or adopt the key row a subgroup was minted at
+/// birth (see `create_group`), which for an Open chain is a key **nothing was
+/// ever encrypted under** — a failure that reads as a successful key delivery
+/// and then decrypts nothing. The writers already agree on this rule:
+/// `execute`'s state-delta path and `GroupGovernancePublisher` both pick their
+/// encrypting group this way, and `pending_rotation` decides rotation
+/// eligibility by it.
+///
+/// Errors propagate rather than defaulting: a failure here means the topology
+/// itself is unreadable (a cyclic parent edge, missing namespace meta), and
+/// guessing "the group's own key" would mis-encrypt for exactly the receivers
+/// the walk was meant to identify.
+pub fn key_covering_group(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
+    if CapabilitiesRepository::new(store).is_open_chain_to_namespace(group_id, &namespace_id)? {
+        Ok(namespace_id)
+    } else {
+        Ok(*group_id)
     }
 }
 

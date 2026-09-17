@@ -17,7 +17,7 @@ use flate2::Compression;
 use crate::build::{self, BuiltWasm};
 use crate::manifest::{self, StagedArtifact};
 use crate::meta::{self, BundleMeta};
-use crate::{icon, logo, registry, workspace};
+use crate::{icon, logo, registry, sdk, workspace};
 use crate::{BuildArgs, BundleArgs};
 
 /// Environment variable naming a signing-key JSON file, used when none of
@@ -52,7 +52,10 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     let staged = stage(&bundle_meta, &built, &staging, args.no_abi)?;
 
     println!("• writing manifest.json");
-    let manifest_path = write_manifest(&staging, &bundle_meta, &staged)?;
+    // Read off the same resolve graph the build just used, so the stamp cannot
+    // describe a different SDK than the wasm was compiled against.
+    let sdk = sdk::resolve(&metadata);
+    let manifest_path = write_manifest(&staging, &bundle_meta, &staged, sdk.as_ref())?;
     let signer_id = sign(&manifest_path, &signing_key)?;
     let application_id = ApplicationId::for_bundle(&bundle_meta.package, &signer_id)?;
 
@@ -117,9 +120,10 @@ fn write_manifest(
     staging: &Utf8Path,
     meta: &BundleMeta,
     staged: &[StagedArtifact],
+    sdk: Option<&manifest::SdkResolution>,
 ) -> Result<Utf8PathBuf> {
     let path = staging.join("manifest.json");
-    let value = manifest::render(meta, staged)?;
+    let value = manifest::render(meta, staged, sdk)?;
     fs::write(&path, serde_json::to_string_pretty(&value)?)
         .wrap_err_with(|| format!("failed to write {path}"))?;
     Ok(path)

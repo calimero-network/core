@@ -115,17 +115,30 @@ impl<'a> NamespaceRetryService<'a> {
             None => return Ok(Vec::new()),
         };
 
-        // The namespace (root) key decrypts the root group AND every `Open`
-        // subgroup, so its presence alone means no group here is keyless.
-        // Resolve it once rather than re-reading the namespace keyring for
-        // every group in the loop.
-        let has_namespace_key = GroupKeyring::new(self.store, ns_typed)
-            .load_current_key()
-            .map_err(|e| eyre::eyre!("load_current_key(namespace): {e}"))?
-            .is_some();
-        if has_namespace_key {
-            return Ok(Vec::new());
-        }
+        // No short-circuit on "this node holds the namespace key".
+        //
+        // There was one, on the reasoning that the root key decrypts the root
+        // group and every `Open` subgroup, so holding it means nothing here is
+        // keyless. That skips the case it is most needed for: a **Restricted**
+        // subgroup is covered by its OWN key, which the namespace key does not
+        // open, so a node with a direct row there is a keyless member of it
+        // while holding the namespace key — and returning empty meant no key
+        // request was ever emitted, leaving the membership undecryptable with
+        // nothing to re-drive it and no error anywhere.
+        //
+        // Two ordinary ways in: a subgroup flips `Open -> Restricted`
+        // (`SubgroupVisibilitySet` distributes no key — it writes the visibility
+        // row and queues an event, nothing more), so a direct member that never
+        // needed the group's own key suddenly does; or a `KeyDelivery` for a
+        // Restricted subgroup is missed while the node is offline, which is
+        // precisely what this pull is the safety net for.
+        //
+        // The per-group loop below already answers correctly for every group,
+        // the root included: it requires a direct row, skips anything not
+        // covered by its own keyring (`key_covering_group`), and then reads
+        // THAT group's keyring. So dropping the early return removes a wrong
+        // answer without changing any right one — it costs one descendant walk
+        // in the case that used to return early.
 
         // Every group in the namespace: the root plus all descendants.
         let mut groups = vec![ns_typed];
@@ -144,8 +157,18 @@ impl<'a> NamespaceRetryService<'a> {
             if !MembershipRepository::new(self.store).has_direct_member(&gid, &my_account)? {
                 continue;
             }
-            // `has_namespace_key` is already known false here; only the group's
-            // own keyring can still supply a key (a `Restricted` subgroup).
+            // Only a group covered by its OWN keyring can be recovered here.
+            //
+            // A group on an Open chain is covered by the namespace key, which
+            // `has_namespace_key` already established is absent — and no peer can
+            // supply the group's own row for it either, because nothing is
+            // encrypted under that row. Flagging it would emit a key request
+            // nobody can satisfy, and the namespace key is not an answer we may
+            // ask for on a subgroup's behalf: a member of the subgroup alone is
+            // not entitled to it. So there is nothing recoverable here; skip.
+            if crate::key_covering_group(self.store, &gid)? != gid {
+                continue;
+            }
             let has_key = GroupKeyring::new(self.store, gid)
                 .load_current_key()
                 .map_err(|e| eyre::eyre!("load_current_key(group): {e}"))?

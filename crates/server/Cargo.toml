@@ -42,6 +42,7 @@ calimero-context.workspace = true
 calimero-governance-store.workspace = true
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
+calimero-crypto.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
@@ -69,6 +70,11 @@ tokio-tungstenite.workspace = true
 tempfile.workspace = true
 calimero-blobstore.workspace = true
 calimero-utils-actix.workspace = true
+# `testing` exposes governance-store's own fixtures, which build an enrolled
+# member — membership rows AND the binding rows that make that account's ops
+# verify. The authorization tests for `seal_to_account` need exactly that state,
+# and a hand-rolled copy here would drift from what the store actually accepts.
+calimero-governance-store = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 bytes.workspace = true
