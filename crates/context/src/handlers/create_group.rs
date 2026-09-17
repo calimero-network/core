@@ -249,16 +249,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // half-created group (mirrors the genesis-failure rollback
                 // below).
                 //
-                // `group_key_id` and `name_written` are threaded out through
-                // outer mutation (not the closure's return) BECAUSE the rollback
-                // runs on the ERROR path: it needs to know exactly which rows
-                // the closure managed to write before it failed, so it drops the
-                // encryption key by the id actually stored (or skips it if the
-                // failure preceded the key write) and only deletes the name row
-                // if it was actually written. The success path takes `key_id`
-                // straight from the closure's `Ok`.
+                // `group_key_id` is threaded out through outer mutation (not the
+                // closure's return) BECAUSE the rollback runs on the ERROR path:
+                // it needs to drop the encryption key by the id actually stored,
+                // or skip it if the failure preceded the key write. The success
+                // path takes `key_id` straight from the closure's `Ok`.
                 let mut group_key_id: Option<[u8; 32]> = None;
-                let mut name_written = false;
                 let write_local_rows = (|| -> eyre::Result<[u8; 32]> {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
                     MembershipRepository::new(&datastore).add_member(
@@ -293,35 +289,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         "stored initial group key"
                     );
 
-                    if let Some(ref n) = name {
-                        // Seed the group's initial metadata record locally, stamped
-                        // with the creator's identity / wall-clock — not the
-                        // zero-value `Default` (which would surface through the API
-                        // as misleading provenance). Like under the former alias,
-                        // this is a local seed; later `GroupOp::GroupMetadataSet`
-                        // ops replicate and supersede it. The name is validated
-                        // here too — the seed bypasses the op-apply validator.
-                        match calimero_primitives::metadata::validate_metadata_payload(
-                            Some(n),
-                            &std::collections::BTreeMap::new(),
-                        ) {
-                            Ok(()) => {
-                                MetadataRepository::new(&datastore).set_group(
-                                    &group_id,
-                                    &calimero_primitives::metadata::MetadataRecord {
-                                        name: name.clone(),
-                                        data: std::collections::BTreeMap::new(),
-                                        updated_at: calimero_governance_store::now_millis(),
-                                        updated_by: admin_identity,
-                                    },
-                                )?;
-                                name_written = true;
-                            }
-                            Err(e) => {
-                                warn!(?group_id, reason = %e, "ignoring invalid group name on create")
-                            }
-                        }
-                    }
                     Ok(key_id)
                 })();
                 let key_id = match write_local_rows {
@@ -332,7 +299,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             &group_id,
                             &admin_account,
                             group_key_id,
-                            name_written,
                         );
                         return Err(err);
                     }
@@ -501,8 +467,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             //
                             // ROLLBACK (#2474 reviewer batch 3): the local root rows were
                             // already written (the `GroupMetaValue`, the founder Admin
-                            // member row, the default caps, the group encryption key, and
-                            // the optional name metadata — all written above in this async
+                            // member row, the default caps, and the group encryption key —
+                            // all written above in this async
                             // block). Leaving them behind on a genesis-apply
                             // failure would strand an orphaned root: the top-of-handler
                             // "group already exists" guard would then make every retry
@@ -566,7 +532,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                                     &group_id,
                                     &admin_account,
                                     Some(key_id),
-                                    name_written,
                                 );
                                 return Err(eyre::eyre!(
                                     "failed to apply NamespaceCreated genesis on namespace \
@@ -621,9 +586,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         )
                         .await
                         {
-                            Ok(report) => {
-                                report.observe("create_group", "DefaultCapabilitiesSet")
-                            }
+                            Ok(report) => report.observe("create_group", "DefaultCapabilitiesSet"),
                             // Best effort, like `TargetApplicationSet` below: the
                             // local row is already correct, so the creator works
                             // either way. What a failure costs is the REPLICATION,
@@ -663,6 +626,47 @@ impl Handler<CreateGroupRequest> for ContextManager {
                                 ?group_id,
                                 "failed to publish the namespace's target application"
                             ),
+                        }
+                    }
+                }
+
+                // A namespace's name rides its DAG, sealed under the key every member
+                // and every paired device holds. A subgroup's stays on this node: sealed
+                // under the subgroup's own key it would be unreadable to inherited members.
+                if let Some(n) = name {
+                    if let Err(e) = calimero_primitives::metadata::validate_metadata_payload(
+                        Some(&n),
+                        &std::collections::BTreeMap::new(),
+                    ) {
+                        warn!(?group_id, reason = %e, "ignoring invalid group name on create");
+                    } else if parent_group_id.is_some() {
+                        MetadataRepository::new(&datastore).set_group(
+                            &group_id,
+                            &calimero_primitives::metadata::MetadataRecord {
+                                name: Some(n),
+                                data: std::collections::BTreeMap::new(),
+                                updated_at: calimero_governance_store::now_millis(),
+                                updated_by: admin_identity,
+                            },
+                        )?;
+                    } else {
+                        match calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            &group_id,
+                            &signer_sk,
+                            GroupOp::GroupMetadataSet {
+                                name: Some(n),
+                                data: std::collections::BTreeMap::new(),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(report) => report.observe("create_group", "GroupMetadataSet"),
+                            Err(e) => {
+                                warn!(?e, ?group_id, "failed to publish the namespace's name")
+                            }
                         }
                     }
                 }
@@ -818,7 +822,6 @@ fn rollback_local_group_rows(
     group_id: &ContextGroupId,
     admin_account: &calimero_account::AccountId,
     group_key_id: Option<[u8; 32]>,
-    has_name: bool,
 ) {
     if let Err(re) = MetaRepository::new(datastore).delete(group_id) {
         warn!(?re, ?group_id, "rollback: failed to delete root meta");
@@ -836,15 +839,6 @@ fn rollback_local_group_rows(
     if let Some(key_id) = group_key_id {
         if let Err(re) = GroupKeyring::new(datastore, *group_id).delete_key_by_id(&key_id) {
             warn!(?re, ?group_id, "rollback: failed to delete group key");
-        }
-    }
-    if has_name {
-        if let Err(re) = MetadataRepository::new(datastore).delete_group(group_id) {
-            warn!(
-                ?re,
-                ?group_id,
-                "rollback: failed to delete group name metadata"
-            );
         }
     }
 }
@@ -900,17 +894,18 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_context_client::group::CreateGroupRequest;
+    use calimero_context_client::local_governance::GroupOp;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        governance_broadcast, now_millis, AccountBindingRepository, AccountNamespaceSet,
+        governance_broadcast, AccountBindingRepository, AccountNamespaceSet,
         CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
         MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
-    use calimero_primitives::metadata::MetadataRecord;
+    use calimero_primitives::metadata::MAX_METADATA_NAME_LEN;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
     use calimero_store::{key, types, Store};
@@ -927,12 +922,7 @@ mod tests {
     }
 
     /// Seed every local row a group create writes, returning the group key id.
-    fn seed_group(
-        store: &Store,
-        group: &ContextGroupId,
-        admin: &PublicKey,
-        with_name: bool,
-    ) -> [u8; 32] {
+    fn seed_group(store: &Store, group: &ContextGroupId, admin: &PublicKey) -> [u8; 32] {
         // Enrolled so the rows name the account this key resolves to; the
         // rollback assertions below read them back by that account.
         let admin_account = crate::test_support::enrol(store, group, admin);
@@ -963,19 +953,6 @@ mod tests {
         let key_id = GroupKeyring::new(store, *group)
             .store_key(&[0x66; 32])
             .expect("store group key");
-        if with_name {
-            MetadataRepository::new(store)
-                .set_group(
-                    group,
-                    &MetadataRecord {
-                        name: Some("g".to_owned()),
-                        data: std::collections::BTreeMap::new(),
-                        updated_at: now_millis(),
-                        updated_by: *admin,
-                    },
-                )
-                .expect("set name metadata");
-        }
         key_id
     }
 
@@ -984,7 +961,7 @@ mod tests {
         let store = store();
         let group = ContextGroupId::from([0xA0; 32]);
         let admin = PublicKey::from([0x01; 32]);
-        let key_id = seed_group(&store, &group, &admin, true);
+        let key_id = seed_group(&store, &group, &admin);
 
         // Sanity: everything is present before the rollback.
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_some());
@@ -996,17 +973,12 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(GroupKeyring::new(&store, group).holds_any_key().unwrap());
-        assert!(MetadataRepository::new(&store)
-            .group_metadata(&group)
-            .unwrap()
-            .is_some());
 
         rollback_local_group_rows(
             &store,
             &group,
             &crate::test_support::account_for(&admin),
             Some(key_id),
-            true,
         );
 
         // Every row the create wrote is gone; a retry with the same id is clean.
@@ -1031,13 +1003,6 @@ mod tests {
             !GroupKeyring::new(&store, group).holds_any_key().unwrap(),
             "group key"
         );
-        assert!(
-            MetadataRepository::new(&store)
-                .group_metadata(&group)
-                .unwrap()
-                .is_none(),
-            "name metadata"
-        );
     }
 
     #[test]
@@ -1046,15 +1011,14 @@ mod tests {
         let victim = ContextGroupId::from([0xA0; 32]);
         let bystander = ContextGroupId::from([0xB0; 32]);
         let admin = PublicKey::from([0x01; 32]);
-        let key_id = seed_group(&store, &victim, &admin, true);
-        let _ = seed_group(&store, &bystander, &admin, true);
+        let key_id = seed_group(&store, &victim, &admin);
+        let _ = seed_group(&store, &bystander, &admin);
 
         rollback_local_group_rows(
             &store,
             &victim,
             &crate::test_support::account_for(&admin),
             Some(key_id),
-            true,
         );
 
         // The bystander group is untouched — every row type the helper deletes
@@ -1074,17 +1038,13 @@ mod tests {
         assert!(GroupKeyring::new(&store, bystander)
             .holds_any_key()
             .unwrap());
-        assert!(MetadataRepository::new(&store)
-            .group_metadata(&bystander)
-            .unwrap()
-            .is_some());
     }
 
     #[test]
-    fn rollback_without_key_id_or_name_is_a_partial_no_op() {
-        // Simulates a create that failed BEFORE storing the group key / name:
-        // the guards for `None` key id and `has_name = false` must not panic,
-        // and the rows that DO exist are still removed.
+    fn rollback_without_a_key_id_is_a_partial_no_op() {
+        // Simulates a create that failed BEFORE storing the group key: the
+        // guard for a `None` key id must not panic, and the rows that DO
+        // exist are still removed.
         let store = store();
         let group = ContextGroupId::from([0xA0; 32]);
         let admin = PublicKey::from([0x01; 32]);
@@ -1112,7 +1072,6 @@ mod tests {
             &group,
             &crate::test_support::account_for(&admin),
             None,
-            false,
         );
 
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
@@ -1216,6 +1175,173 @@ mod tests {
             rung.bytecode_id, [0x01; 32],
             "the rung names the bytecode blob the application row resolves to"
         );
+    }
+
+    /// The group ops this node published for `group_id`, opened with the key it holds.
+    fn published_group_ops(
+        store: &Store,
+        namespace_id: ContextGroupId,
+        group_id: ContextGroupId,
+    ) -> Vec<GroupOp> {
+        calimero_governance_store::NamespaceOpLogService::new(store, namespace_id.to_bytes().into())
+            .collect_signed_group_ops_for_group(group_id.to_bytes())
+            .expect("read the op log")
+            .into_iter()
+            .filter_map(|stored| match &stored.signed_op.op {
+                calimero_governance_types::NamespaceOp::Group {
+                    group_id: op_group_id,
+                    key_id,
+                    encrypted,
+                    ..
+                } => calimero_governance_store::decrypt_group_op(
+                    store,
+                    namespace_id.to_bytes().into(),
+                    *op_group_id,
+                    key_id.as_bytes(),
+                    encrypted,
+                )
+                .expect("open the op"),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A name given at creation is the creator's alone unless it rides the DAG:
+    /// a follower folds ops, never the creator's local metadata row.
+    #[actix::test]
+    async fn creating_a_namespace_with_a_name_publishes_the_name_on_the_dag() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: Some("Test one".to_owned()),
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert!(
+            names_published(&store, created.group_id, created.group_id)
+                .contains(&"Test one".to_owned()),
+            "the name must be published as a GroupMetadataSet op"
+        );
+        assert_eq!(
+            MetadataRepository::new(&store)
+                .group_metadata(&created.group_id)
+                .expect("read the metadata")
+                .and_then(|record| record.name)
+                .as_deref(),
+            Some("Test one"),
+            "the op's apply must leave the creator holding the name too"
+        );
+    }
+
+    /// A name op sealed under a Restricted subgroup's key is unreadable to inherited
+    /// members and parks every later op of that subgroup, so it must not be published.
+    #[actix::test]
+    async fn creating_a_subgroup_with_a_name_keeps_the_name_off_the_dag() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let create = |group: [u8; 32], name: Option<&str>, parent: Option<ContextGroupId>| {
+            CreateGroupRequest {
+                group_id: Some(group.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: name.map(ToOwned::to_owned),
+                parent_group_id: parent,
+                restricted: true,
+            }
+        };
+        let root = harness
+            .manager
+            .send(create(GROUP, None, None))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+        let subgroup = harness
+            .manager
+            .send(create([0xC5; 32], Some("Test two"), Some(root.group_id)))
+            .await
+            .expect("the manager answers")
+            .expect("the subgroup is created");
+
+        assert!(
+            names_published(&store, root.group_id, subgroup.group_id).is_empty(),
+            "a subgroup's name must not become an op in the subgroup's log"
+        );
+        let local = MetadataRepository::new(&store)
+            .group_metadata(&subgroup.group_id)
+            .expect("read the metadata")
+            .expect("the creator keeps the name it was given");
+        assert_eq!(local.name.as_deref(), Some("Test two"));
+    }
+
+    /// An invalid name is warned-and-ignored, never published and never fatal.
+    #[actix::test]
+    async fn an_invalid_name_neither_fails_the_create_nor_reaches_the_dag() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: Some("x".repeat(MAX_METADATA_NAME_LEN + 1)),
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("an invalid name must not fail the creation");
+
+        assert!(
+            names_published(&store, created.group_id, created.group_id).is_empty(),
+            "an invalid name must not be published"
+        );
+        assert!(
+            MetadataRepository::new(&store)
+                .group_metadata(&created.group_id)
+                .expect("read the metadata")
+                .is_none(),
+            "and must not be seeded locally either"
+        );
+    }
+
+    /// The names this node published for `group_id`.
+    fn names_published(
+        store: &Store,
+        namespace_id: ContextGroupId,
+        group_id: ContextGroupId,
+    ) -> Vec<String> {
+        published_group_ops(store, namespace_id, group_id)
+            .into_iter()
+            .filter_map(|op| match op {
+                GroupOp::GroupMetadataSet { name, .. } => name,
+                _ => None,
+            })
+            .collect()
     }
 
     /// A namespace this node creates is one its account gained, and the other
