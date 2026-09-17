@@ -1,0 +1,237 @@
+name: E2E Account - A Revoked Device Writes Again, Before and After Re-Pairing
+description: >
+  A device its account revoked speaks as itself again, can still found a
+  namespace, and re-pairs into the account under a fresh device.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: repair-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: repair-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: repair-node-2
+    username: dev
+    password: dev-password
+
+  # Both need the bytecode: a creation resolves the application locally.
+  - name: Install the application on node-1
+    type: install_application
+    node: repair-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Install the application on node-2
+    type: install_application
+    node: repair-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  # What the phone is before it is anybody's device: its own root, no device.
+  - name: What node-2 speaks as on its own
+    type: node_identity
+    node: repair-node-2
+    outputs:
+      phone_own_account: accountId
+
+  - name: Node-1 creates a namespace to scope the pairing to
+    type: create_namespace
+    node: repair-node-1
+    application_id: '{{app}}'
+    outputs:
+      ns_a: namespaceId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: repair-node-1
+    outputs:
+      alice_account: accountId
+      alice_root: accountRootPublicKey
+      account_namespace: accountNamespaceId
+
+  - name: The two nodes start as two accounts
+    type: json_assert
+    statements:
+      - 'json_not_equal({{phone_own_account}}, {{alice_account}})'
+
+  - name: Pair node-2 onto Alice's account, scoped to the application
+    type: account_pair
+    node: repair-node-2
+    holder: repair-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_namespace}}'
+    namespaces:
+      - '{{ns_a}}'
+    applications:
+      - '{{app}}'
+    await_self: true
+
+  - name: What node-2 speaks as once paired
+    type: node_identity
+    node: repair-node-2
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+      paired_certified: deviceCertified
+
+  - name: The phone is a certified device of Alice's account
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+      - 'json_equal({{paired_certified}}, true)'
+
+  # Polled: the phone is a member of nothing, so no barrier can wait on it.
+  - name: The phone has folded its own link in A
+    type: assert_api_response
+    node: repair-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{ns_a}}'
+    retries: 45
+    interval: 2
+
+  - name: The paired phone founds a namespace as Alice
+    type: create_namespace
+    node: repair-node-2
+    application_id: '{{app}}'
+
+  # Revoke, from the account namespace
+
+  - name: Alice revokes the phone
+    type: account_revoke
+    node: repair-node-1
+    namespace_id: '{{account_namespace}}'
+    device_id: '{{paired_device}}'
+
+  # Polled: the phone releases its spent device once it folds the revocation.
+  - name: The phone speaks as its own account again, with no certified device
+    type: assert_api_response
+    node: repair-node-2
+    path: /admin-api/identity
+    match:
+      data.accountId: '{{phone_own_account}}'
+      data.deviceCertified: false
+    retries: 30
+    interval: 2
+
+  - name: The revoked phone founds a namespace as itself
+    type: create_namespace
+    node: repair-node-2
+    application_id: '{{app}}'
+    outputs:
+      ns_solo: namespaceId
+
+  - name: The phone founded it as itself, not as Alice
+    type: assert_api_response
+    node: repair-node-2
+    path: /admin-api/groups/{{ns_solo}}/members
+    where:
+      identity: '{{phone_own_account}}'
+    match:
+      identity: '{{phone_own_account}}'
+
+  - name: What node-2 speaks as after founding on its own
+    type: node_identity
+    node: repair-node-2
+    outputs:
+      solo_account: accountId
+      solo_device: deviceId
+
+  - name: The write was the phone's own, under a fresh device
+    type: json_assert
+    statements:
+      - 'json_equal({{solo_account}}, {{phone_own_account}})'
+      - 'json_not_equal({{solo_device}}, {{paired_device}})'
+
+  # Re-pair
+
+  - name: Pair node-2 onto Alice's account again
+    type: account_pair
+    node: repair-node-2
+    holder: repair-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_namespace}}'
+    namespaces:
+      - '{{ns_a}}'
+    applications:
+      - '{{app}}'
+    await_self: true
+
+  - name: What node-2 speaks as once re-paired
+    type: node_identity
+    node: repair-node-2
+    outputs:
+      repaired_account: accountId
+      repaired_device: deviceId
+      repaired_certified: deviceCertified
+
+  - name: The re-pair minted a fresh, certified device under Alice's account
+    type: json_assert
+    statements:
+      - 'json_equal({{repaired_account}}, {{alice_account}})'
+      - 'json_not_equal({{repaired_device}}, {{paired_device}})'
+      - 'json_equal({{repaired_certified}}, true)'
+
+  # Polled: the phone is a member of nothing, so no barrier can wait on it.
+  - name: The phone has folded its own link in A again
+    type: assert_api_response
+    node: repair-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{repaired_device}}'
+    match:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{ns_a}}'
+    retries: 45
+    interval: 2
+
+  - name: The re-paired phone founds a namespace as Alice
+    type: create_namespace
+    node: repair-node-2
+    application_id: '{{app}}'
+    outputs:
+      ns_repaired: namespaceId
+
+  - name: The phone founded it as Alice
+    type: assert_api_response
+    node: repair-node-2
+    path: /admin-api/groups/{{ns_repaired}}/members
+    where:
+      identity: '{{alice_account}}'
+    match:
+      identity: '{{alice_account}}'
+
+  - name: What node-2 speaks as after founding as Alice
+    type: node_identity
+    node: repair-node-2
+    outputs:
+      founder_account: accountId
+      founder_device: deviceId
+
+  - name: Founding did not change what the phone speaks as
+    type: json_assert
+    statements:
+      - 'json_equal({{founder_account}}, {{alice_account}})'
+      - 'json_equal({{founder_device}}, {{repaired_device}})'
+
+stop_all_nodes: true
