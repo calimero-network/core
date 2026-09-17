@@ -19,7 +19,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     bind_device_everywhere, withdraw_device_in, AccountBindingRepository, AccountDeviceRegistry,
-    AccountNamespaceSet, KnownDeviceCert, NamespaceDagService, NamespaceRepository,
+    AccountNamespaceSet, KnownDeviceCert, MetaRepository, NamespaceDagService, NamespaceRepository,
     NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
@@ -204,6 +204,61 @@ async fn run(
             _ => {}
         }
     }
+}
+
+/// Does this node still reach `group` - is the namespace owning it inside the
+/// scope this node's own certified device row carries?
+///
+/// The one answer the namespace listing, the account's application report and the
+/// authoring gate share, so a device the account narrowed out of a namespace
+/// cannot go on presenting it as its own. Keyed on the registry row rather than
+/// on a binding: the narrowing is recorded in the account namespace, which a
+/// device never unfollows, while the descope travels on the topic it is dropping.
+///
+/// A holder, an ordinary member and a device with no certified row reach
+/// everywhere, as does the account namespace, which no scope names.
+///
+/// # Errors
+/// Propagates the device, namespace and metadata reads.
+pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
+    let devices = NodeDeviceRepository::new(store);
+    if devices.holder_root()?.is_some() {
+        return Ok(true);
+    }
+    let (Some(account_namespace), Some(held)) = (devices.account_namespace()?, devices.get()?)
+    else {
+        return Ok(true);
+    };
+    let namespace = NamespaceRepository::new(store).resolve(group)?;
+    if namespace == account_namespace {
+        return Ok(true);
+    }
+    let Some(own) = AccountDeviceRegistry::new(store, account_namespace).device(held.device())?
+    else {
+        return Ok(true);
+    };
+    Ok(own.covers(
+        MetaRepository::new(store)
+            .load(&namespace)?
+            .map(|meta| meta.target.application_id),
+    ))
+}
+
+/// The authoring half of [`node_reaches`]: refuse a write into a namespace this
+/// device's account narrowed it out of, rather than answering locally and
+/// publishing something no peer will take.
+///
+/// # Errors
+/// [`crate::error::ContextError::DeviceOutOfScope`], or the reads behind it.
+pub fn require_reach(store: &Store, group: &ContextGroupId) -> EyreResult<()> {
+    if node_reaches(store, group)? {
+        return Ok(());
+    }
+    // Hex, not the id's `Debug`: this message is read by a person.
+    Err(crate::error::ContextError::DeviceOutOfScope {
+        group_id: hex::encode(group.to_bytes()),
+    }
+    .into())
 }
 
 /// This node's own row in its account namespace's registry. `None` until this
@@ -675,9 +730,10 @@ mod tests {
 
     use super::{
         carry_into, follows_on_gain, namespaces_this_scope_decides, namespaces_to_bind_into,
-        namespaces_to_revoke_in, publish_sibling_link, run, signing_identity, unfollows_on_left,
+        namespaces_to_revoke_in, node_reaches, publish_sibling_link, run, signing_identity,
+        unfollows_on_left,
     };
-    use crate::test_support::{actor, eventually};
+    use crate::test_support::{actor, eventually, rescope_paired_device};
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
     const OTHER_GROUP: [u8; 32] = [0xC9; 32];
@@ -691,54 +747,15 @@ mod tests {
     }
 
     /// This node as a DEVICE of an account whose root lives elsewhere, scoped to
-    /// `applications` (empty is every application): the account namespace
-    /// recorded by pairing and taken part in, this node's device minted under the
-    /// account's genesis, and its own certified row folded - the state a device
-    /// is in once pairing has settled.
-    ///
-    /// A device and not a holder on purpose. `NodeDeviceRepository::account_namespace`
-    /// answers a holder from its root derivation and only falls through to the
-    /// stored row otherwise, so a holder fixture would exercise the wrong read.
-    /// The account root comes back beside them because it lives nowhere in this
-    /// store, and a caller that has to sign for the account has no other source.
+    /// `applications`, with its account namespace fixed at `ACCOUNT_NAMESPACE`.
     fn a_device_scoped_to(
         store: &Store,
         applications: &[ApplicationId],
     ) -> (ContextGroupId, DeviceId, PrivateKey) {
-        let root_sk = PrivateKey::from([0x70; 32]);
-        let genesis = AccountGenesis::new(root_sk.public_key());
-        let account = genesis.account_id();
         let account_namespace = ContextGroupId::from(ACCOUNT_NAMESPACE);
-
-        let devices = NodeDeviceRepository::new(store);
-        devices
-            .store_account_namespace(&account_namespace)
-            .expect("record what the pairing named");
-        let held = devices
-            .ensure_enrolled_into(&[account_namespace], genesis)
-            .expect("mint this node's device");
-
-        let proof = AccountProof {
-            genesis,
-            chain: vec![],
-            statement: DeviceCert::sign(
-                &root_sk,
-                account,
-                held.device(),
-                &PrivateKey::from([0x71; 32]).public_key(),
-                &KemPublicKey::from([0x72; 32]),
-                0,
-                0,
-            )
-            .expect("the account root signs this device's certificate"),
-        };
-        let _recorded = AccountDeviceRegistry::new(store, account_namespace)
-            .record(&proof, &scope_for(&root_sk, &proof, applications, 0))
-            .expect("record this device in its account's registry");
-        let _identity = NamespaceRepository::new(store)
-            .participate_in(&account_namespace)
-            .expect("this node takes part in its own account namespace");
-        (account_namespace, held.device(), root_sk)
+        let (device, root_sk) =
+            crate::test_support::paired_device_scoped_to(store, &account_namespace, applications);
+        (account_namespace, device, root_sk)
     }
 
     fn store() -> Store {
@@ -807,19 +824,129 @@ mod tests {
         applications: &[ApplicationId],
         scope_epoch: u32,
     ) -> calimero_account::AccountProof<calimero_account::DeviceScope> {
-        calimero_account::AccountProof {
-            genesis: proof.genesis,
-            chain: vec![],
-            statement: calimero_account::DeviceScope::sign(
-                root_sk,
-                proof.statement.account,
-                proof.statement.device,
-                applications.to_vec(),
-                scope_epoch,
-                0,
-            )
-            .expect("the account root signs the device's scope"),
-        }
+        crate::test_support::device_scope(root_sk, proof, applications, scope_epoch)
+    }
+
+    /// A device reaches what its scope covers, and stops reaching what a narrowing
+    /// takes away - while it is still bound there, which is the whole defect: the
+    /// descope travels on the topic the narrowing makes this device drop, so the
+    /// binding can outlive the scope indefinitely.
+    #[test]
+    fn a_narrowing_stops_a_device_reaching_a_namespace_it_is_still_bound_in() {
+        let store = store();
+        let (account_namespace, device, root_sk) = a_device_scoped_to(&store, &[]);
+        let lost = ns(0xD1);
+        a_namespace_targeting(&store, lost, app(0x22));
+        let (_ns, own_pk, _sk) = NamespaceRepository::new(&store)
+            .participate_in(&lost)
+            .expect("this node's identity there");
+        let _account = crate::test_support::enrol(&store, &lost, &own_pk);
+
+        assert!(
+            node_reaches(&store, &lost).expect("read the scope"),
+            "a bound device reaches a namespace its scope covers"
+        );
+
+        rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app(0x11)],
+            1,
+        );
+
+        assert!(
+            AccountBindingRepository::new(&store)
+                .binding_for_sign_pk(&lost, &own_pk)
+                .expect("read the bindings")
+                .is_some(),
+            "the fixture must keep the binding, or the assertion below proves nothing"
+        );
+        assert!(
+            !node_reaches(&store, &lost).expect("read the scope"),
+            "a narrowed device must stop reaching the namespace its account took away"
+        );
+
+        rescope_paired_device(&store, &account_namespace, device, &root_sk, &[], 2);
+
+        assert!(
+            node_reaches(&store, &lost).expect("read the scope"),
+            "a later statement at a wider scope reaches it again"
+        );
+    }
+
+    /// The write a narrowed device used to be told had worked. It holds a namespace
+    /// identity and a participation row there either way, so nothing below the
+    /// scope gate refuses it.
+    #[actix::test]
+    async fn a_narrowed_device_is_refused_when_it_authors_where_it_no_longer_reaches() {
+        let store = store();
+        let (account_namespace, device, root_sk) = a_device_scoped_to(&store, &[]);
+        let lost = ns(0xD3);
+        a_namespace_targeting(&store, lost, app(0x22));
+        let harness = actor::over(store.clone()).await;
+        let write = || {
+            harness
+                .manager
+                .send(calimero_context_client::group::SetGroupMetadataRequest {
+                    group_id: lost,
+                    name: Some("named by a device".to_owned()),
+                    data: std::collections::BTreeMap::new(),
+                })
+        };
+
+        let before = write()
+            .await
+            .expect("the manager answers")
+            .expect_err("this fixture grants no metadata capability either way");
+        assert!(
+            !matches!(
+                before.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::DeviceOutOfScope { .. })
+            ),
+            "the gate must not fire while the scope still reaches here: {before:?}"
+        );
+
+        rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app(0x11)],
+            1,
+        );
+
+        let refused = write()
+            .await
+            .expect("the manager answers")
+            .expect_err("a narrowed device must not author here");
+        assert!(
+            matches!(
+                refused.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::DeviceOutOfScope { .. })
+            ),
+            "the refusal must be the typed one a caller can map to a 403: {refused:?}"
+        );
+        assert!(
+            refused.to_string().contains(&hex::encode(lost.to_bytes())),
+            "a person reads this message, so it names the namespace in hex: {refused}"
+        );
+    }
+
+    /// The two nodes that hold their own root: the account holder, and an ordinary
+    /// member that joined by invitation. Neither is scoped by anybody.
+    #[test]
+    fn a_node_holding_its_own_root_reaches_everywhere() {
+        let store = store();
+        let project = ns(0xD2);
+        a_namespace_targeting(&store, project, app(0x22));
+        let _sibling = crate::test_support::certify_device(&store, 0x31, &[app(0x11)]);
+
+        assert!(
+            node_reaches(&store, &project).expect("read the scope"),
+            "a holder's own registry rows scope its siblings, never itself"
+        );
     }
 
     /// The scope decides. A namespace targeting an application this device may
