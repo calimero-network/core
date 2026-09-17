@@ -12697,6 +12697,91 @@ mod account_plane_apply {
         vec![ApplicationId::from([0x11; 32])]
     }
 
+    /// Another device of `root_sk`'s account, linked here at scope epoch 0, whose
+    /// signing key comes back: the key that publishes that account's narrowings,
+    /// as the account holder's node does in production.
+    fn an_account_key_bound_here(
+        store: &Store,
+        gid: &ContextGroupId,
+        admin_sk: &PrivateKey,
+        root_sk: &PrivateKey,
+        seed: u8,
+    ) -> PrivateKey {
+        let signer_sk = key(seed);
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [seed; 16]);
+        let cert = DeviceCert::sign(
+            root_sk,
+            account,
+            device,
+            &signer_sk.public_key(),
+            &KemPublicKey::from([seed; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            store,
+            gid,
+            admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: AccountMemberEndorsement::sign(admin_sk, account).unwrap(),
+                scope: link_scope(root_sk, &cert, 0),
+            },
+        )
+        .unwrap();
+        signer_sk
+    }
+
+    /// Is `device` bound to `account` here?
+    fn is_live(store: &Store, gid: &ContextGroupId, account: AccountId, device: DeviceId) -> bool {
+        live_for(store, gid, account)
+            .iter()
+            .any(|bound| bound.device == device)
+    }
+
+    /// Scope statements travel in the clear inside every link and descope on the
+    /// namespace topic, so every member of a namespace holds them. Without a
+    /// signer gate any of them could replay a superseded one and unbind a device.
+    #[test]
+    fn a_descope_signed_for_another_account_is_refused() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let account = genesis.account_id();
+
+        // A valid, root-signed narrowing - replayed by a member of this namespace
+        // that speaks for some other account.
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &admin_sk.public_key(),
+            &descoped(&owner_sk, device, elsewhere(), 1),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert_eq!(events, vec![]);
+        assert!(
+            is_live(&store, &gid, account, device),
+            "a replay by a member of another account must not unbind the device"
+        );
+        assert_eq!(
+            AccountBindingRepository::new(&store)
+                .scope_floor(&gid, account, device)
+                .unwrap(),
+            None,
+            "and must not raise a floor a later re-link would have to cross"
+        );
+    }
+
     /// The binding goes and nothing else does. A tombstone here would spend the
     /// `DeviceId` in every namespace at once, which is the difference between
     /// narrowing a device's reach and destroying it.
@@ -12712,7 +12797,7 @@ mod account_plane_apply {
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &admin_sk.public_key(),
+            &owner_sk.public_key(),
             &descoped(&owner_sk, device, elsewhere(), 1),
             &CUT,
             &FixedAuthorizer(true),
@@ -12762,7 +12847,7 @@ mod account_plane_apply {
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &admin_sk.public_key(),
+            &owner_sk.public_key(),
             &descoped(&owner_sk, device, covering, 1),
             &CUT,
             &FixedAuthorizer(true),
@@ -12789,7 +12874,7 @@ mod account_plane_apply {
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &owner_sk.public_key(),
+            &device_sk.public_key(),
             &descoped(&device_sk, device, elsewhere(), 1),
             &CUT,
             &FixedAuthorizer(true),
@@ -12836,7 +12921,7 @@ mod account_plane_apply {
             let (_handled, _divergence, events) = crate::apply_group_op_mutations(
                 &store,
                 &gid,
-                &admin_sk.public_key(),
+                &owner_sk.public_key(),
                 &op,
                 &CUT,
                 &FixedAuthorizer(true),
@@ -12860,11 +12945,12 @@ mod account_plane_apply {
         // A different account's root, signing about a device it does not hold.
         let other_root = key(7);
         let other = AccountGenesis::new(other_root.public_key()).account_id();
+        let other_signer = an_account_key_bound_here(&store, &gid, &admin_sk, &other_root, 0x77);
         let (_cert, scope) = certified(&other_root, device, elsewhere(), 1);
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &admin_sk.public_key(),
+            &other_signer.public_key(),
             &GroupOp::AccountDeviceDescoped {
                 account: other,
                 device,
@@ -12895,7 +12981,7 @@ mod account_plane_apply {
             let (_handled, _divergence, events) = crate::apply_group_op_mutations(
                 &store,
                 &gid,
-                &admin_sk.public_key(),
+                &owner_sk.public_key(),
                 &op,
                 &CUT,
                 &FixedAuthorizer(true),
@@ -12954,7 +13040,7 @@ mod account_plane_apply {
         let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
             &store,
             &gid,
-            &admin_sk.public_key(),
+            &owner_sk.public_key(),
             &descoped(&owner_sk, device, elsewhere(), 1),
             &CUT,
             &FixedAuthorizer(true),
@@ -12996,26 +13082,22 @@ mod account_plane_apply {
         let account = genesis.account_id();
 
         let narrowing = descoped(&owner_sk, device, elsewhere(), 1);
-        sign_apply_local_group_op_borsh(&store, &gid, &admin_sk, narrowing.clone()).unwrap();
-        assert!(live_for(&store, &gid, account).is_empty());
+        sign_apply_local_group_op_borsh(&store, &gid, &owner_sk, narrowing.clone()).unwrap();
+        assert!(!is_live(&store, &gid, account, device));
 
         // The widening re-binds under a scope that supersedes the narrowing.
         let (_re_owner, _re_genesis, re_bound) = a_linked_device_at(&store, &gid, &admin_sk, 5, 2);
         assert_eq!(re_bound, device);
-        assert_eq!(live_for(&store, &gid, account).len(), 1);
+        assert!(is_live(&store, &gid, account, device));
 
-        // A plain member of this group re-wraps the very same statement. Nothing
-        // about the op is reused: new signer, new signature, new nonce.
-        let attacker_sk = key(0x4A);
-        let attacker = enrol_member(&store, &gid, &attacker_sk.public_key());
-        MembershipRepository::new(&store)
-            .add_member(&gid, &attacker, GroupMemberRole::Member)
-            .unwrap();
-        sign_apply_local_group_op_borsh(&store, &gid, &attacker_sk, narrowing).unwrap();
+        // A sibling device of the SAME account re-wraps the very same statement,
+        // so the signer gate lets it through. Nothing about the op is reused:
+        // new signer, new signature, new nonce.
+        let sibling_sk = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x4A);
+        sign_apply_local_group_op_borsh(&store, &gid, &sibling_sk, narrowing).unwrap();
 
-        assert_eq!(
-            live_for(&store, &gid, account).len(),
-            1,
+        assert!(
+            is_live(&store, &gid, account, device),
             "a scope older than the link in force must not unbind it, however it is re-signed"
         );
     }
@@ -13141,7 +13223,7 @@ mod account_plane_apply {
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
-            &admin_sk,
+            &owner_sk,
             descoped(&owner_sk, device, elsewhere(), 2),
         )
         .unwrap();
@@ -13186,6 +13268,9 @@ mod account_plane_apply {
                 0,
             )
             .unwrap();
+            // Outside the permuted set: the account key that signs its own
+            // narrowings is bound before any of them, as it is in production.
+            let holder_sk = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
             let link_at = |scope_epoch| GroupOp::AccountDeviceLinked {
                 genesis,
                 chain: vec![],
@@ -13201,17 +13286,14 @@ mod account_plane_apply {
             ];
 
             for step in order {
-                sign_apply_local_group_op_borsh(&store, &gid, &admin_sk, ops[step].clone())
-                    .unwrap();
+                let signer = if step % 2 == 0 { &admin_sk } else { &holder_sk };
+                sign_apply_local_group_op_borsh(&store, &gid, signer, ops[step].clone()).unwrap();
             }
 
-            let live = live_for(&store, &gid, account);
-            assert_eq!(
-                live.len(),
-                1,
+            assert!(
+                is_live(&store, &gid, account, device),
                 "order {order:?} left the device unbound; the widening is the latest scope"
             );
-            assert_eq!(live[0].device, device);
         }
     }
 
@@ -13229,7 +13311,7 @@ mod account_plane_apply {
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
-            &admin_sk,
+            &owner_sk,
             descoped(&owner_sk, device, elsewhere(), 1),
         )
         .unwrap();
@@ -13260,11 +13342,12 @@ mod account_plane_apply {
         let owner_sk = key(5);
         let account = AccountGenesis::new(owner_sk.public_key()).account_id();
         let device = DeviceId::mint(account, [5; 16]);
+        let holder_sk = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
 
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
-            &admin_sk,
+            &holder_sk,
             descoped(&owner_sk, device, elsewhere(), 1),
         )
         .unwrap();
@@ -13272,7 +13355,7 @@ mod account_plane_apply {
         let (_owner, _genesis, linked) = a_linked_device_at(&store, &gid, &admin_sk, 5, 0);
         assert_eq!(linked, device);
         assert!(
-            live_for(&store, &gid, account).is_empty(),
+            !is_live(&store, &gid, account, device),
             "the link under the older scope must lose to the narrowing already folded"
         );
     }
@@ -13289,11 +13372,13 @@ mod account_plane_apply {
         let account = AccountGenesis::new(owner_sk.public_key()).account_id();
         let device = DeviceId::mint(account, [5; 16]);
         let stranger_sk = key(9);
+        let stranger_signer =
+            an_account_key_bound_here(&store, &gid, &admin_sk, &stranger_sk, 0x9A);
 
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
-            &admin_sk,
+            &stranger_signer,
             descoped(&stranger_sk, device, elsewhere(), u32::MAX),
         )
         .unwrap();
@@ -13319,10 +13404,10 @@ mod account_plane_apply {
         let account = genesis.account_id();
 
         let signed = SignedGroupOp::sign(
-            &admin_sk,
+            &owner_sk,
             gid,
             vec![],
-            load_nonce_window(&store, &gid, &admin_sk.public_key())
+            load_nonce_window(&store, &gid, &owner_sk.public_key())
                 .unwrap()
                 .max_applied()
                 + 1,

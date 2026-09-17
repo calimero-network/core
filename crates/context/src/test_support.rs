@@ -93,6 +93,37 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
     account
 }
 
+/// Bind this node's OWN device to its own account in `namespace`, as founding or
+/// joining it does, and return that account.
+///
+/// Not [`enrol`]: that derives a stand-in account from the key, so the node's
+/// signing key there speaks for nobody its account root owns - and every gate
+/// that asks "does this signer speak for this account" then refuses.
+///
+/// # Panics
+///
+/// Panics if the credential cannot be built or the rows cannot be written, which
+/// in a test means the fixture is wrong rather than the code under test.
+pub fn enrol_holder(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> AccountId {
+    let credential =
+        crate::join_credential::build(store, namespace, sign_pk).expect("this node's credential");
+    let account = credential.statement.account;
+    let bindings = calimero_governance_store::AccountBindingRepository::new(store);
+    bindings
+        .record_endorser(namespace, account, &account)
+        .expect("record the endorser");
+    let _ = bindings
+        .apply_link(
+            namespace,
+            &credential.genesis,
+            &credential.chain,
+            &credential.statement,
+            calimero_governance_store::JOIN_SCOPE_EPOCH,
+        )
+        .expect("record the binding");
+    account
+}
+
 /// A second device of this node's account, certified by its root exactly as
 /// `pair_device_complete` would, recorded in the account namespace's registry
 /// and scoped to `applications` (empty is every application).

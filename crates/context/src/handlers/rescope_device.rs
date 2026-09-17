@@ -249,7 +249,7 @@ mod tests {
             let _held = devices
                 .ensure_enrolled(&namespace)
                 .expect("mint this node's own device");
-            let account = crate::test_support::enrol(&store, &namespace, &node_pk);
+            let account = crate::test_support::enrol_holder(&store, &namespace, &node_pk);
             MetaRepository::new(&store)
                 .save(
                     &namespace,

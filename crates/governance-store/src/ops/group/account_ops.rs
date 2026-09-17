@@ -529,6 +529,20 @@ pub(crate) fn apply_device_descoped(
         return Ok(());
     }
 
+    // Only the account may narrow its own device. The statement is public - it
+    // rides in the clear on every link - so without this any member could replay a
+    // superseded one; a sibling device of the same account still can, and the
+    // account root re-widening is the remedy for that.
+    //
+    // Order-safe because the signer resolves through its own binding here, and
+    // that link causally precedes any descope it publishes; an unresolvable
+    // signer refuses rather than passing.
+    if !ctx.signer_is(account)? {
+        tracing::warn!(group_id = ?group_id, %account, %device, signer = %ctx.signer(),
+                       "account device descoped: the signer does not speak for this account");
+        return Ok(());
+    }
+
     // The floor is what refuses a stale link replayed later; it is raised even
     // when nothing is bound, so the outcome does not depend on arrival order.
     let epoch = scope.statement.scope_epoch;
