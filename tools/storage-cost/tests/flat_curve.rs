@@ -191,8 +191,8 @@ fn known_linear_costs_are_still_exactly_linear() {
                  floor that marks a linear cost — this appears to have been FIXED. That \
                  is good news, and it must be recorded: move it to \
                  CostShape::ConstantPerCall, regenerate \
-                 tools/storage-cost/storage-costs.json, and update the wall write-up in \
-                 docs/superpowers/2026-08-26-chat-read-wall.md"
+                 tools/storage-cost/storage-costs.json, and rewrite the wall write-up on \
+                 the workload's doc comment in tools/storage-cost/src/workloads.rs"
             ));
         } else if large > ceiling {
             failures.push(format!(

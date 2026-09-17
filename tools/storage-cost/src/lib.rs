@@ -18,7 +18,7 @@
 //! BYTE counts are NOT reproducible, and no amount of process isolation would
 //! make them so. Every entity gets an `Id::random()`
 //! (`crates/storage/src/address.rs:49`), which on the native path is
-//! `rand::thread_rng()` (`crates/storage/src/env.rs:1099`) with no seeding hook
+//! `rand::rng()` (`crates/storage/src/env.rs:1099`) with no seeding hook
 //! reachable from outside the crate. Random ids land in different child-trie
 //! buckets run to run, so index rows serialize to slightly different lengths —
 //! observed drift is ~1.5% at every size.

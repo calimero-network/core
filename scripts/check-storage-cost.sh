@@ -7,7 +7,7 @@
 # and a cost that moves should move visibly.
 #
 # Byte counts are deliberately NOT in the snapshot. Entity ids are random
-# (`Id::random` -> `rand::thread_rng`), so index rows serialize to slightly
+# (`Id::random` -> `rand::rng`), so index rows serialize to slightly
 # different lengths run to run; gating on them would flake. See the module docs
 # of tools/storage-cost/src/lib.rs.
 #

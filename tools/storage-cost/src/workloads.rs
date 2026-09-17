@@ -154,8 +154,8 @@ fn unordered_map_get(n: usize) {
 ///
 /// # Why this is `KnownLinearInN`, and what it is standing in for
 ///
-/// This is the in-repo fixture for the read wall documented in
-/// `docs/superpowers/2026-08-26-chat-read-wall.md`: mero-chat's `get_messages`
+/// This is the in-repo fixture for the chat read wall (the real contract is
+/// probed by `crates/runtime/tests/chat_wall.rs`): mero-chat's `get_messages`
 /// exhausts a 1e9 gas budget at ~32,000 messages, and 30,000 already spends
 /// 99.83% of it. The cause is not the app. It is this call:
 ///
