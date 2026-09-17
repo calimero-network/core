@@ -13318,6 +13318,45 @@ mod account_plane_apply {
         }
     }
 
+    /// The floor only rises. Two narrowings arriving newest-first leave the higher
+    /// one standing, so a link made under a scope between them is still refused -
+    /// which a permutation of one repeated narrowing never exercises.
+    #[test]
+    fn a_narrowing_that_arrives_after_a_newer_one_does_not_lower_the_floor() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let owner_sk = key(5);
+        let account = AccountGenesis::new(owner_sk.public_key()).account_id();
+        let device = DeviceId::mint(account, [5; 16]);
+        let holder_sk = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
+
+        for scope_epoch in [3, 1] {
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &holder_sk,
+                descoped(&owner_sk, device, elsewhere(), scope_epoch),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            AccountBindingRepository::new(&store)
+                .scope_floor(&gid, account, device)
+                .unwrap(),
+            Some(3),
+            "the older narrowing must not pull the floor back down"
+        );
+
+        let (_owner, _genesis, linked) = a_linked_device_at(&store, &gid, &admin_sk, 5, 2);
+        assert_eq!(linked, device);
+        assert!(
+            !is_live(&store, &gid, account, device),
+            "a link between the two narrowings is still under the floor"
+        );
+    }
+
     /// Anyone in the group holds the old link's pieces and could re-send them. A
     /// link made under a scope the account has since narrowed past must not re-bind.
     #[test]
