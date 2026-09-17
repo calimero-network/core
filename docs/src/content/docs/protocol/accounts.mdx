@@ -399,6 +399,12 @@ It records the replacement in the account namespace first, so every other device
 The narrowing is **not** a revocation: it deletes the binding row and leaves no tombstone, so the `DeviceId` survives and a later widening re-binds the same device.
 A revocation would spend that id in every namespace at once, which is the difference between taking one application away and destroying the device.
 The rotation rides along where this node is an admin of the namespace *and* the device actually held a binding there, and is left owed otherwise; the response reports it per namespace, as `descoped`, `linkedIn` and `skipped` lists shaped like relink's.
+`linkedIn` names a namespace whose binding row is actually there after the publish, and a namespace whose link was published but not recorded - or whose narrowing did not publish at all - is reported under `skipped` with reason `failed`, since nothing re-drives it and repeating the same request is the repair.
+
+Three requests are refused before anything is signed.
+Naming the device that holds the account root is a `403`: that device signs every scope statement, so it always acts for every application and there is nothing to replace.
+Naming an application no namespace of this account targets is a `400`, because such a scope reaches nothing and would descope the device everywhere - an empty scope under another name.
+A list longer than a scope statement may carry is a `400` too, and repeats in it are dropped rather than signed.
 
 **A narrowing is ordered, because a root-signed statement is not a fresh op.**
 Every member of a namespace decrypts the ops published there, so any of them holds the statement a past narrowing carried and can re-publish it under their own signature and nonce - which is a genuinely new op, past both the signer check and the replay window.
@@ -406,7 +412,7 @@ So every link carries the root-signed scope it was made under, and the binding r
 Re-presenting yesterday's narrowing after today's widening therefore changes nothing, on every replica, in whatever order the two arrive.
 The old link is just as replayable as the old narrowing, so a narrowing also records its scope epoch as a floor for that account's device in that namespace, whether or not anything is bound there yet.
 A link made under a scope at or below the floor is refused, which is what keeps a stale link from re-binding a device the account narrowed out, and what lets a narrowing win when it arrives before the link it outranks.
-The floor is keyed by account and device together, so a statement signed by another account's root cannot raise it.
+The floor is keyed by account and device together, so a statement signed by another account's root cannot raise it, and only the account's own key may publish the narrowing at all - the apply refuses one signed by any other member of the namespace.
 The same statement on the link is what moves scope enforcement off the publisher: a link into a namespace the scope does not reach is refused when it applies, not merely declined by a well-behaved sender.
 
 A **revoked** device is refused outright rather than repaired namespace by namespace.
