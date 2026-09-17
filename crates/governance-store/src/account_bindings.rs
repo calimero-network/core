@@ -833,7 +833,7 @@ impl<'a> AccountBindingRepository<'a> {
     }
 
     /// Remove every account row under `group` — bindings, revocation
-    /// tombstones, and per-account root keys.
+    /// tombstones, per-account root keys, and the scope floors.
     ///
     /// Used by the group teardown so the account plane does not outlive the group
     /// it describes. The tombstones matter most: they are **terminal**, so a group
@@ -864,6 +864,12 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_ACCOUNT_KEY_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let floors = collect_keys_with_prefix(
+            self.store,
+            GroupDeviceScopeFloor::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_DEVICE_SCOPE_FLOOR_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
 
         let mut handle = self.store.handle();
         for key in bindings {
@@ -873,6 +879,9 @@ impl<'a> AccountBindingRepository<'a> {
             handle.delete(&key)?;
         }
         for key in accounts {
+            handle.delete(&key)?;
+        }
+        for key in floors {
             handle.delete(&key)?;
         }
         Ok(())
@@ -1391,8 +1400,20 @@ mod tests {
         repo.apply_revocation(&other, doomed.device)
             .expect("revoke");
 
+        // A floor outliving the group would keep a device out of a group later
+        // recreated under the same id, with nothing in its history to explain why.
+        repo.narrow(&gid, g.account_id(), live.device, 3)
+            .expect("narrow");
+        repo.narrow(&other, g.account_id(), doomed.device, 3)
+            .expect("narrow");
+
         repo.clear_all_for_group(&gid).expect("clear");
 
+        assert_eq!(
+            repo.scope_floor(&gid, g.account_id(), live.device)
+                .expect("read"),
+            None
+        );
         assert!(repo.live_bindings(&gid).expect("read").is_empty());
         assert!(
             !repo.is_revoked(&gid, doomed.device).expect("read"),
@@ -1410,6 +1431,11 @@ mod tests {
             .account_key(&other, g.account_id())
             .expect("read")
             .is_some());
+        assert_eq!(
+            repo.scope_floor(&other, g.account_id(), doomed.device)
+                .expect("read"),
+            Some(3)
+        );
 
         // Idempotent.
         repo.clear_all_for_group(&gid).expect("clear again");

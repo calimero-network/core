@@ -2488,6 +2488,13 @@ impl GroupDeviceScopeFloor {
             .concat(GenericArray::from(group_id))
             .concat(GenericArray::from(slot))))
     }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
 }
 
 impl AsKeyParts for GroupDeviceScopeFloor {
