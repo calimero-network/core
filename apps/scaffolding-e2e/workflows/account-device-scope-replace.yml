@@ -78,7 +78,6 @@ steps:
     node: scope-replace-node-1
     application_id: '{{app_b}}'
     group_id: '{{ns_b1}}'
-    service_name: store-b
 
   - name: What node-1 speaks as
     type: node_identity
