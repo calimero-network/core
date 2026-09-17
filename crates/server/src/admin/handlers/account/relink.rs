@@ -79,6 +79,8 @@ pub async fn handler(
                         });
                         continue;
                     }
+                    // A relink never narrows, so it never produces one.
+                    BindOutcome::Descoped { .. } => "descoped",
                     BindOutcome::OutOfScope => "outOfScope",
                     BindOutcome::AlreadyBound => "alreadyBound",
                     BindOutcome::NoScopeKey => "noScopeKey",

@@ -2360,11 +2360,8 @@ pub struct RescopeDeviceApiRequest {
     pub scope: DeviceScopeApiRequest,
 }
 
-/// `"all"`, or `{"only": ["<application id>", ...]}`.
-///
-/// Spelled as a tagged enum rather than a list whose emptiness means everything:
-/// the two requests differ by a whole order of magnitude in what they grant, and
-/// the empty-means-all convention makes the accidental one the widest.
+/// `"all"`, or `{"only": ["<application id>", ...]}`. Tagged rather than a list
+/// whose emptiness means everything, which makes the slip the widest ask.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum DeviceScopeApiRequest {
@@ -2398,25 +2395,26 @@ pub struct RescopeDeviceApiResponseData {
     pub account_id: String,
     /// Hex-encoded `DeviceId` that was rescoped.
     pub device_id: String,
-    /// The scope after the request, hex-encoded. Empty means every application.
+    /// The scope after the request. Empty means every application.
     pub applications: Vec<String>,
-    /// What happened per namespace. Publication is per-DAG, so which namespaces
-    /// the replacement actually reached is a state the caller has to be able to
-    /// see.
-    pub outcomes: Vec<RescopeOutcomeApiEntry>,
+    /// Namespaces the new scope no longer reaches, and whether the key rotated.
+    ///
+    /// Reported per namespace for the same reason `linkedIn` is: publication is
+    /// per-DAG, so which namespaces a replacement reached has to be visible.
+    pub descoped: Vec<RescopeDescopeApiEntry>,
+    /// Namespaces the device was linked into by this call.
+    pub linked_in: Vec<RelinkOutcomeApiEntry>,
+    /// Namespaces nothing was published into, and why.
+    pub skipped: Vec<RelinkSkipApiEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RescopeOutcomeApiEntry {
+pub struct RescopeDescopeApiEntry {
     /// Hex-encoded namespace id.
     pub namespace_id: String,
-    /// One of `descoped`, `bound`, `unchanged`.
-    pub change: String,
-    /// Whether the scope key was rotated in the same op.
-    ///
-    /// `false` on a `descoped` entry means the device stopped writing there but
-    /// still holds the key it had, until an admin rotates.
+    /// `false` means the device stopped writing there but still holds the key it
+    /// had, until an admin rotates.
     pub key_rotated: bool,
 }
 

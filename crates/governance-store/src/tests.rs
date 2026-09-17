@@ -12676,11 +12676,6 @@ mod account_plane_apply {
         );
     }
 
-    // -------------------------------------------------------------------
-    // Replacing a device's scope: unbind where the new scope no longer
-    // reaches, WITHOUT spending the device id the way a revocation does.
-    // -------------------------------------------------------------------
-
     /// The narrowing op for `device`, carrying the scope `root_sk`'s account signed.
     fn descoped(
         root_sk: &PrivateKey,

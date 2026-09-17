@@ -84,10 +84,9 @@ pub use self::authorizer::{
 };
 pub use self::capabilities::CapabilitiesRepository;
 
-pub use self::account_bindings::JOIN_SCOPE_EPOCH;
 pub use self::account_bindings::{
     member_account_for_device_key, member_account_in_namespace, AccountBindingRepository,
-    BindingRejected, DeviceBinding,
+    BindingRejected, DeviceBinding, JOIN_SCOPE_EPOCH,
 };
 pub use self::account_devices::AccountDeviceRegistry;
 pub use self::account_namespaces::AccountNamespaceSet;
