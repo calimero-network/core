@@ -1,19 +1,20 @@
 #!/bin/sh
 #
-# A device that holds no node obtains a session and reads a context, with no
-# password anywhere in the flow.
+# A device that holds no node obtains a session, reads a context and submits a
+# delegated write, with no password anywhere in the flow.
 #
-# This is the half of epic #3928 that `delegated-authorship.yml` does not cover.
-# That scenario proves a keyholder can WRITE through a relay, but it logs in with
-# `auth_mode: embedded` and a username and password, which is precisely the
-# provider the target architecture deletes. What has never been exercised
-# end to end is the flow the epic states as its own criterion:
+# This is the flow `delegated-authorship.yml` does not cover. That scenario proves
+# a keyholder can WRITE through a relay, but it logs in with `auth_mode: embedded`
+# and a username and password, which is precisely the provider the target
+# architecture deletes — so its write is made by an already-privileged caller.
+# What has never been exercised end to end is all three legs on one password-free
+# session, which is the epic's own criterion:
 #
 #   A client holding only an account root and a device key can: obtain a session
 #   against a node it is not the owner of, read a context it is a member of, and
 #   submit a delegated write — with no password anywhere in the flow.
 #
-# Usage: delegated-session.sh <node> <context_id> <device_secret> <credential> <node_key>
+# Usage: delegated-session.sh <node> <context_id> <device_secret> <credential> <node_key> <relay_account>
 #
 # <node_key> is the node's own public key, captured by the scenario's
 # `node_identity` step. The statement is signed over it, and the verifier checks
@@ -35,12 +36,14 @@ CONTEXT="$2"
 DEVICE_SECRET="$3"
 CREDENTIAL="$4"
 NODE_KEY="$5"
+RELAY_ACCOUNT="$6"
 
-[ -n "${NODE}" ] || fail "usage: delegated-session.sh <node> <context> <device_secret> <credential>"
+[ -n "${NODE}" ] || fail "usage: delegated-session.sh <node> <context> <device_secret> <credential> <node_key> <relay_account>"
 [ -n "${CONTEXT}" ] || fail "no context id given"
 [ -n "${DEVICE_SECRET}" ] || fail "no device secret given"
 [ -n "${CREDENTIAL}" ] || fail "no device credential given"
 [ -n "${NODE_KEY}" ] || fail "no node key given"
+[ -n "${RELAY_ACCOUNT}" ] || fail "no relay account given — the warrant must name the node that spends it"
 
 URL=$(node_url "${NODE}") || fail "could not resolve ${NODE}'s URL"
 
@@ -125,18 +128,105 @@ echo "${READ_RES}" | grep -q '"returns"[[:space:]]*:[[:space:]]*"read-by-a-keyho
     || fail "the delegated read did not return the value the scenario wrote: ${READ_RES}"
 echo "delegated read served: ${READ_RES}"
 
-# --- 5. Events are deliberately NOT asserted here ---------------------------
+# --- 5. The same session submits a delegated WRITE ---------------------------
 #
-# A subscribed session only sees an event if something WRITES while it is
-# listening, and merobox runs steps sequentially: during any sleep in this
-# script nothing else is running, so a stream assertion here could only ever
-# time out. An earlier draft slept 8s waiting for traffic that no step produced.
-#
-# The honest trigger is a delegated WRITE from this same session -- a warrant
-# minted by the device, spent by the relay -- which is #3942's real shape and
-# needs the authorship grant `delegated-authorship.yml` sets up. Combining the
-# two is worth doing and is not this scenario's first job: what has never run
-# end to end is the password-free SESSION, and that is what the steps above
-# prove.
+# The third leg of epic #3928's criterion, and the one that had never run from a
+# password-free session. `delegated-authorship.yml` already proves the warrant
+# mechanics exhaustively -- refused before the grant, spendable after, replay
+# refused, expiry refused -- but it logs in with `dev`/`dev-password`, so what it
+# demonstrates is a delegated write by an ALREADY-PRIVILEGED caller. The criterion
+# is the two halves joined: the token spent below is the one minted in step 3
+# from a signed statement, and no password exists anywhere in this file.
 
-echo "PASS: a device holding only a key obtained a session and read a context, with no password in the flow"
+# The EXACT bytes the warrant commits to and the intent sends. One variable for
+# both, because the warrant carries `H(method ‖ args)`: re-typing this JSON in
+# the request with different spacing mints a warrant that verifies as a
+# signature and is refused as authorisation -- a failure that reads as a broken
+# gate rather than as a mismatched hash.
+INTENT_ARGS='{"key":"delegated","value":"written-by-a-keyholder"}'
+
+# --- 5a. The device mints a warrant, offline --------------------------------
+#
+# Same device secret and credential as the login statement, and `merod account
+# warrant` for the same reason `login-statement` is used above: the borsh layout
+# and signing domain live in one place, and a harness carrying its own copy
+# passes its own checks while every real client is refused.
+#
+# `--executor` is node-1's own account -- the node this session is talking to is
+# the node that spends the warrant. The scenario granted it
+# `CAN_AUTHOR_ON_BEHALF` one step up; without that the POST below is refused,
+# which is exactly what `delegated-authorship.yml` asserts separately.
+WARRANT=$(offline_merod "${NODE}" account warrant \
+    --context "${CONTEXT}" \
+    --executor "${RELAY_ACCOUNT}" \
+    --method set \
+    --args "${INTENT_ARGS}" \
+    --nonce 1 \
+    --valid-for 300 \
+    --device-secret "${DEVICE_SECRET}" \
+    --credential "${CREDENTIAL}" | tr -d '\r' | grep -E '^[0-9a-f]{200,}$' | head -1)
+[ -n "${WARRANT}" ] || fail "merod minted no warrant"
+echo "warrant minted offline"
+
+# --- 5b. The keyholder spends it, on its own session ------------------------
+#
+# `Authorization: Bearer ${TOKEN}` is the load-bearing part. The provider's
+# `session_permissions` include `context:intent`, so this is what a delegated
+# session is FOR -- and a scenario that posted the intent with node-1's admin
+# credentials would prove nothing about the session at all.
+INTENT_BODY=$(printf '{"method":"set","argsJson":%s,"warrant":"%s","authorProof":"%s"}' \
+    "${INTENT_ARGS}" "${WARRANT}" "${CREDENTIAL}")
+
+INTENT_RES=$(curl -sS -X POST "${URL}/admin-api/contexts/${CONTEXT}/intents" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "${INTENT_BODY}")
+# `rootHash` is only present when the intent actually executed and advanced
+# state. Asserting on it rather than on the absence of an error means a refusal
+# body, an empty body, and a 500 all fail here rather than one of them slipping
+# through as success.
+echo "${INTENT_RES}" | grep -q '"rootHash"' \
+    || fail "the delegated write was not accepted on a password-free session: ${INTENT_RES}"
+echo "delegated write accepted: ${INTENT_RES}"
+
+# --- 5c. The write is visible to the same session ---------------------------
+#
+# Read back through the delegated READ path, so the value is observed the way a
+# client would observe it rather than through an admin surface the keyholder
+# does not have.
+AFTER=$(curl -sS -X POST "${URL}/admin-api/contexts/${CONTEXT}/query" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"method":"get","argsJson":{"key":"delegated"}}')
+echo "${AFTER}" | grep -q '"returns"[[:space:]]*:[[:space:]]*"written-by-a-keyholder"' \
+    || fail "the delegated write did not change what the session reads: ${AFTER}"
+echo "delegated write is visible to its author's session"
+
+# --- 5d. The spent warrant cannot be spent again ----------------------------
+#
+# The security property that makes the whole path safe to expose: the same bytes
+# that just succeeded must now fail. Without this a relay could replay a
+# member's warrant at a time of its choosing, for as long as it stayed valid.
+# `delegated-authorship.yml` asserts this too; it is repeated here because this
+# is the session-authenticated path, and the nonce window is checked against the
+# CONTEXT rather than against whatever authenticated the caller.
+REPLAY_RES=$(curl -sS -X POST "${URL}/admin-api/contexts/${CONTEXT}/intents" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "${INTENT_BODY}")
+if echo "${REPLAY_RES}" | grep -q '"rootHash"'; then
+    fail "the spent warrant was accepted a second time — the nonce was not consumed: ${REPLAY_RES}"
+fi
+echo "replay refused: ${REPLAY_RES}"
+
+# --- What this does NOT assert, stated rather than implied -------------------
+#
+# That the delta is ATTRIBUTED to the author rather than to the relay. That is
+# the point of `Principal`, and it is real, but it is not observable from the
+# two HTTP responses above -- the author lives on the delta, not in the intent
+# reply. The scenario's peer read-back proves the write propagated and was
+# accepted by a node that re-verifies both signature layers, which is the part
+# reachable from here; attribution itself is covered by the unit tests around
+# `Principal` and by `delegated-authorship.yml`'s DAG assertions.
+
+echo "PASS: a device holding only a key obtained a session, read a context, and submitted a delegated write — with no password in the flow"

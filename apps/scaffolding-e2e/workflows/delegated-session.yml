@@ -170,20 +170,50 @@ steps:
   # Read the node's own key rather than pinning a constant. This is the same
   # value the auth service reads at startup, through the same accessor
   # (`NamespaceRepository::node_identity`), so the two cannot disagree.
-  - name: Read node-1's own key, which is what a client pins
+  # Both facts come from one call: the signing key the statement is addressed to,
+  # and the account the warrant names as executor. Reading them separately would
+  # be two chances for them to describe different nodes.
+  - name: Read node-1's own key and account
     type: node_identity
     node: delegated-session-node-1
     outputs:
       node_key: publicKey
+      relay_account: accountId
 
   - name: Assert the node named itself
     type: assert
     statements:
       - "is_set({{node_key}})"
 
+  # --- The relay may author, so the write half of the criterion can run ---
+  #
+  # The executor is NODE-1: the node the keyholder logs in to is the node that
+  # spends the warrant, so its own account is what the warrant names and what the
+  # grant below lands on.
+  #
+  # Granted EXPLICITLY rather than leaning on the namespace default that
+  # calimero-network/core#3969 introduces, for two independent reasons:
+  #
+  #   1. node-1 created this namespace, so it is the root ADMIN — and the default
+  #      mask is seeded for non-admin roles only (`add_member_with_keys`). An
+  #      admin's own node never receives it, so relying on the default here would
+  #      not work at all.
+  #   2. Even where the default does apply, a scenario that depended on it would
+  #      stop testing the intents path the day someone changed the default. This
+  #      assertion is about `CAN_AUTHOR_ON_BEHALF` gating a delegated write, not
+  #      about how the bit got there.
+  #
+  # Bit 9 = 512: authorship alone, implied by neither membership nor admin.
+  - name: Grant node-1 CAN_AUTHOR_ON_BEHALF
+    type: set_member_capabilities
+    node: delegated-session-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{relay_account}}'
+    capabilities: 512
+
   # --- The criterion ---
 
-  - name: A keyholder logs in and reads, with no password
+  - name: A keyholder logs in, reads and writes, with no password
     type: script
     script: scripts/delegated-session.sh
     target: local
@@ -193,3 +223,35 @@ steps:
       - '{{author_secret}}'
       - '{{author_credential}}'
       - '{{node_key}}'
+      - '{{relay_account}}'
+
+  # The delegated write is a real delta, not a local mutation: it has to reach
+  # the peer and be accepted there, which is where both signature layers are
+  # re-verified. A scenario that stopped at the 200 from node-1 would pass even
+  # if every peer dropped the delta.
+  - name: The delegated write reaches the other node
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - delegated-session-node-1
+      - delegated-session-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads back what the keyholder wrote
+    type: call
+    node: delegated-session-node-2
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: delegated
+    outputs:
+      peer_value: result
+
+  # `outputs: result` captures the whole envelope `{"output": ...}`, not the bare
+  # value — assert against that shape, as `delegated-authorship.yml` does.
+  - name: Assert the keyholder's write is present on the peer
+    type: json_assert
+    statements:
+      - 'json_equal({{peer_value}}, {"output": "written-by-a-keyholder"})'
