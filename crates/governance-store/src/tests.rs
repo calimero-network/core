@@ -12860,6 +12860,10 @@ mod account_plane_apply {
 
     /// A device is never descoped from its own account namespace: that is where
     /// its certificate and every scope statement live, and no scope names it.
+    ///
+    /// Recognised from the registry row rather than from the node-local row that
+    /// names the account namespace, which is unset on a device mid-pairing - and
+    /// an apply that read it would delete a binding its peers keep.
     #[test]
     fn a_descope_in_the_account_namespace_is_refused() {
         let store = test_store();
@@ -12870,6 +12874,23 @@ mod account_plane_apply {
             .account_namespace();
         let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
         let (device_sk, genesis, device) = a_linked_device(&store, &gid, &owner_sk, 5);
+        let (proof, scope) = certified(&device_sk, device, vec![], 0);
+        let _recorded = crate::AccountDeviceRegistry::new(&store, gid)
+            .record(&proof, &scope)
+            .unwrap();
+
+        // The state a device is in before its pairing recorded the namespace.
+        crate::NodeDeviceRepository::new(&store).delete().unwrap();
+        let _adopted = crate::NodeDeviceRepository::new(&store)
+            .ensure_enrolled_into(&[gid], AccountGenesis::new(key(0x33).public_key()))
+            .unwrap();
+        assert_eq!(
+            crate::NodeDeviceRepository::new(&store)
+                .account_namespace()
+                .unwrap(),
+            None,
+            "the fixture must leave the node-local row unset, or this proves nothing"
+        );
 
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
@@ -12881,7 +12902,7 @@ mod account_plane_apply {
         )
         .unwrap();
 
-        assert_eq!(live_for(&store, &gid, genesis.account_id()).len(), 1);
+        assert!(is_live(&store, &gid, genesis.account_id(), device));
         assert_eq!(events, vec![]);
     }
 

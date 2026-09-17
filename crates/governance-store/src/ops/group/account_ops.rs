@@ -164,6 +164,26 @@ pub(crate) fn apply_device_linked(
     Ok(())
 }
 
+/// Is this group the account's own namespace - where its certificates and every
+/// scope statement live, and which no scope names?
+///
+/// Answered from the registry row the account's own `AccountDeviceCertified`
+/// wrote, which is replicated and causally precedes any link or descope citing
+/// it. The namespace id itself is hashed from the account's secret root, so no
+/// replica can recompute it from the op, and reading the node-local row that
+/// names it would make an apply verdict differ by which node folded it.
+fn is_the_accounts_own_namespace(
+    ctx: &GroupApplyCtx<'_>,
+    account: AccountId,
+    device: DeviceId,
+) -> EyreResult<bool> {
+    Ok(
+        crate::AccountDeviceRegistry::new(ctx.store(), *ctx.group_id())
+            .device(device)?
+            .is_some_and(|known| known.proof.statement.account == account),
+    )
+}
+
 /// Does `scope` authorise `cert`'s device, and reach this group? Shared with the
 /// descope so the two cannot disagree about which namespaces a scope speaks for.
 fn scope_reaches_here(
@@ -178,9 +198,7 @@ fn scope_reaches_here(
                        %err, what, "the scope did not authorise this device");
         return Ok(false);
     }
-    // The account namespace targets no application, so every scope but the widest
-    // reads as not covering it - and it is where the statements themselves live.
-    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? == Some(group_id) {
+    if is_the_accounts_own_namespace(ctx, cert.account, cert.device)? {
         return Ok(true);
     }
     let application = crate::MetaRepository::new(ctx.store())
@@ -515,7 +533,7 @@ pub(crate) fn apply_device_descoped(
                        "account device descoped: the scope did not authorise this device");
         return Ok(());
     }
-    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? == Some(group_id) {
+    if is_the_accounts_own_namespace(ctx, *account, *device)? {
         tracing::warn!(group_id = ?group_id, %device,
                        "account device descoped: a device keeps its account namespace");
         return Ok(());
