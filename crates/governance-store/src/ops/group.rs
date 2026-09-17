@@ -109,6 +109,18 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             device,
             scope,
         } => account_ops::apply_device_descoped(ctx, account, device, scope)?,
+        GroupOp::AccountNamespaceTargetNamed {
+            namespace,
+            application,
+            package,
+            version,
+        } => account_ops::apply_namespace_target_named(
+            ctx,
+            namespace,
+            *application,
+            package,
+            version,
+        )?,
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,

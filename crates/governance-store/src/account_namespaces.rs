@@ -2,10 +2,16 @@
 //!
 //! One row per namespace, written by the `AccountNamespaceGained` apply and
 //! deleted by `AccountNamespaceLeft`. A device paired or widened later walks it.
+//!
+//! A second row beside it carries the registry coordinates
+//! `AccountNamespaceTargetNamed` records, which is what a device outside the
+//! application's scope needs in order to offer to install it.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_store::key::GroupAccountNamespace;
+use calimero_store::key::{
+    GroupAccountNamespace, GroupAccountNamespaceTarget, GroupAccountNamespaceTargetValue,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::debug;
@@ -60,8 +66,50 @@ impl<'a> AccountNamespaceSet<'a> {
         Ok(())
     }
 
-    /// Drop `namespace`. Absent is not an error: a leave may reach a device that
-    /// never folded the gain.
+    /// Record the registry coordinates of a namespace the set already names, so
+    /// a device outside its scope can offer to install the application.
+    ///
+    /// `false` for a namespace the set does not name: the account left it, or
+    /// never gained it, and a later gain announces its own coordinates.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn name_target(
+        &self,
+        namespace: ContextGroupId,
+        application: ApplicationId,
+        package: &str,
+        version: &str,
+    ) -> EyreResult<bool> {
+        if self.contains(namespace)?.is_none() {
+            return Ok(false);
+        }
+        let mut handle = self.store.handle();
+        handle.put(
+            &self.target_key(namespace),
+            &GroupAccountNamespaceTargetValue {
+                application,
+                package: package.to_owned(),
+                version: version.to_owned(),
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// The coordinates recorded for `namespace`, if any have been.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn target(
+        &self,
+        namespace: ContextGroupId,
+    ) -> EyreResult<Option<GroupAccountNamespaceTargetValue>> {
+        let handle = self.store.handle();
+        Ok(handle.get(&self.target_key(namespace))?)
+    }
+
+    /// Drop `namespace`, coordinates and all. Absent is not an error: a leave
+    /// may reach a device that never folded the gain.
     ///
     /// # Errors
     /// Propagates the store write failure.
@@ -70,7 +118,12 @@ impl<'a> AccountNamespaceSet<'a> {
         let key =
             GroupAccountNamespace::new(self.account_namespace.to_bytes(), namespace.to_bytes());
         handle.delete(&key)?;
+        handle.delete(&self.target_key(namespace))?;
         Ok(())
+    }
+
+    fn target_key(&self, namespace: ContextGroupId) -> GroupAccountNamespaceTarget {
+        GroupAccountNamespaceTarget::new(self.account_namespace.to_bytes(), namespace.to_bytes())
     }
 
     /// The application recorded for `namespace`, or `None` when the set does not
@@ -182,6 +235,47 @@ mod tests {
             .expect("re-record, target unread");
 
         assert_eq!(set.contains(ns(0x61)).expect("read"), Some(Some(app(0x11))));
+    }
+
+    /// Coordinates attach only to a namespace the set already names, and leave
+    /// with it: a stale pair would offer an install for a namespace the account
+    /// is no longer in.
+    #[test]
+    fn coordinates_follow_the_row_they_belong_to() {
+        let store = test_store();
+        let set = AccountNamespaceSet::new(&store, ContextGroupId::from(ACCOUNT));
+
+        assert!(
+            !set.name_target(ns(0x61), app(0x11), "com.acme.app", "1.0.0")
+                .expect("name a target the set does not hold"),
+            "a namespace the set never gained must take no coordinates"
+        );
+        assert_eq!(set.target(ns(0x61)).expect("read"), None);
+
+        set.record(ns(0x61), Some(app(0x11))).expect("record");
+        assert!(set
+            .name_target(ns(0x61), app(0x11), "com.acme.app", "1.0.0")
+            .expect("name the target"));
+        let named = set.target(ns(0x61)).expect("read").expect("named");
+        assert_eq!(named.application, app(0x11));
+        assert_eq!(named.package, "com.acme.app");
+        assert_eq!(named.version, "1.0.0");
+
+        // A later release replaces the pair rather than accumulating one.
+        assert!(set
+            .name_target(ns(0x61), app(0x22), "com.acme.app", "2.0.0")
+            .expect("rename the target"));
+        assert_eq!(
+            set.target(ns(0x61)).expect("read").expect("named").version,
+            "2.0.0"
+        );
+
+        set.forget(ns(0x61)).expect("forget");
+        assert_eq!(
+            set.target(ns(0x61)).expect("read"),
+            None,
+            "leaving a namespace has to drop its coordinates too"
+        );
     }
 
     /// Dropping the one-field wrapper must not have moved a byte: borsh writes a

@@ -1,11 +1,16 @@
 //! Publishing into this node's account namespace: one device's row into its
 //! registry, and one namespace into its set. One publisher per op, since the
 //! scope epoch is minted from THIS node's folded row.
+//!
+//! The exception is a namespace's registry coordinates, which every device of
+//! the account can see go stale; [`refresh_target`] gates on the staleness
+//! itself instead of on an election.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_account::{AccountProof, DeviceCert, DeviceScope};
+use calimero_app_downloader::registry::stored_coords;
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
@@ -259,13 +264,14 @@ async fn publish(
         AccountNamespaceChange::Left => GroupOp::AccountNamespaceLeft { namespace },
     };
     let op_kind = op.op_kind_label();
+    let signer = PrivateKey::from(signer_sk);
 
     calimero_governance_store::sign_apply_and_publish(
         store,
         node_client,
         ack_router,
         &account_namespace,
-        &PrivateKey::from(signer_sk),
+        &signer,
         op,
     )
     .await?
@@ -283,7 +289,169 @@ async fn publish(
             "the account namespace did not take the change"
         );
     }
+
+    // After the gain, never before it: the target op is a no-op for a namespace
+    // the set does not name yet.
+    if named {
+        publish_target(
+            store,
+            node_client,
+            ack_router,
+            account_namespace,
+            &signer,
+            namespace,
+            site,
+        )
+        .await?;
+    }
     Ok(())
+}
+
+/// Name where `namespace`'s application is published, so a device whose scope
+/// excludes it can still offer to install it.
+///
+/// Silent while either half is unfolded here - a `TargetApplicationSet` folded
+/// later is what refreshes it, through [`refresh_target`].
+async fn publish_target(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    account_namespace: ContextGroupId,
+    signer: &PrivateKey,
+    namespace: ContextGroupId,
+    site: &'static str,
+) -> EyreResult<()> {
+    let Some((application, package, version)) = target_coords(store, namespace)? else {
+        debug!(
+            ?namespace,
+            "no registry coordinates folded here yet; announcing none"
+        );
+        return Ok(());
+    };
+    calimero_governance_store::sign_apply_and_publish(
+        store,
+        node_client,
+        ack_router,
+        &account_namespace,
+        signer,
+        GroupOp::AccountNamespaceTargetNamed {
+            namespace,
+            application,
+            package,
+            version,
+        },
+    )
+    .await?
+    .observe(site, "account_namespace_target_named");
+    Ok(())
+}
+
+/// Re-announce `namespace`'s coordinates when a `TargetApplicationSet` left the
+/// account's recorded pair stale. Nothing else refreshes it: a gain is announced
+/// once and never restated.
+///
+/// Every device of the account that follows `namespace` folds that op, so the
+/// single-publisher rule is the staleness gate itself rather than an election -
+/// whichever device publishes first silences the others as they fold the result,
+/// and a concurrent second publish writes the same pair.
+pub(crate) async fn refresh_target(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: ContextGroupId,
+) {
+    let account_namespace = match stale_target(store, namespace) {
+        Ok(Some(account_namespace)) => account_namespace,
+        Ok(None) => return,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace,
+                "could not tell whether this account's recorded coordinates are stale"
+            );
+            return;
+        }
+    };
+    // Participation, not the row, exactly as `publish`: a node authorized to
+    // write in the account namespace has an identity there, and one without
+    // skips rather than publishing something the apply would refuse.
+    let identity = match NamespaceRepository::new(store).identity(&account_namespace) {
+        Ok(Some((_signer_pk, signer_sk))) => PrivateKey::from(signer_sk),
+        Ok(None) => return,
+        Err(err) => {
+            warn!(
+                ?err,
+                "could not read this node's account-namespace identity"
+            );
+            return;
+        }
+    };
+    if let Err(err) = publish_target(
+        store,
+        node_client,
+        ack_router,
+        account_namespace,
+        &identity,
+        namespace,
+        "refresh_target",
+    )
+    .await
+    {
+        warn!(
+            ?err,
+            ?namespace,
+            "failed to refresh a namespace's coordinates in this account's set"
+        );
+    }
+}
+
+/// The account namespace whose recorded coordinates for `namespace` no longer
+/// match what is folded here, or `None` when there is nothing to re-announce.
+fn stale_target(store: &Store, namespace: ContextGroupId) -> EyreResult<Option<ContextGroupId>> {
+    let Some(account_namespace) = NodeDeviceRepository::new(store).account_namespace()? else {
+        return Ok(None);
+    };
+    if account_namespace == namespace {
+        return Ok(None);
+    }
+    let Some((application, package, version)) = target_coords(store, namespace)? else {
+        return Ok(None);
+    };
+    let set = AccountNamespaceSet::new(store, account_namespace);
+    if set.contains(namespace)?.is_none() {
+        return Ok(None);
+    }
+    let current = set.target(namespace)?.is_some_and(|recorded| {
+        recorded.application == application
+            && recorded.package == package
+            && recorded.version == version
+    });
+    Ok((!current).then_some(account_namespace))
+}
+
+/// The application `namespace` targets and the coordinates addressing it, as
+/// folded here. `stored_coords` rejects both the unset pair and the placeholder
+/// a raw-wasm row still carries, neither of which addresses a registry.
+fn target_coords(
+    store: &Store,
+    namespace: ContextGroupId,
+) -> EyreResult<Option<(ApplicationId, String, String)>> {
+    let Some(meta) = MetaRepository::new(store).load(&namespace)? else {
+        return Ok(None);
+    };
+    let application = meta.target.application_id;
+    if *application.as_ref() == [0u8; 32] {
+        return Ok(None);
+    }
+    Ok(
+        stored_coords(&meta.target.package, &meta.target.version).map(|coords| {
+            (
+                application,
+                coords.package.to_owned(),
+                coords.version.to_owned(),
+            )
+        }),
+    )
 }
 
 /// The application `namespace` targets, as folded here. The zero id a
@@ -296,4 +464,212 @@ fn target_application(
         .load(&namespace)?
         .map(|meta| meta.target.application_id)
         .filter(|application| *application.as_ref() != [0u8; 32]))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_account::AccountId;
+    use calimero_governance_store::{GroupKeyring, MembershipRepository};
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{GroupMetaValue, GroupTarget};
+
+    use super::{
+        announce, refresh_target, stale_target, target_coords, AccountNamespaceChange,
+        AccountNamespaceSet, ApplicationId, ContextGroupId, MetaRepository, NamespaceRepository,
+        NodeDeviceRepository, Store,
+    };
+    use crate::test_support::{actor, enrol};
+
+    const PROJECT: [u8; 32] = [0xD1; 32];
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn app(seed: u8) -> ApplicationId {
+        ApplicationId::from([seed; 32])
+    }
+
+    /// This node as the HOLDER of its account: a root, its account namespace
+    /// taken part in and keyed, and its own identity an admin there - the state
+    /// `publish` needs before anything it signs is taken.
+    fn a_holder(store: &Store) -> ContextGroupId {
+        let devices = NodeDeviceRepository::new(store);
+        let account_namespace = devices
+            .provision_account_root()
+            .expect("mint an account root")
+            .account_namespace();
+        let namespaces = NamespaceRepository::new(store);
+        let _identity = namespaces
+            .participate_in(&account_namespace)
+            .expect("take part in its own account namespace");
+        let _key_id = GroupKeyring::new(store, account_namespace)
+            .store_key(&[0x42; 32])
+            .expect("hold its key, without which nothing is published");
+        a_namespace_published_as(store, account_namespace, None);
+        let (sign_pk, _secret) = namespaces
+            .resolve_identity(&account_namespace)
+            .expect("read this node's identity here")
+            .expect("taking part in a namespace mints one");
+        let account = enrol(store, &account_namespace, &sign_pk);
+        MembershipRepository::new(store)
+            .add_member(&account_namespace, &account, GroupMemberRole::Admin)
+            .expect("and an admin of it, which is what the gate asks");
+        account_namespace
+    }
+
+    /// A namespace as its founder leaves it: a meta row naming a target, and
+    /// `None` for the account namespace, whose target is unset by construction.
+    fn a_namespace_published_as(
+        store: &Store,
+        namespace: ContextGroupId,
+        target: Option<(ApplicationId, &str, &str)>,
+    ) {
+        let target = target.map_or_else(GroupTarget::default, |(application, package, version)| {
+            GroupTarget {
+                application_id: application,
+                bytecode_id: [0u8; 32],
+                package: package.into(),
+                version: version.into(),
+            }
+        });
+        MetaRepository::new(store)
+            .save(
+                &namespace,
+                &GroupMetaValue {
+                    target,
+                    created_at: 1_700_000_000,
+                    admin_identity: AccountId::from([0x01; 32]),
+                    owner_identity: AccountId::from([0x01; 32]),
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace metadata");
+    }
+
+    /// Both halves or nothing. A target with no addressable coordinates is what
+    /// a raw-wasm install leaves, and it must not be announced as a location.
+    #[test]
+    fn coordinates_need_a_target_and_a_real_registry_pair() {
+        let store = store();
+        let project = ContextGroupId::from(PROJECT);
+
+        assert_eq!(target_coords(&store, project).expect("read"), None);
+
+        a_namespace_published_as(&store, project, Some((app(0x11), "", "")));
+        assert_eq!(target_coords(&store, project).expect("read"), None);
+
+        a_namespace_published_as(&store, project, Some((app(0x11), "unknown", "0.0.0")));
+        assert_eq!(
+            target_coords(&store, project).expect("read"),
+            None,
+            "the raw-wasm placeholder addresses no registry"
+        );
+
+        a_namespace_published_as(&store, project, Some((app(0x11), "com.acme.app", "1.0.0")));
+        assert_eq!(
+            target_coords(&store, project).expect("read"),
+            Some((app(0x11), "com.acme.app".to_owned(), "1.0.0".to_owned()))
+        );
+    }
+
+    /// The gain and the coordinates travel together, so a device that never
+    /// follows the namespace still learns where to install its application.
+    #[actix::test]
+    async fn a_gain_names_where_the_namespace_is_published() {
+        let store = store();
+        let account_namespace = a_holder(&store);
+        let project = ContextGroupId::from(PROJECT);
+        a_namespace_published_as(&store, project, Some((app(0x11), "com.acme.app", "1.0.0")));
+
+        let harness = actor::over(store.clone()).await;
+        announce(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            project,
+            AccountNamespaceChange::Gained,
+            "test",
+        )
+        .await;
+
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        assert_eq!(set.contains(project).expect("read"), Some(Some(app(0x11))));
+        let named = set.target(project).expect("read").expect("named");
+        assert_eq!(named.application, app(0x11));
+        assert_eq!(named.package, "com.acme.app");
+        assert_eq!(named.version, "1.0.0");
+    }
+
+    /// A gain announced before the coordinates folded records none, and nothing
+    /// restates a gain - so the later `TargetApplicationSet` has to name them.
+    #[actix::test]
+    async fn coordinates_that_arrive_after_the_gain_are_named_by_the_refresh() {
+        let store = store();
+        let account_namespace = a_holder(&store);
+        let project = ContextGroupId::from(PROJECT);
+        a_namespace_published_as(&store, project, Some((app(0x11), "", "")));
+
+        let harness = actor::over(store.clone()).await;
+        announce(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            project,
+            AccountNamespaceChange::Gained,
+            "test",
+        )
+        .await;
+
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        assert!(set.contains(project).expect("read").is_some(), "gained");
+        assert_eq!(
+            set.target(project).expect("read"),
+            None,
+            "a gain with no addressable coordinates must announce none"
+        );
+
+        a_namespace_published_as(&store, project, Some((app(0x22), "com.acme.app", "2.0.0")));
+        assert_eq!(
+            stale_target(&store, project).expect("read"),
+            Some(account_namespace)
+        );
+        refresh_target(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            project,
+        )
+        .await;
+
+        let named = set.target(project).expect("read").expect("named");
+        assert_eq!(named.application, app(0x22));
+        assert_eq!(named.version, "2.0.0");
+        assert_eq!(
+            stale_target(&store, project).expect("read"),
+            None,
+            "the pair now recorded is what is folded here, so nobody re-announces"
+        );
+    }
+
+    /// The refresh is gated on the record, not on an election: a namespace this
+    /// account never gained is not one it names coordinates for.
+    #[test]
+    fn a_namespace_the_account_never_gained_is_never_refreshed() {
+        let store = store();
+        let account_namespace = a_holder(&store);
+        let project = ContextGroupId::from(PROJECT);
+        a_namespace_published_as(&store, project, Some((app(0x11), "com.acme.app", "1.0.0")));
+
+        assert_eq!(stale_target(&store, project).expect("read"), None);
+        assert_eq!(
+            stale_target(&store, account_namespace).expect("read"),
+            None,
+            "the account namespace is never in its own set"
+        );
+    }
 }

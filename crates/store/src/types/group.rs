@@ -89,6 +89,11 @@ impl PredefinedEntry for key::GroupAccountNamespace {
     type DataType<'a> = Option<ApplicationId>;
 }
 
+impl PredefinedEntry for key::GroupAccountNamespaceTarget {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupAccountNamespaceTargetValue;
+}
+
 impl PredefinedEntry for key::GroupReentryBlock {
     type Codec = Borsh;
     type DataType<'a> = key::GroupReentryBlockValue;

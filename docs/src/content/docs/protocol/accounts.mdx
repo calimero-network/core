@@ -346,6 +346,15 @@ Once the window closes it writes the line anyway, with no application - an app-l
 Either way it writes nothing if the account has left the namespace in the meantime: a waiting gain must never overtake a leave, because re-naming a namespace in the set is something no later sweep can undo.
 Recording a line never un-knows an application the set already holds.
 
+Beside each line the set records **where that namespace's application is published** - its registry package and version - named by a second operation the gainer publishes straight after the gain.
+Neither an application id nor a namespace id addresses a registry, so those coordinates are what let a device whose scope excludes the application still offer to install it.
+A gainer that has not folded addressable coordinates yet - an unset target, or the placeholder a raw-wasm install leaves - announces none.
+Nothing ever restates a gain, so a later `TargetApplicationSet` moving the namespace onto a new release would leave the recorded pair stale forever.
+Every device of the account that folds that operation therefore re-announces the coordinates, gated on the recorded pair actually differing from what it just folded: whichever device lands first silences the rest as they fold the result, and a concurrent second announcement writes the same pair.
+
+`GET /admin-api/account/applications` is that set, read back.
+It lists every application the account speaks in, whether or not this device takes part in any of its namespaces, with the coordinates to install it from and a `followed` flag saying which side of this device's scope it falls on.
+
 **What a device does with it.**
 On a gain whose application its own registry scope covers, it follows the namespace: it records participation, subscribes, and pulls the namespace once.
 The pull is part of following, not a rescue: gossip only carries what is published from that moment on, so without it the namespace's existing DAG would arrive only on the next beacon.

@@ -1,0 +1,137 @@
+name: E2E Account - A Device Is Told About An Application Outside Its Own Scope
+description: >
+  A paired device lists an application its account speaks in but its scope
+  leaves out, with the registry coordinates to install it from.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: outside-scope-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: outside-scope-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: outside-scope-node-2
+    username: dev
+    password: dev-password
+
+  # Both applications live on node-1 alone. node-2 installs neither: what it
+  # ends up knowing about app B it knows from its account.
+  - name: Install app A (the bundle) on node-1
+    type: install_application
+    node: outside-scope-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_a: applicationId
+
+  - name: Install app B (the raw wasm) on node-1
+    type: install_application
+    node: outside-scope-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_b: applicationId
+
+  # Read back rather than spelled out: the coordinates the account records are
+  # the ones the installed row carries, so the expectation has one source.
+  - name: What app A is published as
+    type: get_application
+    node: outside-scope-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      app_a_package: application.package
+
+  - name: What app B is published as
+    type: get_application
+    node: outside-scope-node-1
+    application_id: '{{app_b}}'
+    outputs:
+      app_b_package: application.package
+      app_b_version: application.version
+
+  - name: Two applications, not one installed twice
+    type: assert
+    statements:
+      - 'is_set({{app_a}})'
+      - 'is_set({{app_b}})'
+      - '{{app_a}} != {{app_b}}'
+
+  - name: Node-1 creates namespace A1, targeting app A
+    type: create_namespace
+    node: outside-scope-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a1: namespaceId
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: outside-scope-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+
+  # Scoped to app A alone, so app B's namespace below is one this device never
+  # follows - which is exactly the case the route exists to answer.
+  - name: Pair node-2 onto Alice's account, scoped to app A
+    type: account_pair
+    node: outside-scope-node-2
+    holder: outside-scope-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    namespaces:
+      - '{{ns_a1}}'
+    applications:
+      - '{{app_a}}'
+    await_self: true
+
+  - name: Node-1 creates namespace B1, targeting app B
+    type: create_namespace
+    node: outside-scope-node-1
+    application_id: '{{app_b}}'
+    outputs:
+      ns_b1: namespaceId
+
+  # Polled rather than barriered: node-2 is a member of nothing, so no namespace
+  # barrier can include it. The line reaches it over the account namespace.
+  - name: The phone is told about app B, which its scope leaves out
+    type: assert_api_response
+    node: outside-scope-node-2
+    path: /admin-api/account/applications
+    where:
+      applicationId: '{{app_b}}'
+    match:
+      followed: false
+      package: '{{app_b_package}}'
+      version: '{{app_b_version}}'
+    contains:
+      namespaces:
+        - '{{ns_b1}}'
+    retries: 45
+    interval: 2
+
+  - name: And still follows app A, which it is scoped to
+    type: assert_api_response
+    node: outside-scope-node-2
+    path: /admin-api/account/applications
+    where:
+      applicationId: '{{app_a}}'
+    match:
+      followed: true
+      package: '{{app_a_package}}'
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
+    retries: 45
+    interval: 2
+
+stop_all_nodes: true

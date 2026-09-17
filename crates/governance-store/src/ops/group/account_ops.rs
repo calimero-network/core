@@ -329,6 +329,42 @@ pub(crate) fn apply_namespace_gained(
     Ok(())
 }
 
+/// `GroupOp::AccountNamespaceTargetNamed` - record where a namespace already in
+/// the account's set is published, so a device outside its scope can offer to
+/// install it.
+///
+/// A namespace the set does not name is a no-op, not an error. The op is signed,
+/// belongs in the DAG, and every replica reaches that verdict from the same rows:
+/// the publisher only emits it after the gain it cites as a parent, so "absent"
+/// here means the account left, and a later gain announces its own coordinates.
+pub(crate) fn apply_namespace_target_named(
+    ctx: &mut GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+    application: ApplicationId,
+    package: &str,
+    version: &str,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+    if owning_account_signer(ctx, "account namespace target named")?.is_none() {
+        return Ok(());
+    }
+
+    let named = AccountNamespaceSet::new(ctx.store(), group_id).name_target(
+        *namespace,
+        application,
+        package,
+        version,
+    )?;
+    if !named {
+        tracing::debug!(group_id = ?group_id, ?namespace,
+                        "account namespace target named for a namespace the set does not hold");
+        return Ok(());
+    }
+    tracing::info!(group_id = ?group_id, ?namespace, %application, package, version,
+                   "account namespace target named");
+    Ok(())
+}
+
 /// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left. The
 /// event fires with or without a row: a device may follow it from its pair list.
 pub(crate) fn apply_namespace_left(

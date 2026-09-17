@@ -183,7 +183,10 @@ id_newtype! {
 /// gains the root-signed `scope` the link was made under, so the descope apply
 /// can order itself against it. That is a layout change to an existing variant,
 /// so a v13 peer must reject at the version gate rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 14;
+///
+/// v15: appends `GroupOp::AccountNamespaceTargetNamed`; no prior ordinal moves,
+/// so a v14 peer fails at the version gate rather than partway through a DAG.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 15;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -674,6 +677,23 @@ pub enum GroupOp {
         /// proofs: inline it makes the variant too large.
         scope: Box<SignedDeviceScope>,
     },
+    /// Name the registry coordinates of a namespace already in the account's
+    /// set, so a device whose scope excludes the application can still offer to
+    /// install it.
+    ///
+    /// Published after the gain by the node that gained it, and again by
+    /// whichever device folds a `TargetApplicationSet` leaving the recorded pair
+    /// stale - a gain is never re-announced, so nothing else refreshes it.
+    AccountNamespaceTargetNamed {
+        /// The namespace the coordinates address.
+        namespace: ContextGroupId,
+        /// The application it targets.
+        application: ApplicationId,
+        /// The registry package that application is published under.
+        package: String,
+        /// The release of that package.
+        version: String,
+    },
 }
 
 impl GroupOp {
@@ -718,6 +738,7 @@ impl GroupOp {
             GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
             GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
             GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
+            GroupOp::AccountNamespaceTargetNamed { .. } => "account_namespace_target_named",
         }
     }
 }
@@ -2096,6 +2117,9 @@ impl GroupOp {
                 package, version, ..
             }
             | Self::ContextRegistered {
+                package, version, ..
+            }
+            | Self::AccountNamespaceTargetNamed {
                 package, version, ..
             } => check_coords(package, version),
             // Each handoff costs an Ed25519 verification in `root_key_at_epoch`,

@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, NamespaceRepository, NodeDeviceRepository};
+use calimero_governance_store::{
+    AccountNamespaceSet, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     AccountApplicationApiEntry, AccountApplicationsApiResponse,
@@ -18,8 +20,8 @@ use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// Every application this node's participating namespaces target, deduped and
-/// grouped by the namespaces that target each one.
+/// Every application this ACCOUNT speaks in, grouped by the namespaces
+/// targeting each one, whether or not this device takes part in them.
 ///
 /// `None` when this node holds no account, mirroring `GET /admin-api/identity`.
 /// A namespace whose metadata has not synced yet contributes nothing rather than
@@ -33,43 +35,93 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountApplicationApiEntry>>>
     }
 
     let account_namespace = NodeDeviceRepository::new(store).account_namespace()?;
-    let meta = MetaRepository::new(store);
-    let mut by_application: BTreeMap<ApplicationId, Vec<ContextGroupId>> = BTreeMap::new();
-    for namespace in NamespaceRepository::new(store).participating_namespaces()? {
-        // Participation outlives a narrowing, so it alone does not say the
-        // application is still this device's to speak for.
-        if Some(namespace) == account_namespace
-            || !calimero_context::account_follow::node_reaches(store, &namespace)?
-        {
-            continue;
-        }
-        if let Some(value) = meta.load(&namespace)? {
+    let participating: BTreeSet<ContextGroupId> = NamespaceRepository::new(store)
+        .participating_namespaces()?
+        .into_iter()
+        .collect();
+
+    let mut by_application: BTreeMap<ApplicationId, AccountApplicationApiEntry> = BTreeMap::new();
+    for (namespace, application, coords) in
+        namespace_targets(store, account_namespace, &participating)?
+    {
+        let entry =
             by_application
-                .entry(value.target.application_id)
-                .or_default()
-                .push(namespace);
+                .entry(application)
+                .or_insert_with(|| AccountApplicationApiEntry {
+                    application_id: application,
+                    namespaces: Vec::new(),
+                    package: None,
+                    version: None,
+                    followed: false,
+                });
+        entry.namespaces.push(hex::encode(namespace.to_bytes()));
+        // Participation outlives a narrowing, so it alone does not say "followed".
+        entry.followed |= participating.contains(&namespace)
+            && calimero_context::account_follow::node_reaches(store, &namespace)?;
+        if let Some((package, version)) = coords {
+            entry.package = Some(package);
+            entry.version = Some(version);
         }
     }
 
-    Ok(Some(
-        by_application
-            .into_iter()
-            .map(|(application_id, namespaces)| AccountApplicationApiEntry {
-                application_id,
-                namespaces: namespaces
-                    .into_iter()
-                    .map(|namespace| hex::encode(namespace.to_bytes()))
-                    .collect(),
-            })
-            .collect(),
-    ))
+    Ok(Some(by_application.into_values().collect()))
+}
+
+/// Every namespace an application is known for, with the coordinates the account
+/// namespace recorded for it.
+///
+/// The account's own set comes first and wins: it names namespaces this device
+/// takes no part in, which is the whole reason the route exists. Local
+/// participation then fills in anything the set has not learned - a namespace
+/// gained before the account recorded one, or a node holding no account
+/// namespace at all.
+fn namespace_targets(
+    store: &Store,
+    account_namespace: Option<ContextGroupId>,
+    participating: &BTreeSet<ContextGroupId>,
+) -> EyreResult<Vec<(ContextGroupId, ApplicationId, Option<(String, String)>)>> {
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+
+    if let Some(account_namespace) = account_namespace {
+        let set = AccountNamespaceSet::new(store, account_namespace);
+        for (namespace, gained_application) in set.namespaces()? {
+            let named = set.target(namespace)?;
+            // The named target is the later word: a `TargetApplicationSet` after
+            // the gain refreshes it, and the gain is never restated.
+            let Some(application) = named
+                .as_ref()
+                .map(|target| target.application)
+                .or(gained_application)
+            else {
+                continue;
+            };
+            let _ = seen.insert(namespace);
+            targets.push((
+                namespace,
+                application,
+                named.map(|target| (target.package, target.version)),
+            ));
+        }
+    }
+
+    let meta = MetaRepository::new(store);
+    for namespace in participating {
+        if Some(*namespace) == account_namespace || seen.contains(namespace) {
+            continue;
+        }
+        if let Some(value) = meta.load(namespace)? {
+            targets.push((*namespace, value.target.application_id, None));
+        }
+    }
+    Ok(targets)
 }
 
 /// `GET /admin-api/account/applications`
 ///
-/// The applications this account speaks in, derived from its participating
-/// namespaces' target applications - the same mapping `pair-complete`'s scope
-/// resolution reads.
+/// The applications this account speaks in, from the namespace set its own
+/// namespace replicates to every device - so a device whose scope leaves an
+/// application out still learns of it, and where to install it from.
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
     match collect(&state.store) {
         Ok(Some(applications)) => ApiResponse {
@@ -215,11 +267,10 @@ mod tests {
         assert_eq!(applications[0].application_id, app);
     }
 
-    /// A device the account narrowed must stop reporting the application it lost:
-    /// its participation row stays for a later widening, so participation alone is
-    /// not the same question as "is this application still this device's".
+    /// A narrowed device keeps its participation row for a later widening, so the
+    /// application it lost stays listed but must stop reading as followed.
     #[test]
-    fn a_narrowed_device_reports_only_the_applications_it_still_reaches() {
+    fn a_narrowed_device_stops_following_the_application_it_lost() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let namespaces = NamespaceRepository::new(&store);
         let meta = MetaRepository::new(&store);
@@ -237,11 +288,12 @@ mod tests {
             &[],
         );
 
-        let reported = |store: &Store| -> Vec<ApplicationId> {
+        let followed = |store: &Store| -> Vec<ApplicationId> {
             let mut applications: Vec<_> = collect(store)
                 .expect("collect")
                 .expect("has account")
                 .iter()
+                .filter(|entry| entry.followed)
                 .map(|entry| entry.application_id)
                 .collect();
             applications.sort();
@@ -249,7 +301,7 @@ mod tests {
         };
         let mut both = vec![app_kept, app_lost];
         both.sort();
-        assert_eq!(reported(&store), both);
+        assert_eq!(followed(&store), both);
 
         calimero_context::test_support::rescope_paired_device(
             &store,
@@ -261,10 +313,90 @@ mod tests {
         );
 
         assert_eq!(
-            reported(&store),
+            followed(&store),
             vec![app_kept],
-            "an application this device was narrowed out of is no longer its own"
+            "an application this device was narrowed out of is no longer followed"
         );
+    }
+
+    /// The reason the route exists: an application on the account that this
+    /// device's scope leaves out, listed with the coordinates to install it from
+    /// and marked as not followed - beside one the device does take part in.
+    #[test]
+    fn an_application_outside_this_devices_scope_is_listed_unfollowed_with_coordinates() {
+        let store = seeded_account();
+        let devices = NodeDeviceRepository::new(&store);
+        let account_namespace = devices
+            .account_root()
+            .expect("read the root")
+            .expect("seeded_account mints one")
+            .account_namespace();
+        devices
+            .store_account_namespace(&account_namespace)
+            .expect("record it");
+        let followed_app = ApplicationId::from([0x11; 32]);
+        let outside_app = ApplicationId::from([0x22; 32]);
+
+        // NS_A: gained, targeted, and this device takes part in it.
+        NamespaceRepository::new(&store)
+            .note_participation(&ns(NS_A))
+            .expect("join A");
+        MetaRepository::new(&store)
+            .save(&ns(NS_A), &meta_for(followed_app))
+            .expect("save meta A");
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        set.record(ns(NS_A), Some(followed_app)).expect("gain A");
+        set.name_target(ns(NS_A), followed_app, "com.acme.a", "1.0.0")
+            .expect("name A's target");
+        // NS_B: gained by another device of the account, out of this one's scope,
+        // so there is no participation row and no metadata here at all.
+        set.record(ns(NS_B), Some(outside_app)).expect("gain B");
+        set.name_target(ns(NS_B), outside_app, "com.acme.b", "2.0.0")
+            .expect("name B's target");
+
+        let applications = collect(&store).expect("collect").expect("has account");
+
+        let outside = applications
+            .iter()
+            .find(|entry| entry.application_id == outside_app)
+            .expect("the out-of-scope application must be listed");
+        assert_eq!(outside.namespaces, vec![hex::encode(NS_B)]);
+        assert_eq!(outside.package.as_deref(), Some("com.acme.b"));
+        assert_eq!(outside.version.as_deref(), Some("2.0.0"));
+        assert!(
+            !outside.followed,
+            "this device takes part in no namespace of that application"
+        );
+
+        let followed = applications
+            .iter()
+            .find(|entry| entry.application_id == followed_app)
+            .expect("the in-scope application must still be listed");
+        assert_eq!(followed.namespaces, vec![hex::encode(NS_A)]);
+        assert_eq!(followed.package.as_deref(), Some("com.acme.a"));
+        assert!(followed.followed, "this device takes part in NS_A");
+    }
+
+    /// A namespace this node takes part in that the account's set has never
+    /// named keeps the pre-set behaviour: listed, followed, no coordinates.
+    #[test]
+    fn a_namespace_the_account_set_never_named_is_still_listed() {
+        let store = seeded_account();
+        let app = ApplicationId::from([0x77; 32]);
+
+        NamespaceRepository::new(&store)
+            .note_participation(&ns(NS_A))
+            .expect("join A");
+        MetaRepository::new(&store)
+            .save(&ns(NS_A), &meta_for(app))
+            .expect("save meta A");
+
+        let applications = collect(&store).expect("collect").expect("has account");
+
+        assert_eq!(applications.len(), 1);
+        assert_eq!(applications[0].application_id, app);
+        assert!(applications[0].followed);
+        assert_eq!(applications[0].package, None);
     }
 
     #[test]

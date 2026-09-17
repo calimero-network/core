@@ -2,6 +2,7 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::{seed_target_application_row, GroupApplyCtx};
+use crate::op_events::OpEvent;
 use crate::{MetaRepository, MetadataRepository};
 use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
@@ -14,6 +15,13 @@ pub(crate) fn apply(
     target_application_id: &ApplicationId,
     coords: RegistryCoords<'_>,
 ) -> EyreResult<()> {
+    // Queued before the mutation, not after: a failed apply drops its events,
+    // and the borrows below hold `ctx` for the rest of the function.
+    let named_group = ctx.group_id().to_bytes();
+    ctx.queue_event(OpEvent::TargetApplicationSet {
+        group_id: named_group,
+    });
+
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();

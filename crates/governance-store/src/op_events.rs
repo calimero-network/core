@@ -149,6 +149,12 @@ pub enum OpEvent {
         group_id: [u8; 32],
         namespace: ContextGroupId,
     },
+    /// `GroupOp::TargetApplicationSet` - a group's target application, and the
+    /// coordinates addressing it, were named. Fires on every application of the
+    /// op, including a restated one: it is what tells an account's namespace set
+    /// that the coordinates it recorded at gain time may have moved on. The new
+    /// target is read from the group's own meta rather than carried here.
+    TargetApplicationSet { group_id: [u8; 32] },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including
     /// when flags don't change, so handlers should dedupe if they care.

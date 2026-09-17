@@ -2450,8 +2450,8 @@ pub struct AccountDevicesApiResponse {
     pub devices: Vec<AccountDeviceApiEntry>,
 }
 
-/// One application this account speaks in, derived from the namespaces this
-/// node takes part in that target it.
+/// One application this account speaks in, derived from the namespaces the
+/// account's own namespace records plus the ones this node takes part in.
 ///
 /// **Known limitation:** an application installed with no namespace yet is
 /// invisible here - it has no cross-device meaning until a namespace exists.
@@ -2461,6 +2461,16 @@ pub struct AccountApplicationApiEntry {
     pub application_id: ApplicationId,
     /// Hex-encoded ids of the namespaces targeting this application.
     pub namespaces: Vec<String>,
+    /// Where the application is published, for a device that would install it.
+    /// Absent until an `AccountNamespaceTargetNamed` names them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// See [`AccountApplicationApiEntry::package`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Whether THIS device takes part in any of those namespaces. `false` is an
+    /// application on the account that this device's scope leaves out.
+    pub followed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

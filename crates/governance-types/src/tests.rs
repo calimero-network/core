@@ -354,8 +354,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 14,
-        "the ordinals frozen below are the v14 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 15,
+        "the ordinals frozen below are the v15 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -2239,6 +2239,42 @@ fn v10_target_application_set_bytes_are_rejected_not_misparsed() {
     );
 }
 
+fn sample_namespace_target_named(package: &str, version: &str) -> GroupOp {
+    GroupOp::AccountNamespaceTargetNamed {
+        namespace: ContextGroupId::from([0x91; 32]),
+        application: sample_application_id(0x44),
+        package: package.to_owned(),
+        version: version.to_owned(),
+    }
+}
+
+/// The v15 append. Its ordinal has to sit after every v14 one, or a v14 peer
+/// would decode somebody else's op out of these bytes.
+#[test]
+fn account_namespace_target_named_appends_the_last_ordinal() {
+    let encoded = borsh::to_vec(&sample_namespace_target_named("com.acme.app", "1.2.3"))
+        .expect("encode the appended op");
+
+    assert_eq!(encoded[0], 32, "the appended ordinal moved");
+
+    let decoded: GroupOp = borsh::from_slice(&encoded).expect("decode the appended op");
+    assert_eq!(decoded.op_kind_label(), "account_namespace_target_named");
+    match decoded {
+        GroupOp::AccountNamespaceTargetNamed {
+            namespace,
+            application,
+            package,
+            version,
+        } => {
+            assert_eq!(namespace, ContextGroupId::from([0x91; 32]));
+            assert_eq!(application, sample_application_id(0x44));
+            assert_eq!(package, "com.acme.app");
+            assert_eq!(version, "1.2.3");
+        }
+        other => panic!("ordinal 32 decoded as {other:?}"),
+    }
+}
+
 #[test]
 fn oversized_registry_coordinates_are_rejected_before_apply() {
     // `validate()` is the anti-amplification gate the apply path runs before any
@@ -2281,6 +2317,19 @@ fn oversized_registry_coordinates_are_rejected_before_apply() {
         .validate()
         .is_err());
     assert!(sample_context_registered(("pkg", "1.0.0"))
+        .validate()
+        .is_ok());
+
+    assert!(sample_namespace_target_named(&long, "1.0.0")
+        .validate()
+        .is_err());
+    assert!(sample_namespace_target_named("pkg", &long)
+        .validate()
+        .is_err());
+    assert!(sample_namespace_target_named("", "1.0.0")
+        .validate()
+        .is_err());
+    assert!(sample_namespace_target_named("pkg", "1.0.0")
         .validate()
         .is_ok());
 }

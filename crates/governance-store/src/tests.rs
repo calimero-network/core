@@ -13345,6 +13345,82 @@ mod account_plane_apply {
             "a replayed narrowing must not undo the widening that superseded it"
         );
     }
+
+    /// The coordinates half. They attach only to a namespace the set already
+    /// holds, only from the account that owns this namespace, and they leave
+    /// with the row - a pair outliving a leave would offer a stale install.
+    #[test]
+    fn coordinates_are_named_only_for_a_namespace_the_account_holds() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let gained = ContextGroupId::from([0x86; 32]);
+        let never_gained = ContextGroupId::from([0x87; 32]);
+        let app = ApplicationId::from([0x45; 32]);
+        let named =
+            |namespace, package: &str, version: &str| GroupOp::AccountNamespaceTargetNamed {
+                namespace,
+                application: app,
+                package: package.to_owned(),
+                version: version.to_owned(),
+            };
+
+        for op in [
+            GroupOp::AccountNamespaceGained {
+                namespace: gained,
+                application: Some(app),
+            },
+            named(gained, "com.acme.app", "1.0.0"),
+            named(never_gained, "com.acme.app", "1.0.0"),
+        ] {
+            sign_apply_local_group_op_borsh(&store, &gid, &owner_sk, op).unwrap();
+        }
+
+        let set = AccountNamespaceSet::new(&store, gid);
+        let target = set.target(gained).unwrap().expect("the set holds it");
+        assert_eq!(target.application, app);
+        assert_eq!(target.package, "com.acme.app");
+        assert_eq!(target.version, "1.0.0");
+        assert_eq!(
+            set.target(never_gained).unwrap(),
+            None,
+            "a namespace the account left or never gained takes no coordinates"
+        );
+
+        // Admin at the cut, bound to no account here - the same gate the gain
+        // and the leave take, asked where a row already exists to overwrite.
+        let stranger = key(4).public_key();
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &stranger,
+            &named(gained, "com.evil.app", "9.9.9"),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+        assert_eq!(events, vec![], "a refused op owes no wake-up");
+        assert_eq!(
+            set.target(gained).unwrap().expect("still named").package,
+            "com.acme.app",
+            "an admin the namespace can name no account for renames nothing"
+        );
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountNamespaceLeft { namespace: gained },
+        )
+        .unwrap();
+        assert_eq!(
+            set.target(gained).unwrap(),
+            None,
+            "leaving a namespace drops its coordinates with its row"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------

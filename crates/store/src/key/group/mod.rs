@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x52` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x53` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x53`**.
+// `0x54`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2641,6 +2641,87 @@ impl Debug for GroupAccountNamespace {
     }
 }
 
+/// Prefix for [`GroupAccountNamespaceTarget`].
+pub const GROUP_ACCOUNT_NAMESPACE_TARGET_PREFIX: u8 = 0x53;
+
+/// The registry coordinates recorded for a [`GroupAccountNamespace`] row.
+///
+/// A second key rather than a wider value, because the existing rows are bare
+/// `Option<ApplicationId>` borsh and a longer value type would fail to decode
+/// every one of them.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountNamespaceTarget(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountNamespaceTarget {
+    #[must_use]
+    pub fn new(account_namespace: [u8; 32], namespace: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_ACCOUNT_NAMESPACE_TARGET_PREFIX,
+        ])
+        .concat(GenericArray::from(account_namespace))
+        .concat(GenericArray::from(namespace))))
+    }
+
+    #[must_use]
+    pub fn account_namespace(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountNamespaceTarget {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountNamespaceTarget {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountNamespaceTarget {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountNamespaceTarget")
+            .field("account_namespace", &self.account_namespace())
+            .field("namespace", &self.namespace())
+            .finish()
+    }
+}
+
+/// The application a [`GroupAccountNamespaceTarget`] row names, and the registry
+/// coordinates a device outside its scope would install it from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountNamespaceTargetValue {
+    pub application: ApplicationId,
+    pub package: String,
+    pub version: String,
+}
+
+/// The certificate and scope a [`GroupAccountDevice`] row carries.
+///
+/// The node-local row plus the epoch that ordered it: same certificate, same
+/// applications, so the two are one declaration. Borsh writes a nested struct
+/// inline, so the bytes are the three fields in this order either way.
 /// The certificate and scope a [`GroupAccountDevice`] row carries. The statement
 /// is stored whole because a link re-presents it and a sibling cannot re-sign it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3995,6 +4076,10 @@ mod tests {
             ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
+            (
+                "GROUP_ACCOUNT_NAMESPACE_TARGET",
+                GROUP_ACCOUNT_NAMESPACE_TARGET_PREFIX,
+            ),
             ("GROUP_MEMBER_BY_ACCOUNT", GROUP_MEMBER_BY_ACCOUNT_PREFIX),
             (
                 "GROUP_MEMBER_INDEX_BACKFILL",

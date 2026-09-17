@@ -1,7 +1,11 @@
 //! Following what this account gains, unfollowing what it leaves, binding a
 //! sibling it certifies and carrying a revocation it proved: an op-event listener
-//! beside [`crate::auto_follow`], reacting only to this node's own account
-//! namespace, and sweeping both ways on every start.
+//! beside [`crate::auto_follow`], reacting to this node's own account namespace,
+//! and sweeping both ways on every start.
+//!
+//! One arm is not about the account namespace at all: a `TargetApplicationSet`
+//! on any namespace the account holds re-announces that namespace's registry
+//! coordinates, which nothing else refreshes.
 //!
 //! Unfollowing pulls once before it unsubscribes, since the `MemberLeft` the
 //! local view turns on travels on the topic about to be dropped. It needs all
@@ -197,6 +201,23 @@ async fn run(
                         account,
                         device,
                         *proof,
+                    )
+                    .await;
+                });
+            }
+            // The one arm that fires on a PROJECT namespace's DAG: the account's
+            // set records where each namespace's application is published, and
+            // this is the only op that moves it.
+            OpEvent::TargetApplicationSet { group_id } => {
+                let store = store.clone();
+                let node_client = node_client.clone();
+                let ack_router = Arc::clone(&ack_router);
+                let _ = tasks.spawn(async move {
+                    crate::account_namespace::refresh_target(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        ContextGroupId::from(group_id),
                     )
                     .await;
                 });
