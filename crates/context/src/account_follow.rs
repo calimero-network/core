@@ -404,9 +404,13 @@ fn namespaces_in_scope(
             return (Vec::new(), Vec::new());
         }
     };
+    // A node holding the account root reaches everywhere, as `node_reaches` says,
+    // so no statement - stale, replayed or hostile - makes it let a topic go. A
+    // failed read counts as holding: the cost of guessing wrong is every topic.
+    let holds_the_root = !matches!(NodeDeviceRepository::new(store).holder_root(), Ok(None));
     let (mut covered, mut uncovered) = (Vec::new(), Vec::new());
     for (namespace, application) in set {
-        if own.covers(application) {
+        if holds_the_root || own.covers(application) {
             covered.push(namespace);
         } else {
             uncovered.push(namespace);
@@ -733,7 +737,7 @@ mod tests {
         namespaces_to_revoke_in, node_reaches, publish_sibling_link, run, signing_identity,
         unfollows_on_left,
     };
-    use crate::test_support::{actor, eventually, rescope_paired_device};
+    use crate::test_support::{actor, eventually, holder_device_scoped_to, rescope_paired_device};
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
     const OTHER_GROUP: [u8; 32] = [0xC9; 32];
@@ -1043,6 +1047,69 @@ mod tests {
             ),
             (vec![], vec![]),
             "another device's scope says nothing about what this one may follow"
+        );
+    }
+
+    /// The node holding the account root signs every scope statement, so one that
+    /// names itself can never make it let a topic go - whatever the statement says
+    /// and however it arrived.
+    #[test]
+    fn a_root_holders_own_scope_arriving_unfollows_nothing() {
+        let store = store();
+        let (account_namespace, device) = holder_device_scoped_to(&store, &[app(0x11)]);
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        set.record(ContextGroupId::from([0x91; 32]), Some(app(0x11)))
+            .expect("named by the scope");
+        set.record(ContextGroupId::from([0x92; 32]), Some(app(0x22)))
+            .expect("not named by the scope");
+
+        let (covered, uncovered) =
+            namespaces_this_scope_decides(&store, account_namespace.to_bytes(), device);
+
+        assert_eq!(
+            uncovered,
+            Vec::<ContextGroupId>::new(),
+            "the root holder must never unfollow on its own statement"
+        );
+        assert_eq!(
+            covered,
+            vec![
+                ContextGroupId::from([0x91; 32]),
+                ContextGroupId::from([0x92; 32])
+            ],
+            "and it goes on reaching every namespace of its account"
+        );
+    }
+
+    /// The same rule at start-up, where no event is involved: a narrower row
+    /// folded while this node was down must not cost the holder its topics.
+    #[actix::test]
+    async fn the_start_up_sweep_drops_nothing_on_a_node_holding_the_account_root() {
+        let store = store();
+        let (account_namespace, _device) = holder_device_scoped_to(&store, &[app(0x11)]);
+        let uncovered = ContextGroupId::from([0x93; 32]);
+        AccountNamespaceSet::new(&store, account_namespace)
+            .record(uncovered, Some(app(0x22)))
+            .expect("a namespace the row's scope does not name");
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        let mut subscribed = Vec::new();
+        let _followed = eventually(|| {
+            subscribed.append(&mut harness.subscribed());
+            subscribed.contains(&topic(uncovered))
+        })
+        .await;
+        let seen = harness.unsubscribed();
+        listener.abort();
+
+        assert!(
+            subscribed.contains(&topic(uncovered)),
+            "the holder has to follow every namespace of its account; got: {subscribed:?}"
+        );
+        assert!(
+            !seen.contains(&topic(uncovered)),
+            "the sweep must not unfollow on the holder's own row; got: {seen:?}"
         );
     }
 

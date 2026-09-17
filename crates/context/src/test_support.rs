@@ -232,6 +232,49 @@ pub fn paired_device_scoped_to(
     (held.device(), root_sk)
 }
 
+/// This node as the HOLDER of its account: its own root, its own device row and
+/// its own registry row, scoped to `applications` (empty is every application).
+///
+/// The counterpart of [`paired_device_scoped_to`], for the reads that answer
+/// differently on a node holding the root its statements are signed by.
+///
+/// # Panics
+///
+/// Panics if any of the rows cannot be written, which in a test means the fixture
+/// is wrong rather than the code under test.
+pub fn holder_device_scoped_to(
+    store: &Store,
+    applications: &[calimero_primitives::application::ApplicationId],
+) -> (ContextGroupId, calimero_account::DeviceId) {
+    let devices = calimero_governance_store::NodeDeviceRepository::new(store);
+    let root = devices
+        .provision_account_root()
+        .expect("this node's account root");
+    let account_namespace = root.account_namespace();
+    devices
+        .store_account_namespace(&account_namespace)
+        .expect("name the account namespace");
+    let (_namespace, signer_pk, _signer_sk) =
+        calimero_governance_store::NamespaceRepository::new(store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
+    let credential = crate::join_credential::build(store, &account_namespace, &signer_pk)
+        .expect("mint and certify this node's own device");
+    let proof = calimero_account::AccountProof {
+        genesis: credential.genesis,
+        chain: credential.chain.clone(),
+        statement: credential.statement,
+    };
+    let device = proof.statement.device;
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, account_namespace)
+        .record(
+            &proof,
+            &device_scope(root.signing_key(), &proof, applications, 0),
+        )
+        .expect("record the holder's own device in its registry");
+    (account_namespace, device)
+}
+
 /// Replace this node's own scope with `applications` at `scope_epoch`, as folding
 /// the account holder's `AccountDeviceCertified` does.
 ///
