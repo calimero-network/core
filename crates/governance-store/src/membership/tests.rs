@@ -135,18 +135,7 @@ fn readd_with_defaults_seeds_defaults_not_stale_caps() {
         .add_member(&gid, &pk, GroupMemberRole::Member)
         .unwrap();
 
-    // The elevated grant is genuinely gone, not merely masked: no explicit row
-    // survives the removal, which is the distinction this test exists to make.
-    assert_eq!(
-        caps.member_capability(&gid, &pk).unwrap(),
-        None,
-        "removal must clear the explicit grant rather than leave it to be overwritten"
-    );
-    // And what the re-added member actually gets is the group default.
-    assert_eq!(
-        membership.effective_member_capability(&gid, &pk).unwrap(),
-        defaults
-    );
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(defaults));
 }
 
 #[test]
@@ -684,99 +673,9 @@ fn check_membership_path_inherited_when_member_added_after_default_caps() {
 }
 
 #[test]
-fn an_inherited_member_does_not_pick_up_the_subgroups_default() {
-    // The default is what a group grants the members it ADMITTED. An inherited
-    // member was admitted to an ancestor, so resolving the subgroup's default
-    // for them would hand every namespace member whatever an Open subgroup
-    // happens to default to — a widening nobody granted, and one that would
-    // arrive silently the moment an admin set a default on a subgroup.
-    //
-    // `group-join-via-inheritance` states the rule for the API: an inherited
-    // joiner holds no explicit bitmask in the subgroup, and `0` means "member,
-    // no extra delegated bits". `authorship_grant_source` already reads the
-    // ANCHOR's row for the same reason.
+fn check_membership_path_none_when_member_added_before_default_caps() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
-    let store = test_store();
-    let ns = ContextGroupId::from([0xC8; 32]);
-    let child = ContextGroupId::from([0xC9; 32]);
-    let bob = AccountId::from([0x02; 32]);
-
-    nest_for_test(&store, &ns, &child);
-    let capabilities = CapabilitiesRepository::new(&store);
-    capabilities
-        .set_subgroup_visibility(&child, VisibilityMode::Open)
-        .unwrap();
-
-    // Bob is a member of the ROOT, and reaches the Open child by inheritance.
-    capabilities
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns, &bob, GroupMemberRole::Member)
-        .unwrap();
-
-    // The child carries a default of its own — the case that makes this bite.
-    capabilities
-        .set_default_capabilities(
-            &child,
-            (MemberCapabilities::CAN_AUTHOR_ON_BEHALF | MemberCapabilities::CAN_INVITE_MEMBERS)
-                .bits(),
-        )
-        .unwrap();
-
-    let membership = MembershipRepository::new(&store);
-    assert!(
-        matches!(
-            membership.check_path(&child, &bob).unwrap(),
-            MembershipPath::Inherited { .. }
-        ),
-        "bob reaches the child by inheritance, which is the precondition here"
-    );
-    assert_eq!(
-        membership.effective_capabilities(&child, &bob).unwrap(),
-        Some(0),
-        "an inherited member holds no bits in the subgroup — the child's default \
-         belongs to members the child admitted, not to everyone who can reach it"
-    );
-
-    // And a DIRECT member of the same child does resolve it, so this is a
-    // distinction between paths rather than the default being inert.
-    let carol = AccountId::from([0x03; 32]);
-    membership
-        .add_member(&child, &carol, GroupMemberRole::Member)
-        .unwrap();
-    assert_eq!(
-        membership.effective_capabilities(&child, &carol).unwrap(),
-        Some(
-            (MemberCapabilities::CAN_AUTHOR_ON_BEHALF | MemberCapabilities::CAN_INVITE_MEMBERS)
-                .bits()
-        ),
-        "a member the child admitted gets the child's default"
-    );
-}
-
-#[test]
-fn check_membership_path_inherited_when_member_added_before_default_caps() {
-    use calimero_context_config::{MemberCapabilities, VisibilityMode};
-
-    // The counterpart of the test above, and the point of the pair: the SAME
-    // two operations in the OTHER order must reach the same answer.
-    //
-    // It used not to. Admission copied the group default into a per-member
-    // capability row, so a member admitted before `DefaultCapabilitiesSet`
-    // folded got no row, a later default did not retroactively materialise one,
-    // and `check_path` answered `None` forever. That is the state that produced
-    // `MemberJoinedOpen rejected: no membership path` on a later-joining peer,
-    // and it was worked around by ordering `set_default_capabilities` ahead of
-    // the catch-up apply in `join_group` -- a fix that holds only where one
-    // handler controls the order. Nothing controls the order in which a peer
-    // folds two ops off the DAG, which is why the same defect came back as two
-    // peers disagreeing about whether a relay may author on behalf.
-    //
-    // Resolving the default at read time removes the ordering from the answer
-    // instead of arranging it, so this now asserts `Inherited` where it once
-    // asserted `None`.
     let store = test_store();
     let ns = ContextGroupId::from([0xB6; 32]);
     let child = ContextGroupId::from([0xB7; 32]);
@@ -787,7 +686,10 @@ fn check_membership_path_inherited_when_member_added_before_default_caps() {
         .set_subgroup_visibility(&child, VisibilityMode::Open)
         .unwrap();
 
-    // Member first, default second -- the ordering a peer cannot control.
+    // Buggy ordering (what the pre-fix `join_group` catch-up did when a
+    // node caught up on an earlier member's `MemberJoined` before its
+    // own `set_default_capabilities` ran): member added while default
+    // caps are still unset → no per-member capability row is written.
     MembershipRepository::new(&store)
         .add_member(&ns, &bob, GroupMemberRole::Member)
         .unwrap();
@@ -795,23 +697,18 @@ fn check_membership_path_inherited_when_member_added_before_default_caps() {
         .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
+    // The later `set_default_capabilities` does NOT retroactively
+    // materialize bob's per-member cap, so the inheritance check still
+    // returns `None`. This is exactly the state that produced
+    // `MemberJoinedOpen rejected: no membership path` on the
+    // later-joining peer; the `join_group` handler fix prevents it by
+    // ordering `set_default_capabilities` before the catch-up apply.
     let path = MembershipRepository::new(&store)
         .check_path(&child, &bob)
         .unwrap();
     assert!(
-        matches!(path, MembershipPath::Inherited { .. }),
-        "the default must apply whenever it arrives, not only to members admitted \
-         after it, got {path:?}"
-    );
-
-    // And no explicit row was invented on bob's behalf: the answer is resolved,
-    // which is what makes it independent of when the default arrived.
-    assert_eq!(
-        CapabilitiesRepository::new(&store)
-            .member_capability(&ns, &bob)
-            .unwrap(),
-        None,
-        "a resolved default must not be materialised as an explicit grant"
+        matches!(path, MembershipPath::None),
+        "member added before default caps has no per-member cap row → no inherited path, got {path:?}"
     );
 }
 

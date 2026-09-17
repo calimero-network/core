@@ -63,6 +63,7 @@ impl<'a> MembershipRepository<'a> {
         private_key: Option<[u8; 32]>,
         sender_key: Option<[u8; 32]>,
     ) -> EyreResult<()> {
+        let is_admin = role == GroupMemberRole::Admin;
         let mut handle = self.store.handle();
         let key = GroupMember::new(group_id.to_bytes(), *identity);
         // Preserve auto_follow across updates — used for upserts (e.g. MemberRoleSet).
@@ -126,13 +127,14 @@ impl<'a> MembershipRepository<'a> {
         // stranded behind a stale inherited-deny.
         DenyListRepository::new(self.store).clear_inherited(group_id, identity)?;
 
-        // No capability row is written here. It used to copy the group's default
-        // into the member's row at admission, which made the answer depend on
-        // whether `DefaultCapabilitiesSet` had folded yet -- and the copy was
-        // unconditional, so a DAG replay silently re-derived it from whatever the
-        // default was by then. The row is an explicit grant; its absence resolves
-        // to the group default at read time
-        // (`CapabilitiesRepository::effective_member_capability`).
+        if !is_admin {
+            let capabilities = CapabilitiesRepository::new(self.store);
+            if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+                if defaults != 0 {
+                    capabilities.set_member_capability(group_id, identity, defaults)?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -158,6 +160,7 @@ impl<'a> MembershipRepository<'a> {
         identity: &AccountId,
         role: GroupMemberRole,
     ) -> EyreResult<()> {
+        let is_admin = role == GroupMemberRole::Admin;
         let mut handle = self.store.handle();
         let key = GroupMember::new(group_id.to_bytes(), *identity);
         let existing =
@@ -178,18 +181,32 @@ impl<'a> MembershipRepository<'a> {
         )?;
         drop(handle);
 
-        // This used to seed baseline caps from the group default when no
-        // capability row existed, gated on `is_none` so a role change never
-        // clobbered an existing grant. Both halves of that are now free: the row
-        // is only ever an explicit grant, so there is nothing to seed and nothing
-        // to clobber, and a demoted admin's custom caps survive because this
-        // function no longer touches capabilities at all. An absent row resolves
-        // to the group default at read time
-        // (`CapabilitiesRepository::effective_member_capability`).
+        // Two-phase write (member row, then the default-caps row on its own
+        // handle), identical to `add_member_with_keys`. It is NOT a transaction,
+        // and deliberately so: the store is unbuffered/write-through, so a single
+        // shared handle would not make the two puts atomic across a crash anyway.
+        // Safety rests on the apply model, not a lock: group-op apply is
+        // serialized per group_id by the single-threaded ContextManager actor, so
+        // no concurrent reader observes the in-between state; and apply is
+        // replay-safe/idempotent, so a crash landing between the two writes is
+        // healed when the op re-applies (set_role re-runs and re-seeds the caps).
         //
-        // Dropping it also removes the two-phase write this comment used to have
-        // to justify: `set_role` now writes one key, so there is no non-atomic
-        // pair for a crash to land between.
+        // Seed baseline caps ONLY when no capability row exists yet — never
+        // clobber an existing grant on a role change (e.g. demoting an admin who
+        // held custom caps). The `is_none` gate also keeps re-apply idempotent.
+        if !is_admin {
+            let capabilities = CapabilitiesRepository::new(self.store);
+            if capabilities
+                .member_capability(group_id, identity)?
+                .is_none()
+            {
+                if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+                    if defaults != 0 {
+                        capabilities.set_member_capability(group_id, identity, defaults)?;
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -295,7 +312,9 @@ impl<'a> MembershipRepository<'a> {
                 });
             }
             if has_direct_member(self.store, &parent, identity)? && anchor_decision.is_none() {
-                let caps = self.effective_member_capability(&parent, identity)?;
+                let caps = CapabilitiesRepository::new(self.store)
+                    .member_capability(&parent, identity)?
+                    .unwrap_or(0);
                 anchor_decision = Some(
                     if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                         MembershipPath::Inherited {
@@ -362,57 +381,12 @@ impl<'a> MembershipRepository<'a> {
             {
                 Ok(None)
             }
-            // A DIRECT member resolves the group's default, because that is what
-            // the default is for: what this group grants the members it admitted.
-            MembershipPath::Direct => {
-                Ok(Some(self.effective_member_capability(group_id, identity)?))
-            }
-            // An INHERITED member does not. Their membership comes from an
-            // ancestor, and so do their capabilities — `authorship_grant_source`
-            // already reads the ANCHOR's row for exactly this reason. Resolving
-            // the subgroup's default here would hand every namespace member
-            // whatever an Open subgroup happens to default to, which is a
-            // widening nobody granted: `group-join-via-inheritance` pins the
-            // rule, and its comment states it outright — an inherited member
-            // holds no explicit bitmask in the subgroup, and `0` means "member,
-            // no extra delegated bits".
-            MembershipPath::Inherited { .. } => Ok(Some(
+            MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
                 CapabilitiesRepository::new(self.store)
                     .member_capability(group_id, identity)?
                     .unwrap_or(0),
             )),
         }
-    }
-
-    /// `identity`'s effective capability bits in `group_id`, by the rule that
-    /// needs the role: the explicit per-member grant if one exists, else the
-    /// group default — **unless the member is an Admin, which gets neither.**
-    ///
-    /// The admin exclusion is not incidental. `add_member_with_keys` only ever
-    /// seeded a row for a non-admin role, so an admin's bits were always `0`
-    /// unless granted outright, and the capability is deliberately not implied
-    /// by admin: `delegated-authorship` proves the distinction by refusing the
-    /// namespace owner's own delegated write until `CAN_AUTHOR_ON_BEHALF` is
-    /// granted explicitly, then accepting the same bytes once it is.
-    ///
-    /// Resolving the default here rather than copying it at admission is what
-    /// makes a member's capabilities independent of the order two ops fold in
-    /// (see `CapabilitiesRepository::resolved_for_non_admin`). Applying that
-    /// fallback to admins as well would have widened every namespace owner to
-    /// its own default mask, which is what the first attempt did.
-    pub fn effective_member_capability(
-        &self,
-        group_id: &ContextGroupId,
-        identity: &AccountId,
-    ) -> EyreResult<u32> {
-        let capabilities = CapabilitiesRepository::new(self.store);
-        if let Some(explicit) = capabilities.member_capability(group_id, identity)? {
-            return Ok(explicit);
-        }
-        if self.role_of(group_id, identity)? == Some(GroupMemberRole::Admin) {
-            return Ok(0);
-        }
-        capabilities.resolved_for_non_admin(group_id, identity)
     }
 
     /// Enumerate the accounts that are members of `group_id` purely by

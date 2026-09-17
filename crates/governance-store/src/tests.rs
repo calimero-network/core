@@ -2455,12 +2455,10 @@ fn default_capabilities_include_can_join_open_subgroups() {
         .add_member(&gid, &alice, GroupMemberRole::Member)
         .unwrap();
 
-    // Read through the resolver, not the raw row: admission no longer copies the
-    // default into a per-member row, so the bit is resolved rather than stored.
-    // What the test is about -- a new non-admin member HAS the bit -- is unchanged.
-    let caps = MembershipRepository::new(&store)
-        .effective_member_capability(&gid, &alice)
-        .unwrap();
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &alice)
+        .unwrap()
+        .unwrap_or(0);
     assert_eq!(
         caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()
@@ -3006,9 +3004,10 @@ fn default_capabilities_admin_override_propagates_to_new_member() {
     // alice should NOT have any capability bits; in particular she
     // should NOT have CAN_JOIN_OPEN_SUBGROUPS just because a hard-coded
     // path snuck it in.
-    let caps = MembershipRepository::new(&store)
-        .effective_member_capability(&gid, &alice)
-        .unwrap();
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &alice)
+        .unwrap()
+        .unwrap_or(0);
     assert_eq!(
         caps, 0,
         "admin override default=0 should give member caps=0, got {caps}"
@@ -3024,9 +3023,10 @@ fn default_capabilities_admin_override_propagates_to_new_member() {
     MembershipRepository::new(&store)
         .add_member(&gid, &bob, GroupMemberRole::Member)
         .unwrap();
-    let bob_caps = MembershipRepository::new(&store)
-        .effective_member_capability(&gid, &bob)
-        .unwrap();
+    let bob_caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &bob)
+        .unwrap()
+        .unwrap_or(0);
     assert_eq!(
         bob_caps, custom,
         "admin override default={custom} should give member caps={custom}, got {bob_caps}"
