@@ -204,6 +204,26 @@ pub enum ContextError {
     )]
     ScopeReplacementEmpty,
 
+    /// A `400`: the list is longer than a scope statement may carry, so it could
+    /// never be signed into one.
+    #[error("a scope replacement may name at most {limit} applications")]
+    ScopeReplacementTooLarge {
+        /// The cap the wire format puts on a scope statement.
+        limit: usize,
+    },
+
+    /// A `400`: the list names an application no namespace of this account
+    /// targets, so the replacement would reach nothing and descope everywhere.
+    #[error(
+        "this account takes part in no namespace targeting application \
+         {application}, so naming it in a scope replacement would leave the \
+         device reaching nothing"
+    )]
+    ScopeReplacementUnknownApplication {
+        /// The application the caller named (for the message only).
+        application: String,
+    },
+
     /// A `409`: scope epochs only ever rise, and this device's has reached the
     /// last one there is, so no further statement can supersede what it holds.
     #[error(

@@ -774,7 +774,9 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     Some(match err {
         Refusal::PairingStatementInvalid { .. }
         | Refusal::PairingCodeMismatch { .. }
-        | Refusal::ScopeReplacementEmpty => StatusCode::BAD_REQUEST,
+        | Refusal::ScopeReplacementEmpty
+        | Refusal::ScopeReplacementTooLarge { .. }
+        | Refusal::ScopeReplacementUnknownApplication { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
         | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,

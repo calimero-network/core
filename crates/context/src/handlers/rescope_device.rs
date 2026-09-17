@@ -13,7 +13,10 @@ use calimero_context_client::group::{
 };
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, NamespaceRepository, NodeDeviceRepository};
+use calimero_governance_store::{
+    AccountNamespaceSet, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+};
+use calimero_governance_types::bounds::MAX_DEVICE_SCOPE_APPLICATIONS;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -25,15 +28,56 @@ use crate::handlers::pair_device_complete::signing_identity;
 use crate::handlers::relink_device::resolve_device;
 use crate::ContextManager;
 
-/// The applications a request asks for, with the empty `Only` refused.
+/// The applications a request asks for: the empty `Only` refused, a list longer
+/// than a statement can carry refused, and repeats dropped in the order given.
 fn requested_applications(scope: ScopeRequest) -> EyreResult<Vec<ApplicationId>> {
-    match scope {
-        ScopeRequest::All => Ok(Vec::new()),
-        ScopeRequest::Only(applications) if applications.is_empty() => {
-            Err(ContextError::ScopeReplacementEmpty.into())
-        }
-        ScopeRequest::Only(applications) => Ok(applications),
+    let ScopeRequest::Only(applications) = scope else {
+        return Ok(Vec::new());
+    };
+    if applications.is_empty() {
+        return Err(ContextError::ScopeReplacementEmpty.into());
     }
+    if applications.len() > MAX_DEVICE_SCOPE_APPLICATIONS {
+        return Err(ContextError::ScopeReplacementTooLarge {
+            limit: MAX_DEVICE_SCOPE_APPLICATIONS,
+        }
+        .into());
+    }
+    let mut named = Vec::with_capacity(applications.len());
+    for application in applications {
+        if !named.contains(&application) {
+            named.push(application);
+        }
+    }
+    Ok(named)
+}
+
+/// Refuse an application no namespace of this account targets.
+///
+/// Accepting one is an empty scope in all but name: it reaches nothing and
+/// descopes the device everywhere, which is not what naming an application says.
+fn refuse_unknown_applications(
+    store: &Store,
+    account_namespace: ContextGroupId,
+    applications: &[ApplicationId],
+) -> EyreResult<()> {
+    if applications.is_empty() {
+        return Ok(());
+    }
+    let known: Vec<_> = AccountNamespaceSet::new(store, account_namespace)
+        .namespaces()?
+        .into_iter()
+        .filter_map(|(_namespace, application)| application)
+        .collect();
+    for application in applications {
+        if !known.contains(application) {
+            return Err(ContextError::ScopeReplacementUnknownApplication {
+                application: application.to_string(),
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Refuse the device this node runs as while it holds the account root.
@@ -98,6 +142,11 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
         if let Err(err) = refuse_the_root_holders_own_device(&store, device) {
+            return ActorResponse::reply(Err(err));
+        }
+        if let Err(err) =
+            refuse_unknown_applications(&store, root.account_namespace(), &applications)
+        {
             return ActorResponse::reply(Err(err));
         }
         // Signed before anything is published: the descopes below carry it, and so
@@ -219,7 +268,8 @@ mod tests {
 
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        AccountBindingRepository, AccountDeviceRegistry, GroupKeyring, MembershipRepository,
+        AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, GroupKeyring,
+        MembershipRepository,
     };
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{GroupMetaValue, GroupTarget};
@@ -301,6 +351,63 @@ mod tests {
             refused.downcast_ref::<ContextError>(),
             Some(ContextError::ScopeReplacementEmpty)
         ));
+    }
+
+    /// A list longer than a scope statement may carry could never be signed into
+    /// one, so it is refused here rather than as "the replacement was not recorded".
+    #[test]
+    fn naming_more_applications_than_a_statement_carries_is_refused() {
+        let named = vec![app(APP_ONE); MAX_DEVICE_SCOPE_APPLICATIONS + 1];
+        let refused = requested_applications(ScopeRequest::Only(named))
+            .expect_err("an oversized replacement");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::ScopeReplacementTooLarge { .. })
+        ));
+    }
+
+    /// Repeats say nothing the first mention did not, and the statement they are
+    /// signed into is what every peer compares.
+    #[test]
+    fn a_repeated_application_is_named_once_in_the_order_given() {
+        let named = requested_applications(ScopeRequest::Only(vec![
+            app(APP_TWO),
+            app(APP_ONE),
+            app(APP_TWO),
+        ]))
+        .expect("a replacement naming one application twice");
+        assert_eq!(named, vec![app(APP_TWO), app(APP_ONE)]);
+    }
+
+    /// An application no namespace of the account targets reaches nothing, so
+    /// accepting it would be an empty scope under another name.
+    #[actix::test]
+    async fn naming_an_application_this_account_has_no_namespace_for_is_refused() {
+        let store = a_holder_of_two_namespaces();
+        let harness = actor::over(store.clone()).await;
+        let _namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
+        let device = certify_device(&store, 0x39, &[]);
+
+        let refused = harness
+            .manager
+            .send(RescopeDeviceRequest {
+                device,
+                scope: ScopeRequest::Only(vec![app([0x5F; 32])]),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the account takes part in no namespace of it");
+
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::ScopeReplacementUnknownApplication { .. })
+            ),
+            "got: {refused}"
+        );
     }
 
     /// The narrowing publishes only where the new scope stops reaching, and the
@@ -601,6 +708,17 @@ mod tests {
     async fn a_replacement_the_registry_did_not_record_is_an_error() {
         let store = a_holder_of_two_namespaces();
         let device = certify_device(&store, 0x34, &[]);
+        // The set names the application, so the request gets past validation and
+        // fails where this test is aiming.
+        AccountNamespaceSet::new(
+            &store,
+            NodeDeviceRepository::new(&store)
+                .account_namespace()
+                .expect("read")
+                .expect("the holder names one"),
+        )
+        .record(ContextGroupId::from(NS_ONE), Some(app(APP_ONE)))
+        .expect("record the namespace the account takes part in");
 
         // Nothing created the account namespace here, so this node is not an
         // admin of the one its root names and the certified op's apply refuses.
