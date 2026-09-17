@@ -258,10 +258,7 @@ pub fn authorship_grant_source(
     else {
         return Ok(None);
     };
-    let Some(bits) = CapabilitiesRepository::new(store).member_capability(&anchor, &account)?
-    else {
-        return Ok(None);
-    };
+    let bits = CapabilitiesRepository::new(store).effective_member_capability(&anchor, &account)?;
     Ok(MemberCapabilities::from_bits_truncate(bits)
         .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
         .then_some(anchor))
@@ -863,6 +860,64 @@ mod tests {
     /// Without this, that test would pass just as happily if `add_member` were
     /// granting authorship to every TEE node regardless of the default — which
     /// is the failure it is meant to rule out, not demonstrate.
+    /// The order two ops fold in must not decide whether a relay may author.
+    ///
+    /// No peer controls that order. The key-delivery retry sorts buffered ops by
+    /// `(signer_bytes, nonce)` — publish order within one signer, public-key
+    /// order across signers — so an admission signed by a second admin folds
+    /// ahead of the `DefaultCapabilitiesSet` its capabilities depend on. See
+    /// `key_delivery_retry_folds_per_signer_not_in_causal_order`.
+    ///
+    /// Admission used to COPY the group default into the member's capability row,
+    /// so that order decided whether the relay carried `CAN_AUTHOR_ON_BEHALF`:
+    /// one peer accepted its delegated writes and another dropped them at the
+    /// cut, permanently, because every seeding site is absence-gated. Resolving
+    /// the default at read time makes both orders reach the same answer.
+    #[test]
+    fn a_relay_admitted_before_the_default_arrives_may_still_author() {
+        let mask =
+            MemberCapabilities::CAN_AUTHOR_ON_BEHALF | MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+
+        // Order A: the relay is admitted first, while the group still has no
+        // default — the ordering that used to strand it.
+        let a = seed(7);
+        let late = enrol_member(&a.store, &a.group, &PublicKey::from([0x1B; 32]));
+        MembershipRepository::new(&a.store)
+            .add_member(&a.group, &late, GroupMemberRole::Member)
+            .expect("admit the relay before any default exists");
+        assert!(
+            !account_may_author(&a.store, &a.context, late).expect("read the gate"),
+            "with no default set anywhere, admission alone still confers nothing"
+        );
+        CapabilitiesRepository::new(&a.store)
+            .set_default_capabilities(&a.group, mask.bits())
+            .expect("the mask arrives afterwards");
+
+        // Order B: the same two steps, the other way round.
+        let b = seed(7);
+        CapabilitiesRepository::new(&b.store)
+            .set_default_capabilities(&b.group, mask.bits())
+            .expect("the mask arrives first");
+        let early = enrol_member(&b.store, &b.group, &PublicKey::from([0x1B; 32]));
+        MembershipRepository::new(&b.store)
+            .add_member(&b.group, &early, GroupMemberRole::Member)
+            .expect("admit the relay after the default exists");
+
+        let authored_a = account_may_author(&a.store, &a.context, late).expect("read gate A");
+        let authored_b = account_may_author(&b.store, &b.context, early).expect("read gate B");
+
+        assert_eq!(
+            authored_a, authored_b,
+            "the two peers folded the same two ops in different orders and must \
+             agree about whether the relay may author (A={authored_a}, B={authored_b})"
+        );
+        assert!(
+            authored_a,
+            "and the answer they agree on is the granted one: the namespace default \
+             carries CAN_AUTHOR_ON_BEHALF, so a member with no explicit override has it"
+        );
+    }
+
     #[test]
     fn an_admitted_tee_node_is_closed_when_no_default_is_set() {
         let w = seed(7);

@@ -55,6 +55,39 @@ impl<'a> CapabilitiesRepository<'a> {
         Ok(())
     }
 
+    /// `member`'s effective capability bits in `group_id`: the explicit
+    /// per-member grant if one exists, else the group's default, else `0`.
+    ///
+    /// **The row means "explicitly granted", and its absence means "take the
+    /// group default" — it has never meant "no capabilities".** Reading
+    /// [`member_capability`](Self::member_capability) directly and treating
+    /// `None` as `0` is what made a member's capabilities depend on whether
+    /// `DefaultCapabilitiesSet` had folded before they were admitted: admission
+    /// copied whatever default was present at that instant, so two peers that
+    /// folded the same ops in a different order materialised different rows for
+    /// the same member and disagreed about what they may do.
+    ///
+    /// Resolving instead of copying removes the ordering from the answer: the
+    /// default is replicated by its own op, so every peer reads the same one
+    /// whenever it arrives.
+    ///
+    /// This is the live twin of `calimero_authz::AclView::capability`, which
+    /// resolves the same two planes at an op's causal cut and has always had
+    /// this fallback. The two are now the same rule in two places rather than
+    /// two rules, which matters because `AtCutAuthorizer` decides with the
+    /// former and the receive path with the latter — a disagreement between
+    /// them is a write authorized at the cut and refused live, or the reverse.
+    pub fn effective_member_capability(
+        &self,
+        group_id: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<u32> {
+        if let Some(explicit) = self.member_capability(group_id, member)? {
+            return Ok(explicit);
+        }
+        Ok(self.default_capabilities(group_id)?.unwrap_or(0))
+    }
+
     pub fn enumerate_members(
         &self,
         group_id: &ContextGroupId,

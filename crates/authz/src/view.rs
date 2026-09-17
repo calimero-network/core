@@ -169,8 +169,17 @@ impl AclView {
 
     /// `member`'s effective capability bitmask in `group` at the cut: the
     /// explicit per-member override if present, else the group default, else
-    /// `0`. Mirrors the live `member_capability` read used by inherited-
-    /// membership resolution (the `CAN_JOIN_OPEN_SUBGROUPS` gate).
+    /// `0`.
+    ///
+    /// The live twin is `CapabilitiesRepository::effective_member_capability`,
+    /// and the two are deliberately the same rule. This comment used to claim it
+    /// mirrored the live `member_capability` read, which it did not: that read
+    /// had no default fallback, because admission copied the default into a
+    /// per-member row instead of resolving it. So the at-cut answer and the live
+    /// answer could differ for a member admitted before the group's
+    /// `DefaultCapabilitiesSet` folded — a delegated write authorized here and
+    /// refused on the receive path, or the reverse. The live side now resolves
+    /// too, so the claim holds.
     #[must_use]
     pub fn capability(&self, group: &ContextGroupId, member: &AccountId) -> u32 {
         self.member_caps

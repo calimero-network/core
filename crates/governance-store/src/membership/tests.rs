@@ -135,7 +135,18 @@ fn readd_with_defaults_seeds_defaults_not_stale_caps() {
         .add_member(&gid, &pk, GroupMemberRole::Member)
         .unwrap();
 
-    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(defaults));
+    // The elevated grant is genuinely gone, not merely masked: no explicit row
+    // survives the removal, which is the distinction this test exists to make.
+    assert_eq!(
+        caps.member_capability(&gid, &pk).unwrap(),
+        None,
+        "removal must clear the explicit grant rather than leave it to be overwritten"
+    );
+    // And what the re-added member actually gets is the group default.
+    assert_eq!(
+        caps.effective_member_capability(&gid, &pk).unwrap(),
+        defaults
+    );
 }
 
 #[test]
@@ -673,9 +684,26 @@ fn check_membership_path_inherited_when_member_added_after_default_caps() {
 }
 
 #[test]
-fn check_membership_path_none_when_member_added_before_default_caps() {
+fn check_membership_path_inherited_when_member_added_before_default_caps() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
+    // The counterpart of the test above, and the point of the pair: the SAME
+    // two operations in the OTHER order must reach the same answer.
+    //
+    // It used not to. Admission copied the group default into a per-member
+    // capability row, so a member admitted before `DefaultCapabilitiesSet`
+    // folded got no row, a later default did not retroactively materialise one,
+    // and `check_path` answered `None` forever. That is the state that produced
+    // `MemberJoinedOpen rejected: no membership path` on a later-joining peer,
+    // and it was worked around by ordering `set_default_capabilities` ahead of
+    // the catch-up apply in `join_group` -- a fix that holds only where one
+    // handler controls the order. Nothing controls the order in which a peer
+    // folds two ops off the DAG, which is why the same defect came back as two
+    // peers disagreeing about whether a relay may author on behalf.
+    //
+    // Resolving the default at read time removes the ordering from the answer
+    // instead of arranging it, so this now asserts `Inherited` where it once
+    // asserted `None`.
     let store = test_store();
     let ns = ContextGroupId::from([0xB6; 32]);
     let child = ContextGroupId::from([0xB7; 32]);
@@ -686,10 +714,7 @@ fn check_membership_path_none_when_member_added_before_default_caps() {
         .set_subgroup_visibility(&child, VisibilityMode::Open)
         .unwrap();
 
-    // Buggy ordering (what the pre-fix `join_group` catch-up did when a
-    // node caught up on an earlier member's `MemberJoined` before its
-    // own `set_default_capabilities` ran): member added while default
-    // caps are still unset → no per-member capability row is written.
+    // Member first, default second -- the ordering a peer cannot control.
     MembershipRepository::new(&store)
         .add_member(&ns, &bob, GroupMemberRole::Member)
         .unwrap();
@@ -697,18 +722,23 @@ fn check_membership_path_none_when_member_added_before_default_caps() {
         .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
-    // The later `set_default_capabilities` does NOT retroactively
-    // materialize bob's per-member cap, so the inheritance check still
-    // returns `None`. This is exactly the state that produced
-    // `MemberJoinedOpen rejected: no membership path` on the
-    // later-joining peer; the `join_group` handler fix prevents it by
-    // ordering `set_default_capabilities` before the catch-up apply.
     let path = MembershipRepository::new(&store)
         .check_path(&child, &bob)
         .unwrap();
     assert!(
-        matches!(path, MembershipPath::None),
-        "member added before default caps has no per-member cap row → no inherited path, got {path:?}"
+        matches!(path, MembershipPath::Inherited { .. }),
+        "the default must apply whenever it arrives, not only to members admitted \
+         after it, got {path:?}"
+    );
+
+    // And no explicit row was invented on bob's behalf: the answer is resolved,
+    // which is what makes it independent of when the default arrived.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .member_capability(&ns, &bob)
+            .unwrap(),
+        None,
+        "a resolved default must not be materialised as an explicit grant"
     );
 }
 

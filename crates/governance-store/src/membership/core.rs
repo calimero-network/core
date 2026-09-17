@@ -63,7 +63,6 @@ impl<'a> MembershipRepository<'a> {
         private_key: Option<[u8; 32]>,
         sender_key: Option<[u8; 32]>,
     ) -> EyreResult<()> {
-        let is_admin = role == GroupMemberRole::Admin;
         let mut handle = self.store.handle();
         let key = GroupMember::new(group_id.to_bytes(), *identity);
         // Preserve auto_follow across updates — used for upserts (e.g. MemberRoleSet).
@@ -127,14 +126,13 @@ impl<'a> MembershipRepository<'a> {
         // stranded behind a stale inherited-deny.
         DenyListRepository::new(self.store).clear_inherited(group_id, identity)?;
 
-        if !is_admin {
-            let capabilities = CapabilitiesRepository::new(self.store);
-            if let Some(defaults) = capabilities.default_capabilities(group_id)? {
-                if defaults != 0 {
-                    capabilities.set_member_capability(group_id, identity, defaults)?;
-                }
-            }
-        }
+        // No capability row is written here. It used to copy the group's default
+        // into the member's row at admission, which made the answer depend on
+        // whether `DefaultCapabilitiesSet` had folded yet -- and the copy was
+        // unconditional, so a DAG replay silently re-derived it from whatever the
+        // default was by then. The row is an explicit grant; its absence resolves
+        // to the group default at read time
+        // (`CapabilitiesRepository::effective_member_capability`).
 
         Ok(())
     }
@@ -160,7 +158,6 @@ impl<'a> MembershipRepository<'a> {
         identity: &AccountId,
         role: GroupMemberRole,
     ) -> EyreResult<()> {
-        let is_admin = role == GroupMemberRole::Admin;
         let mut handle = self.store.handle();
         let key = GroupMember::new(group_id.to_bytes(), *identity);
         let existing =
@@ -181,32 +178,18 @@ impl<'a> MembershipRepository<'a> {
         )?;
         drop(handle);
 
-        // Two-phase write (member row, then the default-caps row on its own
-        // handle), identical to `add_member_with_keys`. It is NOT a transaction,
-        // and deliberately so: the store is unbuffered/write-through, so a single
-        // shared handle would not make the two puts atomic across a crash anyway.
-        // Safety rests on the apply model, not a lock: group-op apply is
-        // serialized per group_id by the single-threaded ContextManager actor, so
-        // no concurrent reader observes the in-between state; and apply is
-        // replay-safe/idempotent, so a crash landing between the two writes is
-        // healed when the op re-applies (set_role re-runs and re-seeds the caps).
+        // This used to seed baseline caps from the group default when no
+        // capability row existed, gated on `is_none` so a role change never
+        // clobbered an existing grant. Both halves of that are now free: the row
+        // is only ever an explicit grant, so there is nothing to seed and nothing
+        // to clobber, and a demoted admin's custom caps survive because this
+        // function no longer touches capabilities at all. An absent row resolves
+        // to the group default at read time
+        // (`CapabilitiesRepository::effective_member_capability`).
         //
-        // Seed baseline caps ONLY when no capability row exists yet — never
-        // clobber an existing grant on a role change (e.g. demoting an admin who
-        // held custom caps). The `is_none` gate also keeps re-apply idempotent.
-        if !is_admin {
-            let capabilities = CapabilitiesRepository::new(self.store);
-            if capabilities
-                .member_capability(group_id, identity)?
-                .is_none()
-            {
-                if let Some(defaults) = capabilities.default_capabilities(group_id)? {
-                    if defaults != 0 {
-                        capabilities.set_member_capability(group_id, identity, defaults)?;
-                    }
-                }
-            }
-        }
+        // Dropping it also removes the two-phase write this comment used to have
+        // to justify: `set_role` now writes one key, so there is no non-atomic
+        // pair for a crash to land between.
 
         Ok(())
     }
@@ -313,8 +296,7 @@ impl<'a> MembershipRepository<'a> {
             }
             if has_direct_member(self.store, &parent, identity)? && anchor_decision.is_none() {
                 let caps = CapabilitiesRepository::new(self.store)
-                    .member_capability(&parent, identity)?
-                    .unwrap_or(0);
+                    .effective_member_capability(&parent, identity)?;
                 anchor_decision = Some(
                     if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                         MembershipPath::Inherited {
@@ -383,8 +365,7 @@ impl<'a> MembershipRepository<'a> {
             }
             MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
                 CapabilitiesRepository::new(self.store)
-                    .member_capability(group_id, identity)?
-                    .unwrap_or(0),
+                    .effective_member_capability(group_id, identity)?,
             )),
         }
     }

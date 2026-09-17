@@ -1984,12 +1984,13 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         "the TEE node must be recorded as a ReadOnlyTee member on the replica"
     );
 
-    // (a) The TEE's ROOT row must carry CAN_JOIN_OPEN_SUBGROUPS — snapshotted
-    // from the seeded default caps at admission time.
+    // (a) The TEE must RESOLVE to CAN_JOIN_OPEN_SUBGROUPS on the root. This used
+    // to read the raw row, because admission copied the seeded default into one;
+    // it now resolves against the group default instead, so the bit no longer
+    // depends on the default having been seeded before the admission applied.
     let tee_root_caps = CapabilitiesRepository::new(&store)
-        .member_capability(&ns_gid, &tee_member_account)
-        .unwrap()
-        .unwrap_or(0);
+        .effective_member_capability(&ns_gid, &tee_member_account)
+        .unwrap();
     assert_ne!(
         tee_root_caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         0,
