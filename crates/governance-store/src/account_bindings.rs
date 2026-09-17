@@ -1441,6 +1441,43 @@ mod tests {
         repo.clear_all_for_group(&gid).expect("clear again");
     }
 
+    /// The two equal-epoch boundaries the floor rules turn on, stated once:
+    /// a link AT the floor is refused, and a narrowing AT the binding's stamp
+    /// leaves it bound.
+    #[test]
+    fn an_equal_scope_epoch_neither_links_nor_unbinds() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let account = g.account_id();
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+
+        let _ = repo.apply_link(&gid, &g, &[], &cert, 2).expect("store");
+        assert!(
+            !repo.narrow(&gid, account, cert.device, 2).expect("narrow"),
+            "a narrowing at the epoch the binding was made under does not unbind it"
+        );
+        assert!(repo.is_device_linked(&gid, cert.device).expect("read"));
+
+        // A second device, so the floor raised for it is the one its link meets.
+        let sibling = cert_for(&g, &key(1), 6, 0, 0);
+        let _ = repo
+            .narrow(&gid, account, sibling.device, 4)
+            .expect("narrow");
+        assert!(
+            matches!(
+                repo.apply_link(&gid, &g, &[], &sibling, 4).expect("store"),
+                Err(BindingRejected::ScopeNarrowed { .. })
+            ),
+            "a link AT the floor is under it, not above it"
+        );
+        assert!(repo
+            .apply_link(&gid, &g, &[], &sibling, 5)
+            .expect("store")
+            .is_ok());
+    }
+
     #[test]
     fn a_rotation_for_an_unknown_account_is_refused() {
         let store = test_store();
