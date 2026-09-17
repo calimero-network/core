@@ -7,13 +7,13 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::scope_covers;
+use calimero_account::{scope_covers, DeviceId};
 use calimero_context_client::group::{
     BindOutcome, RescopeDeviceRequest, RescopeDeviceResponse, ScopeRequest,
 };
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MetaRepository, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -34,6 +34,23 @@ fn requested_applications(scope: ScopeRequest) -> EyreResult<Vec<ApplicationId>>
         }
         ScopeRequest::Only(applications) => Ok(applications),
     }
+}
+
+/// Refuse the device this node runs as while it holds the account root.
+///
+/// That device signs every scope statement, so narrowing it would have it publish
+/// its own withdrawal: here rather than in the route, so no caller can skip it.
+fn refuse_the_root_holders_own_device(store: &Store, device: DeviceId) -> EyreResult<()> {
+    let devices = NodeDeviceRepository::new(store);
+    if devices.holder_root()?.is_some()
+        && devices.get()?.is_some_and(|held| held.device() == device)
+    {
+        return Err(ContextError::ScopeReplacementHoldsTheRoot {
+            device: device.to_string(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// Every participating namespace `applications` no longer reaches, bound or not:
@@ -80,6 +97,9 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
             Ok(target) => target,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        if let Err(err) = refuse_the_root_holders_own_device(&store, device) {
+            return ActorResponse::reply(Err(err));
+        }
         // Signed before anything is published: the descopes below carry it, and so
         // does every link the re-bind makes, so all three name one statement.
         cached.scope = match crate::account_namespace::next_device_scope(
@@ -193,11 +213,9 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
 mod tests {
     use std::sync::Arc;
 
-    use calimero_account::DeviceId;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
         AccountBindingRepository, AccountDeviceRegistry, GroupKeyring, MembershipRepository,
-        MetaRepository, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{GroupMetaValue, GroupTarget};
@@ -459,6 +477,75 @@ mod tests {
                 .expect("read"),
             Err(calimero_governance_store::BindingRejected::ScopeNarrowed { .. })
         ));
+    }
+
+    /// The holder's own device signs every scope statement, so narrowing it would
+    /// publish its own withdrawal. Refused before anything is signed, for `all`
+    /// as much as for `only`: neither has anything to replace.
+    #[actix::test]
+    async fn the_device_holding_the_account_root_cannot_be_rescoped() {
+        let store = a_holder_of_two_namespaces();
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
+        let own = NodeDeviceRepository::new(&store)
+            .get()
+            .expect("read")
+            .expect("the holder runs as a device")
+            .device();
+        let account = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("the holder holds a root")
+            .account();
+        let registry = AccountDeviceRegistry::new(&store, account_namespace);
+        let before = registry
+            .device(own)
+            .expect("read")
+            .expect("the holder recorded its own device")
+            .scope
+            .statement
+            .scope_epoch;
+
+        for scope in [ScopeRequest::Only(vec![app(APP_ONE)]), ScopeRequest::All] {
+            let refused = harness
+                .manager
+                .send(RescopeDeviceRequest { device: own, scope })
+                .await
+                .expect("the manager answers")
+                .expect_err("the holder's own device is never rescoped");
+            assert!(
+                matches!(
+                    refused.downcast_ref::<ContextError>(),
+                    Some(ContextError::ScopeReplacementHoldsTheRoot { .. })
+                ),
+                "got: {refused}"
+            );
+        }
+
+        assert_eq!(
+            registry
+                .device(own)
+                .expect("read")
+                .expect("still recorded")
+                .scope
+                .statement
+                .scope_epoch,
+            before,
+            "a refusal must not mint a scope epoch"
+        );
+        let bindings = AccountBindingRepository::new(&store);
+        for namespace in [NS_ONE, NS_TWO] {
+            assert_eq!(
+                bindings
+                    .scope_floor(&namespace.into(), account, own)
+                    .expect("read the floor"),
+                None,
+                "a refusal must publish no descope"
+            );
+        }
     }
 
     /// A replacement the registry never took must not answer with the new scope:

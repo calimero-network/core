@@ -204,6 +204,18 @@ pub enum ContextError {
     )]
     ScopeReplacementEmpty,
 
+    /// A `403`: the named device is the one holding the account root, which signs
+    /// every scope statement - including any that would narrow itself.
+    #[error(
+        "device {device} holds the account root, so it always acts for every \
+         application and there is nothing to replace; name one of the account's \
+         paired devices instead"
+    )]
+    ScopeReplacementHoldsTheRoot {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
     /// A `403`: the account replaced this device's scope with one that no longer
     /// reaches the namespace, so it may read on but must not author there.
     #[error(

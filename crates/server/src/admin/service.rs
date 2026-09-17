@@ -778,9 +778,9 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
             StatusCode::CONFLICT
         }
-        Refusal::PairingNotTheAccountHolder { .. } | Refusal::PairingDeviceRevoked { .. } => {
-            StatusCode::FORBIDDEN
-        }
+        Refusal::PairingNotTheAccountHolder { .. }
+        | Refusal::PairingDeviceRevoked { .. }
+        | Refusal::ScopeReplacementHoldsTheRoot { .. } => StatusCode::FORBIDDEN,
         Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
         _ => return None,
     })
@@ -1528,6 +1528,25 @@ mod parse_api_error_tests {
         fn an_empty_scope_replacement_maps_to_400() {
             let api = parse_api_error(ContextError::ScopeReplacementEmpty.into());
             assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        }
+
+        /// A scope replacement naming the device that holds the account root.
+        /// `403`: the request was understood and can never work, on any node.
+        #[test]
+        fn rescoping_the_root_holding_device_maps_to_403() {
+            let api = parse_api_error(
+                ContextError::ScopeReplacementHoldsTheRoot {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("holds the account root")
+                    && api.message.contains("nothing to replace"),
+                "the refusal has to say why there is nothing to do; got: {}",
+                api.message
+            );
         }
 
         /// A relink names a device this node holds no certificate for. `404`,
