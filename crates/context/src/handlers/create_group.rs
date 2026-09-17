@@ -267,11 +267,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         GroupMemberRole::Admin,
                     )?;
 
-                    // Set default capabilities so new members can be inherited
-                    // into Open subgroups beneath this group.
                     CapabilitiesRepository::new(&datastore).set_default_capabilities(
                         &group_id,
-                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                        initial_default_capabilities(parent_group_id.is_none()),
                     )?;
 
                     // Generate and store the group encryption key.
@@ -688,6 +686,74 @@ impl Handler<CreateGroupRequest> for ContextManager {
 /// DELIBERATELY not deleted (see the genesis-failure comment above): it is
 /// derived idempotently from the stable group id, so reusing it on retry keeps
 /// the founder deterministic (#2474).
+/// The capability mask a newly created group seeds every NON-ADMIN member's
+/// row from at admission.
+///
+/// `CAN_JOIN_OPEN_SUBGROUPS` is in both arms and always was: it is what lets a
+/// member of this group be inherited into an Open subgroup beneath it, so
+/// dropping it strands every later member at the group it joined.
+///
+/// # Why a namespace also opens to delegated authorship
+///
+/// `CAN_AUTHOR_ON_BEHALF` is implied by nothing — not membership, not admin,
+/// not the subgroup-admit cascade — so a namespace created without it is
+/// authorship-closed, and every attested relay admitted to it afterwards needs
+/// its own admin-signed op. For a namespace that keeps admitting fleet nodes
+/// that is one governance op per admission, published at the moment a node is
+/// assigned and the admin is not watching. The grant then reliably arrives
+/// late, or not at all, and the symptom is a write refused at
+/// `POST .../intents` after the author has already spent a warrant nonce on it.
+///
+/// Setting it here is the one point that needs no backfill: the mask is COPIED
+/// into a member's capability row when that member is admitted
+/// (`MembershipRepository::add_member`), so it reaches every member admitted
+/// after creation and no member admitted before — and at creation there are
+/// none.
+///
+/// # Namespaces only, and what that costs
+///
+/// A subgroup keeps the old mask. A grant resolves through the membership
+/// anchor, so one on the namespace root already reaches every Open subgroup
+/// beneath it — which is where contexts live — and a `Restricted` subgroup is a
+/// deliberate membership boundary whose admin should decide its own posture
+/// rather than inherit one from a parent it was created to be separate from.
+///
+/// The cost is stated rather than hidden: this reaches every non-admin member
+/// of the namespace, not only attested TEE nodes, so any of them may be named
+/// as a warrant's `executor`. What it does NOT confer is the ability to forge
+/// one. A delegated write is authorized by the AUTHOR's warrant — signed by
+/// their device key, committed to this context, this method and these exact
+/// arguments, with its nonce checked unspent and every peer re-verifying both
+/// signature layers at the cut — so a holder can only spend a warrant it was
+/// deliberately handed. What it gains is the arguments in cleartext and the
+/// choice of when, or whether, to publish.
+///
+/// Admins never receive this at all: `add_member` seeds the default for
+/// non-admin roles only, and the capability is not implied by admin. So a
+/// namespace creator's own node is the one member this does not cover, and
+/// still needs an explicit grant.
+///
+/// # This is the initial value, not a rule
+///
+/// It is a plain local row, changed afterwards by `GroupOp::DefaultCapabilitiesSet`
+/// (`meroctl group settings set-default-capabilities`). An admin who wants a
+/// closed namespace clears the bit; nothing here re-asserts it.
+///
+/// It is also not recomputed on any other peer. A joiner adopts the namespace's
+/// `default_capabilities` verbatim from the join bundle, so two peers cannot
+/// disagree about the mask by having been built at different times — which is
+/// what would make one peer seed a member row the other would not, and split
+/// the answer `account_may_author` gives about the same relay.
+fn initial_default_capabilities(is_namespace: bool) -> u32 {
+    use calimero_context_config::MemberCapabilities;
+
+    let mut caps = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+    if is_namespace {
+        caps |= MemberCapabilities::CAN_AUTHOR_ON_BEHALF;
+    }
+    caps.bits()
+}
+
 fn rollback_local_group_rows(
     datastore: &Store,
     group_id: &ContextGroupId,
@@ -790,7 +856,7 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::{key, types, Store};
 
-    use super::rollback_local_group_rows;
+    use super::{initial_default_capabilities, rollback_local_group_rows};
     use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
@@ -1298,5 +1364,81 @@ mod tests {
                 .is_empty(),
             "no target op may be published for a group that targets nothing"
         );
+    }
+
+    /// A namespace is created able to host a relay fleet; a subgroup is not.
+    ///
+    /// The asymmetry is the decision, so it is pinned from both sides: a test
+    /// that only checked the namespace would pass just as happily if every
+    /// group were opened, which is the widening this is scoped to avoid.
+    #[test]
+    fn a_namespace_is_created_open_to_delegated_authorship() {
+        let namespace = initial_default_capabilities(true);
+        let subgroup = initial_default_capabilities(false);
+
+        assert_eq!(
+            namespace,
+            (MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+                | MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
+                .bits(),
+            "a namespace must seed the authorship grant, or every fleet relay \
+             admitted to it needs its own admin-signed op"
+        );
+        assert_eq!(
+            subgroup,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            "a subgroup keeps the old mask: a root grant already reaches every \
+             Open subgroup through the membership anchor, and a Restricted one \
+             is a boundary whose admin decides its own posture"
+        );
+    }
+
+    /// The bit that was always there, and must survive the one being added.
+    ///
+    /// Losing it is silent and late: members still join the group, and only
+    /// inheritance into Open subgroups — where contexts actually live — stops
+    /// working, for every member admitted from then on.
+    #[test]
+    fn open_subgroup_inheritance_survives_in_both_arms() {
+        for is_namespace in [true, false] {
+            let caps =
+                MemberCapabilities::from_bits_truncate(initial_default_capabilities(is_namespace));
+            assert!(
+                caps.contains(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+                "is_namespace={is_namespace}"
+            );
+        }
+    }
+
+    /// Nothing else rides along.
+    ///
+    /// The mask is copied verbatim into every non-admin member's row, so an
+    /// extra bit here is a capability silently granted to every member of every
+    /// namespace — the failure mode this test exists to catch early.
+    #[test]
+    fn no_other_capability_is_seeded() {
+        let namespace = initial_default_capabilities(true);
+
+        assert_eq!(
+            namespace.count_ones(),
+            2,
+            "exactly CAN_JOIN_OPEN_SUBGROUPS and CAN_AUTHOR_ON_BEHALF"
+        );
+        for unexpected in [
+            MemberCapabilities::CAN_CREATE_CONTEXT,
+            MemberCapabilities::CAN_INVITE_MEMBERS,
+            MemberCapabilities::MANAGE_MEMBERS,
+            MemberCapabilities::MANAGE_APPLICATION,
+            MemberCapabilities::CAN_CREATE_SUBGROUP,
+            MemberCapabilities::CAN_DELETE_SUBGROUP,
+            MemberCapabilities::CAN_MANAGE_VISIBILITY,
+            MemberCapabilities::CAN_MANAGE_METADATA,
+        ] {
+            assert_eq!(
+                namespace & unexpected.bits(),
+                0,
+                "{unexpected:?} must not be seeded by default"
+            );
+        }
     }
 }
