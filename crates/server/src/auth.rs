@@ -321,7 +321,35 @@ where
                 // Attempt to resolve the authenticated public key and inject it so
                 // handlers can use it as the effective requester without trusting the
                 // caller-supplied value.
-                match service.get_key_public_key(&auth_response.key_id).await {
+                // Ask FIRST whether the subject is an account. An
+                // `account_proof` login records its account on first use, so it
+                // now has a row here AND that row carries the account in its
+                // `public_key` field -- which parses as a `PublicKey` (that
+                // `FromStr` is hex, while `Display` is bs58) and would otherwise
+                // be injected as `AuthenticatedKey`, an identity no member holds.
+                // The delegated read then refuses a perfectly good session for
+                // want of an account.
+                //
+                // Neither inference below can answer this: presence says only
+                // that something was provisioned, and a parseable `public_key`
+                // says only that 32 bytes were stored. The record's own
+                // `auth_method` says which provider minted it, so that is what
+                // decides.
+                match service.is_account_anchored_key(&auth_response.key_id).await {
+                    Ok(true) => match auth_response.key_id.parse::<calimero_account::AccountId>() {
+                        Ok(account) => {
+                            debug!(%account, "account-anchored session: granting AuthenticatedAccount");
+                            parts.extensions.insert(AuthenticatedAccount(account));
+                        }
+                        Err(_) => {
+                            // Minted by the account provider yet not a parseable
+                            // account: grant nothing rather than fall through to
+                            // an inference that would read it as the node owner.
+                            warn!(key_id=%auth_response.key_id, "account-anchored record whose id is not an account; granting no identity");
+                        }
+                    },
+                    Ok(false) => {
+                        match service.get_key_public_key(&auth_response.key_id).await {
                     Ok(Some(pk_hex)) => {
                         use std::str::FromStr as _;
                         match calimero_primitives::identity::PublicKey::from_str(&pk_hex) {
@@ -402,6 +430,17 @@ where
                         // closed rather than failing open: do NOT grant
                         // node-owner access on a transient error.
                         warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id; rejecting request");
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                }
+                    }
+                    Err(err) => {
+                        // Whether the subject is an account decides WHICH
+                        // identity a handler sees, so a failure here must not
+                        // fall through to the inferences above: those would
+                        // read an account-anchored session as the node owner,
+                        // which on a relay is another tenant entirely.
+                        warn!(key_id=%auth_response.key_id, %err, "failed to classify the authenticated subject; rejecting request");
                         return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 }

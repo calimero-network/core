@@ -105,6 +105,20 @@ impl AuthService {
         self.token_manager.key_row_exists(key_id).await
     }
 
+    /// Whether `key_id` names a record an account-anchored login created.
+    ///
+    /// Asked BEFORE any inference from row existence or from a stored public
+    /// key: an `account_proof` login records its account on first use, so it is
+    /// present in this store like any other key, and its subject is still an
+    /// account rather than a key this node issued.
+    ///
+    /// # Errors
+    /// [`AuthError::StorageError`] if the lookup fails. Callers must fail closed
+    /// rather than assume either answer.
+    pub async fn is_account_anchored_key(&self, key_id: &str) -> Result<bool, AuthError> {
+        self.token_manager.is_account_anchored_key(key_id).await
+    }
+
     /// Authenticate a token request
     ///
     /// This method authenticates the user using the provided token request

@@ -1,7 +1,7 @@
 #!/bin/sh
 #
-# A device that holds no node obtains a session, reads a context and receives an
-# event — with no password anywhere in the flow.
+# A device that holds no node obtains a session and reads a context, with no
+# password anywhere in the flow.
 #
 # This is the half of epic #3928 that `delegated-authorship.yml` does not cover.
 # That scenario proves a keyholder can WRITE through a relay, but it logs in with
@@ -86,8 +86,16 @@ echo "statement signed, session key ${SESSION_KEY}"
 
 # --- 3. The node mints a session from it ------------------------------------
 
-TOKEN_BODY=$(printf '{"auth_method":"account_proof","public_key":"%s","client_name":"%s","provider_data":{"challenge":"%s","login_statement":"%s","account_proof":"%s"}}' \
-    "${SESSION_KEY}" "${URL}" "${CHALLENGE}" "${STATEMENT}" "${CREDENTIAL}")
+# `timestamp` is REQUIRED and `BaseTokenRequest` is `deny_unknown_fields`, so a
+# body missing it is rejected before any provider runs -- and the refusal names
+# deserialization, not the login, which reads as though the statement were at
+# fault. `permissions` is deliberately OMITTED rather than set: leaving it unset
+# takes the provider's own `session_permissions` (`context:intent`,
+# `context:query`, `context:subscribe`) instead of asking for authority a
+# delegated session must not have. mero-js#84 is the same mistake made the other
+# way -- `authenticate()` hardcodes `['admin']`.
+TOKEN_BODY=$(printf '{"auth_method":"account_proof","public_key":"%s","client_name":"%s","timestamp":%s,"provider_data":{"challenge":"%s","login_statement":"%s","account_proof":"%s"}}' \
+    "${SESSION_KEY}" "${URL}" "$(date +%s)" "${CHALLENGE}" "${STATEMENT}" "${CREDENTIAL}")
 
 TOKEN_RES=$(curl -sS -X POST "${URL}/auth/token" \
     -H 'Content-Type: application/json' \
@@ -105,35 +113,30 @@ READ_RES=$(curl -sS -X POST "${URL}/admin-api/contexts/${CONTEXT}/query" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H 'Content-Type: application/json' \
     -d '{"method":"get","argsJson":{"key":"delegated"}}')
-echo "${READ_RES}" | grep -q '"output"' \
-    || fail "the delegated read returned no output: ${READ_RES}"
+# Assert the VALUE, not merely that some field came back. The response shape
+# is `QueryContextApiResponseData { returns }` (crates/server/.../query_context.rs),
+# and an earlier version of this check grepped for `"output"` -- a field that
+# does not exist on this route. It therefore failed while the read was
+# succeeding, and would equally have passed on any body that happened to carry
+# the word. `read-by-a-keyholder` is what the scenario wrote two steps up, so
+# matching it proves the keyholder read THIS context's state rather than an
+# empty or defaulted answer.
+echo "${READ_RES}" | grep -q '"returns"[[:space:]]*:[[:space:]]*"read-by-a-keyholder"' \
+    || fail "the delegated read did not return the value the scenario wrote: ${READ_RES}"
 echo "delegated read served: ${READ_RES}"
 
-# --- 5. The session receives events -----------------------------------------
+# --- 5. Events are deliberately NOT asserted here ---------------------------
 #
-# #3942. Subscribing is what makes a client's UI update by itself; without it a
-# delegated device can read and write and still look frozen.
+# A subscribed session only sees an event if something WRITES while it is
+# listening, and merobox runs steps sequentially: during any sleep in this
+# script nothing else is running, so a stream assertion here could only ever
+# time out. An earlier draft slept 8s waiting for traffic that no step produced.
+#
+# The honest trigger is a delegated WRITE from this same session -- a warrant
+# minted by the device, spent by the relay -- which is #3942's real shape and
+# needs the authorship grant `delegated-authorship.yml` sets up. Combining the
+# two is worth doing and is not this scenario's first job: what has never run
+# end to end is the password-free SESSION, and that is what the steps above
+# prove.
 
-SSE_OUT=$(mktemp)
-curl -sS -N --max-time 15 "${URL}/sse" \
-    -H "Authorization: Bearer ${TOKEN}" > "${SSE_OUT}" 2>/dev/null &
-SSE_PID=$!
-sleep 2
-
-curl -fsS -X POST "${URL}/sse/subscription" \
-    -H "Authorization: Bearer ${TOKEN}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"contextIds\":[\"${CONTEXT}\"]}" >/dev/null \
-    || fail "the session could not subscribe"
-
-# Give the stream something to carry, then let it arrive.
-sleep 8
-kill "${SSE_PID}" 2>/dev/null || true
-wait "${SSE_PID}" 2>/dev/null || true
-
-grep -q 'data:' "${SSE_OUT}" \
-    || fail "the subscribed session received no events (stream was: $(head -c 200 "${SSE_OUT}"))"
-echo "events delivered to a password-free session"
-rm -f "${SSE_OUT}"
-
-echo "PASS: a device holding only a key obtained a session, read, and received events"
+echo "PASS: a device holding only a key obtained a session and read a context, with no password in the flow"
