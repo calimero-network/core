@@ -1,0 +1,205 @@
+name: E2E Account - Replacing A Device's Application Scope
+description: >
+  Narrowing a paired device to one application takes the other application's
+  namespace away from it, widening back to `all` gives it back, and the device
+  holding the account root can never be narrowed at all.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: scope-replace-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: scope-replace-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: scope-replace-node-2
+    username: dev
+    password: dev-password
+
+  # App A is the bundle, because a node that is a member of nothing can only
+  # complete acquisition for one; app B is only ever the application to be
+  # narrowed out of.
+  - name: Install app A (the bundle) on node-1
+    type: install_application
+    node: scope-replace-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
+    dev: true
+    outputs:
+      app_a: applicationId
+
+  - name: Install app B (the raw wasm) on node-1
+    type: install_application
+    node: scope-replace-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_b: applicationId
+
+  - name: Two applications, not one installed twice
+    type: assert
+    statements:
+      - 'is_set({{app_a}})'
+      - 'is_set({{app_b}})'
+      - '{{app_a}} != {{app_b}}'
+
+  - name: Node-1 creates namespace A1, targeting app A
+    type: create_namespace
+    node: scope-replace-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a1: namespaceId
+
+  - name: Node-1 creates namespace B1, targeting app B
+    type: create_namespace
+    node: scope-replace-node-1
+    application_id: '{{app_b}}'
+    outputs:
+      ns_b1: namespaceId
+
+  - name: Node-1 registers a context in namespace A1
+    type: create_context
+    node: scope-replace-node-1
+    application_id: '{{app_a}}'
+    group_id: '{{ns_a1}}'
+    service_name: store-a
+
+  - name: Node-1 registers a context in namespace B1
+    type: create_context
+    node: scope-replace-node-1
+    application_id: '{{app_b}}'
+    group_id: '{{ns_b1}}'
+    service_name: store-b
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: scope-replace-node-1
+    outputs:
+      alice_device: deviceId
+      alice_root: accountRootPublicKey
+
+  # Paired on everything, so the narrowing below is the only thing that can
+  # take a namespace away from it.
+  - name: Pair node-2 onto Alice's account, scoped to every application
+    type: account_pair
+    node: scope-replace-node-2
+    holder: scope-replace-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    namespaces:
+      - '{{ns_a1}}'
+      - '{{ns_b1}}'
+    await_self: true
+    outputs:
+      paired_device: deviceId
+
+  - name: The pairing reached both namespaces
+    type: assert_api_response
+    node: scope-replace-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
+        - '{{ns_b1}}'
+
+  # ── Narrow node-2 to app A ─────────────────────────────────────────
+
+  - name: Narrow the paired device to app A alone
+    type: account_rescope
+    node: scope-replace-node-1
+    device_id: '{{paired_device}}'
+    scope:
+      only:
+        - '{{app_a}}'
+
+  - name: The holder's row names app A alone and no longer app B's namespace
+    type: assert_api_response
+    node: scope-replace-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      applications.0: '{{app_a}}'
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
+    not_contains:
+      namespaces:
+        - '{{ns_b1}}'
+    absent:
+      - applications.1
+
+  # The narrowed device lets the topic go, so the namespace leaves its listing.
+  # The read cut is asserted by the sync-access fix's own scenario.
+  - name: The narrowed device stops listing app B's namespace
+    type: assert_api_response
+    node: scope-replace-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_b1}}'
+    expect_no_match: true
+    retries: 45
+    interval: 2
+
+  # ── The holder's own device is never narrowed ──────────────────────
+
+  - name: Replacing the scope of the device holding the account root is refused
+    type: account_rescope
+    node: scope-replace-node-1
+    device_id: '{{alice_device}}'
+    scope:
+      only:
+        - '{{app_a}}'
+    expect_status: 403
+
+  - name: The holder still lists every namespace of its account
+    type: assert_api_response
+    node: scope-replace-node-1
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_b1}}'
+    match:
+      targetApplicationId: '{{app_b}}'
+
+  # ── Widen back to all ──────────────────────────────────────────────
+
+  - name: Widen the paired device back to every application
+    type: account_rescope
+    node: scope-replace-node-1
+    device_id: '{{paired_device}}'
+    scope: all
+
+  - name: The holder's row reaches app B's namespace again
+    type: assert_api_response
+    node: scope-replace-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
+        - '{{ns_b1}}'
+
+  - name: The widened device lists app B's namespace again
+    type: assert_api_response
+    node: scope-replace-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_b1}}'
+    match:
+      targetApplicationId: '{{app_b}}'
+    retries: 45
+    interval: 2
+
+stop_all_nodes: true
