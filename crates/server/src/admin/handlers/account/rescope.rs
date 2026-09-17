@@ -4,11 +4,11 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::DeviceId;
-use calimero_context_client::group::{RescopeChange, RescopeDeviceRequest, ScopeRequest};
+use calimero_context_client::group::{BindOutcome, RescopeDeviceRequest, ScopeRequest};
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
-    DeviceScopeApiRequest, RescopeDeviceApiRequest, RescopeDeviceApiResponse,
-    RescopeDeviceApiResponseData, RescopeOutcomeApiEntry,
+    DeviceScopeApiRequest, RelinkOutcomeApiEntry, RelinkSkipApiEntry, RescopeDescopeApiEntry,
+    RescopeDeviceApiRequest, RescopeDeviceApiResponse, RescopeDeviceApiResponseData,
 };
 use reqwest::StatusCode;
 use tracing::info;
@@ -62,23 +62,41 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            // The wire names are produced here and the match is exhaustive on
-            // purpose: a new change has to be given a name rather than fall into
-            // a catch-all and be reported as something it is not.
-            let outcomes = resp
-                .outcomes
-                .iter()
-                .map(|outcome| RescopeOutcomeApiEntry {
-                    namespace_id: hex::encode(outcome.namespace_id.to_bytes()),
-                    change: match outcome.change {
-                        RescopeChange::Descoped => "descoped",
-                        RescopeChange::Bound => "bound",
-                        RescopeChange::Unchanged => "unchanged",
+            let mut descoped = Vec::new();
+            let mut linked_in = Vec::new();
+            let mut skipped = Vec::new();
+            for (namespace, outcome) in &resp.outcomes {
+                let namespace_id = hex::encode(namespace.to_bytes());
+                // The wire names are produced here and the match is exhaustive on
+                // purpose: a new outcome has to be given a name rather than fall
+                // into a catch-all and be reported as something it is not.
+                let reason = match *outcome {
+                    BindOutcome::Descoped { key_rotated } => {
+                        descoped.push(RescopeDescopeApiEntry {
+                            namespace_id,
+                            key_rotated,
+                        });
+                        continue;
                     }
-                    .to_owned(),
-                    key_rotated: outcome.key_rotated,
-                })
-                .collect();
+                    BindOutcome::Linked { key_delivered } => {
+                        linked_in.push(RelinkOutcomeApiEntry {
+                            namespace_id,
+                            key_delivered,
+                        });
+                        continue;
+                    }
+                    BindOutcome::OutOfScope => "outOfScope",
+                    BindOutcome::AlreadyBound => "alreadyBound",
+                    BindOutcome::NoScopeKey => "noScopeKey",
+                    BindOutcome::Revoked => "revoked",
+                    BindOutcome::OwnDevice => "ownDevice",
+                    BindOutcome::Failed => "failed",
+                };
+                skipped.push(RelinkSkipApiEntry {
+                    namespace_id,
+                    reason: reason.to_owned(),
+                });
+            }
 
             info!(
                 account = %resp.account,
@@ -92,7 +110,9 @@ pub async fn handler(
                         account_id: hex::encode(resp.account.as_bytes()),
                         device_id: hex::encode(resp.device.as_bytes()),
                         applications: resp.applications.iter().map(ToString::to_string).collect(),
-                        outcomes,
+                        descoped,
+                        linked_in,
+                        skipped,
                     },
                 },
             }

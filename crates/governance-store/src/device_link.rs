@@ -297,10 +297,6 @@ pub async fn bind_device_everywhere(
 /// The rotation is admin-only - peers accept a sidecar only from an admin at the
 /// cut - so elsewhere the write right is gone and the rotation is left owed.
 /// `Ok(true)` means it rode along.
-///
-/// `what` names the withdrawal in the logs: a revocation spends the device id, a
-/// descope only narrows what it reaches, and the two must not read alike.
-#[allow(clippy::too_many_arguments, reason = "orthogonal publish-path args")]
 pub async fn withdraw_device_in(
     store: &Store,
     node_client: &NodeClient,
@@ -309,10 +305,11 @@ pub async fn withdraw_device_in(
     signer_sk: &PrivateKey,
     device: DeviceId,
     op: GroupOp,
-    what: &'static str,
 ) -> EyreResult<bool> {
-    // Both questions are about THIS namespace, so both are answered where the op
-    // is going. A failed read costs the rotation, never the withdrawal.
+    let what = op.op_kind_label();
+    // All three questions are about THIS namespace, so all three are answered
+    // where the op is going. A failed read costs the rotation, never the
+    // withdrawal; a namespace the device was never bound in has no key to rotate.
     let is_admin_here = member_account_in_namespace(store, namespace, &signer_sk.public_key())
         .ok()
         .flatten()
@@ -321,8 +318,12 @@ pub async fn withdraw_device_in(
                 .is_admin(namespace, &account)
                 .unwrap_or(false)
         });
+    let bound_here = AccountBindingRepository::new(store)
+        .is_device_linked(namespace, device)
+        .unwrap_or(false);
+    let rotate = is_admin_here && bound_here;
 
-    let report = if is_admin_here {
+    let report = if rotate {
         GroupGovernancePublisher::new(store, node_client, *namespace)
             .sign_apply_and_publish_device_revocation(ack_router, signer_sk, op)
             .await?
@@ -331,7 +332,7 @@ pub async fn withdraw_device_in(
             .await?
     };
 
-    if !is_admin_here {
+    if bound_here && !is_admin_here {
         warn!(
             namespace_id = ?namespace,
             %device,
@@ -346,10 +347,10 @@ pub async fn withdraw_device_in(
         %device,
         what,
         published = report.is_some(),
-        key_rotated = is_admin_here,
+        key_rotated = rotate,
         "device withdrawn"
     );
-    Ok(is_admin_here)
+    Ok(rotate)
 }
 
 #[cfg(test)]
@@ -1125,13 +1126,18 @@ mod tests {
                 &admin_sk,
                 device,
                 op.clone(),
-                "revoked"
             )
             .await
             .expect("the admin's withdrawal publishes"),
             "an admin may rotate, so the rotation rides on the withdrawal"
         );
 
+        // A second, still-bound device: the first one's id is spent, and an
+        // unbound device would make the member's turn pass for the wrong reason.
+        let other = certify(&root, 0x7E, [0x7E; 32]);
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &other.genesis, &other.chain, &other.statement, 0)
+            .expect("bind the device the member's withdrawal names");
         let member_sk = PrivateKey::from([0x5A; 32]);
         let member = enrol_member(&store, &ns, &member_sk.public_key());
         MembershipRepository::new(&store)
@@ -1145,13 +1151,66 @@ mod tests {
                 &ack_router,
                 &ns,
                 &member_sk,
-                device,
-                op,
-                "revoked"
+                other.statement.device,
+                GroupOp::AccountDeviceUnlinked {
+                    account: other.statement.account,
+                    device: other.statement.device,
+                    proof: None,
+                },
             )
             .await
             .expect("the member's withdrawal publishes"),
             "a plain member withdraws the device and leaves the rotation owed"
+        );
+    }
+
+    /// A descope into a namespace the device was never bound in is still
+    /// published - that is what writes the scope floor there - but there is no
+    /// key it ever held, so nothing is rotated.
+    #[actix::test]
+    async fn a_withdrawal_where_nothing_is_bound_rotates_nothing() {
+        let (store, node_client, ack_router, ns_id, admin_sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&admin_sk.public_key());
+        let cert = certify(&root, 0x7F, [0x7F; 32]);
+        let device = cert.statement.device;
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold a scope key the rotation would replace");
+        assert!(!AccountBindingRepository::new(&store)
+            .is_device_linked(&ns, device)
+            .expect("read the bindings"));
+
+        assert!(
+            !withdraw_device_in(
+                &store,
+                &node_client,
+                &ack_router,
+                &ns,
+                &admin_sk,
+                device,
+                GroupOp::AccountDeviceDescoped {
+                    account: cert.statement.account,
+                    device,
+                    scope: Box::new(AccountProof {
+                        genesis: cert.genesis,
+                        chain: vec![],
+                        statement: DeviceScope::sign(
+                            &root,
+                            cert.statement.account,
+                            device,
+                            vec![app(APP_TWO)],
+                            1,
+                            0,
+                        )
+                        .expect("sign the replacement scope"),
+                    }),
+                },
+            )
+            .await
+            .expect("the withdrawal publishes"),
+            "an admin rotates only where the device actually held the key"
         );
     }
 }

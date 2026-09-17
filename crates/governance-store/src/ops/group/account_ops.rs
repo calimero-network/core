@@ -146,11 +146,6 @@ pub(crate) fn apply_device_linked(
                 scope_epoch = scope.statement.scope_epoch,
                 "account device linked"
             );
-            ctx.queue_event(OpEvent::DeviceLinked {
-                group_id: group_id.to_bytes(),
-                account: binding.account,
-                device: binding.device,
-            });
             // The device saw the group's earlier context registrations as
             // nobody; the sweep a new member row starts catches it up.
             if let Some(event) =

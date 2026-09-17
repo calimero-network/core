@@ -226,7 +226,6 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
                         &signer_sk,
                         device,
                         op.clone(),
-                        "revoked",
                     )
                     .await
                     {

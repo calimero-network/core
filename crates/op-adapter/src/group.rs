@@ -85,10 +85,8 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             account: *account,
             device: *device,
         }),
-        // Narrowing a device's reach has no unified-plane payload, and must not
-        // borrow `DeviceRevoked`: that one is terminal and global, which is the
-        // property this op exists to avoid. Per-namespace device scope has no
-        // representation in `ScopeState` yet, so it folds to nothing.
+        // No `ScopeState` representation for per-namespace device scope yet, and
+        // `DeviceRevoked` is terminal - the property this op exists to avoid.
         GroupOp::AccountDeviceDescoped { .. } => None,
         GroupOp::AccountKeysRotated { handoff } => {
             Some(OpPayload::AccountKeysRotated { handoff: *handoff })

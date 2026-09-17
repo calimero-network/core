@@ -893,6 +893,7 @@ impl PairDeviceCompleteResponse {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BindOutcome {
     Linked { key_delivered: bool }, // false: link landed, key did not; the device's sync pull retries
+    Descoped { key_rotated: bool }, // false: the device stopped writing here but keeps the key until an admin rotates
     OutOfScope,   // the device's scope does not reach this namespace's application
     Revoked,      // terminal: a revoked id can never be linked again, in any account
     AlreadyBound, // a live binding already
@@ -945,11 +946,8 @@ impl Message for RelinkDeviceRequest {
     type Result = eyre::Result<RelinkDeviceResponse>;
 }
 
-/// What a device's scope is being replaced with.
-///
-/// An explicit enum rather than a list whose emptiness means "everything": the
-/// two requests differ by a whole order of magnitude in what they grant, and the
-/// wire convention would make the accidental one the widest.
+/// What a device's scope is being replaced with. An explicit enum rather than a
+/// list whose emptiness means "everything", which makes the slip the widest ask.
 #[derive(Clone, Debug)]
 pub enum ScopeRequest {
     /// Every application, now and later.
@@ -969,48 +967,6 @@ pub struct RescopeDeviceRequest {
     pub scope: ScopeRequest,
 }
 
-/// What one namespace did about the replacement.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RescopeChange {
-    /// The device lost its binding: the new scope no longer reaches here.
-    Descoped,
-    /// The device gained a binding the new scope reaches.
-    Bound,
-    /// Nothing was published here.
-    Unchanged,
-}
-
-/// Where one namespace's rescope landed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct RescopeOutcome {
-    pub namespace_id: ContextGroupId,
-    pub change: RescopeChange,
-    /// Whether the scope key was rotated in the same op.
-    ///
-    /// `false` on a narrowing means the device stopped writing here but still
-    /// holds the key it had. Only an admin may rotate, and the account holder
-    /// often is not one, so the debt is commonly left owed.
-    pub key_rotated: bool,
-}
-
-impl RescopeOutcome {
-    /// Exists because the struct is `#[non_exhaustive]` and the producer lives in
-    /// another crate.
-    #[must_use]
-    pub const fn new(
-        namespace_id: ContextGroupId,
-        change: RescopeChange,
-        key_rotated: bool,
-    ) -> Self {
-        Self {
-            namespace_id,
-            change,
-            key_rotated,
-        }
-    }
-}
-
 /// The scope the device now holds, and what each namespace did about it.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -1019,7 +975,7 @@ pub struct RescopeDeviceResponse {
     pub device: DeviceId,
     /// The scope after the request. Empty means every application.
     pub applications: Vec<ApplicationId>,
-    pub outcomes: Vec<RescopeOutcome>,
+    pub outcomes: Vec<(ContextGroupId, BindOutcome)>,
 }
 
 impl RescopeDeviceResponse {
@@ -1030,7 +986,7 @@ impl RescopeDeviceResponse {
         account: AccountId,
         device: DeviceId,
         applications: Vec<ApplicationId>,
-        outcomes: Vec<RescopeOutcome>,
+        outcomes: Vec<(ContextGroupId, BindOutcome)>,
     ) -> Self {
         Self {
             account,

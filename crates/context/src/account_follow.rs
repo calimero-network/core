@@ -19,7 +19,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     bind_device_everywhere, withdraw_device_in, AccountBindingRepository, AccountDeviceRegistry,
-    AccountNamespaceSet, KnownDeviceCert, MetaRepository, NamespaceDagService, NamespaceRepository,
+    AccountNamespaceSet, KnownDeviceCert, NamespaceDagService, NamespaceRepository,
     NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
@@ -84,7 +84,7 @@ async fn run(
     // Nothing re-drives a gain or a leave applied while no listener was up - a
     // lagged recv, or a restart's shutdown-to-spawn window - so a start sweeps both.
     for namespace in namespaces_the_account_left(&store) {
-        unfollow(&node_client, namespace, "the account left it").await;
+        unfollow(&node_client, namespace).await;
     }
     if let Some((account_namespace, own)) = own_registry_scope(&store) {
         let (covered, uncovered) = namespaces_in_scope(&store, account_namespace, &own);
@@ -94,12 +94,7 @@ async fn run(
         // A device offline while its scope shrank folds the narrowing with no
         // listener up, so the sweep is the only thing that lets those topics go.
         for namespace in uncovered {
-            unfollow(
-                &node_client,
-                namespace,
-                "this device's scope no longer reaches it",
-            )
-            .await;
+            unfollow(&node_client, namespace).await;
         }
     }
 
@@ -178,26 +173,8 @@ async fn run(
                         follow(&store, &node_client, namespace).await;
                     }
                     for namespace in uncovered {
-                        unfollow(
-                            &node_client,
-                            namespace,
-                            "this device's scope no longer reaches it",
-                        )
-                        .await;
+                        unfollow(&node_client, namespace).await;
                     }
-                });
-            }
-            OpEvent::DeviceLinked {
-                group_id,
-                account,
-                device,
-            } => {
-                let store = store.clone();
-                let node_client = node_client.clone();
-                let ack_router = Arc::clone(&ack_router);
-                let _ = tasks.spawn(async move {
-                    redrive_narrowing(&store, &node_client, &ack_router, group_id, account, device)
-                        .await;
                 });
             }
             // Only a proof-bearing revocation carries: an admin one authorises
@@ -482,101 +459,6 @@ fn unfollows_on_left(store: &Store, group_id: [u8; 32], namespace: ContextGroupI
         .is_some_and(|account_namespace| namespace != account_namespace)
 }
 
-/// Narrow again a link made under a scope the account has since replaced - the
-/// concurrent case an epoch stamp cannot reach, since that link was legitimate.
-async fn redrive_narrowing(
-    store: &Store,
-    node_client: &NodeClient,
-    ack_router: &AckRouter,
-    group_id: [u8; 32],
-    account: AccountId,
-    device: DeviceId,
-) {
-    let Some((account_namespace, cert)) = out_of_scope_link(store, group_id, account, device)
-    else {
-        return;
-    };
-    let namespace = ContextGroupId::from(group_id);
-    let signer_sk = match signing_identity(store, &[namespace]) {
-        Ok(secret) => PrivateKey::from(secret),
-        Err(err) => {
-            warn!(?err, %device, "account-follow: no identity to re-narrow a link with");
-            return;
-        }
-    };
-    let op = GroupOp::AccountDeviceDescoped {
-        account,
-        device,
-        scope: Box::new(cert.scope.clone()),
-    };
-    info!(
-        ?namespace, %device, ?account_namespace,
-        "account-follow: re-narrowing a link made under a superseded scope"
-    );
-    if let Err(err) = calimero_governance_store::withdraw_device_in(
-        store,
-        node_client,
-        ack_router,
-        &namespace,
-        &signer_sk,
-        device,
-        op,
-        "descoped",
-    )
-    .await
-    {
-        warn!(?err, ?namespace, %device, "account-follow: the re-narrowing did not publish");
-    }
-}
-
-/// The account namespace and the device's registry row, when this node holds the
-/// account root and the scope in force does not reach `group_id`.
-fn out_of_scope_link(
-    store: &Store,
-    group_id: [u8; 32],
-    account: AccountId,
-    device: DeviceId,
-) -> Option<(ContextGroupId, KnownDeviceCert)> {
-    let devices = NodeDeviceRepository::new(store);
-    let resolved = || -> EyreResult<Option<(ContextGroupId, KnownDeviceCert)>> {
-        // Holder-only: every device of the account folds this link, and one
-        // re-drive is a narrowing while N are N copies of the same op.
-        let Some(root) = devices.account_root()? else {
-            return Ok(None);
-        };
-        if root.account() != account {
-            return Ok(None);
-        }
-        let namespace = ContextGroupId::from(group_id);
-        let Some(account_namespace) = devices.account_namespace()? else {
-            return Ok(None);
-        };
-        // The account namespace holds the statements themselves and is exempt from
-        // every scope, exactly as the apply gate has it.
-        if namespace == account_namespace {
-            return Ok(None);
-        }
-        let Some(cert) = AccountDeviceRegistry::new(store, account_namespace).device(device)?
-        else {
-            return Ok(None);
-        };
-        let application = MetaRepository::new(store)
-            .load(&namespace)?
-            .map(|meta| meta.target.application_id);
-        if cert.covers(application) {
-            return Ok(None);
-        }
-        Ok(Some((account_namespace, cert)))
-    };
-    match resolved() {
-        Ok(found) => found,
-        Err(err) => {
-            warn!(?err, %device, "account-follow: failed to judge a link against the scope in force");
-            None
-        }
-    }
-}
-
 /// Bind a newly certified sibling where its scope reaches. A projector that is no
 /// admin has its `KeyDelivery` refused; the sibling pulls the key for itself.
 async fn handle_sibling_certified(
@@ -705,7 +587,6 @@ async fn carry_into(
             signer_sk,
             device,
             op.clone(),
-            "revoked",
         )
         .await
         {
@@ -737,22 +618,19 @@ async fn handle_namespace_left(
             "account-follow: failed to pull a namespace before unfollowing it"
         );
     }
-    unfollow(node_client, namespace, "the account left it").await;
+    unfollow(node_client, namespace).await;
 }
 
-/// Drop `namespace`'s topic. `why` names which rule asked, since the two - the
-/// account leaving, and this device's scope no longer reaching - are different
-/// events with the same remedy.
-async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId, why: &'static str) {
+/// Drop `namespace`'s topic.
+async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
     match node_client
         .unsubscribe_namespace(namespace.to_bytes())
         .await
     {
-        Ok(()) => info!(?namespace, why, "account-follow: unfollowed a namespace"),
+        Ok(()) => info!(?namespace, "account-follow: unfollowed a namespace"),
         Err(err) => warn!(
             ?err,
             ?namespace,
-            why,
             "account-follow: failed to unfollow a namespace"
         ),
     }
@@ -797,10 +675,9 @@ mod tests {
 
     use super::{
         carry_into, follows_on_gain, namespaces_this_scope_decides, namespaces_to_bind_into,
-        namespaces_to_revoke_in, out_of_scope_link, publish_sibling_link, run, signing_identity,
-        unfollows_on_left,
+        namespaces_to_revoke_in, publish_sibling_link, run, signing_identity, unfollows_on_left,
     };
-    use crate::test_support::{actor, certify_device, eventually};
+    use crate::test_support::{actor, eventually};
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
     const OTHER_GROUP: [u8; 32] = [0xC9; 32];
@@ -862,26 +739,6 @@ mod tests {
             .participate_in(&account_namespace)
             .expect("this node takes part in its own account namespace");
         (account_namespace, held.device(), root_sk)
-    }
-
-    /// A node that holds its own account root, which is the only node a re-drive
-    /// runs on - unlike [`a_device_scoped_to`], whose store holds no root at all.
-    fn a_holder(store: &Store) -> (ContextGroupId, calimero_account::AccountId) {
-        let devices = NodeDeviceRepository::new(store);
-        let root = devices
-            .provision_account_root()
-            .expect("this node's account root");
-        let account_namespace = devices
-            .account_namespace()
-            .expect("read")
-            .expect("a store with a root names one");
-        devices
-            .store_account_namespace(&account_namespace)
-            .expect("record the account namespace");
-        let _identity = NamespaceRepository::new(store)
-            .participate_in(&account_namespace)
-            .expect("take part in its own account namespace");
-        (account_namespace, root.account())
     }
 
     fn store() -> Store {
@@ -1494,112 +1351,6 @@ mod tests {
         MembershipRepository::new(store)
             .add_member(&namespace, &account, GroupMemberRole::Member)
             .expect("and a member of it");
-    }
-
-    /// The concurrent case the epoch stamp cannot reach on its own: a sibling
-    /// that had not folded the narrowing publishes a link under the old scope, and
-    /// it lands afterwards. Only the holder can see that and re-narrow.
-    #[actix::test]
-    async fn a_link_the_scope_in_force_does_not_cover_is_narrowed_again_by_the_holder() {
-        let store = store();
-        let (account_namespace, account) = a_holder(&store);
-        let project = ContextGroupId::from([0x87; 32]);
-        a_namespace_targeting(&store, project, app(0x22));
-        let _key_id = GroupKeyring::new(&store, project)
-            .store_key(&[0x42; 32])
-            .expect("hold this namespace's scope key");
-        a_member_of(&store, project);
-
-        // The sibling was certified wide, and the link it published under that
-        // scope reached `project`. The narrowing that followed is epoch 1, and the
-        // link lands afterwards - stamped at the scope it really was made under.
-        let sibling = certify_device(&store, 0x67, &[]);
-        let wide = AccountDeviceRegistry::new(&store, account_namespace)
-            .device(sibling)
-            .expect("read")
-            .expect("the sibling is registered");
-        let _narrowed = certify_device(&store, 0x67, &[app(0x11)]);
-        let bindings = AccountBindingRepository::new(&store);
-        let _admitted = bindings
-            .apply_link(
-                &project,
-                &wide.proof.genesis,
-                &wide.proof.chain,
-                &wide.proof.statement,
-                wide.scope.statement.scope_epoch,
-            )
-            .expect("store the concurrent link")
-            .expect("the credential stands");
-        assert!(bindings
-            .is_device_linked(&project, sibling)
-            .expect("read the binding"));
-
-        let harness = actor::over(store.clone()).await;
-        let listener = listen(&store, &harness);
-        op_events::notify(OpEvent::DeviceLinked {
-            group_id: project.to_bytes(),
-            account,
-            device: sibling,
-        });
-
-        let narrowed = eventually(|| {
-            !bindings
-                .is_device_linked(&project, sibling)
-                .expect("read the binding")
-        })
-        .await;
-        listener.abort();
-
-        assert!(
-            narrowed,
-            "the holder never re-narrowed a link its account's scope no longer covers"
-        );
-    }
-
-    /// Loop-freedom, mechanically: the re-drive reacts to a link, and the descope
-    /// it publishes announces itself as a descope - so nothing it emits re-enters.
-    #[test]
-    fn the_re_drive_is_not_driven_by_what_it_publishes() {
-        let store = store();
-        let (_account_namespace, account) = a_holder(&store);
-        let project = ContextGroupId::from([0x88; 32]);
-        a_namespace_targeting(&store, project, app(0x22));
-        let sibling = certify_device(&store, 0x68, &[app(0x11)]);
-
-        assert!(
-            out_of_scope_link(&store, project.to_bytes(), account, sibling).is_some(),
-            "a link into a namespace the scope in force does not reach is re-driven"
-        );
-        // The same device in the namespace its scope DOES reach is left alone, which
-        // is what stops the re-drive from firing on its own re-bind.
-        let covered = ContextGroupId::from([0x89; 32]);
-        a_namespace_targeting(&store, covered, app(0x11));
-        assert!(
-            out_of_scope_link(&store, covered.to_bytes(), account, sibling).is_none(),
-            "a link the scope reaches is not something to narrow"
-        );
-    }
-
-    /// Holder-only. Every device of the account folds the link, and N re-drives of
-    /// one narrowing are N copies of the same op.
-    #[test]
-    fn a_node_that_is_not_the_account_holder_re_drives_nothing() {
-        let store = store();
-        let (account_namespace, account) = a_holder(&store);
-        let project = ContextGroupId::from([0x8A; 32]);
-        a_namespace_targeting(&store, project, app(0x22));
-        let sibling = certify_device(&store, 0x69, &[app(0x11)]);
-
-        // Somebody else's account: this node holds a root, but not that one.
-        let stranger = AccountGenesis::new(PrivateKey::from([0x8B; 32]).public_key()).account_id();
-        assert!(
-            out_of_scope_link(&store, project.to_bytes(), stranger, sibling).is_none(),
-            "a link about another account is another holder's business"
-        );
-        assert!(
-            out_of_scope_link(&store, account_namespace.to_bytes(), account, sibling).is_none(),
-            "and the account namespace is exempt from every scope"
-        );
     }
 
     /// The arm itself, driven the way the sweep tests drive it. Pinned on the

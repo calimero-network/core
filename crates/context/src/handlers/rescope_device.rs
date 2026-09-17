@@ -9,11 +9,11 @@ use std::sync::Arc;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::scope_covers;
 use calimero_context_client::group::{
-    RescopeChange, RescopeDeviceRequest, RescopeDeviceResponse, RescopeOutcome, ScopeRequest,
+    BindOutcome, RescopeDeviceRequest, RescopeDeviceResponse, ScopeRequest,
 };
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{AccountBindingRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MetaRepository, NamespaceRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -36,7 +36,9 @@ fn requested_applications(scope: ScopeRequest) -> EyreResult<Vec<ApplicationId>>
     }
 }
 
-/// The namespaces `device` is bound in that `applications` no longer reaches.
+/// Every participating namespace `applications` no longer reaches, bound or not:
+/// the descope is what writes the scope floor there, so a racing sibling link or
+/// a replayed stale one is refused at apply on every replica.
 ///
 /// Never the account namespace: that is where the device's certificate and every
 /// scope statement live, and no scope names it.
@@ -44,14 +46,12 @@ fn namespaces_left_behind(
     store: &Store,
     namespaces: &[ContextGroupId],
     account_namespace: ContextGroupId,
-    device: calimero_account::DeviceId,
     applications: &[ApplicationId],
 ) -> EyreResult<Vec<ContextGroupId>> {
-    let bindings = AccountBindingRepository::new(store);
     let meta = MetaRepository::new(store);
     let mut left = Vec::new();
     for namespace in namespaces {
-        if *namespace == account_namespace || !bindings.is_device_linked(namespace, device)? {
+        if *namespace == account_namespace {
             continue;
         }
         let application = meta.load(namespace)?.map(|meta| meta.target.application_id);
@@ -109,9 +109,8 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // The statement is the only durable record of the replacement, and
-                // it is what every later bind is judged against - so a response
-                // carrying a scope nothing recorded would be a lie.
+                // The statement is the only durable record of the replacement and
+                // what every later bind is judged against.
                 if !crate::account_namespace::publish_device_certified(
                     &store,
                     &node_client,
@@ -129,13 +128,8 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                     );
                 }
 
-                let left = namespaces_left_behind(
-                    &store,
-                    &namespaces,
-                    account_namespace,
-                    device,
-                    &applications,
-                )?;
+                let left =
+                    namespaces_left_behind(&store, &namespaces, account_namespace, &applications)?;
                 let mut outcomes = Vec::with_capacity(namespaces.len());
                 for namespace in &left {
                     let op = GroupOp::AccountDeviceDescoped {
@@ -151,15 +145,12 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                         &signer_sk,
                         device,
                         op,
-                        "descoped",
                     )
                     .await
                     {
-                        Ok(key_rotated) => outcomes.push(RescopeOutcome::new(
-                            *namespace,
-                            RescopeChange::Descoped,
-                            key_rotated,
-                        )),
+                        Ok(key_rotated) => {
+                            outcomes.push((*namespace, BindOutcome::Descoped { key_rotated }));
+                        }
                         // One namespace failing must not withhold the narrowing
                         // from the rest; the caller sees which ones landed.
                         Err(err) => warn!(
@@ -182,13 +173,7 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                     if left.contains(&namespace) {
                         continue;
                     }
-                    let change = match outcome {
-                        calimero_context_client::group::BindOutcome::Linked { .. } => {
-                            RescopeChange::Bound
-                        }
-                        _ => RescopeChange::Unchanged,
-                    };
-                    outcomes.push(RescopeOutcome::new(namespace, change, false));
+                    outcomes.push((namespace, outcome));
                 }
 
                 info!(%account, %device, ?applications, ?outcomes, "replaced a device's scope");
@@ -340,15 +325,15 @@ mod tests {
                 .expect("read the tombstones"),
             "narrowing must leave no tombstone; that is what makes it reversible"
         );
-        assert!(narrowed.outcomes.contains(&RescopeOutcome::new(
+        assert!(narrowed.outcomes.contains(&(
             ContextGroupId::from(NS_TWO),
-            RescopeChange::Descoped,
-            true,
+            BindOutcome::Descoped { key_rotated: true },
         )));
         assert!(
-            !narrowed.outcomes.iter().any(|outcome| outcome.namespace_id
-                == ContextGroupId::from(NS_ONE)
-                && outcome.change == RescopeChange::Descoped),
+            !narrowed.outcomes.iter().any(|(namespace, outcome)| {
+                *namespace == ContextGroupId::from(NS_ONE)
+                    && matches!(outcome, BindOutcome::Descoped { .. })
+            }),
             "a namespace the new scope still reaches is never published into; got: {:?}",
             narrowed.outcomes
         );
@@ -403,49 +388,76 @@ mod tests {
 
         assert!(is_bound(&store, NS_TWO, device), "the id was never spent");
         assert!(widened.applications.is_empty());
-        assert!(widened.outcomes.contains(&RescopeOutcome::new(
+        assert!(widened.outcomes.contains(&(
             ContextGroupId::from(NS_TWO),
-            RescopeChange::Bound,
-            false,
+            BindOutcome::Linked {
+                key_delivered: true
+            },
         )));
     }
 
-    /// The same three refusals a relink answers with, because the same three
-    /// things have to be true before this node may sign a replacement scope.
-    #[test]
-    fn the_wrong_machine_an_unknown_device_and_a_revoked_one_are_all_refused() {
+    /// The floor is written where nothing is bound too, which is what refuses a
+    /// racing sibling link or a replayed stale one on every replica - rather than
+    /// only where this node happened to see a binding at narrowing time.
+    #[actix::test]
+    async fn a_namespace_the_device_was_never_bound_in_still_takes_the_floor() {
         let store = a_holder_of_two_namespaces();
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
+        // Certified but never linked anywhere: NS_TWO holds no binding for it.
+        let device = certify_device(&store, 0x35, &[]);
+        assert!(!is_bound(&store, NS_TWO, device));
 
-        let refused = resolve_device(&store, DeviceId::from([0x51; 32]))
-            .expect_err("nothing is known about this device");
-        assert!(matches!(
-            refused.downcast_ref::<ContextError>(),
-            Some(ContextError::PairingUnknownDevice { .. })
-        ));
+        let narrowed = harness
+            .manager
+            .send(RescopeDeviceRequest {
+                device,
+                scope: ScopeRequest::Only(vec![app(APP_ONE)]),
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the rescope runs");
 
-        let device = certify_device(&store, 0x33, &[]);
-        AccountBindingRepository::new(&store)
-            .apply_revocation(&NS_ONE.into(), device)
-            .expect("tombstone the device");
-        let refused = resolve_device(&store, device).expect_err("the id is spent");
-        assert!(matches!(
-            refused.downcast_ref::<ContextError>(),
-            Some(ContextError::PairingDeviceRevoked { .. })
-        ));
+        let registry = AccountDeviceRegistry::new(&store, account_namespace);
+        let recorded = registry
+            .device(device)
+            .expect("read")
+            .expect("the rescope recorded the device");
+        let epoch = recorded.scope.statement.scope_epoch;
+        let account = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("the holder holds a root")
+            .account();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(
+            bindings
+                .scope_floor(&NS_TWO.into(), account, device)
+                .expect("read the floor"),
+            Some(epoch),
+            "the uncovered namespace has to record the replacement's epoch"
+        );
+        assert!(narrowed.outcomes.contains(&(
+            ContextGroupId::from(NS_TWO),
+            BindOutcome::Descoped { key_rotated: false },
+        )));
 
-        let devices = NodeDeviceRepository::new(&store);
-        devices.delete().expect("release the slot");
-        let _adopted = devices
-            .ensure_enrolled_into(
-                &[NS_ONE.into()],
-                calimero_account::AccountGenesis::new(PrivateKey::from([0x41; 32]).public_key()),
-            )
-            .expect("adopt somebody else's account, as pairing into one does");
-        let refused =
-            resolve_device(&store, DeviceId::from([0x52; 32])).expect_err("wrong machine");
+        // A link made under the scope in force before the replacement, landing
+        // after it: the floor is what refuses it.
         assert!(matches!(
-            refused.downcast_ref::<ContextError>(),
-            Some(ContextError::PairingNotTheAccountHolder { .. })
+            bindings
+                .apply_link(
+                    &NS_TWO.into(),
+                    &recorded.proof.genesis,
+                    &recorded.proof.chain,
+                    &recorded.proof.statement,
+                    epoch - 1,
+                )
+                .expect("read"),
+            Err(calimero_governance_store::BindingRejected::ScopeNarrowed { .. })
         ));
     }
 
