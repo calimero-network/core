@@ -24,6 +24,19 @@ const RUNS: usize = 7;
 /// order of magnitude — and that job belongs to `flat_curve.rs`.
 const MAX_DECLARED_TOLERANCE_PCT: u32 = 25;
 
+// Release only. With debug assertions on, `ChildTrie::write_path` calls
+// `debug_reconcile` (`crates/storage/src/child_trie.rs`), which reads every
+// occupied slot below each node it writes. Occupancy follows the random entity
+// ids, so a debug build issues MORE reads than the snapshot records and a
+// varying number of them: every `tolerance_pct = 0` workload that writes then
+// "varies" by 0.1-2%, and this test reports tolerances that are fine as stale.
+// The declared tolerances describe the release-build counts the gate measures
+// (`scripts/check-storage-cost.sh` runs `--release`), and CI's storage-cost job
+// runs this test in release.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "row counts include debug-only child-trie reconciliation reads; run with --release"
+)]
 #[test]
 fn declared_tolerances_bound_the_observed_spread() {
     let mut failures = Vec::new();
