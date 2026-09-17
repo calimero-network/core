@@ -65,11 +65,59 @@ pub(super) fn effective_stub_source(op_source: &str) -> &str {
     }
 }
 
-pub(crate) fn min_acks_after_local_mutation(
-    _known_at_gate: usize,
-    known_at_publish: usize,
+/// Peers that could return a countable ack for a publish on `namespace_id`.
+///
+/// Both halves are necessary: only a subscribed peer receives the op, and only
+/// a namespace member can sign an ack that `verify_ack` counts. A device being
+/// paired subscribes without being a member, which is why the subscriber count
+/// alone is not the question.
+pub(crate) fn ackable_members(
+    store: &Store,
+    namespace_id: NamespaceId,
+    signer_pk: &PublicKey,
+    known_subscribers: usize,
 ) -> usize {
-    if known_at_publish == 0 {
+    if known_subscribers == 0 {
+        return 0;
+    }
+    let group_id = ContextGroupId::from(namespace_id.to_bytes());
+    let own = crate::member_account_in_namespace(store, &group_id, signer_pk)
+        .ok()
+        .flatten();
+    // This account's other devices count too: a linked device acks like any member.
+    let siblings = crate::AccountBindingRepository::new(store)
+        .live_bindings(&group_id)
+        .map_or(0, |bound| {
+            bound
+                .iter()
+                .filter(|b| Some(b.account) == own && b.sign_pk != *signer_pk)
+                .count()
+        });
+    match MembershipRepository::new(store).namespace_accounts(namespace_id) {
+        Ok(accounts) => {
+            siblings
+                + accounts
+                    .into_iter()
+                    .filter(|account| Some(*account) != own)
+                    .count()
+        }
+        // A membership read that failed is not evidence that nobody can ack;
+        // wait as if every subscriber were a member rather than skip the wait.
+        Err(err) => {
+            tracing::warn!(
+                %err,
+                namespace_id = %hex::encode(namespace_id.as_bytes()),
+                "could not read namespace membership; assuming an ack may come"
+            );
+            known_subscribers
+        }
+    }
+}
+
+/// An ack only counts when its signer is a namespace member (`verify_ack`), so
+/// waiting for one is only meaningful while such a member is reachable.
+pub(crate) fn min_acks_after_local_mutation(ackable_members: usize) -> usize {
+    if ackable_members == 0 {
         0
     } else {
         governance_broadcast::DEFAULT_MIN_ACKS
@@ -77,13 +125,13 @@ pub(crate) fn min_acks_after_local_mutation(
 }
 
 /// Classify a best-effort governance publish from the role of its ack
-/// signers. Shared by `NamespaceGovernance::sign_apply_and_publish` and
-/// `GroupGovernancePublisher` (a sibling module — hence `pub(crate)`).
-pub(crate) fn classify_report_readiness(
+/// signers. Applied at both publish boundaries, so every caller — the
+/// group-op path included — gets the classification without asking.
+fn classify_report_readiness(
     store: &Store,
     namespace_id: NamespaceId,
     report: &DeliveryReport,
-    known_subscribers: usize,
+    ackable_members: usize,
 ) -> PublishReadiness {
     // Acks are signed, so `acked_by` holds keys; authority is held by accounts.
     // A key that resolves to nothing carries no authority, which is what
@@ -99,7 +147,7 @@ pub(crate) fn classify_report_readiness(
                     .unwrap_or(false)
             })
     });
-    classify_publish_readiness(authoritative_ack, report.acked_by.len(), known_subscribers)
+    classify_publish_readiness(authoritative_ack, report.acked_by.len(), ackable_members)
 }
 
 /// Domain API for namespace DAG and governance operation lifecycle.
@@ -918,11 +966,16 @@ impl<'a> NamespaceGovernance<'a> {
         let mesh = node_client
             .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
             .await;
-        let known = node_client.known_subscribers(&topic);
+        let ackable = ackable_members(
+            self.store,
+            self.namespace_id,
+            &signer_sk.public_key(),
+            node_client.known_subscribers(&topic),
+        );
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
-        let min_acks = min_acks_after_local_mutation(known, known);
+        let min_acks = min_acks_after_local_mutation(ackable);
 
         // Best-effort publish: the op is already committed locally, so a
         // `NoAckReceived` / `Publish` failure is NOT fatal — synthesize an
@@ -958,7 +1011,8 @@ impl<'a> NamespaceGovernance<'a> {
             }
         };
 
-        report.readiness = classify_report_readiness(self.store, self.namespace_id, &report, known);
+        report.readiness =
+            classify_report_readiness(self.store, self.namespace_id, &report, ackable);
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id.as_bytes()),
@@ -1013,7 +1067,6 @@ impl<'a> NamespaceGovernance<'a> {
             op,
             topic,
             mesh,
-            known,
             required_signers,
             false,
         )
@@ -1021,8 +1074,8 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// Post-gate variant of [`sign_and_publish_without_apply`]: takes the
-    /// `mesh` / `known_subscribers` snapshot the caller already observed,
-    /// so this never re-samples or re-runs `assert_transport_ready`.
+    /// `mesh` snapshot the caller already observed, so this never re-samples
+    /// or re-runs `assert_transport_ready`.
     /// Used by [`GroupGovernancePublisher::sign_apply_and_publish_inner`]
     /// after the local group store has already been mutated. That caller
     /// passes `best_effort = true`: it has no gate of its own (the local
@@ -1038,7 +1091,6 @@ impl<'a> NamespaceGovernance<'a> {
         signer_sk: &PrivateKey,
         op: NamespaceOp,
         mesh: usize,
-        known: usize,
         best_effort: bool,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
@@ -1049,7 +1101,6 @@ impl<'a> NamespaceGovernance<'a> {
             op,
             topic,
             mesh,
-            known,
             None,
             best_effort,
         )
@@ -1058,7 +1109,7 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Shared body of [`sign_and_publish_without_apply`] and
     /// [`sign_and_publish_post_gate`]. Takes the caller's `mesh` snapshot
-    /// to feed the metric; the subscriber count is re-sampled at publish
+    /// to feed the metric; the ackable-member count is re-sampled at publish
     /// time (see below) so transient peer departures don't skew `min_acks`.
     ///
     /// `best_effort` selects the failure mode of the publish:
@@ -1078,7 +1129,6 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
         topic: TopicHash,
         mesh: usize,
-        known_at_gate: usize,
         required_signers: Option<Vec<PublicKey>>,
         best_effort: bool,
     ) -> EyreResult<DeliveryReport> {
@@ -1133,25 +1183,27 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
-        // Refresh `known` here, AFTER all the local-mutation /
-        // encryption / key-rotation / store_operation work above and
-        // immediately before deciding `min_acks`. The caller's snapshot
-        // (`known_at_gate`) was taken many awaits ago; in group-publish
-        // flows it predates `sign_apply_local_group_op_borsh` and the
-        // per-removal key mint. If a peer unsubscribed in the meantime,
-        // sticking with the stale count would leave `min_acks = 1`
-        // against an empty subscriber set and force `NoAckReceived`
+        // Sample the ackable-member count HERE, after all the
+        // local-mutation / encryption / key-rotation / store_operation
+        // work above and immediately before deciding `min_acks`. The
+        // caller's own snapshot was taken many awaits ago; in
+        // group-publish flows it predates `sign_apply_local_group_op_borsh`
+        // and the per-removal key mint. If the last subscriber left in the
+        // meantime, sticking with the stale count would leave
+        // `min_acks = 1` against an empty topic and force `NoAckReceived`
         // after the local DAG has already advanced. For `best_effort`
         // callers that `NoAckReceived` is swallowed into a `Degraded`
         // report; for quorum callers it is the genuine failure they
-        // expect. `known_subscribers` is a cheap synchronous DashMap
-        // lookup on `NodeClient` (no actor mailbox round-trip), so
-        // re-sampling here costs effectively nothing while making the
-        // solo-namespace fast-path responsive to live state.
-        let known_at_publish = node_client.known_subscribers(&topic);
-        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
+        // expect.
+        let ackable = ackable_members(
+            self.store,
+            self.namespace_id,
+            &signer_sk.public_key(),
+            node_client.known_subscribers(&topic),
+        );
+        let min_acks = min_acks_after_local_mutation(ackable);
 
-        let report = match publish_and_await_ack_namespace(
+        let mut report = match publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -1186,6 +1238,8 @@ impl<'a> NamespaceGovernance<'a> {
             }
             Err(e) => return Err(eyre::eyre!(e)),
         };
+        report.readiness =
+            classify_report_readiness(self.store, self.namespace_id, &report, ackable);
         // `best_effort` distinguishes the two callers: the quorum path
         // (`sign_and_publish_without_apply`, `best_effort = false`) does no
         // local apply, while the group-op path (`sign_and_publish_post_gate`,
@@ -1196,6 +1250,7 @@ impl<'a> NamespaceGovernance<'a> {
             op_kind,
             namespace_id = %hex::encode(self.namespace_id.as_bytes()),
             acks = report.acked_by.len(),
+            readiness = report.readiness.label(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
             best_effort,

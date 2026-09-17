@@ -12,9 +12,8 @@ use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use rand::RngExt;
 
-use super::namespace::classify_report_readiness;
 use super::{sign_apply_local_group_op_borsh, NamespaceGovernance};
-use crate::governance_broadcast::{ns_topic, DeliveryReport};
+use crate::governance_broadcast::DeliveryReport;
 use crate::metrics::record_governance_publish_mesh_peers;
 
 /// Orchestrates local apply + encrypted namespace publish for group governance ops.
@@ -262,17 +261,15 @@ impl<'a> GroupGovernancePublisher<'a> {
         // namespace publish at the end is best-effort (`best_effort = true`)
         // so an unformed mesh downgrades readiness instead of failing the
         // call. The op propagates to peers via sync. See the
-        // best-effort-readiness design doc. `mesh` / `known` are still
-        // sampled here — `mesh` feeds the cleartext-labelled metric below
-        // and both are handed to `sign_and_publish_post_gate`.
+        // best-effort-readiness design doc. `mesh` is still sampled here —
+        // it feeds the cleartext-labelled metric below and is handed to
+        // `sign_and_publish_post_gate`.
         let namespace_id = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
-        let topic = ns_topic(namespace_bytes.into());
         let mesh = self
             .node_client
             .mesh_peer_count_for_namespace(namespace_bytes)
             .await;
-        let known = self.node_client.known_subscribers(&topic);
 
         // C5.S3b: the op-level pre-apply state_hash capture was removed with the
         // field (`scope_root` is the convergence signal now). The `MemberRemoved` /
@@ -487,22 +484,19 @@ impl<'a> GroupGovernancePublisher<'a> {
         // mutation from `sign_apply_local_group_op_borsh` (above) is
         // already committed, so a publish that gathers no acks is NOT a
         // failure — it is reported as `Degraded` and the op reaches peers
-        // via sync. `sign_and_publish_post_gate` takes the `mesh` / `known`
-        // snapshot directly and never runs `assert_transport_ready`, so
-        // there is no gate that could reject after the local apply.
-        let mut report = NamespaceGovernance::new(self.store, namespace_bytes.into())
+        // via sync. `sign_and_publish_post_gate` takes the `mesh` snapshot
+        // directly and never runs `assert_transport_ready`, so there is no
+        // gate that could reject after the local apply.
+        let report = NamespaceGovernance::new(self.store, namespace_bytes.into())
             .sign_and_publish_post_gate(
                 self.node_client,
                 ack_router,
                 &namespace_sk,
                 namespace_op,
                 mesh,
-                known,
                 true,
             )
             .await?;
-        report.readiness =
-            classify_report_readiness(self.store, namespace_bytes.into(), &report, known);
         tracing::debug!(
             op_kind,
             group_id = %hex::encode(self.group_id.to_bytes()),

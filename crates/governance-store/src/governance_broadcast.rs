@@ -368,11 +368,11 @@ pub struct DeliveryReport {
 /// `Ready` means an owner/admin/TEE node provably received the op (a
 /// signed ack arrived from one). `Degraded` and `Solo` both mean the op
 /// applied locally and will reach peers via sync; they differ only in
-/// whether any remote subscriber was known. None of the three is a
+/// whether any member able to ack was known. None of the three is a
 /// failure — the apply already happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishReadiness {
-    /// No remote subscribers were known — the node is effectively solo.
+    /// No member able to ack was known — the node is effectively solo.
     Solo,
     /// At least one owner / admin / TEE node acked the op.
     Ready,
@@ -402,14 +402,19 @@ impl PublishReadiness {
 /// authoritative ack cannot exist without an ack, so `authoritative_ack`
 /// with `ack_count == 0` is a contradictory input; it is treated as
 /// "no acks" rather than reported as `Ready`.
+///
+/// `ackable_members` is the population that could have acked, not the raw
+/// subscriber set: a peer that cannot sign a countable ack makes this node
+/// effectively `Solo`, and calling that `Degraded` would report a silence
+/// nobody was ever able to break.
 #[must_use]
 pub fn classify_publish_readiness(
     authoritative_ack: bool,
     ack_count: usize,
-    known_subscribers: usize,
+    ackable_members: usize,
 ) -> PublishReadiness {
     if ack_count == 0 {
-        return if known_subscribers == 0 {
+        return if ackable_members == 0 {
             PublishReadiness::Solo
         } else {
             PublishReadiness::Degraded
@@ -676,8 +681,8 @@ pub async fn publish_and_await_ack_namespace(
         //
         //   * `min_acks == 0` — caller opted out of confirmation, so
         //     "delivered to no one" is a legitimate Ok-with-empty result.
-        //     Solo namespaces (`assert_transport_ready` passed because
-        //     `known_subscribers == 0`) compute this min_acks and reach
+        //     Solo namespaces (no member holds a fresh readiness
+        //     beacon) compute this min_acks and reach
         //     this arm. Matches the legacy
         //     `NodeClient::publish_signed_namespace_op` semantics that
         //     warned and returned Ok rather than propagating.
