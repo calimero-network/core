@@ -59,6 +59,7 @@ fn every_request_body_is_a_closed_set() {
         admin::AccountPairInitApiRequest,
         admin::AccountPairCompleteApiRequest,
         admin::RelinkDeviceApiRequest,
+        admin::RescopeDeviceApiRequest,
         admin::RevokeDeviceApiRequest,
         admin::CreateNamespaceApiRequest,
         admin::DeleteNamespaceApiRequest,

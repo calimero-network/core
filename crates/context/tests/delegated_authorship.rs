@@ -153,7 +153,7 @@ fn world(nonce: u64) -> World {
             .record_endorser(&group, p.account, &admin)
             .expect("record the endorser");
         let _admitted = bindings
-            .apply_link(&group, &p.proof.genesis, &[], &p.proof.statement)
+            .apply_link(&group, &p.proof.genesis, &[], &p.proof.statement, 0)
             .expect("apply the link");
         MembershipRepository::new(&store)
             .add_member(&group, &p.account, GroupMemberRole::Member)

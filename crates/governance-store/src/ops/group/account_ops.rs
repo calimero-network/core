@@ -51,8 +51,16 @@ pub(crate) fn apply_device_linked(
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
     endorsement: &AccountMemberEndorsement,
+    scope: &AccountProof<DeviceScope>,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
+
+    // The scope decides two things no other gate here can: that the root meant
+    // this device to reach this namespace, and which epoch the binding is stamped
+    // at, which is what a later descope orders itself against.
+    if !scope_reaches_here(ctx, cert, scope, "device link")? {
+        return Ok(());
+    }
 
     // The policy gate, in three steps: the endorsement is about this account, it
     // is validly signed, and its signer is a member at the cut. Membership rows
@@ -98,7 +106,8 @@ pub(crate) fn apply_device_linked(
     let store = ctx.store();
     let bindings = AccountBindingRepository::new(store);
 
-    let outcome = bindings.apply_link(&group_id, genesis, chain, cert)?;
+    let outcome =
+        bindings.apply_link(&group_id, genesis, chain, cert, scope.statement.scope_epoch)?;
 
     // Record the vouch even when the link itself is refused, for the same reason
     // the genesis is absorbed unconditionally: the endorsement is self-certifying
@@ -134,8 +143,14 @@ pub(crate) fn apply_device_linked(
                 account = %binding.account,
                 device = %binding.device,
                 device_epoch = binding.device_epoch,
+                scope_epoch = scope.statement.scope_epoch,
                 "account device linked"
             );
+            ctx.queue_event(OpEvent::DeviceLinked {
+                group_id: group_id.to_bytes(),
+                account: binding.account,
+                device: binding.device,
+            });
             // The device saw the group's earlier context registrations as
             // nobody; the sweep a new member row starts catches it up.
             if let Some(event) =
@@ -152,6 +167,36 @@ pub(crate) fn apply_device_linked(
         }
     }
     Ok(())
+}
+
+/// Does `scope` authorise `cert`'s device, and reach this group? Shared with the
+/// descope so the two cannot disagree about which namespaces a scope speaks for.
+fn scope_reaches_here(
+    ctx: &GroupApplyCtx<'_>,
+    cert: &DeviceCert,
+    scope: &AccountProof<DeviceScope>,
+    what: &str,
+) -> EyreResult<bool> {
+    let group_id = *ctx.group_id();
+    if let Err(err) = scope.authorises(cert.account, cert.device) {
+        tracing::warn!(group_id = ?group_id, account = %cert.account, device = %cert.device,
+                       %err, what, "the scope did not authorise this device");
+        return Ok(false);
+    }
+    // The account namespace targets no application, so every scope but the widest
+    // reads as not covering it - and it is where the statements themselves live.
+    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? == Some(group_id) {
+        return Ok(true);
+    }
+    let application = crate::MetaRepository::new(ctx.store())
+        .load(&group_id)?
+        .map(|meta| meta.target.application_id);
+    if !calimero_account::scope_covers(&scope.statement.applications, application) {
+        tracing::warn!(group_id = ?group_id, device = %cert.device, what,
+                       "the carried scope does not reach this group");
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Keep the proof if this link is about THIS node's device. Best-effort: a
@@ -248,11 +293,8 @@ pub(crate) fn apply_device_certified(
         return Ok(());
     }
 
-    let recorded = crate::AccountDeviceRegistry::new(ctx.store(), group_id).record(
-        certificate,
-        &scope.statement.applications,
-        scope.statement.scope_epoch,
-    )?;
+    let recorded =
+        crate::AccountDeviceRegistry::new(ctx.store(), group_id).record(certificate, scope)?;
     if !recorded {
         return Ok(());
     }
@@ -457,6 +499,61 @@ pub(crate) fn apply_device_unlinked(
         device = %device,
         self_service,
         "account device unlinked"
+    );
+    Ok(())
+}
+
+/// `GroupOp::AccountDeviceDescoped` - drop a device's binding because the
+/// account replaced its scope with one that no longer reaches this group.
+pub(crate) fn apply_device_descoped(
+    ctx: &mut GroupApplyCtx<'_>,
+    account: &AccountId,
+    device: &DeviceId,
+    scope: &AccountProof<DeviceScope>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+
+    // The mirror of the link's gate: the scope must authorise this device, and a
+    // scope that still reaches here is not a narrowing at all.
+    if let Err(err) = scope.authorises(*account, *device) {
+        tracing::warn!(group_id = ?group_id, %account, %device, %err,
+                       "account device descoped: the scope did not authorise this device");
+        return Ok(());
+    }
+    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? == Some(group_id) {
+        tracing::warn!(group_id = ?group_id, %device,
+                       "account device descoped: a device keeps its account namespace");
+        return Ok(());
+    }
+    let application = crate::MetaRepository::new(ctx.store())
+        .load(&group_id)?
+        .map(|meta| meta.target.application_id);
+    if calimero_account::scope_covers(&scope.statement.applications, application) {
+        tracing::warn!(group_id = ?group_id, %device,
+                       "account device descoped: the carried scope still reaches this group");
+        return Ok(());
+    }
+
+    // The floor is what refuses a stale link replayed later; it is raised even
+    // when nothing is bound, so the outcome does not depend on arrival order.
+    let epoch = scope.statement.scope_epoch;
+    if !AccountBindingRepository::new(ctx.store()).narrow(&group_id, *account, *device, epoch)? {
+        return Ok(());
+    }
+    // The same debt a revocation leaves: the device stops writing at once but
+    // keeps the key it holds, so it reads on until an admin rotates.
+    crate::PendingDeviceRotationRepository::new(ctx.store()).mark(&group_id, device)?;
+    ctx.queue_event(OpEvent::DeviceDescoped {
+        group_id: group_id.to_bytes(),
+        account: *account,
+        device: *device,
+    });
+    tracing::info!(
+        group_id = ?group_id,
+        %account,
+        %device,
+        scope_epoch = scope.statement.scope_epoch,
+        "account device descoped"
     );
     Ok(())
 }

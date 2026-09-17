@@ -331,14 +331,21 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
                 // One certificate for three uses: the fan-out publishes it, the store keeps it for
                 // namespaces gained later, and the response hands it to the device.
-                let cert = KnownDeviceCert {
-                    proof: AccountProof {
-                        genesis,
-                        chain: vec![],
-                        statement: device_cert,
-                    },
-                    applications,
+                let proof = AccountProof {
+                    genesis,
+                    chain: vec![],
+                    statement: device_cert,
                 };
+                // Signed before the fan-out because every link it publishes has to
+                // carry it; the account namespace records the same statement below.
+                let scope = crate::account_namespace::next_device_scope(
+                    &store,
+                    account_namespace,
+                    &account_root,
+                    &proof,
+                    &applications,
+                )?;
+                let cert = KnownDeviceCert { proof, scope };
 
                 // A device belongs to an account, not to a scope, so both
                 // credentials the link carries are account-scoped: the certificate
@@ -383,9 +390,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                         &ack_router,
                         account_namespace,
                         &signer_sk,
-                        &account_root,
-                        &cert.proof,
-                        &cert.applications,
+                        &cert,
                         "pair_device_complete",
                     )
                     .await;
@@ -900,11 +905,12 @@ mod tests {
             .account_namespace()
             .expect("read")
             .expect("pairing ensured the account namespace");
-        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
             .device(response.device)
             .expect("read")
             .expect("the paired device is in the registry");
-        assert_eq!(recorded.applications, vec![app(APP_ONE)]);
+        let epoch = recorded.scope.statement.scope_epoch;
+        assert_eq!(recorded.applications(), vec![app(APP_ONE)]);
         assert_eq!(epoch, 0);
     }
 
@@ -936,11 +942,12 @@ mod tests {
             .account_namespace()
             .expect("read")
             .expect("pairing ensured the account namespace");
-        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
             .device(offer.device)
             .expect("read")
             .expect("the paired device is in the registry");
-        assert_eq!(recorded.applications, vec![app(APP_ONE)]);
+        let epoch = recorded.scope.statement.scope_epoch;
+        assert_eq!(recorded.applications(), vec![app(APP_ONE)]);
         assert_eq!(epoch, 1);
     }
 }

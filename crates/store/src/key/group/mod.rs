@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x51` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x52` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x52`**.
+// `0x53`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2401,6 +2401,8 @@ pub struct GroupDeviceBindingValue {
     pub device_epoch: u32,
     /// Account root-key epoch that signed this device's certificate.
     pub key_epoch: u32,
+    /// Scope epoch the link carried. A descope below it is a stale replay.
+    pub scope_epoch: u32,
 }
 
 /// Revocation tombstone for a device (see [`GROUP_REVOKED_DEVICE_PREFIX`]).
@@ -2467,6 +2469,50 @@ impl Debug for GroupRevokedDevice {
             .field("group_id", &self.group_id())
             .field("device_id", &self.device_id())
             .finish()
+    }
+}
+
+/// Prefix for [`GroupDeviceScopeFloor`].
+pub const GROUP_DEVICE_SCOPE_FLOOR_PREFIX: u8 = 0x52;
+
+/// The scope epoch a device was last narrowed out of this group at; a link at or
+/// below it is refused. `slot` hashes account and device, so no other root can raise it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeviceScopeFloor(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupDeviceScopeFloor {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], slot: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_DEVICE_SCOPE_FLOOR_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(slot))))
+    }
+}
+
+impl AsKeyParts for GroupDeviceScopeFloor {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupDeviceScopeFloor {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupDeviceScopeFloor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("GroupDeviceScopeFloor").finish()
     }
 }
 
@@ -2595,18 +2641,15 @@ impl Debug for GroupAccountNamespace {
     }
 }
 
-/// The certificate and scope a [`GroupAccountDevice`] row carries.
-///
-/// The node-local row plus the epoch that ordered it: same certificate, same
-/// applications, so the two are one declaration. Borsh writes a nested struct
-/// inline, so the bytes are the three fields in this order either way.
+/// The certificate and scope a [`GroupAccountDevice`] row carries. The statement
+/// is stored whole because a link re-presents it and a sibling cannot re-sign it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDeviceValue {
-    /// The root-signed certificate and the applications it is scoped to.
-    pub cert: NodeAccountDeviceCertValue,
-    /// Which scope statement wrote this row. Only a higher one supersedes.
-    pub scope_epoch: u32,
+    /// The root-signed certificate with the chain that reaches its signing epoch.
+    pub proof: AccountProof<DeviceCert>,
+    /// The root-signed scope in force: its applications and its ordering epoch.
+    pub scope: AccountProof<DeviceScope>,
 }
 
 /// An account's current root key within a group (see [`GROUP_ACCOUNT_KEY_PREFIX`]).
@@ -3949,6 +3992,7 @@ mod tests {
             ),
             ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
+            ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
             ("GROUP_MEMBER_BY_ACCOUNT", GROUP_MEMBER_BY_ACCOUNT_PREFIX),

@@ -44,6 +44,26 @@ use sha2::{Digest, Sha256};
 /// Deterministic because the op names the account this certifies and later
 /// assertions have to name the same one; a fresh random root per call would make
 /// every mention a different principal.
+/// The root-signed scope a link carries; empty, so it reaches every group.
+fn link_scope(
+    root_sk: &PrivateKey,
+    cert: &calimero_account::DeviceCert,
+) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
+    Box::new(calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            vec![],
+            0,
+            0,
+        )
+        .expect("the account root signs its device's scope"),
+    })
+}
+
 fn test_join_account_for(
     sign_pk: &calimero_primitives::identity::PublicKey,
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
@@ -1496,6 +1516,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
         cert,
         endorsement: calimero_account::AccountMemberEndorsement::sign(&device_sk, account)
             .expect("endorse"),
+        scope: link_scope(&root_sk, &cert),
     };
     let link_id = [0xC1; 32];
     proj.ingest_op(&op_from_namespace_op(

@@ -407,6 +407,12 @@ pub(crate) fn setup(
             "/account/devices/{device_id}/relink",
             post(account::relink::handler),
         )
+        // The other direction, which relink deliberately cannot do: replace the
+        // scope outright, so an application can be taken away again.
+        .route(
+            "/account/devices/{device_id}/scope",
+            put(account::rescope::handler),
+        )
         .route(
             "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
@@ -766,9 +772,9 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     use calimero_context::error::ContextError as Refusal;
 
     Some(match err {
-        Refusal::PairingStatementInvalid { .. } | Refusal::PairingCodeMismatch { .. } => {
-            StatusCode::BAD_REQUEST
-        }
+        Refusal::PairingStatementInvalid { .. }
+        | Refusal::PairingCodeMismatch { .. }
+        | Refusal::ScopeReplacementEmpty => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
             StatusCode::CONFLICT
         }
@@ -1496,6 +1502,14 @@ mod parse_api_error_tests {
                 "{}",
                 api.message
             );
+        }
+
+        /// A scope replacement that names no application at all. `400`: the
+        /// caller has to fix the payload, and `all` is the request they meant.
+        #[test]
+        fn an_empty_scope_replacement_maps_to_400() {
+            let api = parse_api_error(ContextError::ScopeReplacementEmpty.into());
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         }
 
         /// A relink names a device this node holds no certificate for. `404`,

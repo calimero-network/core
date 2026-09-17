@@ -197,7 +197,7 @@ mod tests {
         )
         .expect("the account root signs its own device cert");
         let _binding = AccountBindingRepository::new(store)
-            .apply_link(&namespace(), &genesis, &[], &cert)
+            .apply_link(&namespace(), &genesis, &[], &cert, 0)
             .expect("the store write succeeds")
             .expect("the credential binds");
     }

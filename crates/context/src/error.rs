@@ -195,4 +195,14 @@ pub enum ContextError {
         /// Debug rendering of the namespaces holding a tombstone for it.
         namespaces: String,
     },
+
+    /// A scope replacement named no application at all.
+    ///
+    /// A `400`: an empty list means every application on the wire, so accepting
+    /// it here would turn the narrowest request into the widest one.
+    #[error(
+        "a scope replacement must name at least one application; ask for every \
+         application explicitly instead"
+    )]
+    ScopeReplacementEmpty,
 }

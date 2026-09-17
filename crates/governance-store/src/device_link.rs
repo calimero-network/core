@@ -6,7 +6,7 @@
 //! and one key wrap. One publish path for all three callers: pairing's fan-out,
 //! the auto-bind on gaining a namespace, and the relink that repairs drift.
 
-use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId};
+use calimero_account::{AccountMemberEndorsement, DeviceId};
 use calimero_context_client::group::BindOutcome;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
@@ -86,9 +86,10 @@ async fn publish_link_and_key(
     ack_router: &AckRouter,
     namespace: &ContextGroupId,
     signer_sk: &PrivateKey,
-    proof: &AccountProof<DeviceCert>,
+    known: &KnownDeviceCert,
     ns_key: &[u8; 32],
 ) -> EyreResult<bool> {
+    let proof = &known.proof;
     let cert = &proof.statement;
     let device = cert.device;
 
@@ -113,6 +114,9 @@ async fn publish_link_and_key(
         chain: proof.chain.clone(),
         cert: *cert,
         endorsement,
+        // The registry's statement, re-presented. A sibling holds no account root
+        // and so could not sign a replacement even if it wanted a wider one.
+        scope: Box::new(known.scope.clone()),
     };
 
     let report =
@@ -207,7 +211,7 @@ async fn ensure_bound(
         ack_router,
         namespace,
         signer_sk,
-        &cert.proof,
+        cert,
         &ns_key,
     )
     .await
@@ -293,7 +297,11 @@ pub async fn bind_device_everywhere(
 /// The rotation is admin-only - peers accept a sidecar only from an admin at the
 /// cut - so elsewhere the write right is gone and the rotation is left owed.
 /// `Ok(true)` means it rode along.
-pub async fn revoke_device_in(
+///
+/// `what` names the withdrawal in the logs: a revocation spends the device id, a
+/// descope only narrows what it reaches, and the two must not read alike.
+#[allow(clippy::too_many_arguments, reason = "orthogonal publish-path args")]
+pub async fn withdraw_device_in(
     store: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
@@ -301,6 +309,7 @@ pub async fn revoke_device_in(
     signer_sk: &PrivateKey,
     device: DeviceId,
     op: GroupOp,
+    what: &'static str,
 ) -> EyreResult<bool> {
     // Both questions are about THIS namespace, so both are answered where the op
     // is going. A failed read costs the rotation, never the withdrawal.
@@ -326,7 +335,8 @@ pub async fn revoke_device_in(
         warn!(
             namespace_id = ?namespace,
             %device,
-            "revoked without a key rotation: this node is not an admin here, so the device \
+            what,
+            "withdrawn without a key rotation: this node is not an admin here, so the device \
              loses the right to write immediately but keeps the key it already holds until \
              an admin rotates"
         );
@@ -334,9 +344,10 @@ pub async fn revoke_device_in(
     info!(
         namespace_id = ?namespace,
         %device,
+        what,
         published = report.is_some(),
         key_rotated = is_admin_here,
-        "device revoked"
+        "device withdrawn"
     );
     Ok(is_admin_here)
 }
@@ -353,6 +364,7 @@ mod tests {
         enrol_member, namespace_publish_fixture, test_group_id, test_store,
     };
     use crate::{AccountBindingRepository, MembershipRepository};
+    use calimero_account::DeviceScope;
 
     const APP_ONE: [u8; 32] = [0x11; 32];
     const APP_TWO: [u8; 32] = [0x22; 32];
@@ -395,23 +407,57 @@ mod tests {
     }
 
     fn known(root_sk: &PrivateKey, seed: u8, applications: Vec<[u8; 32]>) -> KnownDeviceCert {
-        KnownDeviceCert {
-            proof: certify(root_sk, seed, [seed ^ 0xFF; 32]),
-            applications: applications.into_iter().map(app).collect(),
+        let proof = certify(root_sk, seed, [seed ^ 0xFF; 32]);
+        let scope = scope_for(
+            root_sk,
+            &proof,
+            applications.into_iter().map(app).collect(),
+            0,
+        );
+        KnownDeviceCert { proof, scope }
+    }
+
+    /// The root-signed scope a registry row - and every link made under it - carries.
+    fn scope_for(
+        root_sk: &PrivateKey,
+        proof: &AccountProof<DeviceCert>,
+        applications: Vec<calimero_primitives::application::ApplicationId>,
+        scope_epoch: u32,
+    ) -> AccountProof<DeviceScope> {
+        AccountProof {
+            genesis: proof.genesis,
+            chain: vec![],
+            statement: DeviceScope::sign(
+                root_sk,
+                proof.statement.account,
+                proof.statement.device,
+                applications,
+                scope_epoch,
+                0,
+            )
+            .expect("sign the scope"),
         }
     }
 
     /// Put a device in the account namespace's registry, the way the certified
     /// op's apply does, and name that namespace so a bind can find it.
     /// Derived while the store still holds a root, so a later account swap reads it.
-    fn register(store: &Store, proof: &AccountProof<DeviceCert>, applications: &[[u8; 32]]) {
+    fn register(
+        store: &Store,
+        root_sk: &PrivateKey,
+        proof: &AccountProof<DeviceCert>,
+        applications: &[[u8; 32]],
+    ) {
         let namespace = account_namespace_of(store);
         NodeDeviceRepository::new(store)
             .store_account_namespace(&namespace)
             .expect("record the account namespace");
         let applications: Vec<_> = applications.iter().copied().map(app).collect();
+        // The SAME root that signed the certificate: a scope from another root
+        // does not authorise this device, which is what the apply gate checks.
+        let scope = scope_for(root_sk, proof, applications, 0);
         let _recorded = AccountDeviceRegistry::new(store, namespace)
-            .record(proof, &applications, 0)
+            .record(proof, &scope)
             .expect("record the device in the registry");
     }
 
@@ -606,6 +652,7 @@ mod tests {
                 &cert.proof.genesis,
                 &cert.proof.chain,
                 &cert.proof.statement,
+                0,
             )
             .expect("store the binding")
             .expect("the credential is admissible");
@@ -662,22 +709,23 @@ mod tests {
             .account_root()
             .expect("read")
             .expect("present");
+        let own_proof = AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: DeviceCert::sign(
+                root.signing_key(),
+                held.account,
+                held.device(),
+                &PrivateKey::from([0x68; 32]).public_key(),
+                &held.kem_public_key(),
+                0,
+                0,
+            )
+            .expect("sign"),
+        };
         let cert = KnownDeviceCert {
-            proof: AccountProof {
-                genesis: held.genesis,
-                chain: vec![],
-                statement: DeviceCert::sign(
-                    root.signing_key(),
-                    held.account,
-                    held.device(),
-                    &PrivateKey::from([0x68; 32]).public_key(),
-                    &held.kem_public_key(),
-                    0,
-                    0,
-                )
-                .expect("sign"),
-            },
-            applications: Vec::new(),
+            scope: scope_for(root.signing_key(), &own_proof, Vec::new(), 0),
+            proof: own_proof,
         };
 
         assert_eq!(planned(&store, &ns, &cert), BindOutcome::OwnDevice);
@@ -695,8 +743,8 @@ mod tests {
 
         let in_scope = certify(&root, 0x71, [0x71; 32]);
         let out_of_scope = certify(&root, 0x72, [0x72; 32]);
-        register(&store, &in_scope, &[]);
-        register(&store, &out_of_scope, &[APP_TWO]);
+        register(&store, &root, &in_scope, &[]);
+        register(&store, &root, &out_of_scope, &[APP_TWO]);
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
@@ -746,9 +794,10 @@ mod tests {
         // the ordinary "not caught up yet" state rather than a fault.
         let keyless = ContextGroupId::from([0xEE; 32]);
         let root = account_root_of(&sk.public_key());
+        let proof = certify(&root, 0x77, [0x77; 32]);
         let cert = KnownDeviceCert {
-            proof: certify(&root, 0x77, [0x77; 32]),
-            applications: Vec::new(),
+            scope: scope_for(&root, &proof, Vec::new(), 0),
+            proof,
         };
         let _key_id = GroupKeyring::new(&store, repaired)
             .store_key(&[0x42; 32])
@@ -801,8 +850,8 @@ mod tests {
         // cannot be wrapped for it, so nothing about this device is publishable.
         let unaddressable = certify(&root, 0x73, [0u8; 32]);
         let healthy = certify(&root, 0x74, [0x74; 32]);
-        register(&store, &unaddressable, &[]);
-        register(&store, &healthy, &[]);
+        register(&store, &root, &unaddressable, &[]);
+        register(&store, &root, &healthy, &[]);
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
@@ -865,7 +914,7 @@ mod tests {
         let root = account_root_of(&sk.public_key());
 
         let revoked = certify(&root, 0x75, [0x75; 32]);
-        register(&store, &revoked, &[]);
+        register(&store, &root, &revoked, &[]);
         AccountBindingRepository::new(&store)
             .apply_revocation(&ns, revoked.statement.device)
             .expect("tombstone the device");
@@ -897,7 +946,7 @@ mod tests {
         let ns = ContextGroupId::from(ns_id.to_bytes());
         let root = account_root_of(&sk.public_key());
         let cert = certify(&root, 0x76, [0x76; 32]);
-        register(&store, &cert, &[]);
+        register(&store, &root, &cert, &[]);
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
@@ -936,8 +985,8 @@ mod tests {
         let root = account_root_of(&sk.public_key());
         let spent = certify(&root, 0x79, [0x79; 32]);
         let kept = certify(&root, 0x7A, [0x7A; 32]);
-        register(&store, &spent, &[]);
-        register(&store, &kept, &[]);
+        register(&store, &root, &spent, &[]);
+        register(&store, &root, &kept, &[]);
         AccountBindingRepository::new(&store)
             .apply_revocation(&account_namespace_of(&store), spent.statement.device)
             .expect("tombstone the device where the account records it");
@@ -971,7 +1020,7 @@ mod tests {
         let cert = certify(&root, 0x7B, [0x7B; 32]);
         let account_namespace = ContextGroupId::from(ACCOUNT_NS);
         let _recorded = AccountDeviceRegistry::new(&store, account_namespace)
-            .record(&cert, &[], 0)
+            .record(&cert, &scope_for(&root, &cert, Vec::new(), 0))
             .expect("record the device in a registry nothing names yet");
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
@@ -1016,7 +1065,7 @@ mod tests {
         let ns = ContextGroupId::from(ns_id.to_bytes());
         let root = account_root_of(&sk.public_key());
         let sibling = certify(&root, 0x7C, [0x7C; 32]);
-        register(&store, &sibling, &[]);
+        register(&store, &root, &sibling, &[]);
 
         // What pairing leaves behind: a device of somebody else's account, so
         // `holder_root` answers `None` and only the recorded row names the
@@ -1056,7 +1105,7 @@ mod tests {
         let cert = certify(&root, 0x7D, [0x7D; 32]);
         let device = cert.statement.device;
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &cert.genesis, &cert.chain, &cert.statement)
+            .apply_link(&ns, &cert.genesis, &cert.chain, &cert.statement, 0)
             .expect("bind the device the withdrawal names");
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
@@ -1068,14 +1117,15 @@ mod tests {
         };
 
         assert!(
-            revoke_device_in(
+            withdraw_device_in(
                 &store,
                 &node_client,
                 &ack_router,
                 &ns,
                 &admin_sk,
                 device,
-                op.clone()
+                op.clone(),
+                "revoked"
             )
             .await
             .expect("the admin's withdrawal publishes"),
@@ -1089,14 +1139,15 @@ mod tests {
             .expect("a plain member of this namespace");
 
         assert!(
-            !revoke_device_in(
+            !withdraw_device_in(
                 &store,
                 &node_client,
                 &ack_router,
                 &ns,
                 &member_sk,
                 device,
-                op
+                op,
+                "revoked"
             )
             .await
             .expect("the member's withdrawal publishes"),
