@@ -607,10 +607,12 @@ impl<'a> NodeDeviceRepository<'a> {
         })?
         .into();
 
+        let doomed_certificate = calimero_store::key::NodeDeviceCertificate::new();
         let mut tx = Transaction::default();
         tx.put(&root_key, root_bytes);
         if doomed {
             tx.delete(&doomed_key);
+            tx.delete(&doomed_certificate);
         }
         self.store.apply(&tx)?;
         let released = doomed;
@@ -800,6 +802,16 @@ impl<'a> NodeDeviceRepository<'a> {
             .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
     }
 
+    /// The stored certificate, decoded; `None` also when the bytes decode as nothing.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn imported_proof(&self) -> EyreResult<Option<AccountProof<DeviceCert>>> {
+        Ok(self
+            .imported_certificate()?
+            .and_then(|stored| borsh::from_slice(&stored).ok()))
+    }
+
     /// The account namespace recorded here, at creation or at pair-init.
     fn stored_account_namespace(&self) -> EyreResult<Option<ContextGroupId>> {
         Ok(self
@@ -856,12 +868,11 @@ impl<'a> NodeDeviceRepository<'a> {
             return Ok(());
         }
         // Bytes that decode as nothing carry no epoch to lose to, so an operator's
-        // garbage is replaced rather than pinned forever.
-        if self
-            .imported_certificate()?
-            .and_then(|stored| borsh::from_slice::<AccountProof<DeviceCert>>(&stored).ok())
-            .is_none_or(|kept| cert.device_epoch > kept.statement.device_epoch)
-        {
+        // garbage is replaced rather than pinned forever. Epochs are compared only
+        // between certificates of the same device.
+        if self.imported_proof()?.is_none_or(|kept| {
+            kept.statement.device != cert.device || cert.device_epoch > kept.statement.device_epoch
+        }) {
             self.store_imported_certificate(&borsh::to_vec(proof)?)?;
         }
         Ok(())
@@ -972,8 +983,8 @@ impl<'a> NodeDeviceRepository<'a> {
     ///   be linked again — in this account or any other. Keeping it locks the node
     ///   out of the namespace with its own revocation: enrolment keeps minting
     ///   certificates for a spent id and every peer refuses them, with nothing to
-    ///   say why. Nothing else releases the slot, so "re-enrolling mints a fresh
-    ///   one" is only true if this does it. (A node that never received the
+    ///   say why. Folding the withdrawal releases the slot first; this is the
+    ///   fallback for a node that folded one before it did. (A node that never received the
     ///   revocation has no tombstone to read and cannot know; that is inherent to
     ///   causal revocation, not something this can repair.)
     /// - **The device names another account and was never linked.** The row is
@@ -1034,18 +1045,11 @@ impl<'a> NodeDeviceRepository<'a> {
             if serves {
                 return Ok(existing);
             }
-            // The recorded account namespace belongs to the account being left,
-            // so a re-mint under another one takes it with the row. A revoked
-            // device re-minted under the SAME account keeps it: the namespace is
-            // still this node's.
-            if existing.account != account {
-                self.clear_account_namespace()?;
-            }
             // Deleting takes the KEM secret with it, which is only safe because
             // both replacement cases leave nothing addressed to it: a revoked
             // device is rotated away from, and an unlinked one was never a
             // recipient at all.
-            self.delete()?;
+            self.drop_row_leaving(&existing, account)?;
         }
 
         self.mint_device_locked(genesis)
@@ -1201,6 +1205,38 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(self.revoked_in(held.device())?.is_empty().then_some(held))
     }
 
+    /// Release `device` if this node holds it and has a root of its own to speak
+    /// as; a rootless node keeps the row, and the credential path refuses.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn release_revoked_device(&self, device: DeviceId) -> EyreResult<bool> {
+        let _guard = NODE_DEVICE_MINT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let Some(held) = self.get()? else {
+            return Ok(false);
+        };
+        if held.device() != device {
+            return Ok(false);
+        }
+        let Some(root) = self.account_root()? else {
+            return Ok(false);
+        };
+        self.drop_row_leaving(&held, root.account())?;
+        Ok(true)
+    }
+
+    /// Drop the held row, and the account namespace with it when the node moves
+    /// to another account: that namespace belonged to the account being left.
+    fn drop_row_leaving(&self, held: &NodeDevice, next: AccountId) -> EyreResult<()> {
+        if held.account != next {
+            self.clear_account_namespace()?;
+        }
+        self.delete()
+    }
+
     /// Drop this node's device identity so the next pairing mints a fresh one.
     ///
     /// A revoked row is spent everywhere, because one row serves every namespace
@@ -1254,8 +1290,14 @@ impl<'a> NodeDeviceRepository<'a> {
     /// # Errors
     /// Propagates the store write failure.
     pub fn delete(&self) -> EyreResult<()> {
-        let key = NodeDeviceIdentity::new();
-        self.store.handle().delete(&key)?;
+        // The certificate names this device, so it is worthless without the row
+        // and misleading beside the next one.
+        let row = NodeDeviceIdentity::new();
+        let certificate = calimero_store::key::NodeDeviceCertificate::new();
+        let mut tx = Transaction::default();
+        tx.delete(&row);
+        tx.delete(&certificate);
+        self.store.apply(&tx)?;
         Ok(())
     }
 }
@@ -1363,6 +1405,70 @@ mod tests {
             "and the row itself stays, because the KEM secret still opens keys \
              already wrapped for it"
         );
+    }
+
+    /// Folding the withdrawal is what puts a paired node back on its own root:
+    /// the row, the certificate that named it and the namespace it followed for
+    /// the other account all go together.
+    #[test]
+    fn releasing_a_withdrawn_device_leaves_the_node_on_its_own_root() {
+        let (store, _root_sk, held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+        let theirs = ContextGroupId::from([0x4E; 32]);
+        repo.store_account_namespace(&theirs).expect("record");
+
+        assert!(repo
+            .release_revoked_device(held.device())
+            .expect("release the withdrawn device"));
+
+        assert!(repo.get().expect("read").is_none(), "the row is gone");
+        assert!(
+            repo.imported_certificate().expect("read").is_none(),
+            "and so is the certificate that named it"
+        );
+        let own = repo.account_root().expect("read").expect("provisioned");
+        assert_eq!(
+            repo.account_namespace().expect("read"),
+            Some(own.account_namespace()),
+            "the node follows its own account namespace again"
+        );
+        let _adopted = repo
+            .adopt_account(AccountGenesis::new(root(0x53)))
+            .expect("pair elsewhere");
+        assert_eq!(
+            repo.account_namespace().expect("read"),
+            None,
+            "and the namespace the withdrawn account named is not inherited by the next \
+             pairing"
+        );
+    }
+
+    /// A node holding no root has nothing to release into, so the row stays and
+    /// the credential path refuses with it rather than leaving the node mute.
+    #[test]
+    fn a_rootless_node_keeps_the_device_it_cannot_release() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root(0x31)))
+            .expect("adopt");
+
+        assert!(!repo
+            .release_revoked_device(held.device())
+            .expect("nothing to release into"));
+        assert!(repo.get().expect("read").is_some());
+    }
+
+    /// Every node folds the withdrawal, so only the one it names may act on it.
+    #[test]
+    fn a_withdrawal_of_somebody_elses_device_releases_nothing() {
+        let (store, _root_sk, held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert!(!repo
+            .release_revoked_device(DeviceId::mint(held.account, [0x5A; 16]))
+            .expect("read"));
+        assert!(repo.get().expect("read").is_some());
     }
 
     /// A revoked row is spent, so dropping it is what lets the next pairing mint
@@ -3273,6 +3379,39 @@ mod tests {
         repo.remember_own_link(&proof).expect("fold");
 
         assert_eq!(stored_cert(&repo), proof);
+    }
+
+    /// The certificate names the device, so it goes when the device goes: a
+    /// re-mint or a reset must not leave a certificate for a spent id behind for
+    /// the next device to be mistaken for.
+    #[test]
+    fn dropping_the_device_drops_the_certificate_that_named_it() {
+        let (store, _root_sk, _held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+
+        repo.delete().expect("release the slot");
+
+        assert!(repo.imported_certificate().expect("read").is_none());
+    }
+
+    /// Epoch precedence is between certificates of ONE device. A fresh device's
+    /// first link is epoch 0 too, and must not lose to the spent device's epoch 0.
+    #[test]
+    fn a_link_for_a_fresh_device_replaces_the_certificate_of_the_one_it_succeeds() {
+        let (store, root_sk, spent) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+        // The row alone, leaving the certificate where a re-mint used to leave it.
+        store
+            .handle()
+            .delete(&NodeDeviceIdentity::new())
+            .expect("drop the row");
+        let fresh = repo.adopt_account(spent.genesis).expect("re-mint");
+        assert_ne!(fresh.device(), spent.device());
+
+        repo.remember_own_link(&paired_link(&fresh, &root_sk, 0))
+            .expect("fold");
+
+        assert_eq!(stored_cert(&repo).statement.device, fresh.device());
     }
 
     /// A node holding the account root can always self-sign, and an import for its

@@ -191,7 +191,7 @@ async fn perform(
     let signer = local_signer(ctx_client, &context_id).await?;
     let executor_proof =
         calimero_context::join_credential::build(ctx_client.datastore(), &group_id, &signer)
-            .map_err(|err| eyre::eyre!("this node could not present its own credential: {err}"))?;
+            .wrap_err("this node could not present its own credential")?;
 
     let delegation = calimero_account::Delegation {
         warrant: Box::new(warrant),

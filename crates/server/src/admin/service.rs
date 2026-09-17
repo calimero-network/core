@@ -1478,6 +1478,26 @@ mod parse_api_error_tests {
             );
         }
 
+        /// A write from a device that was revoked and has no root to fall back to
+        /// is a client error naming the revocation, never a 500.
+        #[test]
+        fn a_revoked_device_with_no_root_maps_to_403_and_names_the_revocation() {
+            let api = parse_api_error(
+                eyre::Report::from(calimero_governance_store::NodeDeviceError::Revoked {
+                    device: "d".to_owned(),
+                    account: "a".to_owned(),
+                    namespaces: "[ns]".to_owned(),
+                })
+                .wrap_err("failed to mint this node's account credential"),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("revoked from account a"),
+                "{}",
+                api.message
+            );
+        }
+
         /// A relink names a device this node holds no certificate for. `404`,
         /// because the thing being addressed does not exist here - not `403`,
         /// which would say the caller is at the wrong machine.
