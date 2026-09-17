@@ -204,6 +204,17 @@ pub enum ContextError {
     )]
     ScopeReplacementEmpty,
 
+    /// A `409`: scope epochs only ever rise, and this device's has reached the
+    /// last one there is, so no further statement can supersede what it holds.
+    #[error(
+        "device {device} is at the last scope epoch there is, so its scope can no \
+         longer be replaced; revoke it and pair the machine afresh"
+    )]
+    ScopeEpochExhausted {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
     /// A `403`: the named device is the one holding the account root, which signs
     /// every scope statement - including any that would narrow itself.
     #[error(

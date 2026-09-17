@@ -40,9 +40,16 @@ pub fn next_device_scope(
     // No account namespace yet means no statement has ever been recorded, so the
     // first one starts the sequence exactly as an empty registry row would.
     let scope_epoch = match namespace {
-        Some(namespace) => AccountDeviceRegistry::new(store, namespace)
-            .device(device)?
-            .map_or(0, |cert| cert.scope.statement.scope_epoch.saturating_add(1)),
+        Some(namespace) => match AccountDeviceRegistry::new(store, namespace).device(device)? {
+            // Never saturating: a statement minted at the epoch already in force
+            // supersedes nothing, and the caller would be told it had.
+            Some(cert) => cert.scope.statement.scope_epoch.checked_add(1).ok_or(
+                crate::error::ContextError::ScopeEpochExhausted {
+                    device: device.to_string(),
+                },
+            )?,
+            None => 0,
+        },
         None => 0,
     };
 
@@ -102,9 +109,10 @@ pub async fn publish_device_certified(
 
     // The op's own local apply is the only durable write, and an apply that
     // refuses the statement warns rather than failing - so the row is what says it.
-    let epoch = scope.statement.scope_epoch;
+    // The whole statement, not its epoch: two racing replacements mint one epoch,
+    // and the loser reading the number alone would report the winner's row as its own.
     match AccountDeviceRegistry::new(store, namespace).device(device) {
-        Ok(Some(cert)) if cert.scope.statement.scope_epoch == epoch => true,
+        Ok(Some(cert)) if cert.scope.statement == scope.statement => true,
         Ok(_) => {
             warn!(%device, "the account namespace did not take the device's scope");
             false

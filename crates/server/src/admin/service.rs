@@ -775,9 +775,9 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         Refusal::PairingStatementInvalid { .. }
         | Refusal::PairingCodeMismatch { .. }
         | Refusal::ScopeReplacementEmpty => StatusCode::BAD_REQUEST,
-        Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
-            StatusCode::CONFLICT
-        }
+        Refusal::PairingNoNamespaceIdentity { .. }
+        | Refusal::PairingNoScopeKey { .. }
+        | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,
         Refusal::PairingNotTheAccountHolder { .. }
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. } => StatusCode::FORBIDDEN,
@@ -1547,6 +1547,20 @@ mod parse_api_error_tests {
                 "the refusal has to say why there is nothing to do; got: {}",
                 api.message
             );
+        }
+
+        /// A device whose scope epochs are spent. `409`: the request is understood
+        /// and conflicts with a state no retry moves.
+        #[test]
+        fn a_spent_scope_epoch_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::ScopeEpochExhausted {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+            assert!(api.message.contains("last scope epoch"), "{}", api.message);
         }
 
         /// A relink names a device this node holds no certificate for. `404`,

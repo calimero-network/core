@@ -548,6 +548,49 @@ mod tests {
         }
     }
 
+    /// Scope epochs only rise, so a device at the last one has nothing to mint:
+    /// a typed refusal, never a `200` reporting a replacement that never happened.
+    #[actix::test]
+    async fn a_device_at_the_last_scope_epoch_is_refused() {
+        let store = a_holder_of_two_namespaces();
+        let harness = actor::over(store.clone()).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
+        let device = certify_device(&store, 0x36, &[]);
+        let registry = AccountDeviceRegistry::new(&store, account_namespace);
+        let known = registry.device(device).expect("read").expect("row");
+        let root = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("the holder holds a root");
+        assert!(registry
+            .record(
+                &known.proof,
+                &crate::test_support::device_scope(root.signing_key(), &known.proof, &[], u32::MAX),
+            )
+            .expect("put the device at the last epoch"));
+
+        let refused = harness
+            .manager
+            .send(RescopeDeviceRequest {
+                device,
+                scope: ScopeRequest::Only(vec![app(APP_ONE)]),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("there is no epoch left to mint");
+
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::ScopeEpochExhausted { .. })
+            ),
+            "got: {refused}"
+        );
+    }
+
     /// A replacement the registry never took must not answer with the new scope:
     /// the statement is the only durable record of it.
     #[actix::test]
