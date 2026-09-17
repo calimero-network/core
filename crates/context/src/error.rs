@@ -203,4 +203,16 @@ pub enum ContextError {
          application explicitly instead"
     )]
     ScopeReplacementEmpty,
+
+    /// A `403`: the account replaced this device's scope with one that no longer
+    /// reaches the namespace, so it may read on but must not author there.
+    #[error(
+        "this device's account narrowed its application scope out of the namespace \
+         owning group '{group_id}', so it may no longer write there; widen the scope \
+         with `PUT /admin-api/account/devices/{{id}}/scope` from the account holder"
+    )]
+    DeviceOutOfScope {
+        /// Hex rendering of the target group id (for the message only).
+        group_id: String,
+    },
 }

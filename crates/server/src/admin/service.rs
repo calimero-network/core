@@ -861,8 +861,12 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // typed 403 with its (safe, intended) message instead of letting it fall
     // through to the generic 500 below. This is what a caller sees when it
     // lists a group the node hasn't joined / isn't in.
-    if let Some(calimero_context::error::ContextError::NotAGroupMember { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    // `DeviceOutOfScope` rides along: it is the same kind of "no" about this
+    // node's own standing, and a `500` would read as a server fault.
+    if let Some(
+        calimero_context::error::ContextError::NotAGroupMember { .. }
+        | calimero_context::error::ContextError::DeviceOutOfScope { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
@@ -1203,6 +1207,20 @@ mod parse_api_error_tests {
         assert_eq!(api.status_code, StatusCode::FORBIDDEN);
         assert!(
             api.message.contains("not a member"),
+            "expected the typed reason to reach the client, got: {}",
+            api.message
+        );
+    }
+
+    #[test]
+    fn a_narrowed_device_maps_to_403_with_message() {
+        let err = calimero_context::error::ContextError::DeviceOutOfScope {
+            group_id: "test-group".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("narrowed its application scope"),
             "expected the typed reason to reach the client, got: {}",
             api.message
         );
