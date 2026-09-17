@@ -149,26 +149,46 @@ pub enum BlobPresence {
 /// realistic holder fraction of 0.2-0.3, eight probes answer 83-94% of misses,
 /// and a miss only widens the search by one more batch.
 ///
-/// This bounds the *width* of the search. [`MAX_PROBE_BATCHES`] bounds its
-/// *volume*, and [`DISCOVERY_DEADLINE`] bounds its duration — a batch cap alone
-/// is not a bounded search.
+/// This bounds the *width* of the search — how much work is outstanding at
+/// once. [`DISCOVERY_DEADLINE`] bounds its duration and is what normally ends
+/// a sweep; [`MAX_PROBE_CANDIDATES`] is the safety ceiling on its volume.
 const PROBE_BATCH: usize = 8;
 
-/// How many batches a single sweep may probe before giving up on it.
+/// Safety ceiling on how many candidates one sweep may probe.
 ///
-/// So a sweep asks at most `PROBE_BATCH * MAX_PROBE_BATCHES` = 32 peers,
-/// regardless of how large the subscriber set is. Without this, a miss on a
-/// 1024-peer context probes all 1024 — 128 sequential batches, each able to
-/// burn a full probe timeout.
+/// A sweep runs until [`DISCOVERY_DEADLINE`] expires or the candidates are
+/// exhausted. This is not what normally stops it — the deadline is — it is what
+/// keeps outstanding work and message count finite in the pathological case: a
+/// context with thousands of subscribers that all answer instantly would
+/// otherwise turn one local miss into thousands of probes inside the budget.
 ///
-/// **This is a deliberate incompleteness.** A blob held ONLY by a peer outside
-/// the first 32 candidates will not be found, and `get_blob` reports it as
-/// absent. That is the documented escalation trigger for this design: a context
-/// large enough for the holder to hide beyond the prefix needs real provider
-/// state (an anchor, a rendezvous, a sharded index), not a wider linear scan.
-/// The trade is against a search that can otherwise run for tens of minutes
-/// inside an HTTP request.
-const MAX_PROBE_BATCHES: usize = 4;
+/// **This replaced a four-batch cap, which was the binding bound and the wrong
+/// one.** That cap stopped a sweep at 32 peers however fast the batches
+/// answered and however much of the budget was untouched, so a holder sitting
+/// past candidate 32 was never asked and `get_blob` reported the blob absent.
+/// The two bounds were redundant: a probe answers in ~3ms on a healthy network
+/// (measured on a two-node run), so 32 peers cost roughly a hundred
+/// milliseconds of a thirty-second budget — the search gave up with almost all
+/// of its time unspent. In the other direction the deadline alone already
+/// permits ~6 batches at the network layer's 5s probe timeout, more than the
+/// cap allowed anyway.
+///
+/// **The trade this makes, plainly.** A hit costs the same as before: the sweep
+/// short-circuits on the first holder, so the common case is still one batch.
+/// What gets more expensive is a *miss* on a large context — it can now cost up
+/// to `MAX_PROBE_CANDIDATES` probes rather than 32. That is the right way
+/// round. A wrong "nobody has it" is user-visible and unrecoverable: the caller
+/// gets a 404 for a blob that exists on a peer it simply never asked. An
+/// expensive miss is latency, and latency this path already caps — the sweep
+/// stops at [`DISCOVERY_DEADLINE`] no matter how many candidates remain.
+///
+/// **The escalation note survives, restated against this ceiling.** A blob held
+/// ONLY by a peer beyond candidate 256 is still not found, and still reads as
+/// absent. A context that large needs real provider state — an anchor, a
+/// rendezvous, a sharded index — not a linear scan widened again. This constant
+/// is where that need becomes visible, exactly as the 32-peer cap was before
+/// it; the incompleteness has moved, not gone.
+const MAX_PROBE_CANDIDATES: usize = 256;
 
 /// Wall-clock ceiling on the whole discover-and-fetch path, retries included.
 ///
@@ -176,11 +196,16 @@ const MAX_PROBE_BATCHES: usize = 4;
 /// (`crates/server/src/admin/handlers/blob.rs`) and by the lazy-upgrade
 /// bytecode fetch inside `execute`
 /// (`crates/context/src/handlers/execute/mod.rs`), so an unbounded search here
-/// is a request that never answers. 30s is chosen to sit above the worst
-/// legitimate discovery cost — `MAX_PROBE_BATCHES` sequential batches at the
-/// network layer's 5s probe timeout is 20s, plus up to ~3.1s of retry backoff —
-/// while staying inside a request budget; it is the same order as the transfer
-/// layer's 30s `CHUNK_RECEIVE_TIMEOUT`.
+/// is a request that never answers. 30s is chosen to stay inside a request
+/// budget while leaving room for the worst legitimate discovery cost; it is the
+/// same order as the transfer layer's 30s `CHUNK_RECEIVE_TIMEOUT`.
+///
+/// This is the bound that normally ends a sweep. Batches run until it expires
+/// or [`MAX_PROBE_CANDIDATES`] is reached, so how far a sweep gets is decided by
+/// how fast peers answer: at the network layer's 5s probe timeout a fully
+/// stalled search manages ~6 batches, while on a healthy network — ~3ms a probe
+/// — the same budget walks the whole candidate list. Up to ~3.1s of retry
+/// backoff comes out of the same 30s.
 ///
 /// The deadline is enforced at batch and fetch boundaries: it stops new work
 /// from starting, and deliberately does NOT abort a transfer already in flight,
@@ -223,9 +248,10 @@ fn discovery_backoff(attempt: usize) -> core::time::Duration {
 /// search, and no peer after it is ever probed. Within a batch, the
 /// earliest-listed holder wins, which keeps the choice deterministic.
 ///
-/// At most [`MAX_PROBE_BATCHES`] batches are probed, and `deadline` is checked
-/// before each one, so this returns `None` for "not found, not asked, or out of
-/// time" — all three are the same answer to the caller.
+/// `deadline` is checked before each batch and is what normally ends the sweep;
+/// [`MAX_PROBE_CANDIDATES`] caps how far it can get regardless. So this returns
+/// `None` for "not found, not asked, or out of time" — all three are the same
+/// answer to the caller.
 ///
 /// `probe` answers `Some(_)` for a holder and `None` otherwise, and must answer
 /// `None` for a peer it cannot reach — a search with other candidates left
@@ -242,11 +268,11 @@ where
     P: Fn(PeerId) -> F,
     F: core::future::Future<Output = Option<T>>,
 {
-    for (batch_index, batch) in candidates
-        .chunks(PROBE_BATCH)
-        .take(MAX_PROBE_BATCHES)
-        .enumerate()
-    {
+    // Truncate before chunking, not after: the ceiling is a count of
+    // candidates, so it must not depend on where a batch boundary falls.
+    let window = &candidates[..candidates.len().min(MAX_PROBE_CANDIDATES)];
+
+    for (batch_index, batch) in window.chunks(PROBE_BATCH).enumerate() {
         if tokio::time::Instant::now() >= deadline {
             return None;
         }
@@ -470,9 +496,9 @@ impl NodeClient {
             // `subscribed_peers` is the full connected+subscribed set, not the
             // grafted mesh, so probing all of it on every miss is exactly the
             // fan-out this design exists to avoid. Probes therefore go out in
-            // bounded batches, short-circuiting on the first holder, capped at
-            // `MAX_PROBE_BATCHES` batches per sweep and by `DISCOVERY_DEADLINE`
-            // overall, and retried only while the subscriber set is still empty
+            // bounded batches, short-circuiting on the first holder, bounded
+            // by `DISCOVERY_DEADLINE` overall with `MAX_PROBE_CANDIDATES` as a
+            // safety ceiling, and retried only while the set is still empty
             // (a mesh that has not converged yet).
             //
             // Generate authorization for the blob once. The same signed proof
@@ -484,16 +510,19 @@ impl NodeClient {
             let fetched = discover_and_fetch_blob(
                 || async {
                     let candidates = self.context_subscribers(context_id).await;
-                    // Ordering runs BEFORE batching, so on a context with more
-                    // than `PROBE_BATCH * MAX_PROBE_BATCHES` subscribers it
-                    // decides which candidates are probed at all, not just in
-                    // what order: a holder past the cap is never asked. Putting
+                    // Ordering runs BEFORE batching, so on a context whose
+                    // subscriber set outruns the deadline — or exceeds
+                    // `MAX_PROBE_CANDIDATES` — it decides which candidates are
+                    // probed at all, not just in what order. Putting
                     // availability nodes first is therefore what keeps a large
                     // context findable, on top of turning the common case into
-                    // a single round trip.
+                    // a single round trip; peers that recently served this
+                    // node a blob here take the tail's front for the same
+                    // reason, one guess weaker.
                     order_candidates(
                         candidates,
                         &self.member_roles.anchors_for_context(context_id),
+                        &self.recent_providers.for_context(context_id),
                     )
                 },
                 |peer_id| async move {
@@ -584,6 +613,14 @@ impl NodeClient {
                         return None;
                     }
 
+                    // Recorded here and nowhere else: at this point the peer
+                    // served the bytes, they hashed to the id that was asked
+                    // for, and the transfer finished. A probe answering "yes"
+                    // proves none of that, and a peer that lies or drops the
+                    // connection must not earn a place at the front of the next
+                    // sweep for having claimed custody.
+                    self.recent_providers.record(context_id, peer_id);
+
                     // Return the newly stored blob as a stream
                     Some(self.blob_manager.get_blob_stream(*blob_id))
                 },
@@ -592,13 +629,13 @@ impl NodeClient {
 
             let Some(result) = fetched else {
                 // "Not found" here also covers "not asked" and "out of
-                // time": the search is capped at `MAX_PROBE_BATCHES` batches
-                // per sweep and by `DISCOVERY_DEADLINE`, so on a very large
-                // context a holder can sit beyond the probed prefix.
+                // time": the sweep stops at `DISCOVERY_DEADLINE`, and at
+                // `MAX_PROBE_CANDIDATES` at the latest, so on a very large
+                // context a holder can still sit beyond the probed prefix.
                 tracing::info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
-                    max_probed = PROBE_BATCH * MAX_PROBE_BATCHES,
+                    max_probed = MAX_PROBE_CANDIDATES,
                     deadline_secs = DISCOVERY_DEADLINE.as_secs(),
                     "No context peer served this blob"
                 );
@@ -1075,7 +1112,8 @@ impl NodeClient {
     /// store read, no network, `None` if the blob is not here. With one, a
     /// local miss falls through to the same bounded probe sweep `get_blob`
     /// uses — same candidates, same availability-node-first ordering, same
-    /// `PROBE_BATCH`/`MAX_PROBE_BATCHES` caps, same [`DISCOVERY_DEADLINE`] —
+    /// `PROBE_BATCH` width and `MAX_PROBE_CANDIDATES` ceiling, same
+    /// [`DISCOVERY_DEADLINE`] —
     /// but stops at the header the holder sends before its first chunk. **No
     /// bytes are transferred and nothing is cached**, which is what makes this
     /// answerable for a blob far too large to download just to size it.
@@ -1112,6 +1150,7 @@ impl NodeClient {
                 order_candidates(
                     candidates,
                     &self.member_roles.anchors_for_context(context_id),
+                    &self.recent_providers.for_context(context_id),
                 )
             },
             |peer_id| async move {
@@ -1131,7 +1170,7 @@ impl NodeClient {
             tracing::debug!(
                 %blob_id,
                 %context_id,
-                max_probed = PROBE_BATCH * MAX_PROBE_BATCHES,
+                max_probed = MAX_PROBE_CANDIDATES,
                 deadline_secs = DISCOVERY_DEADLINE.as_secs(),
                 "no context peer reported holding this blob"
             );
@@ -1307,11 +1346,11 @@ mod blob_discovery_tests {
 
     use super::{
         discover_and_fetch_blob, discover_blob_presence, fetch_from_first_holder, find_blob_holder,
-        PeerId, DISCOVERY_DEADLINE, MAX_DISCOVERY_ATTEMPTS, MAX_PROBE_BATCHES, PROBE_BATCH,
+        PeerId, DISCOVERY_DEADLINE, MAX_DISCOVERY_ATTEMPTS, MAX_PROBE_CANDIDATES, PROBE_BATCH,
     };
 
-    /// The most peers a single sweep may ask.
-    const PROBE_WINDOW: usize = PROBE_BATCH * MAX_PROBE_BATCHES;
+    /// The most peers a single sweep may ask, deadline permitting.
+    const PROBE_WINDOW: usize = MAX_PROBE_CANDIDATES;
 
     /// A deadline far enough out that a test which is not about the deadline
     /// never trips it. Tests that ARE about it build their own.
@@ -1367,7 +1406,7 @@ mod blob_discovery_tests {
     async fn never_exceeds_the_batch_bound() {
         // Far more candidates than one batch: the width bound is what stops
         // this from becoming a broadcast to every subscriber of the topic.
-        let candidates = peers(PROBE_WINDOW * 3);
+        let candidates = peers(PROBE_WINDOW * 2);
         let recorder = ProbeRecorder::default();
 
         let holder = find_blob_holder(
@@ -1387,9 +1426,10 @@ mod blob_discovery_tests {
 
     #[tokio::test]
     async fn a_sweep_probes_at_most_the_window_however_many_candidates_there_are() {
-        // The volume bound, which the width bound alone does NOT give: a
-        // 1024-peer context must not cost 128 sequential batches.
-        let candidates = peers(PROBE_WINDOW * 32);
+        // The safety ceiling. Probes here answer instantly, so the deadline is
+        // nowhere near spent and cannot be what stops the sweep — only
+        // `MAX_PROBE_CANDIDATES` can, which is exactly the case it exists for.
+        let candidates = peers(PROBE_WINDOW * 2);
         let recorder = ProbeRecorder::default();
 
         let holder = find_blob_holder(
@@ -1408,7 +1448,7 @@ mod blob_discovery_tests {
         // Width x volume x retries is the number that actually matters: before
         // the caps, a miss on a large context probed every candidate on every
         // one of the 6 attempts.
-        let candidates = peers(PROBE_WINDOW * 8);
+        let candidates = peers(PROBE_WINDOW * 2);
         let recorder = ProbeRecorder::default();
 
         let result: Option<&str> = discover_and_fetch_blob(
@@ -1470,8 +1510,10 @@ mod blob_discovery_tests {
         .await;
 
         assert_eq!(result, None);
-        // 11s a batch against a 30s budget: three batches start, the fourth
-        // is refused. The search ends on the deadline, not on the candidates.
+        // 11s a batch against a 30s budget: three batches start, the fourth is
+        // refused. There are `PROBE_WINDOW` candidates and the ceiling is
+        // `PROBE_WINDOW`, so neither the list nor the ceiling can be what ended
+        // this — only the deadline could.
         assert_eq!(recorder.probed().len(), PROBE_BATCH * 3);
         assert!(started.elapsed() <= DISCOVERY_DEADLINE + core::time::Duration::from_secs(11));
     }
@@ -1519,6 +1561,86 @@ mod blob_discovery_tests {
         // Two batches: the miss widened the search exactly once, and the third
         // batch was never touched.
         assert_eq!(recorder.probed(), candidates[..PROBE_BATCH * 2].to_vec());
+    }
+
+    /// The regression this pins: the sweep used to stop at four batches, so a
+    /// holder at candidate 40 was never asked and the blob read as absent —
+    /// with the whole 30s budget still unspent, because these probes answer
+    /// instantly. Now the deadline governs, so the sweep keeps going.
+    #[tokio::test]
+    async fn a_fast_sweep_continues_past_four_batches_to_a_late_holder() {
+        let candidates = peers(PROBE_BATCH * 8);
+        // Beyond `PROBE_BATCH * 4` = 32, the old cap, and in the sixth batch.
+        let holder_index = 41;
+        assert!(holder_index >= PROBE_BATCH * 4, "must be past the old cap");
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| {
+                let answer = peer_id == candidates[holder_index];
+                recorder.probe(peer_id, answer)
+            },
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, Some((holder_index, ())));
+        // Six batches, and not a peer past the holder's own batch: widening is
+        // still short-circuiting, it just is not cut off at four.
+        assert_eq!(recorder.probed(), candidates[..PROBE_BATCH * 6].to_vec());
+    }
+
+    /// The safety ceiling, stated as a count rather than a batch multiple: a
+    /// candidate list larger than `MAX_PROBE_CANDIDATES` probes exactly
+    /// `MAX_PROBE_CANDIDATES` of it, and the sweep answers "not found" rather
+    /// than running on.
+    #[tokio::test]
+    async fn a_candidate_list_past_the_ceiling_probes_at_most_the_ceiling() {
+        let candidates = peers(MAX_PROBE_CANDIDATES + PROBE_BATCH * 3 + 1);
+        let recorder = ProbeRecorder::default();
+
+        let holder = find_blob_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, false),
+            no_deadline(),
+        )
+        .await;
+
+        assert_eq!(holder, None::<(usize, ())>);
+        assert_eq!(recorder.probed().len(), MAX_PROBE_CANDIDATES);
+        assert_eq!(
+            recorder.probed(),
+            candidates[..MAX_PROBE_CANDIDATES].to_vec()
+        );
+    }
+
+    /// A holder sitting exactly on the ceiling boundary is still asked; one
+    /// past it is not. The truncation is by candidate count, so it must not
+    /// move with where a batch boundary happens to fall.
+    #[tokio::test]
+    async fn the_ceiling_is_exclusive_at_exactly_the_last_candidate() {
+        let candidates = peers(MAX_PROBE_CANDIDATES + 1);
+        let recorder = ProbeRecorder::default();
+
+        let last = find_blob_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, peer_id == candidates[MAX_PROBE_CANDIDATES - 1]),
+            no_deadline(),
+        )
+        .await;
+        assert_eq!(last, Some((MAX_PROBE_CANDIDATES - 1, ())));
+
+        let past = find_blob_holder(
+            &candidates,
+            |peer_id| recorder.probe(peer_id, peer_id == candidates[MAX_PROBE_CANDIDATES]),
+            no_deadline(),
+        )
+        .await;
+        assert_eq!(
+            past, None::<(usize, ())>,
+            "the 257th candidate is not asked"
+        );
     }
 
     #[tokio::test]
@@ -1774,12 +1896,12 @@ mod blob_discovery_tests {
         assert_eq!(recorder.probed().len(), candidates.len());
     }
 
-    /// The batch and window bounds are the shared `find_blob_holder` ones, not
-    /// a second copy that could drift: a presence sweep on a huge context asks
-    /// the same 32 peers, a full batch wide and no wider.
+    /// The batch and ceiling bounds are the shared `find_blob_holder` ones, not
+    /// a second copy that could drift: a presence sweep on a huge context stops
+    /// at the same `MAX_PROBE_CANDIDATES`, a full batch wide and no wider.
     #[tokio::test]
     async fn presence_holds_the_batch_and_window_bounds() {
-        let candidates = peers(PROBE_WINDOW * 32);
+        let candidates = peers(PROBE_WINDOW * 2);
         let recorder = ProbeRecorder::default();
 
         let size: Option<Option<u64>> = discover_blob_presence(
