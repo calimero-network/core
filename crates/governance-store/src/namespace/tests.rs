@@ -11045,3 +11045,134 @@ fn redelivering_the_same_key_is_idempotent() {
     let (current_id, current) = ring.load_current_key().unwrap().expect("current");
     assert_eq!((current_id, current), (first, key));
 }
+
+#[test]
+fn key_delivery_retry_folds_per_signer_not_in_causal_order() {
+    // #3974 asked, and left open, whether the KeyDelivery retry pass folds
+    // buffered ops in CAUSAL order. It does not, and this pins down exactly how
+    // far the guarantee goes — the answer decides whether publishing
+    // `DefaultCapabilitiesSet` at namespace creation is sufficient on its own.
+    //
+    // `collect_retry_candidates_for_group` sorts by `(signer_bytes, nonce)`.
+    // Within ONE signer that is publish order, so a namespace whose
+    // `DefaultCapabilitiesSet` and whose `MemberJoinedViaTeeAttestation` are
+    // signed by the same admin folds correctly: the mask is set before any row
+    // snapshots it. Across signers the sort groups by public key
+    // lexicographically, so a causally-LATER op from a signer whose key sorts
+    // lower applies FIRST.
+    //
+    // That is the gap. `add_member_with_keys` snapshots the group's default caps
+    // into a non-admin member's row at admission, so when a second admin admits
+    // the TEE relay, whether that row carries `CAN_AUTHOR_ON_BEHALF` is decided
+    // by how two public keys happen to compare — not by the DAG.
+    //
+    // The existing sort comment justifies per-signer ordering on the grounds
+    // that `last_nonce` is tracked per-(group, signer) and cross-signer causality
+    // was enforced at DAG-receive time. Both are true, and neither covers this:
+    // they are about nonce dedup and about what was ALLOWED to apply, not about a
+    // state dependency BETWEEN two signers' ops. This test exists so that
+    // reasoning is not re-derived from the sort comment a third time.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let namespace_id = [0xC1; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    // Two DISTINCT signers, picked so the causally-later one sorts LOWER. The
+    // search is over freshly generated keys rather than hardcoded bytes because
+    // a `PublicKey` must be a real point — and it terminates on the first draw
+    // roughly half the time.
+    let (creator_sk, admitter_sk) = loop {
+        let a = PrivateKey::random(&mut rng);
+        let b = PrivateKey::random(&mut rng);
+        let a_bytes: [u8; 32] = *a.public_key().as_ref();
+        let b_bytes: [u8; 32] = *b.public_key().as_ref();
+        if b_bytes < a_bytes {
+            break (a, b);
+        }
+    };
+
+    // No namespace identity is stored, so neither op is skipped as "this node's
+    // own" — both are peer ops, which is what a bootstrapping replica sees.
+    let group_key = [0xC2; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let mk = |sk: &PrivateKey, nonce: u64, op: &GroupOp| {
+        SignedNamespaceOp::sign(
+            sk,
+            namespace_id.into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    // Causally FIRST: the creator publishes the namespace default mask (what
+    // #3974 added). Buffered, because a bootstrapping replica has no key yet.
+    gov.store_operation(&mk(
+        &creator_sk,
+        1,
+        &GroupOp::DefaultCapabilitiesSet {
+            capabilities: MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+                | MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        },
+    ))
+    .unwrap();
+
+    // Causally SECOND: a different admin admits the TEE relay, whose row
+    // snapshots the mask above at apply time.
+    gov.store_operation(&mk(
+        &admitter_sk,
+        1,
+        &GroupOp::MemberJoinedViaTeeAttestation {
+            member: AccountId::from(*admitter_sk.public_key()),
+            quote_hash: [0xC3; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    ))
+    .unwrap();
+
+    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
+        .collect_retry_candidates_for_group(namespace_id)
+        .unwrap();
+
+    assert_eq!(
+        candidates.len(),
+        2,
+        "both buffered ops are retry candidates"
+    );
+    assert_eq!(
+        candidates[0].signed_op.signer,
+        admitter_sk.public_key(),
+        "the retry pass folds by signer bytes, so the causally-LATER admission \
+         sorts ahead of the DefaultCapabilitiesSet it depends on — the retry is \
+         not a topological fold, and #3974's publish alone does not make the \
+         replica's snapshot deterministic across signers"
+    );
+    assert_eq!(
+        candidates[1].signed_op.signer,
+        creator_sk.public_key(),
+        "and the mask that should have been folded first applies second"
+    );
+}
