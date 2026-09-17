@@ -54,7 +54,15 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
         return Ok(BindPlan::Skip(BindOutcome::Revoked));
     }
     if bindings.is_device_linked(namespace, device)? {
-        return Ok(BindPlan::Skip(BindOutcome::AlreadyBound));
+        // The row alone is not enough: every join binds at `JOIN_SCOPE_EPOCH`, so
+        // one left at that stamp stays under the live scope epoch, where a
+        // superseded narrowing still outranks it.
+        let stamped = bindings
+            .raw_binding(namespace, device)?
+            .map_or(0, |bound| bound.scope_epoch);
+        if stamped >= cert.scope.statement.scope_epoch {
+            return Ok(BindPlan::Skip(BindOutcome::AlreadyBound));
+        }
     }
 
     let Some((_key_id, ns_key)) = GroupKeyring::new(store, *namespace).load_current_key()? else {
@@ -514,6 +522,49 @@ mod tests {
             },
             BindPlan::Skip(outcome) => outcome,
         }
+    }
+
+    /// Every join binds at [`crate::JOIN_SCOPE_EPOCH`], so a row is not "already
+    /// bound" just by existing: left at that stamp it stays under the live scope
+    /// epoch forever, where a superseded narrowing still outranks it.
+    #[test]
+    fn a_binding_stamped_below_the_live_scope_epoch_is_re_linked() {
+        let store = test_store();
+        let ns = test_group_id();
+        namespace_serving(&store, &ns, APP_ONE);
+        let root = PrivateKey::from([0x61; 32]);
+        let proof = certify(&root, 0x62, [0x62; 32]);
+        let _bound = AccountBindingRepository::new(&store)
+            .apply_link(
+                &ns,
+                &proof.genesis,
+                &proof.chain,
+                &proof.statement,
+                crate::JOIN_SCOPE_EPOCH,
+            )
+            .expect("bind it the way a join does");
+
+        let widened = KnownDeviceCert {
+            proof: proof.clone(),
+            scope: scope_for(&root, &proof, vec![], 2),
+        };
+        assert_eq!(
+            planned(&store, &ns, &widened),
+            BindOutcome::Linked {
+                key_delivered: true
+            },
+            "a binding below the live scope epoch has to be re-linked"
+        );
+
+        let unchanged = KnownDeviceCert {
+            proof: proof.clone(),
+            scope: scope_for(&root, &proof, vec![], crate::JOIN_SCOPE_EPOCH),
+        };
+        assert_eq!(
+            planned(&store, &ns, &unchanged),
+            BindOutcome::AlreadyBound,
+            "and a row already at the live epoch is left alone"
+        );
     }
 
     #[test]
