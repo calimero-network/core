@@ -11,6 +11,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     AccountApplicationApiEntry, AccountApplicationsApiResponse,
 };
+use calimero_store::key::GroupAccountNamespaceTargetValue;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::error;
@@ -41,9 +42,8 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountApplicationApiEntry>>>
         .collect();
 
     let mut by_application: BTreeMap<ApplicationId, AccountApplicationApiEntry> = BTreeMap::new();
-    for (namespace, application, coords) in
-        namespace_targets(store, account_namespace, &participating)?
-    {
+    for target in namespace_targets(store, account_namespace, &participating)? {
+        let application = target.application;
         let entry =
             by_application
                 .entry(application)
@@ -54,17 +54,27 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountApplicationApiEntry>>>
                     version: None,
                     followed: false,
                 });
-        entry.namespaces.push(hex::encode(namespace.to_bytes()));
+        entry
+            .namespaces
+            .push(hex::encode(target.namespace.to_bytes()));
         // Participation outlives a narrowing, so it alone does not say "followed".
-        entry.followed |= participating.contains(&namespace)
-            && calimero_context::account_follow::node_reaches(store, &namespace)?;
-        if let Some((package, version)) = coords {
-            entry.package = Some(package);
-            entry.version = Some(version);
+        entry.followed |= participating.contains(&target.namespace)
+            && calimero_context::account_follow::node_reaches(store, &target.namespace)?;
+        if let Some(named) = target.named {
+            entry.package = Some(named.package);
+            entry.version = Some(named.version);
         }
     }
 
     Ok(Some(by_application.into_values().collect()))
+}
+
+/// One namespace an application is known for, and what the account's own
+/// namespace recorded about where that application is published.
+struct NamespaceTarget {
+    namespace: ContextGroupId,
+    application: ApplicationId,
+    named: Option<GroupAccountNamespaceTargetValue>,
 }
 
 /// Every namespace an application is known for, with the coordinates the account
@@ -79,7 +89,7 @@ fn namespace_targets(
     store: &Store,
     account_namespace: Option<ContextGroupId>,
     participating: &BTreeSet<ContextGroupId>,
-) -> EyreResult<Vec<(ContextGroupId, ApplicationId, Option<(String, String)>)>> {
+) -> EyreResult<Vec<NamespaceTarget>> {
     let mut seen = BTreeSet::new();
     let mut targets = Vec::new();
 
@@ -97,11 +107,11 @@ fn namespace_targets(
                 continue;
             };
             let _ = seen.insert(namespace);
-            targets.push((
+            targets.push(NamespaceTarget {
                 namespace,
                 application,
-                named.map(|target| (target.package, target.version)),
-            ));
+                named,
+            });
         }
     }
 
@@ -111,7 +121,11 @@ fn namespace_targets(
             continue;
         }
         if let Some(value) = meta.load(namespace)? {
-            targets.push((*namespace, value.target.application_id, None));
+            targets.push(NamespaceTarget {
+                namespace: *namespace,
+                application: value.target.application_id,
+                named: None,
+            });
         }
     }
     Ok(targets)

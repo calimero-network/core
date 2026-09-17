@@ -21,6 +21,7 @@ use calimero_governance_store::{
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
+use calimero_store::key::GroupAccountNamespaceTargetValue;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tokio::time::sleep;
@@ -291,9 +292,10 @@ async fn publish(
     }
 
     // After the gain, never before it: the target op is a no-op for a namespace
-    // the set does not name yet.
+    // the set does not name yet. Warned rather than propagated, so a gain that
+    // landed is not reported as one that did not.
     if named {
-        publish_target(
+        if let Err(err) = publish_target(
             store,
             node_client,
             ack_router,
@@ -302,7 +304,14 @@ async fn publish(
             namespace,
             site,
         )
-        .await?;
+        .await
+        {
+            warn!(
+                ?err,
+                ?namespace,
+                "gained a namespace but could not name where its application is published"
+            );
+        }
     }
     Ok(())
 }
@@ -321,7 +330,7 @@ async fn publish_target(
     namespace: ContextGroupId,
     site: &'static str,
 ) -> EyreResult<()> {
-    let Some((application, package, version)) = target_coords(store, namespace)? else {
+    let Some(target) = target_coords(store, namespace)? else {
         debug!(
             ?namespace,
             "no registry coordinates folded here yet; announcing none"
@@ -336,9 +345,9 @@ async fn publish_target(
         signer,
         GroupOp::AccountNamespaceTargetNamed {
             namespace,
-            application,
-            package,
-            version,
+            application: target.application,
+            package: target.package,
+            version: target.version,
         },
     )
     .await?
@@ -414,18 +423,14 @@ fn stale_target(store: &Store, namespace: ContextGroupId) -> EyreResult<Option<C
     if account_namespace == namespace {
         return Ok(None);
     }
-    let Some((application, package, version)) = target_coords(store, namespace)? else {
+    let Some(target) = target_coords(store, namespace)? else {
         return Ok(None);
     };
     let set = AccountNamespaceSet::new(store, account_namespace);
     if set.contains(namespace)?.is_none() {
         return Ok(None);
     }
-    let current = set.target(namespace)?.is_some_and(|recorded| {
-        recorded.application == application
-            && recorded.package == package
-            && recorded.version == version
-    });
+    let current = set.target(namespace)? == Some(target);
     Ok((!current).then_some(account_namespace))
 }
 
@@ -435,7 +440,7 @@ fn stale_target(store: &Store, namespace: ContextGroupId) -> EyreResult<Option<C
 fn target_coords(
     store: &Store,
     namespace: ContextGroupId,
-) -> EyreResult<Option<(ApplicationId, String, String)>> {
+) -> EyreResult<Option<GroupAccountNamespaceTargetValue>> {
     let Some(meta) = MetaRepository::new(store).load(&namespace)? else {
         return Ok(None);
     };
@@ -445,11 +450,11 @@ fn target_coords(
     }
     Ok(
         stored_coords(&meta.target.package, &meta.target.version).map(|coords| {
-            (
+            GroupAccountNamespaceTargetValue {
                 application,
-                coords.package.to_owned(),
-                coords.version.to_owned(),
-            )
+                package: coords.package.to_owned(),
+                version: coords.version.to_owned(),
+            }
         }),
     )
 }
@@ -474,7 +479,7 @@ mod tests {
     use calimero_governance_store::{GroupKeyring, MembershipRepository};
     use calimero_primitives::context::GroupMemberRole;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{GroupMetaValue, GroupTarget};
+    use calimero_store::key::{GroupAccountNamespaceTargetValue, GroupMetaValue, GroupTarget};
 
     use super::{
         announce, refresh_target, stale_target, target_coords, AccountNamespaceChange,
@@ -573,7 +578,11 @@ mod tests {
         a_namespace_published_as(&store, project, Some((app(0x11), "com.acme.app", "1.0.0")));
         assert_eq!(
             target_coords(&store, project).expect("read"),
-            Some((app(0x11), "com.acme.app".to_owned(), "1.0.0".to_owned()))
+            Some(GroupAccountNamespaceTargetValue {
+                application: app(0x11),
+                package: "com.acme.app".to_owned(),
+                version: "1.0.0".to_owned(),
+            })
         );
     }
 
