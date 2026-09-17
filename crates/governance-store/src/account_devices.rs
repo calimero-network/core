@@ -2,6 +2,8 @@
 //! certificate proof and the scope the root signed. Replicated, unlike the
 //! node-local cache, so any device can carry a sibling into a namespace it gains.
 
+use core::cmp::Ordering;
+
 use calimero_account::{AccountProof, DeviceCert, DeviceId, DeviceScope};
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::{
@@ -11,6 +13,17 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use crate::{collect_keys_with_prefix, AccountBindingRepository, KnownDeviceCert};
+
+/// Does `offered` replace `stored`? A higher epoch wins; at an equal one the
+/// lower signature does, so two replicas folding a race in opposite orders keep
+/// the same statement. A re-stated row never supersedes itself.
+fn supersedes(stored: &DeviceScope, offered: &DeviceScope) -> bool {
+    match offered.scope_epoch.cmp(&stored.scope_epoch) {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => offered.signature < stored.signature,
+    }
+}
 
 /// Reads and writes one account namespace's device registry.
 pub struct AccountDeviceRegistry<'a> {
@@ -25,8 +38,8 @@ impl<'a> AccountDeviceRegistry<'a> {
         Self { store, namespace }
     }
 
-    /// Record `proof` under the scope `scope` states. `false` means the row was
-    /// already at that epoch or above, which makes a re-gossiped op a no-op.
+    /// Record `proof` under the scope `scope` states. `false` means the stored
+    /// row already stands, which makes a re-gossiped op a no-op.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
@@ -41,7 +54,7 @@ impl<'a> AccountDeviceRegistry<'a> {
         );
         let mut handle = self.store.handle();
         if let Some(stored) = handle.get::<GroupAccountDevice>(&key)? {
-            if stored.scope.statement.scope_epoch >= scope.statement.scope_epoch {
+            if !supersedes(&stored.scope.statement, &scope.statement) {
                 return Ok(false);
             }
         }
@@ -196,9 +209,9 @@ mod tests {
             .expect("first write"));
         assert!(
             !registry
-                .record(&proof, &scope(&store, 0x61, &[], 0))
+                .record(&proof, &scope(&store, 0x61, &[app(1)], 0))
                 .expect("re-stated"),
-            "the same epoch changes nothing, the way a re-gossiped link does"
+            "re-stating the stored statement changes nothing, as a re-gossiped op does"
         );
         let cert = registry
             .device(device)
@@ -222,6 +235,46 @@ mod tests {
         );
         let cert = registry.device(device).expect("read").expect("row");
         assert_eq!(cert.scope.statement.scope_epoch, 1);
+    }
+
+    /// Two statements the same root signed at one epoch - what two racing scope
+    /// replacements produce. Replicas fold them in either order, so the survivor
+    /// may not depend on which arrived first.
+    #[test]
+    fn two_scopes_at_one_epoch_converge_whichever_order_they_arrive_in() {
+        let store = test_store();
+        let device = DeviceId::from([0x61; 32]);
+        let proof = proof(&store, 0x61);
+        let rivals = [
+            scope(&store, 0x61, &[app(1)], 4),
+            scope(&store, 0x61, &[app(2)], 4),
+        ];
+
+        // One registry per arrival order, so the two folds cannot see each other.
+        let mut survivors = Vec::new();
+        for namespace in [ContextGroupId::from(NS), ContextGroupId::from([0x4E; 32])] {
+            let registry = AccountDeviceRegistry::new(&store, namespace);
+            let mut order = rivals.clone();
+            if namespace != ContextGroupId::from(NS) {
+                order.reverse();
+            }
+            for rival in &order {
+                let _recorded = registry.record(&proof, rival).expect("record");
+            }
+            survivors.push(
+                registry
+                    .device(device)
+                    .expect("read")
+                    .expect("row")
+                    .scope
+                    .statement,
+            );
+        }
+
+        assert_eq!(
+            survivors[0], survivors[1],
+            "the same pair of statements has to leave the same row whichever order it lands in"
+        );
     }
 
     /// A device revoked here is never served, since a binder checks the target
