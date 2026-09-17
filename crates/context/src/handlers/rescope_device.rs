@@ -172,11 +172,15 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                             outcomes.push((*namespace, BindOutcome::Descoped { key_rotated }));
                         }
                         // One namespace failing must not withhold the narrowing
-                        // from the rest; the caller sees which ones landed.
-                        Err(err) => warn!(
-                            ?err, ?namespace, %device,
-                            "rescope: a namespace did not take the narrowing; the rest continue"
-                        ),
+                        // from the rest, and the caller is told which one: nothing
+                        // re-drives it, so a repeat of the same request is the repair.
+                        Err(err) => {
+                            warn!(
+                                ?err, ?namespace, %device,
+                                "rescope: a namespace did not take the narrowing; the rest continue"
+                            );
+                            outcomes.push((*namespace, BindOutcome::Failed));
+                        }
                     }
                 }
 

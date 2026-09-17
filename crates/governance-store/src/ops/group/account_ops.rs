@@ -168,10 +168,10 @@ pub(crate) fn apply_device_linked(
 /// scope statement live, and which no scope names?
 ///
 /// Answered from the registry row the account's own `AccountDeviceCertified`
-/// wrote, which is replicated and causally precedes any link or descope citing
-/// it. The namespace id itself is hashed from the account's secret root, so no
-/// replica can recompute it from the op, and reading the node-local row that
-/// names it would make an apply verdict differ by which node folded it.
+/// wrote, which is replicated and causally precedes every descope citing it. The
+/// namespace id itself is hashed from the account's secret root, so no replica
+/// can recompute it from the op, and reading the node-local row that names it
+/// would let one node delete a binding its peers keep.
 fn is_the_accounts_own_namespace(
     ctx: &GroupApplyCtx<'_>,
     account: AccountId,
@@ -198,7 +198,12 @@ fn scope_reaches_here(
                        %err, what, "the scope did not authorise this device");
         return Ok(false);
     }
-    if is_the_accounts_own_namespace(ctx, cert.account, cert.device)? {
+    // The account namespace targets no application, so every scope but the widest
+    // reads as not covering it - and it is where the statements themselves live.
+    // Node-local here and not on the descope path: pairing publishes a device's
+    // first link into the account namespace BEFORE the certificate that would
+    // name it, so there is no replicated row to recognise it by yet.
+    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? == Some(group_id) {
         return Ok(true);
     }
     let application = crate::MetaRepository::new(ctx.store())

@@ -224,7 +224,23 @@ async fn ensure_bound(
     )
     .await
     {
-        Ok(key_delivered) => BindOutcome::Linked { key_delivered },
+        // The local apply is the only durable write and it warns rather than
+        // failing, so the binding row - not the publish - is what says "linked".
+        Ok(key_delivered) => {
+            match AccountBindingRepository::new(store).is_device_linked(namespace, device) {
+                Ok(true) => BindOutcome::Linked { key_delivered },
+                Ok(false) => {
+                    warn!(namespace_id = ?namespace, %device,
+                      "the link was published but this namespace did not record the binding");
+                    BindOutcome::Failed
+                }
+                Err(err) => {
+                    warn!(namespace_id = ?namespace, %device, %err,
+                      "could not confirm the binding this link was meant to write");
+                    BindOutcome::Failed
+                }
+            }
+        }
         Err(err) => {
             warn!(namespace_id = ?namespace, %device, %err,
                   "could not extend a known device into this namespace");
@@ -1144,6 +1160,41 @@ mod tests {
                 key_delivered: true
             }),
         );
+    }
+
+    /// A link whose apply refused it is not a link. The local apply is the
+    /// durable write, so reporting "linked" off the publish alone tells a caller
+    /// a namespace is reachable when the binding is not there.
+    #[actix::test]
+    async fn a_link_the_apply_refused_is_not_reported_as_linked() {
+        let (store, node_client, ack_router, ns_id, _admin_sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        namespace_serving(&store, &ns, APP_ONE);
+
+        // A signer this namespace holds no membership for, so the endorsement its
+        // link carries is refused at the cut and no binding is written.
+        let stranger_sk = PrivateKey::from([0x6A; 32]);
+        let cert = known(&account_root_of(&stranger_sk.public_key()), 0x6B, vec![]);
+
+        let outcomes = bind_device_everywhere(
+            &store,
+            &node_client,
+            &ack_router,
+            &[ns],
+            &stranger_sk,
+            &cert,
+        )
+        .await;
+
+        assert_eq!(
+            outcomes,
+            vec![(ns, BindOutcome::Failed)],
+            "a namespace that did not record the binding must not be reported as linked"
+        );
+        assert!(!AccountBindingRepository::new(&store)
+            .is_device_linked(&ns, cert.device())
+            .expect("read the bindings"));
     }
 
     /// The one thing the extraction changed: what the operator is told about the
