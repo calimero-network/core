@@ -435,6 +435,72 @@ mkversions() {
 EOF
 }
 
+# The full shape mero-tee actually has: the image version is ONE version in
+# THREE files, and the docs state both pins. A surface that moved only the JSON
+# produced a pull request that failed the consumer's own guards — which is what
+# the first generated one would have done.
+mkkms() {
+  mkdir -p "$1/mero-kms"
+  cat > "$1/mero-kms/Cargo.toml" <<EOF
+[package]
+name = "mero-kms-phala"
+version = "$2"
+
+[dependencies]
+serde = { version = "1.0.200" }
+EOF
+  cat > "$1/Cargo.lock" <<EOF
+[[package]]
+name = "serde"
+version = "1.0.200"
+
+[[package]]
+name = "mero-kms-phala"
+version = "$2"
+EOF
+}
+mkteedocs() {
+  mkdir -p "$1/docs/src/content/docs/operate" "$1/docs/dist"
+  cat > "$1/docs/src/content/docs/operate/config-reference.mdx" <<EOF
+| \`imageVersion\` | the image, currently \`$2\` |
+| \`merodVersion\` | the core tag, currently \`$3\` |
+
+The interim 25.10 release reached EOL and was dropped.
+EOF
+  echo "imageVersion 9.9.9" > "$1/docs/dist/index.html"
+}
+
+D=$(mkfixture tee-companions); mkversions "$D" 2.3.56 0.11.0-rc.35
+mkkms "$D" 2.3.56; mkteedocs "$D" 2.3.56 0.11.0-rc.35; commit "$D"
+expect_exit 0 "the companion files move with the image version" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-kms/Cargo.toml" 'version = "2.3.57"' "  the KMS package version tracks imageVersion"
+expect_file "$D/mero-kms/Cargo.toml" 'serde = { version = "1.0.200" }' "  a dependency version is NOT rewritten"
+expect_file "$D/Cargo.lock" 'name = "mero-kms-phala"' "  the lock still names the package"
+expect_absent "$D/Cargo.lock" 'version = "2.3.56"' "  the lock entry moved"
+expect_file "$D/Cargo.lock" 'version = "1.0.200"' "  an unrelated lock entry did not"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`2.3.57`' "  the docs state the new image"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`0.11.0-rc.39`' "  ...and the new core tag"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" 'interim 25.10 release' "  prose about another version is untouched"
+expect_file "$D/docs/dist/index.html" 'imageVersion 9.9.9' "  built output under dist/ is left alone"
+
+# Docs drift on their own, and a sweep that matched the OLD value would do
+# nothing in exactly that case — which is the state mero-tee was really in, two
+# releases apart. Anchoring on the key makes it self-healing.
+D=$(mkfixture tee-docs-drifted); mkversions "$D" 2.3.56 0.11.0-rc.35
+mkkms "$D" 2.3.56; mkteedocs "$D" 2.3.52 0.11.0-rc.33; commit "$D"
+expect_exit 0 "already-drifted docs still get corrected" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`0.11.0-rc.39`' "  a doc two releases behind is repaired"
+expect_absent "$D/docs/src/content/docs/operate/config-reference.mdx" '2.3.52' "  ...and its stale image version is gone"
+
+# A repository with no KMS crate and no docs is not an error: the surface is
+# shaped for mero-tee but must not hard-fail on a consumer without those.
+D=$(mkfixture tee-json-only); mkversions "$D" 2.3.56 0.11.0-rc.35; commit "$D"
+expect_exit 0 "versions.json alone still bumps" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"merodVersion": "0.11.0-rc.39"' "  the pin moved anyway"
+
 D=$(mkfixture tee-image); mkversions "$D" 2.3.56 0.11.0-rc.35; commit "$D"
 expect_exit 0 "the bundled merod moves" \
   bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"

@@ -931,6 +931,102 @@ bump_tee() {
   fi
 
   record_change "mero-tee/versions.json"
+
+  # `imageVersion` is ONE version wearing three hats, and the consumer enforces
+  # it: scripts/policy/check_release_version_sync.sh refuses a versions.json
+  # whose imageVersion disagrees with mero-kms/Cargo.toml's package.version or
+  # with the mero-kms-phala entry in Cargo.lock. Moving only the JSON produces a
+  # pull request that cannot merge — which is what the first generated one would
+  # have done. The repository's own config-reference documents the rule; this
+  # honours it rather than rediscovering it in CI.
+  [ -n "${next:-}" ] && bump_tee_companions "$next"
+
+  # Anything under `mero-tee/` also trips that repository's docs guard, which
+  # demands a docs/** or README.md change alongside. That is not a formality
+  # here: the pinned versions are written out in the docs, and they had already
+  # drifted two releases behind the file they describe. Rewriting them keeps the
+  # documented values true AND satisfies the guard — one action, both reasons.
+  bump_tee_docs "$VERSION" "${next:-}"
+}
+
+# The two files that carry `imageVersion` under different names. Both optional:
+# a consumer shaped differently is not an error, it simply has nothing here.
+bump_tee_companions() {
+  local image_version="$1"
+
+  local cargo="$DIR/mero-kms/Cargo.toml"
+  if [ -f "$cargo" ]; then
+    # Only `version` inside `[package]`. A workspace or dependency table further
+    # down carries versions too, and a first-match rewrite would take whichever
+    # came first in the file rather than the package's own.
+    NEW="$image_version" perl -i -pe '
+      if (/^\s*\[/) { $in = /^\s*\[package\]/ ? 1 : 0 }
+      if ($in && !$done && s{^(version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2}) { $done = 1 }
+    ' "$cargo"
+    record_change "mero-kms/Cargo.toml"
+    note "mero-kms/Cargo.toml now $image_version"
+  else
+    note "no mero-kms/Cargo.toml — nothing to keep in sync with imageVersion"
+  fi
+
+  local lock="$DIR/Cargo.lock"
+  if [ -f "$lock" ]; then
+    # Only the version line of the `mero-kms-phala` package block. Matching on
+    # the name alone would rewrite the first version in the file; matching the
+    # pair keeps it to the one entry the guard reads.
+    NEW="$image_version" perl -0777 -i -pe '
+      s{(name = "mero-kms-phala"\nversion = ")[^"]*(")}{$1$ENV{NEW}$2}
+    ' "$lock"
+    record_change "Cargo.lock"
+    note "Cargo.lock mero-kms-phala now $image_version"
+  fi
+}
+
+# Rewrite the versions the docs state, so they stay true and the docs guard is
+# satisfied by the same edit.
+#
+# Scoped to lines that NAME the key. The docs also discuss versions in prose —
+# an EOL'd OS release, for one — and a blind search-and-replace of a version
+# string would rewrite history rather than the pin. A key and its value share a
+# line in both the JSON sample and the reference table, so requiring the key on
+# the line is both precise and enough.
+bump_tee_docs() {
+  local new_merod="$1" new_image="$2"
+  local found=0 f
+
+  # `docs/dist` is built output and `node_modules` is not ours; rewriting either
+  # would be noise in the diff and neither is what anybody reads.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # Rewrite whatever version the line currently states, rather than matching
+    # the one being replaced. The docs drift on their own — mero-tee's said
+    # 0.11.0-rc.33 while the file said rc.35, two releases apart — and a
+    # replace-the-old-value sweep silently does nothing precisely when the docs
+    # are most wrong. Anchoring on the KEY instead makes this self-healing.
+    NEW="$new_merod" perl -i -pe '
+      s{\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?}{$ENV{NEW}}g if /merodVersion/
+    ' "$f"
+    if [ -n "$new_image" ]; then
+      NEW="$new_image" perl -i -pe '
+        s{\d+\.\d+\.\d+}{$ENV{NEW}}g if /imageVersion/
+      ' "$f"
+    fi
+    if ! ( cd "$DIR" && git diff --quiet -- "${f#$DIR/}" ); then
+      record_change "${f#$DIR/}"
+      found=$((found + 1))
+    fi
+  done <<EOF
+$(find "$DIR/docs" -type f \( -name '*.mdx' -o -name '*.md' \) \
+    -not -path '*/dist/*' -not -path '*/node_modules/*' 2>/dev/null)
+EOF
+
+  if [ "$found" -eq 0 ]; then
+    note "WARNING: no documented version was updated — this repository's docs"
+    note "         guard requires a docs change alongside mero-tee/*, so the"
+    note "         generated pull request will fail it"
+  else
+    note "updated $found documentation file(s) that state the pinned versions"
+  fi
 }
 
 # ---------------------------------------------------------------------------
