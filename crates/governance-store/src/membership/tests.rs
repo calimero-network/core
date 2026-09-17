@@ -684,6 +684,79 @@ fn check_membership_path_inherited_when_member_added_after_default_caps() {
 }
 
 #[test]
+fn an_inherited_member_does_not_pick_up_the_subgroups_default() {
+    // The default is what a group grants the members it ADMITTED. An inherited
+    // member was admitted to an ancestor, so resolving the subgroup's default
+    // for them would hand every namespace member whatever an Open subgroup
+    // happens to default to — a widening nobody granted, and one that would
+    // arrive silently the moment an admin set a default on a subgroup.
+    //
+    // `group-join-via-inheritance` states the rule for the API: an inherited
+    // joiner holds no explicit bitmask in the subgroup, and `0` means "member,
+    // no extra delegated bits". `authorship_grant_source` already reads the
+    // ANCHOR's row for the same reason.
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xC8; 32]);
+    let child = ContextGroupId::from([0xC9; 32]);
+    let bob = AccountId::from([0x02; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    let capabilities = CapabilitiesRepository::new(&store);
+    capabilities
+        .set_subgroup_visibility(&child, VisibilityMode::Open)
+        .unwrap();
+
+    // Bob is a member of the ROOT, and reaches the Open child by inheritance.
+    capabilities
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &bob, GroupMemberRole::Member)
+        .unwrap();
+
+    // The child carries a default of its own — the case that makes this bite.
+    capabilities
+        .set_default_capabilities(
+            &child,
+            (MemberCapabilities::CAN_AUTHOR_ON_BEHALF | MemberCapabilities::CAN_INVITE_MEMBERS)
+                .bits(),
+        )
+        .unwrap();
+
+    let membership = MembershipRepository::new(&store);
+    assert!(
+        matches!(
+            membership.check_path(&child, &bob).unwrap(),
+            MembershipPath::Inherited { .. }
+        ),
+        "bob reaches the child by inheritance, which is the precondition here"
+    );
+    assert_eq!(
+        membership.effective_capabilities(&child, &bob).unwrap(),
+        Some(0),
+        "an inherited member holds no bits in the subgroup — the child's default \
+         belongs to members the child admitted, not to everyone who can reach it"
+    );
+
+    // And a DIRECT member of the same child does resolve it, so this is a
+    // distinction between paths rather than the default being inert.
+    let carol = AccountId::from([0x03; 32]);
+    membership
+        .add_member(&child, &carol, GroupMemberRole::Member)
+        .unwrap();
+    assert_eq!(
+        membership.effective_capabilities(&child, &carol).unwrap(),
+        Some(
+            (MemberCapabilities::CAN_AUTHOR_ON_BEHALF | MemberCapabilities::CAN_INVITE_MEMBERS)
+                .bits()
+        ),
+        "a member the child admitted gets the child's default"
+    );
+}
+
+#[test]
 fn check_membership_path_inherited_when_member_added_before_default_caps() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 

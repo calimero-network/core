@@ -362,9 +362,25 @@ impl<'a> MembershipRepository<'a> {
             {
                 Ok(None)
             }
-            MembershipPath::Direct | MembershipPath::Inherited { .. } => {
+            // A DIRECT member resolves the group's default, because that is what
+            // the default is for: what this group grants the members it admitted.
+            MembershipPath::Direct => {
                 Ok(Some(self.effective_member_capability(group_id, identity)?))
             }
+            // An INHERITED member does not. Their membership comes from an
+            // ancestor, and so do their capabilities — `authorship_grant_source`
+            // already reads the ANCHOR's row for exactly this reason. Resolving
+            // the subgroup's default here would hand every namespace member
+            // whatever an Open subgroup happens to default to, which is a
+            // widening nobody granted: `group-join-via-inheritance` pins the
+            // rule, and its comment states it outright — an inherited member
+            // holds no explicit bitmask in the subgroup, and `0` means "member,
+            // no extra delegated bits".
+            MembershipPath::Inherited { .. } => Ok(Some(
+                CapabilitiesRepository::new(self.store)
+                    .member_capability(group_id, identity)?
+                    .unwrap_or(0),
+            )),
         }
     }
 
