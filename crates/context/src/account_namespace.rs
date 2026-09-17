@@ -10,8 +10,8 @@ use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountNamespaceSet, AccountRoot, MembershipRepository, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    AccountDeviceRegistry, AccountNamespaceSet, AccountRoot, KnownDeviceCert, MembershipRepository,
+    MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -27,58 +27,59 @@ const TARGET_WAIT_INTERVAL: Duration = Duration::from_secs(1); // how often a ta
 const TARGET_WAIT_INTERVAL: Duration = Duration::from_millis(20); // the same wait, shortened so tests do not sit out the real one
 const TARGET_WAIT_ATTEMPTS: u32 = 30; // how many of those before the gain is announced with no target
 
-/// Record `certificate` and `applications` in `namespace`'s registry, at the
-/// next scope epoch for that device.
-///
-/// `true` only when the registry took the statement. Never fails the caller:
-/// every step runs after the work the request was made for, so a failure warns
-/// and the next pairing or relink republishes it.
-#[allow(clippy::too_many_arguments, reason = "orthogonal publish-path args")]
-pub async fn publish_device_certified(
+/// Sign `applications` for `certificate`'s device at the next scope epoch. Minted
+/// before publishing because every link made under it has to carry this statement.
+pub fn next_device_scope(
     store: &Store,
-    node_client: &NodeClient,
-    ack_router: &AckRouter,
-    namespace: ContextGroupId,
-    signer_sk: &PrivateKey,
+    namespace: Option<ContextGroupId>,
     root: &AccountRoot,
     certificate: &AccountProof<DeviceCert>,
     applications: &[ApplicationId],
-    site: &'static str,
-) -> bool {
+) -> EyreResult<AccountProof<DeviceScope>> {
     let device = certificate.statement.device;
-    let registry = AccountDeviceRegistry::new(store, namespace);
-    let scope_epoch = match registry.device(device) {
-        Ok(stored) => stored.map_or(0, |(_cert, epoch)| epoch.saturating_add(1)),
-        Err(err) => {
-            warn!(%device, %err, "could not read the device's registry row, so it was not recorded");
-            return false;
-        }
+    // No account namespace yet means no statement has ever been recorded, so the
+    // first one starts the sequence exactly as an empty registry row would.
+    let scope_epoch = match namespace {
+        Some(namespace) => AccountDeviceRegistry::new(store, namespace)
+            .device(device)?
+            .map_or(0, |cert| cert.scope.statement.scope_epoch.saturating_add(1)),
+        None => 0,
     };
 
     // Key epoch 0: the account root has not rotated (rotation is not implemented
     // yet), so the certifying key is the genesis key and there are no handoffs.
-    let statement = match DeviceScope::sign(
+    let statement = DeviceScope::sign(
         root.signing_key(),
         certificate.statement.account,
         device,
         applications.to_vec(),
         scope_epoch,
         0,
-    ) {
-        Ok(statement) => statement,
-        Err(err) => {
-            warn!(%device, %err, "could not sign the device's scope, so it was not recorded");
-            return false;
-        }
-    };
+    )
+    .map_err(|err| eyre::eyre!("failed to sign the scope for {device}: {err}"))?;
 
     // Both anchors taken from the certificate, so the two proofs in one op can
     // never resolve the root key at different epochs.
-    let scope = AccountProof {
+    Ok(AccountProof {
         genesis: certificate.genesis,
         chain: certificate.chain.clone(),
         statement,
-    };
+    })
+}
+
+/// Record `certificate` and `scope` in `namespace`'s registry. Never fails the
+/// caller: it runs after the request's own work, so the next publish repairs it.
+pub async fn publish_device_certified(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: ContextGroupId,
+    signer_sk: &PrivateKey,
+    known: &KnownDeviceCert,
+    site: &'static str,
+) -> bool {
+    let (certificate, scope) = (&known.proof, &known.scope);
+    let device = certificate.statement.device;
     match calimero_governance_store::sign_apply_and_publish(
         store,
         node_client,
@@ -87,7 +88,7 @@ pub async fn publish_device_certified(
         signer_sk,
         GroupOp::AccountDeviceCertified {
             certificate: Box::new(certificate.clone()),
-            scope: Box::new(scope),
+            scope: Box::new(scope.clone()),
         },
     )
     .await
@@ -101,8 +102,9 @@ pub async fn publish_device_certified(
 
     // The op's own local apply is the only durable write, and an apply that
     // refuses the statement warns rather than failing - so the row is what says it.
-    match registry.device(device) {
-        Ok(Some((_cert, epoch))) if epoch == scope_epoch => true,
+    let epoch = scope.statement.scope_epoch;
+    match AccountDeviceRegistry::new(store, namespace).device(device) {
+        Ok(Some(cert)) if cert.scope.statement.scope_epoch == epoch => true,
         Ok(_) => {
             warn!(%device, "the account namespace did not take the device's scope");
             false

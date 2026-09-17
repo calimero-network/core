@@ -88,7 +88,7 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
         .record_endorser(namespace, account, &account)
         .expect("record the endorser");
     let _ = bindings
-        .apply_link(namespace, &genesis, &[], &cert)
+        .apply_link(namespace, &genesis, &[], &cert, 0)
         .expect("record the binding");
     account
 }
@@ -134,8 +134,16 @@ pub fn certify_device(
         .account_namespace()
         .expect("read the account namespace")
         .expect("a store with an account root names one");
+    let scope = crate::account_namespace::next_device_scope(
+        store,
+        Some(namespace),
+        &root,
+        &proof,
+        applications,
+    )
+    .expect("the account root signs its own device scope");
     let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
-        .record(&proof, applications, 0)
+        .record(&proof, &scope)
         .expect("record the device in the account namespace");
     device
 }

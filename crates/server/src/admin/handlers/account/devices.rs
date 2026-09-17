@@ -57,7 +57,7 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
                 cert.device(),
                 Draft {
                     signing_key: cert.proof.statement.sign_pk,
-                    applications: cert.applications,
+                    applications: cert.applications().to_vec(),
                     namespaces: Vec::new(),
                 },
             );
@@ -175,16 +175,26 @@ mod tests {
             .account_namespace()
             .expect("read the account namespace")
             .expect("a store with an account root names one");
-        let _recorded = AccountDeviceRegistry::new(store, namespace)
-            .record(
-                &AccountProof {
-                    genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                applications,
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                root.signing_key(),
+                genesis.account_id(),
+                device_id,
+                applications.to_vec(),
+                0,
                 0,
             )
+            .expect("the account root signs its own device scope"),
+        };
+        let _recorded = AccountDeviceRegistry::new(store, namespace)
+            .record(&proof, &scope)
             .expect("record the device in the account namespace");
         device_id
     }
@@ -209,7 +219,7 @@ mod tests {
         )
         .expect("the account root signs its own device cert");
         AccountBindingRepository::new(store)
-            .apply_link(namespace, &genesis, &[], &cert)
+            .apply_link(namespace, &genesis, &[], &cert, 0)
             .expect("the store write succeeds")
             .expect("the credential binds");
     }
@@ -429,16 +439,26 @@ mod tests {
             0,
         )
         .expect("sign");
-        assert!(AccountDeviceRegistry::new(&store, namespace)
-            .record(
-                &AccountProof {
-                    genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                &[narrow, wide],
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                root.signing_key(),
+                genesis.account_id(),
+                device,
+                vec![narrow, wide],
                 1,
+                0,
             )
+            .expect("sign the scope"),
+        };
+        assert!(AccountDeviceRegistry::new(&store, namespace)
+            .record(&proof, &scope)
             .expect("record"));
 
         let entries = collect(&store).expect("collect").expect("has account");
@@ -473,16 +493,26 @@ mod tests {
             0,
         )
         .expect("sign");
-        assert!(AccountDeviceRegistry::new(&store, namespace)
-            .record(
-                &AccountProof {
-                    genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                &[app],
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                root.signing_key(),
+                genesis.account_id(),
+                device,
+                vec![app],
+                0,
                 0,
             )
+            .expect("sign the scope"),
+        };
+        assert!(AccountDeviceRegistry::new(&store, namespace)
+            .record(&proof, &scope)
             .expect("record"));
 
         let entries = collect(&store).expect("collect").expect("has account");

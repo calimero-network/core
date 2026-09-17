@@ -40,7 +40,7 @@ use crate::group::{
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
     PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
-    RemoveGroupMembersRequest, ResyncContextRequest, ResyncContextResponse,
+    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest, ResyncContextResponse,
     RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
@@ -2313,6 +2313,12 @@ impl ContextClient {
         RelinkDevice,
         RelinkDeviceRequest,
         eyre::Result<crate::group::RelinkDeviceResponse>
+    );
+    forward_to_actor!(
+        rescope_device,
+        RescopeDevice,
+        RescopeDeviceRequest,
+        eyre::Result<crate::group::RescopeDeviceResponse>
     );
     forward_to_actor!(
         rotate_group_key,

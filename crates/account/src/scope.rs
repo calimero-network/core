@@ -78,6 +78,13 @@ impl DeviceScope {
     }
 }
 
+/// Does a scope's `applications` reach a namespace serving `application`?
+/// **Empty means all of them**; a namespace naming none is reachable only by it.
+#[must_use]
+pub fn scope_covers(applications: &[ApplicationId], application: Option<ApplicationId>) -> bool {
+    applications.is_empty() || application.is_some_and(|app| applications.contains(&app))
+}
+
 impl RootSigned for DeviceScope {
     const ACCOUNT_MISMATCH: AccountError = AccountError::ScopeAccountMismatch;
     const SIGNATURE_INVALID: AccountError = AccountError::ScopeSignatureInvalid;

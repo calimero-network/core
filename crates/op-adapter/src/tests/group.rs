@@ -48,6 +48,19 @@ fn a_governance_device_link_reaches_the_projection() {
             chain: vec![],
             cert,
             endorsement: AccountMemberEndorsement::sign(&root, account).expect("sign endorsement"),
+            scope: Box::new(calimero_account::AccountProof {
+                genesis,
+                chain: vec![],
+                statement: calimero_account::DeviceScope::sign(
+                    &root,
+                    account,
+                    device,
+                    vec![],
+                    0,
+                    0,
+                )
+                .expect("sign scope"),
+            }),
         },
     )
     .expect("the account ops must map to a unified payload, not fold to Noop");

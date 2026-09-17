@@ -84,6 +84,7 @@ pub use self::authorizer::{
 };
 pub use self::capabilities::CapabilitiesRepository;
 
+pub use self::account_bindings::JOIN_SCOPE_EPOCH;
 pub use self::account_bindings::{
     member_account_for_device_key, member_account_in_namespace, AccountBindingRepository,
     BindingRejected, DeviceBinding,
@@ -99,7 +100,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, revoke_device_in};
+pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 

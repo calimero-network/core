@@ -310,6 +310,7 @@ pub fn enrol_member(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicK
             &credential.genesis,
             &credential.chain,
             &credential.statement,
+            0,
         )
         .expect("store the binding");
     bindings
@@ -562,6 +563,7 @@ pub fn record_credential(
             &credential.genesis,
             &credential.chain,
             &credential.statement,
+            0,
         )
         .expect("record the binding");
 }

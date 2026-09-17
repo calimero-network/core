@@ -120,6 +120,20 @@ pub enum OpEvent {
         device: DeviceId,
         proof: Option<Box<SignedDeviceRevocation>>,
     },
+    /// `GroupOp::AccountDeviceLinked` - a device of `account` gained a binding
+    /// here. Only the holder's re-drive reacts, to narrow a superseded link.
+    DeviceLinked {
+        group_id: [u8; 32],
+        account: AccountId,
+        device: DeviceId,
+    },
+    /// `GroupOp::AccountDeviceDescoped` - a device lost its binding here to a
+    /// narrower scope. Not [`OpEvent::DeviceRevoked`]: nothing here is terminal.
+    DeviceDescoped {
+        group_id: [u8; 32],
+        account: AccountId,
+        device: DeviceId,
+    },
     /// `GroupOp::AccountDeviceCertified` - a device was recorded in this
     /// namespace's registry. Fires only when the row changed, so a re-gossiped
     /// op wakes nobody; `group_id` is the namespace, which owns the registry.

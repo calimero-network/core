@@ -88,6 +88,7 @@
   "POST /admin-api/namespaces/{namespace_id}/invite",
   "POST /admin-api/namespaces/{namespace_id}/join",
   "POST /admin-api/namespaces/{namespace_id}/leave",
+  "PUT /admin-api/account/devices/{device_id}/scope",
   "PUT /admin-api/blobs",
   "PUT /admin-api/groups/{group_id}/contexts/{context_id}/metadata",
   "PUT /admin-api/groups/{group_id}/members/{account}/auto-follow",

@@ -1,0 +1,103 @@
+use std::sync::Arc;
+
+use axum::extract::Path;
+use axum::response::IntoResponse;
+use axum::Extension;
+use calimero_account::DeviceId;
+use calimero_context_client::group::{RescopeChange, RescopeDeviceRequest, ScopeRequest};
+use calimero_primitives::application::ApplicationId;
+use calimero_server_primitives::admin::{
+    DeviceScopeApiRequest, RescopeDeviceApiRequest, RescopeDeviceApiResponse,
+    RescopeDeviceApiResponseData, RescopeOutcomeApiEntry,
+};
+use reqwest::StatusCode;
+use tracing::info;
+
+use crate::admin::handlers::account::decode32;
+use crate::admin::handlers::validation::ValidatedJson;
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::AdminState;
+
+/// Replace the scope of a device this account already certified.
+///
+/// Run on the node that holds the account root - it is the only one whose key can
+/// sign the replacement. The device is not consulted and need not be online.
+pub async fn handler(
+    Path(device_id_str): Path<String>,
+    Extension(state): Extension<Arc<AdminState>>,
+    ValidatedJson(req): ValidatedJson<RescopeDeviceApiRequest>,
+) -> impl IntoResponse {
+    let device = match decode32(&device_id_str, "deviceId") {
+        Ok(bytes) => DeviceId::from(bytes),
+        Err(err) => return err.into_response(),
+    };
+
+    let scope = match req.scope {
+        DeviceScopeApiRequest::All => ScopeRequest::All,
+        DeviceScopeApiRequest::Only(named) => {
+            let mut applications = Vec::with_capacity(named.len());
+            for application_id in &named {
+                match application_id.parse::<ApplicationId>() {
+                    Ok(id) => applications.push(id),
+                    Err(_) => {
+                        return ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: format!("Invalid application id: {application_id}"),
+                        }
+                        .into_response()
+                    }
+                }
+            }
+            ScopeRequest::Only(applications)
+        }
+    };
+
+    info!(device = %device_id_str, "replacing a device's scope");
+
+    let result = state
+        .ctx_client
+        .rescope_device(RescopeDeviceRequest { device, scope })
+        .await
+        .map_err(parse_api_error);
+
+    match result {
+        Ok(resp) => {
+            // The wire names are produced here and the match is exhaustive on
+            // purpose: a new change has to be given a name rather than fall into
+            // a catch-all and be reported as something it is not.
+            let outcomes = resp
+                .outcomes
+                .iter()
+                .map(|outcome| RescopeOutcomeApiEntry {
+                    namespace_id: hex::encode(outcome.namespace_id.to_bytes()),
+                    change: match outcome.change {
+                        RescopeChange::Descoped => "descoped",
+                        RescopeChange::Bound => "bound",
+                        RescopeChange::Unchanged => "unchanged",
+                    }
+                    .to_owned(),
+                    key_rotated: outcome.key_rotated,
+                })
+                .collect();
+
+            info!(
+                account = %resp.account,
+                device = %resp.device,
+                applications = resp.applications.len(),
+                "device rescoped"
+            );
+            ApiResponse {
+                payload: RescopeDeviceApiResponse {
+                    data: RescopeDeviceApiResponseData {
+                        account_id: hex::encode(resp.account.as_bytes()),
+                        device_id: hex::encode(resp.device.as_bytes()),
+                        applications: resp.applications.iter().map(ToString::to_string).collect(),
+                        outcomes,
+                    },
+                },
+            }
+            .into_response()
+        }
+        Err(err) => err.into_response(),
+    }
+}

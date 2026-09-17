@@ -227,6 +227,7 @@ pub(super) fn record_join_credential(
         &account.genesis,
         &account.chain,
         &account.statement,
+        crate::JOIN_SCOPE_EPOCH,
     )?;
 
     // The endorsement, materialized. `AccountDeviceLinked` carries an explicit

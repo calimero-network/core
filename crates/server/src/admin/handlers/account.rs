@@ -3,6 +3,7 @@ pub mod devices;
 pub mod pair_complete;
 pub mod pair_init;
 pub mod relink;
+pub mod rescope;
 
 use reqwest::StatusCode;
 

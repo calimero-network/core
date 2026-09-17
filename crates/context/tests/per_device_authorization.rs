@@ -34,6 +34,26 @@ use core::num::NonZeroU128;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
+/// The root-signed scope a link carries; empty, so it reaches every group.
+fn link_scope(
+    root_sk: &PrivateKey,
+    cert: &calimero_account::DeviceCert,
+) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
+    Box::new(calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            vec![],
+            0,
+            0,
+        )
+        .expect("the account root signs its device's scope"),
+    })
+}
+
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -149,7 +169,7 @@ fn link_device(
         )
         .unwrap();
     bindings
-        .apply_link(&ns, &genesis, &[], &cert)
+        .apply_link(&ns, &genesis, &[], &cert, 0)
         .unwrap()
         .expect("admitted");
     device
@@ -276,6 +296,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
         chain: vec![],
         cert,
         endorsement: calimero_account::AccountMemberEndorsement::sign(&member_sk, account).unwrap(),
+        scope: link_scope(&account_root, &cert),
     };
     let ns_bytes = ns.to_bytes();
     let group_key = [0x5A; 32];
@@ -371,6 +392,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
         chain: vec![],
         cert,
         endorsement: calimero_account::AccountMemberEndorsement::sign(&member_sk, account).unwrap(),
+        scope: link_scope(&account_root, &cert),
     };
     let ns_bytes = ns.to_bytes();
     let group_key = [0x5A; 32];

@@ -49,6 +49,7 @@ pub mod pair_device_init;
 pub mod relay_signed_join;
 pub mod relink_device;
 pub mod remove_group_members;
+pub mod rescope_device;
 pub mod resync_context;
 pub mod retry_group_upgrade;
 pub mod revoke_device;
@@ -207,6 +208,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RelinkDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RescopeDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RotateGroupKey { request, outcome } => {

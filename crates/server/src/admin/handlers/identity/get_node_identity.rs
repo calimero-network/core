@@ -447,16 +447,26 @@ mod tests {
         devices
             .store_account_namespace(&namespace)
             .expect("pair-init records the account namespace");
-        let _recorded = calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
-            .record(
-                &AccountProof {
-                    genesis: adopted.genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                &[],
+        let proof = AccountProof {
+            genesis: adopted.genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = AccountProof {
+            genesis: adopted.genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                &holder_root,
+                adopted.account,
+                adopted.device(),
+                vec![],
+                0,
                 0,
             )
+            .expect("the account root signs the device's scope"),
+        };
+        let _recorded = calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
+            .record(&proof, &scope)
             .expect("fold the certified op");
 
         let (.., certified) = node_identity(&store).expect("read").expect("present");
