@@ -66,7 +66,7 @@ pub fn build(
     signing_pk: &PublicKey,
 ) -> EyreResult<Box<JoinAccountCredential>> {
     let devices = NodeDeviceRepository::new(datastore);
-    release_revoked_device(&devices)?;
+    refuse_a_spent_rootless_device(&devices)?;
     // The existing row, READ not minted. Minting is what needs a root, and the
     // ordering is forced: a certificate is signed over a device id, a signing key
     // and an agreement key, so the device has to exist before anybody can certify
@@ -155,41 +155,33 @@ pub fn build(
     }))
 }
 
-/// Drop a device that has been revoked anywhere, certificate included, so what is
-/// presented below is never a spent id. The recovery pull releases the slot the
-/// same way; doing it here too keeps a write from racing that pull.
-///
-/// # Errors
-/// Typed, when the node has no root to speak as afterwards: the refusal reaches
-/// the admin API as a client error naming the revocation.
-fn release_revoked_device(devices: &NodeDeviceRepository<'_>) -> EyreResult<()> {
+/// Refuse a revoked device on a rootless node: the fold releases a device only
+/// where a root is left to speak as. Typed, so the API answers a client error.
+fn refuse_a_spent_rootless_device(devices: &NodeDeviceRepository<'_>) -> EyreResult<()> {
     let Some(held) = devices
         .get()
         .wrap_err("join credential: could not read this node's device row")?
     else {
         return Ok(());
     };
+    if devices
+        .account_root()
+        .wrap_err("join credential: could not read this node's account root")?
+        .is_some()
+    {
+        return Ok(());
+    }
     let revoked_in = devices
         .revoked_in(held.device())
         .wrap_err("join credential: could not read this device's revocations")?;
     if revoked_in.is_empty() {
         return Ok(());
     }
-    if devices
-        .account_root()
-        .wrap_err("join credential: could not read this node's account root")?
-        .is_none()
-    {
-        eyre::bail!(NodeDeviceError::Revoked {
-            device: held.device().to_string(),
-            account: held.account.to_string(),
-            namespaces: format!("{revoked_in:?}"),
-        });
-    }
-    devices
-        .reset_device(false)
-        .wrap_err("join credential: could not release this node's revoked device")?;
-    Ok(())
+    eyre::bail!(NodeDeviceError::Revoked {
+        device: held.device().to_string(),
+        account: held.account.to_string(),
+        namespaces: format!("{revoked_in:?}"),
+    })
 }
 
 /// Refuse an imported certificate that does not describe THIS node.
@@ -473,12 +465,16 @@ mod tests {
         let paired = build(&store, &ns, &signing_pk).expect("a paired device presents its link");
         assert_eq!(paired.statement.device, first.device());
 
+        // What folding the withdrawal does; the credential path only reads after it.
         AccountBindingRepository::new(&store)
             .apply_revocation(&ns, first.device())
             .expect("tombstone");
+        assert!(repo
+            .release_revoked_device(first.device())
+            .expect("release the withdrawn device"));
 
         let own = build(&store, &ns, &signing_pk)
-            .expect("a revoked device is released and the node speaks as its own account");
+            .expect("a released device leaves the node speaking as its own account");
         assert_eq!(own.statement.account, own_root.account());
         assert_ne!(own.statement.device, first.device());
 

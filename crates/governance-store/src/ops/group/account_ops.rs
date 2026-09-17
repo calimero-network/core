@@ -429,6 +429,17 @@ pub(crate) fn apply_device_unlinked(
     // once, but it keeps the key it already holds, so it can keep READING until
     // someone rotates for an unrelated reason.
     crate::PendingDeviceRotationRepository::new(ctx.store()).mark(&group_id, device)?;
+
+    // Puts this node back on its own root when the withdrawn device is its own.
+    // Best-effort: a node-local write must never refuse an op the group accepted.
+    match crate::NodeDeviceRepository::new(ctx.store()).release_revoked_device(*device) {
+        Ok(true) => tracing::info!(group_id = ?group_id, %device,
+                                   "released this node's withdrawn device"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(group_id = ?group_id, %device, %err,
+                                   "could not release this node's withdrawn device"),
+    }
+
     ctx.queue_event(OpEvent::DeviceRevoked {
         group_id: group_id.to_bytes(),
         account: *account,

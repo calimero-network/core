@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_governance_store::{AccountDeviceRegistry, NodeDeviceRepository};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{NodeIdentityApiResponse, NodeIdentityApiResponseData};
@@ -69,8 +69,7 @@ pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityPart
         // signed and an operator imported, if it names THIS device.
         let certified = in_registry
             || devices
-                .imported_certificate()?
-                .and_then(|stored| borsh::from_slice::<AccountProof<DeviceCert>>(&stored).ok())
+                .imported_proof()?
                 .is_some_and(|proof| proof.statement.device == held.device());
         return Ok(Some((
             held.account,
@@ -210,7 +209,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
 mod tests {
     use std::sync::Arc;
 
-    use calimero_account::AccountGenesis;
+    use calimero_account::{AccountGenesis, AccountProof, DeviceCert};
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{AccountBindingRepository, NamespaceRepository};
     use calimero_primitives::identity::PrivateKey;
