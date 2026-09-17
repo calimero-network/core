@@ -579,6 +579,65 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         }
                     }
 
+                    // Put the namespace's default capability mask on the DAG.
+                    //
+                    // The local row written at creation is only this node's copy.
+                    // Four other sites seed a namespace's `default_capabilities`
+                    // when none is set — the two `NamespaceCreated` arms, the
+                    // replica bootstrap, and gossiped group meta — and before
+                    // #3969 they all agreed on `CAN_JOIN_OPEN_SUBGROUPS`, so the
+                    // disagreement could not arise. Seeding the namespace with
+                    // `CAN_AUTHOR_ON_BEHALF` as well made the creator's value
+                    // differ from every fallback, and each of those sites is
+                    // absence-gated, so a peer that guessed first kept the guess
+                    // forever.
+                    //
+                    // Publishing it as an op is what makes the value REPLICATED
+                    // rather than recomputed. `DefaultCapabilitiesSet`'s apply
+                    // writes unconditionally (`ops/group/default_capabilities_set.rs`),
+                    // so it overwrites a fallback that already landed, and it is
+                    // published here — immediately after genesis — so it causally
+                    // precedes every admission on the namespace DAG. A peer
+                    // applying ops in causal order therefore has the real mask
+                    // before any `MemberJoined` copies it into a member row.
+                    //
+                    // Old peers need no special handling: `DefaultCapabilitiesSet`
+                    // long predates this, so they apply it as they always have.
+                    // That is the whole reason this is an op rather than a wider
+                    // `NamespaceCreated`, which would have been a wire change.
+                    if parent_group_id.is_none() {
+                        match calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            &group_id,
+                            &signer_sk,
+                            GroupOp::DefaultCapabilitiesSet {
+                                capabilities:
+                                    calimero_context_config::MemberCapabilities::from_bits_truncate(
+                                        initial_default_capabilities(true),
+                                    ),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(report) => {
+                                report.observe("create_group", "DefaultCapabilitiesSet")
+                            }
+                            // Best effort, like `TargetApplicationSet` below: the
+                            // local row is already correct, so the creator works
+                            // either way. What a failure costs is the REPLICATION,
+                            // and the honest handling is to say so rather than to
+                            // unwind a namespace that is otherwise fine.
+                            Err(e) => tracing::warn!(
+                                ?e,
+                                "failed to publish DefaultCapabilitiesSet on namespace DAG; \
+                                 peers that never receive it fall back to their own seed, \
+                                 which does not carry CAN_AUTHOR_ON_BEHALF"
+                            ),
+                        }
+                    }
+
                     // Put the target on the DAG so a node that only backfills
                     // (a paired device) learns it too. Best effort: it is applied
                     // locally before the publish.
