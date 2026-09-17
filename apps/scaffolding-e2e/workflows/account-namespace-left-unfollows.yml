@@ -54,17 +54,23 @@ steps:
     outputs:
       ns_a: namespaceId
 
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-left-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+
   # Before the join and naming no project namespace, so everything the phone
   # learns about A comes from the account namespace.
   - name: Pair node-2 onto Alice's account, with only the account namespace
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-left-node-1
-      - account-left-node-2
-      - '-'
+    type: account_pair
+    node: account-left-node-2
+    holder: account-left-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    applications:
       - '{{app_a}}'
+    await_self: true
 
   - name: Invite node-1 to namespace A
     type: create_namespace_invitation

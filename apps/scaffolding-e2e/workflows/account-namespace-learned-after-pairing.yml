@@ -45,6 +45,7 @@ steps:
     node: learned-node-1
     outputs:
       alice_root: accountRootPublicKey
+      account_ns: accountNamespaceId
 
   # `account_pair` names no account namespace, which is the state to start from.
   - name: Pair node-2 the plain way, naming no account namespace
@@ -57,15 +58,27 @@ steps:
     applications:
       - '{{app}}'
 
-  # The script polls until node-2 resolves its own binding in the account namespace.
+  # `await_self` returns once node-2 reads its own binding in the account namespace.
   - name: Pair node-2 again, this time naming the account namespace
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - learned-node-1
-      - learned-node-2
-      - '-'
-      - '-'
+    type: account_pair
+    node: learned-node-2
+    holder: learned-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: '{{account_ns}}'
+    await_self: true
+    outputs:
+      key_delivered: keyDelivered
+
+  - name: The re-pairing delivered a key
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+
+  - name: Node-2 now names the laptop's account namespace
+    type: assert_api_response
+    node: learned-node-2
+    path: /admin-api/identity
+    match:
+      data.accountNamespaceId: '{{account_ns}}'
 
 stop_all_nodes: true

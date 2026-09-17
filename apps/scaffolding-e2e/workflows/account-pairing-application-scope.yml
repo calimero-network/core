@@ -39,9 +39,8 @@ description: >
        in one of them. That asymmetry is the whole design: a subscription the
        holder never reaches costs nothing, and a binding published where the
        device is not listening is picked up whenever it does subscribe. The
-       pairing runs through a script rather than merobox's `account_pair` step,
-       because only a script can hand `pair-init` the account namespace id -
-       a device that does not follow it hears nothing the account records.
+       pairing also names the account namespace: a device that does not follow
+       it hears nothing the account records.
 
     2. `GET /admin-api/account/devices` on the holder must report the row as
        scoped to exactly app A, and bound in app A's namespace and the account
@@ -252,17 +251,39 @@ steps:
   # `pair-init` is idempotent, so the real pairing below mints the same device
   # and reads out the same code even though it names one namespace more.
   #
-  # A script, because these two need a payload with one field substituted and
-  # `account_pair` derives the statement and the code from its own `pair-init`.
-  - name: Pair-complete refuses a tampered statement and a mismatched code
-    type: script
-    script: scripts/account-pair-refusal-statuses.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - account-scope-node-2
+  - name: Node-2 mints an offer for Alice's account
+    type: account_pair_init
+    node: account-scope-node-2
+    root_key: '{{alice_root}}'
+    namespaces:
       - '{{ns_a1}}'
-      - '{{alice_root}}'
+    outputs:
+      offer_device: deviceId
+      offer_kem: kemPublicKey
+      offer_sign: signPublicKey
+      offer_statement: statement
+      offer_code: confirmationCode
+
+  # Still 128 hex, so the refusal is the signature check, not the width check.
+  - name: Pair-complete refuses a tampered statement
+    type: account_pair_complete
+    node: account-scope-node-1
+    device_id: '{{offer_device}}'
+    kem_public_key: '{{offer_kem}}'
+    sign_public_key: '{{offer_sign}}'
+    statement: '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'
+    confirmation_code: '{{offer_code}}'
+    expect_status: 400
+
+  - name: Pair-complete refuses a mismatched confirmation code
+    type: account_pair_complete
+    node: account-scope-node-1
+    device_id: '{{offer_device}}'
+    kem_public_key: '{{offer_kem}}'
+    sign_public_key: '{{offer_sign}}'
+    statement: '{{offer_statement}}'
+    confirmation_code: DEAD-BEEF-DEAD-BEEF
+    expect_status: 400
 
   # The account namespace is always a target, so an app with no namespace still binds.
   - name: Pair-complete accepts a scope this node speaks nowhere in yet
@@ -333,27 +354,26 @@ steps:
 
   # The namespace set and the application scope are chosen independently on
   # purpose. node-2 subscribes to A1 and B1; node-1 certifies it for app A only.
-  # A script: account_pair has no field for the account namespace id.
-  - name: Pair node-2 onto Alice's account, listening on A1
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - account-scope-node-2
+  - name: Pair node-2 onto Alice's account, listening on A1 and B1
+    type: account_pair
+    node: account-scope-node-2
+    holder: account-scope-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    namespaces:
       - '{{ns_a1}}'
-      - '{{app_a}}'
-
-  # A second call: pair-init's namespace set is additive, so A1 and B1 both land.
-  - name: Extend the pairing so node-2 also listens on B1
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - account-scope-node-2
       - '{{ns_b1}}'
+    applications:
       - '{{app_a}}'
+    await_self: true
+
+  - name: The phone sees Alice's own device
+    type: account_devices
+    node: account-scope-node-2
+    where:
+      deviceId: '{{alice_device}}'
+    retries: 45
+    interval: 2
 
   # node-2's own view of the account it adopted, which its `pair-init` wrote
   # synchronously before the step returned - so there is nothing to wait for.
@@ -375,12 +395,9 @@ steps:
 
   # Reads node-1's own store, which its own `pair-complete` wrote before it
   # answered, so no barrier stands between this and the pairing.
-  # `assert_api_response`, not `account_devices`: only this step takes `absent`,
-  # which is what pins each list to its length and makes the absence assertable.
   - name: The paired device reaches app A's namespace and not app B's
-    type: assert_api_response
+    type: account_devices
     node: account-scope-node-1
-    path: /admin-api/account/devices
     where:
       deviceId: '{{paired_device}}'
     match:
@@ -390,9 +407,11 @@ steps:
     contains:
       namespaces:
         - '{{ns_a1}}'
+    not_contains:
+      namespaces:
+        - '{{ns_b1}}'
     absent:
       - applications.1
-      - namespaces.2
 
   # ── What a repair refuses while the pairing stands ─────────────────
 
@@ -633,10 +652,10 @@ stop_all_nodes: true
 # different state of this one. They are `expect_status`, not `expected_failure`,
 # which passes on the 500 the status mapping exists to stop.
 #
-# The two `pair-complete` `400`s still run through a script: they need a payload
-# with one field substituted - a tampered statement, a code the device never
-# minted - and `account_pair` derives both from its own `pair-init`, so no
-# scenario can hand it a bad one.
+# The two `pair-complete` `400`s run through `account_pair_init` and
+# `account_pair_complete`: they need a payload with one field substituted - a
+# tampered statement, a code the device never minted - and `account_pair`
+# derives both from its own `pair-init`.
 #
 # node-2 appears in no `wait_for_sync` - a namespace barrier reads
 # `groupStateHash`, which a node answers only for a member, and a paired device

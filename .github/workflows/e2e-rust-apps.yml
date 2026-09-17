@@ -242,7 +242,7 @@ jobs:
       # emoji banner to a cp1252 stdout. The last of those is why this step no
       # longer sets `PYTHONIOENCODING`.
       - name: Install merobox
-        run: pip install merobox==0.6.75
+        run: pip install merobox==0.6.76
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         shell: bash
@@ -320,7 +320,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install merobox
-        run: pip install merobox==0.6.75
+        run: pip install merobox==0.6.76
 
       # `cd` into the app first, exactly as the Linux matrix above does. The
       # scenario's `path: ../../dist/...` is resolved against the CWD, not

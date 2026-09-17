@@ -38,15 +38,54 @@ steps:
     node: account-registry-node-1
     application_id: '{{app}}'
 
-  # A script, because merobox's account_pair step has no field for that id.
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-registry-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+      alice_device: deviceId
+
+  # A scope reaches the phone only through the account namespace, so `await_self`
+  # returning is the phone reading the scope back.
   - name: Pair node-2 with the account namespace and a scope, and read the scope back
-    type: script
-    script: scripts/account-namespace-pair-into.sh
-    target: local
-    args:
-      - account-registry-node-1
-      - account-registry-node-2
-      - '-'
+    type: account_pair
+    node: account-registry-node-2
+    holder: account-registry-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    applications:
       - '{{app}}'
+    await_self: true
+    outputs:
+      phone_device: deviceId
+      account_ns: accountNamespace
+
+  # From the certificate it signed, so a registry that replaced the cache cannot quietly lose it.
+  - name: The laptop bound the phone in the account namespace, with the scope
+    type: account_devices
+    node: account-registry-node-1
+    where:
+      deviceId: '{{phone_device}}'
+    contains:
+      namespaces:
+        - '{{account_ns}}'
+      applications:
+        - '{{app}}'
+
+  - name: The laptop never lists the account namespace as a project
+    type: assert_api_response
+    node: account-registry-node-1
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{account_ns}}'
+    expect_no_match: true
+
+  - name: The phone sees the laptop's own device
+    type: account_devices
+    node: account-registry-node-2
+    where:
+      deviceId: '{{alice_device}}'
+    retries: 45
+    interval: 2
 
 stop_all_nodes: true
