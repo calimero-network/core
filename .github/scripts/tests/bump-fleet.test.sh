@@ -414,6 +414,54 @@ echo "no surface at all"
 D=$(mkfixture bare); echo '{}' > "$D/package.json"; commit "$D"
 expect_exit 3 "no contract anywhere" bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
 
+# ─────────────────────────────────────────────────────────────────────────────
+echo "tee — the fleet image bundles a merod"
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Two versions in ONE object, which is what makes this different from `tauri`:
+# there the document's own `version` is the first key and position is enough, so
+# a positional rewrite here would move whichever version happened to come first.
+# These cases pin that both fields move, and that the OTHERS do not.
+mkversions() {
+  mkdir -p "$1/mero-tee"
+  cat > "$1/mero-tee/versions.json" <<EOF
+{
+  "traefikVersion": "3.5.0",
+  "nodeExporterVersion": "1.9.1",
+  "vectorVersion": "0.50.0",
+  "imageVersion": "$2",
+  "merodVersion": "$3"
+}
+EOF
+}
+
+D=$(mkfixture tee-image); mkversions "$D" 2.3.56 0.11.0-rc.35; commit "$D"
+expect_exit 0 "the bundled merod moves" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"merodVersion": "0.11.0-rc.39"' "  merodVersion took the release"
+expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.3.57"' "  imageVersion patch-incremented"
+expect_file "$D/mero-tee/versions.json" '"traefikVersion": "3.5.0"' "  an unrelated version is untouched"
+expect_file "$D/mero-tee/versions.json" '"vectorVersion": "0.50.0"' "  ...and so is the one after it"
+
+# Re-running a release must be a no-op, not a second image version. Without the
+# early exit this would walk imageVersion forward on every re-run.
+D=$(mkfixture tee-already); mkversions "$D" 2.3.57 0.11.0-rc.39; commit "$D"
+expect_exit 4 "already bundling this merod" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.3.57"' "  the image version did NOT drift on a re-run"
+
+# `nothing to do here` and `this does not apply here` stay distinguishable.
+D=$(mkfixture tee-absent); echo '{}' > "$D/package.json"; commit "$D"
+expect_exit 3 "no versions.json is not-applicable, not failure" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+
+# A version with no patch field would silently print `2.4.0` from awk's empty $3
+# if the increment were not explicit about it.
+D=$(mkfixture tee-two-field); mkversions "$D" 2.4 0.11.0-rc.35; commit "$D"
+expect_exit 0 "a two-field image version still bumps" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.4.1"' "  missing patch reads as 0 and becomes 1"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
