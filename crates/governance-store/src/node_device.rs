@@ -607,10 +607,12 @@ impl<'a> NodeDeviceRepository<'a> {
         })?
         .into();
 
+        let doomed_certificate = calimero_store::key::NodeDeviceCertificate::new();
         let mut tx = Transaction::default();
         tx.put(&root_key, root_bytes);
         if doomed {
             tx.delete(&doomed_key);
+            tx.delete(&doomed_certificate);
         }
         self.store.apply(&tx)?;
         let released = doomed;
@@ -856,11 +858,15 @@ impl<'a> NodeDeviceRepository<'a> {
             return Ok(());
         }
         // Bytes that decode as nothing carry no epoch to lose to, so an operator's
-        // garbage is replaced rather than pinned forever.
+        // garbage is replaced rather than pinned forever. Epochs are compared only
+        // between certificates of the same device.
         if self
             .imported_certificate()?
             .and_then(|stored| borsh::from_slice::<AccountProof<DeviceCert>>(&stored).ok())
-            .is_none_or(|kept| cert.device_epoch > kept.statement.device_epoch)
+            .is_none_or(|kept| {
+                kept.statement.device != cert.device
+                    || cert.device_epoch > kept.statement.device_epoch
+            })
         {
             self.store_imported_certificate(&borsh::to_vec(proof)?)?;
         }
@@ -1254,8 +1260,14 @@ impl<'a> NodeDeviceRepository<'a> {
     /// # Errors
     /// Propagates the store write failure.
     pub fn delete(&self) -> EyreResult<()> {
-        let key = NodeDeviceIdentity::new();
-        self.store.handle().delete(&key)?;
+        // The certificate names this device, so it is worthless without the row
+        // and misleading beside the next one.
+        let row = NodeDeviceIdentity::new();
+        let certificate = calimero_store::key::NodeDeviceCertificate::new();
+        let mut tx = Transaction::default();
+        tx.delete(&row);
+        tx.delete(&certificate);
+        self.store.apply(&tx)?;
         Ok(())
     }
 }
@@ -3273,6 +3285,39 @@ mod tests {
         repo.remember_own_link(&proof).expect("fold");
 
         assert_eq!(stored_cert(&repo), proof);
+    }
+
+    /// The certificate names the device, so it goes when the device goes: a
+    /// re-mint or a reset must not leave a certificate for a spent id behind for
+    /// the next device to be mistaken for.
+    #[test]
+    fn dropping_the_device_drops_the_certificate_that_named_it() {
+        let (store, _root_sk, _held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+
+        repo.delete().expect("release the slot");
+
+        assert!(repo.imported_certificate().expect("read").is_none());
+    }
+
+    /// Epoch precedence is between certificates of ONE device. A fresh device's
+    /// first link is epoch 0 too, and must not lose to the spent device's epoch 0.
+    #[test]
+    fn a_link_for_a_fresh_device_replaces_the_certificate_of_the_one_it_succeeds() {
+        let (store, root_sk, spent) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+        // The row alone, leaving the certificate where a re-mint used to leave it.
+        store
+            .handle()
+            .delete(&NodeDeviceIdentity::new())
+            .expect("drop the row");
+        let fresh = repo.adopt_account(spent.genesis).expect("re-mint");
+        assert_ne!(fresh.device(), spent.device());
+
+        repo.remember_own_link(&paired_link(&fresh, &root_sk, 0))
+            .expect("fold");
+
+        assert_eq!(stored_cert(&repo).statement.device, fresh.device());
     }
 
     /// A node holding the account root can always self-sign, and an import for its
