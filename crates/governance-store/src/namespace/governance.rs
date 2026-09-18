@@ -1214,13 +1214,16 @@ impl<'a> NamespaceGovernance<'a> {
         // callers that `NoAckReceived` is swallowed into a `Degraded`
         // report; for quorum callers it is the genuine failure they
         // expect.
+        let known = node_client.known_subscribers(&topic);
         let ackable = ackable_members(
             self.store,
             self.namespace_id,
             &signer_sk.public_key(),
-            node_client.known_subscribers(&topic),
+            known,
         );
-        let min_acks = min_acks_after_local_mutation(ackable);
+        // Only the best-effort path may relax the wait. A quorum caller asked for
+        // confirmation, so it keeps the subscriber rule and its `NoAckReceived`.
+        let min_acks = min_acks_after_local_mutation(if best_effort { ackable } else { known });
 
         let mut report = match publish_and_await_ack_namespace(
             self.store,
