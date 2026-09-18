@@ -480,7 +480,7 @@ async fn the_publish_only_path_also_feeds_the_local_apply_path() {
     // here — the feed fires before the publish is awaited, which is the point
     // (the local DAG must not wait on the network for an op authored here).
     let _ = NamespaceGovernance::new(&store, ns_id)
-        .sign_and_publish_post_gate(&node_client, &ack_router, &sk, op, 0, 0, true)
+        .sign_and_publish_post_gate(&node_client, &ack_router, &sk, op, 0, true)
         .await;
 
     let fed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -5185,13 +5185,185 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     );
 }
 
+/// A namespace with `admin` (this node) and a second member account.
+fn two_member_namespace(ns_id: [u8; 32]) -> (Store, PrivateKey) {
+    let store = test_store();
+    let (admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let peer = PrivateKey::random(&mut rand::rng()).public_key();
+    let peer_account = enrol_member(&store, &gid, &peer);
+    MembershipRepository::new(&store)
+        .add_member(&gid, &peer_account, GroupMemberRole::Member)
+        .expect("plant the second member");
+    (store, admin_sk)
+}
+
+/// The cross-node read-after-write case: a second member is subscribed, so the
+/// publish must wait for its ack.
 #[test]
-fn min_acks_after_local_mutation_uses_publish_time_subscribers() {
-    let min_acks = super::governance::min_acks_after_local_mutation(1, 0);
+fn ackable_members_counts_a_second_member_behind_a_subscriber() {
+    let ns_id = [0xA1; 32];
+    let (store, admin_sk) = two_member_namespace(ns_id);
 
     assert_eq!(
-        min_acks, 0,
-        "subscriber departure after the readiness gate must use min_acks=0 to avoid NoAckReceived after local DAG mutation"
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        1
+    );
+}
+
+/// The account's own second device is a peer too: a write on the laptop has to be
+/// readable on the phone when the call returns, exactly as across two accounts.
+#[test]
+fn ackable_members_counts_this_accounts_other_device() {
+    let ns_id = [0xA4; 32];
+    let store = test_store();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let root_sk = PrivateKey::from(*admin_pk);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+    let sibling = PrivateKey::random(&mut rand::rng()).public_key();
+    let cert = calimero_account::DeviceCert::sign(
+        &root_sk,
+        account,
+        calimero_account::DeviceId::mint(account, [9; 16]),
+        &sibling,
+        &calimero_account::KemPublicKey::from([9; 32]),
+        0,
+        0,
+    )
+    .expect("the root certifies a second device");
+    let _bound = crate::AccountBindingRepository::new(&store)
+        .apply_link(&gid, &genesis, &[], &cert)
+        .expect("store the binding")
+        .expect("the binding is admissible");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        1,
+        "a sibling device of this account can ack"
+    );
+}
+
+/// The pairing case: the only subscriber is a device that is not a member.
+#[test]
+fn ackable_members_is_zero_when_this_node_is_the_only_member() {
+    let ns_id = [0xA2; 32];
+    let store = test_store();
+    let (admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        0,
+        "our own account is not somebody who can ack our publish"
+    );
+}
+
+/// A removal publishes after it applies, so only the account this op removed is
+/// gone; the members left behind still have to be waited for.
+#[test]
+fn ackable_members_excludes_only_the_account_removed_by_this_op() {
+    let ns_id = [0xA6; 32];
+    let (store, admin_sk) = two_member_namespace(ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let leaver = PrivateKey::random(&mut rand::rng()).public_key();
+    let leaver_account = enrol_member(&store, &gid, &leaver);
+    let membership = MembershipRepository::new(&store);
+    membership
+        .add_member(&gid, &leaver_account, GroupMemberRole::Member)
+        .expect("plant the third member");
+    membership
+        .remove_member(&gid, &leaver_account)
+        .expect("remove the third member");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        1,
+        "the member that stayed can still ack"
+    );
+}
+
+/// Revocation withdraws the right to author, and an ack is authored: a device
+/// this account has retired cannot end the wait.
+#[test]
+fn ackable_members_ignores_a_revoked_sibling_device() {
+    let ns_id = [0xA7; 32];
+    let store = test_store();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let root_sk = PrivateKey::from(*admin_pk);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+    let device = calimero_account::DeviceId::mint(account, [9; 16]);
+    let sibling = PrivateKey::random(&mut rand::rng()).public_key();
+    let cert = calimero_account::DeviceCert::sign(
+        &root_sk,
+        account,
+        device,
+        &sibling,
+        &calimero_account::KemPublicKey::from([9; 32]),
+        0,
+        0,
+    )
+    .expect("the root certifies a second device");
+    let bindings = crate::AccountBindingRepository::new(&store);
+    let _bound = bindings
+        .apply_link(&gid, &genesis, &[], &cert)
+        .expect("store the binding")
+        .expect("the binding is admissible");
+    bindings
+        .apply_revocation(&gid, device)
+        .expect("retire the second device");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        0,
+        "a revoked device is nobody to wait for"
+    );
+}
+
+/// A key we cannot resolve to an account leaves us unable to tell our own
+/// membership row from anybody else's, so every subscriber has to count.
+#[test]
+fn ackable_members_fails_open_when_the_signer_is_unbound() {
+    let ns_id = [0xA5; 32];
+    let store = test_store();
+    let _admin = bootstrap_namespace_with_admin(&store, ns_id);
+    let stranger = PrivateKey::random(&mut rand::rng()).public_key();
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &stranger, 3),
+        3,
+        "an unresolvable signer must not silently make the namespace look solo"
+    );
+}
+
+/// An offline member is still a member; with nobody on the topic the publish
+/// would only reach `NoPeersSubscribed`, so it must not wait.
+#[test]
+fn ackable_members_is_zero_without_a_subscriber() {
+    let ns_id = [0xA3; 32];
+    let (store, admin_sk) = two_member_namespace(ns_id);
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 0),
+        0
+    );
+}
+
+#[test]
+fn min_acks_after_local_mutation_waits_only_for_a_member_that_can_ack() {
+    assert_eq!(
+        super::governance::min_acks_after_local_mutation(0),
+        0,
+        "with no member able to ack - only a non-member subscriber, say - \
+         waiting can only end in NoAckReceived after the local DAG has \
+         already advanced"
+    );
+    assert_eq!(
+        super::governance::min_acks_after_local_mutation(1),
+        crate::governance_broadcast::DEFAULT_MIN_ACKS,
+        "a live member still gets waited for"
     );
 }
 
