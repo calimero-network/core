@@ -206,17 +206,11 @@ async fn run(
     }
 }
 
-/// Does this node still reach `group` - is the namespace owning it inside the
-/// scope this node's own certified device row carries?
+/// Does this node's own certified scope still reach `group`? The one answer the
+/// namespace listing, the application report and the authoring gate share.
 ///
-/// The one answer the namespace listing, the account's application report and the
-/// authoring gate share, so a device the account narrowed out of a namespace
-/// cannot go on presenting it as its own. Keyed on the registry row rather than
-/// on a binding: the narrowing is recorded in the account namespace, which a
-/// device never unfollows, while the descope travels on the topic it is dropping.
-///
-/// A holder, an ordinary member and a device with no certified row reach
-/// everywhere, as does the account namespace, which no scope names.
+/// Keyed on the registry row, not on a binding: the narrowing is recorded in the
+/// account namespace, while the descope travels on the topic being dropped.
 ///
 /// # Errors
 /// Propagates the device, namespace and metadata reads.
@@ -245,11 +239,7 @@ pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
 }
 
 /// The namespaces this node takes part in that its own scope still reaches.
-///
-/// What a start-up sweep may subscribe to and sync. Unfiltered, such a sweep
-/// races this listener's own start-up unfollow in another actor, and whichever
-/// finishes last decides - so a narrowed device goes on replicating a namespace
-/// it no longer covers until the next scope event.
+/// Unfiltered, a start-up sweep races this listener's own unfollow and may undo it.
 ///
 /// # Errors
 /// Propagates the participation read and the reads behind [`node_reaches`].
@@ -265,9 +255,8 @@ pub fn namespaces_in_reach(store: &Store) -> EyreResult<Vec<ContextGroupId>> {
     Ok(reached)
 }
 
-/// The authoring half of [`node_reaches`]: refuse a write into a namespace this
-/// device's account narrowed it out of, rather than answering locally and
-/// publishing something no peer will take.
+/// The authoring half of [`node_reaches`]: refuse a write no peer would take,
+/// rather than answering locally and publishing it.
 ///
 /// # Errors
 /// [`crate::error::ContextError::DeviceOutOfScope`], or the reads behind it.
@@ -408,8 +397,8 @@ fn namespaces_this_scope_decides(
     namespaces_in_scope(store, account_namespace, &own)
 }
 
-/// The set split by whether `own`'s scope covers it. The account namespace is
-/// never in the set, so the uncovered half cannot name the one topic to keep.
+/// The account's namespace set, split by whether `own`'s scope covers each. The
+/// account namespace is never in the set, so the uncovered half cannot name it.
 fn namespaces_in_scope(
     store: &Store,
     account_namespace: ContextGroupId,
@@ -425,9 +414,8 @@ fn namespaces_in_scope(
             return (Vec::new(), Vec::new());
         }
     };
-    // A node holding the account root reaches everywhere, as `node_reaches` says,
-    // so no statement - stale, replayed or hostile - makes it let a topic go. A
-    // failed read counts as holding: the cost of guessing wrong is every topic.
+    // A root holder reaches everywhere, so no statement makes it let a topic go.
+    // A failed read counts as holding: guessing wrong costs every topic.
     let holds_the_root = !matches!(NodeDeviceRepository::new(store).holder_root(), Ok(None));
     let (mut covered, mut uncovered) = (Vec::new(), Vec::new());
     for (namespace, application) in set {
@@ -758,7 +746,9 @@ mod tests {
         namespaces_to_bind_into, namespaces_to_revoke_in, node_reaches, publish_sibling_link, run,
         signing_identity, unfollows_on_left,
     };
-    use crate::test_support::{actor, eventually, holder_device_scoped_to, rescope_paired_device};
+    use crate::test_support::{
+        actor, device_scope, eventually, holder_device_scoped_to, rescope_paired_device,
+    };
 
     const ACCOUNT_NAMESPACE: [u8; 32] = [0xC1; 32];
     const OTHER_GROUP: [u8; 32] = [0xC9; 32];
@@ -837,25 +827,16 @@ mod tests {
             .expect("the account root signs a sibling's cert"),
         };
         let _recorded = AccountDeviceRegistry::new(store, account_namespace)
-            .record(&proof, &scope_for(root_sk, &proof, applications, 0))
+            .record(
+                &proof,
+                &device_scope(root_sk, &proof.statement, applications, 0),
+            )
             .expect("record the sibling");
         device
     }
 
-    /// The root-signed scope a registry row carries, from the same root as the cert.
-    fn scope_for(
-        root_sk: &PrivateKey,
-        proof: &calimero_account::AccountProof<calimero_account::DeviceCert>,
-        applications: &[ApplicationId],
-        scope_epoch: u32,
-    ) -> calimero_account::AccountProof<calimero_account::DeviceScope> {
-        crate::test_support::device_scope(root_sk, proof, applications, scope_epoch)
-    }
-
-    /// A device reaches what its scope covers, and stops reaching what a narrowing
-    /// takes away - while it is still bound there, which is the whole defect: the
-    /// descope travels on the topic the narrowing makes this device drop, so the
-    /// binding can outlive the scope indefinitely.
+    /// Still bound there is the whole defect: the descope travels on the topic the
+    /// narrowing drops, so the binding can outlive the scope indefinitely.
     #[test]
     fn a_narrowing_stops_a_device_reaching_a_namespace_it_is_still_bound_in() {
         let store = store();
@@ -901,12 +882,8 @@ mod tests {
         );
     }
 
-    /// The start-up sweep must not re-subscribe a namespace this device's scope
-    /// stopped covering.
-    ///
     /// The sweep and this listener's own unfollow run in different actors, so an
-    /// unfiltered sweep is a race whose winner decides whether a narrowed device
-    /// keeps replicating - and a restart is exactly when both run.
+    /// unfiltered sweep races it - and a restart is exactly when both run.
     #[test]
     fn the_startup_sweep_skips_a_namespace_this_scope_no_longer_covers() {
         let store = store();
@@ -946,9 +923,8 @@ mod tests {
         );
     }
 
-    /// The write a narrowed device used to be told had worked. It holds a namespace
-    /// identity and a participation row there either way, so nothing below the
-    /// scope gate refuses it.
+    /// The device holds a namespace identity and a participation row either way,
+    /// so nothing below the scope gate refuses the write.
     #[actix::test]
     async fn a_narrowed_device_is_refused_when_it_authors_where_it_no_longer_reaches() {
         let store = store();
@@ -1116,9 +1092,8 @@ mod tests {
         );
     }
 
-    /// The node holding the account root signs every scope statement, so one that
-    /// names itself can never make it let a topic go - whatever the statement says
-    /// and however it arrived.
+    /// The root holder signs every scope statement, so one naming itself can never
+    /// make it let a topic go, whatever it says and however it arrived.
     #[test]
     fn a_root_holders_own_scope_arriving_unfollows_nothing() {
         let store = store();
@@ -1295,9 +1270,8 @@ mod tests {
         );
     }
 
-    /// A scope narrowed while this device was offline: nothing re-drives the
-    /// certified op, so the sweep is what lets the uncovered topic go - and it
-    /// must let go of nothing else, the account namespace least of all.
+    /// Nothing re-drives the certified op, so the sweep is what lets the uncovered
+    /// topic go - and nothing else, the account namespace least of all.
     #[actix::test]
     async fn the_start_up_sweep_drops_what_this_devices_scope_no_longer_covers() {
         let store = store();

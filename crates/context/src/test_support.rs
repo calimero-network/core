@@ -96,9 +96,8 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
 /// Bind this node's OWN device to its own account in `namespace`, as founding or
 /// joining it does, and return that account.
 ///
-/// Not [`enrol`]: that derives a stand-in account from the key, so the node's
-/// signing key there speaks for nobody its account root owns - and every gate
-/// that asks "does this signer speak for this account" then refuses.
+/// Not [`enrol`]: that derives a stand-in account from the key, so every gate
+/// asking "does this signer speak for this account" then refuses.
 ///
 /// # Panics
 ///
@@ -179,7 +178,8 @@ pub fn certify_device(
     device
 }
 
-/// The root-signed scope a registry row carries, from the same root as `proof`.
+/// The root-signed scope a registry row - and every link made under it - carries.
+/// `root_sk` is the root that signed `cert`, so it names the same genesis.
 ///
 /// # Panics
 ///
@@ -187,17 +187,17 @@ pub fn certify_device(
 #[must_use]
 pub fn device_scope(
     root_sk: &PrivateKey,
-    proof: &calimero_account::AccountProof<calimero_account::DeviceCert>,
+    cert: &calimero_account::DeviceCert,
     applications: &[calimero_primitives::application::ApplicationId],
     scope_epoch: u32,
 ) -> calimero_account::AccountProof<calimero_account::DeviceScope> {
     calimero_account::AccountProof {
-        genesis: proof.genesis,
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
         chain: vec![],
         statement: calimero_account::DeviceScope::sign(
             root_sk,
-            proof.statement.account,
-            proof.statement.device,
+            cert.account,
+            cert.device,
             applications.to_vec(),
             scope_epoch,
             0,
@@ -206,17 +206,12 @@ pub fn device_scope(
     }
 }
 
-/// This node as a DEVICE of an account whose root lives elsewhere, scoped to
-/// `applications` (empty is every application): the account namespace recorded by
-/// pairing and taken part in, this node's device minted under the account's
-/// genesis, and its own certified row folded - the state a device is in once
-/// pairing has settled.
+/// This node as a DEVICE of an account whose root lives elsewhere: the state
+/// pairing leaves behind, scoped to `applications`.
 ///
-/// A device and not a holder on purpose. `NodeDeviceRepository::account_namespace`
-/// answers a holder from its root derivation and only falls through to the stored
-/// row otherwise, so a holder fixture would exercise the wrong read. The account
-/// root comes back beside the device because it lives nowhere in this store, and a
-/// caller that has to sign for the account has no other source.
+/// A device and not a holder on purpose - `account_namespace` answers a holder
+/// from its root derivation, which is the wrong read. The root comes back beside
+/// the device because it lives nowhere in this store.
 ///
 /// # Panics
 ///
@@ -255,7 +250,10 @@ pub fn paired_device_scoped_to(
     };
     let _recorded =
         calimero_governance_store::AccountDeviceRegistry::new(store, *account_namespace)
-            .record(&proof, &device_scope(&root_sk, &proof, applications, 0))
+            .record(
+                &proof,
+                &device_scope(&root_sk, &proof.statement, applications, 0),
+            )
             .expect("record this device in its account's registry");
     let _identity = calimero_governance_store::NamespaceRepository::new(store)
         .participate_in(account_namespace)
@@ -300,7 +298,7 @@ pub fn holder_device_scoped_to(
     let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, account_namespace)
         .record(
             &proof,
-            &device_scope(root.signing_key(), &proof, applications, 0),
+            &device_scope(root.signing_key(), &proof.statement, applications, 0),
         )
         .expect("record the holder's own device in its registry");
     (account_namespace, device)
@@ -329,7 +327,7 @@ pub fn rescope_paired_device(
     let _recorded = registry
         .record(
             &proof,
-            &device_scope(root_sk, &proof, applications, scope_epoch),
+            &device_scope(root_sk, &proof.statement, applications, scope_epoch),
         )
         .expect("record the replacement scope");
 }

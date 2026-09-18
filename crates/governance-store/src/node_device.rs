@@ -1309,7 +1309,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::test_fixtures::{test_group_id, test_store, test_store_without_account_root};
+    use crate::test_fixtures::{
+        device_scope, test_group_id, test_store, test_store_without_account_root,
+    };
     use crate::AccountBindingRepository;
     use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
@@ -1345,27 +1347,6 @@ mod tests {
         }
     }
 
-    /// The root-signed scope a registry row carries beside the certificate.
-    fn scoped(
-        root_sk: &PrivateKey,
-        proof: &AccountProof<DeviceCert>,
-        applications: Vec<ApplicationId>,
-    ) -> AccountProof<DeviceScope> {
-        AccountProof {
-            genesis: proof.genesis,
-            chain: vec![],
-            statement: DeviceScope::sign(
-                root_sk,
-                proof.statement.account,
-                proof.statement.device,
-                applications,
-                0,
-                0,
-            )
-            .expect("sign the scope"),
-        }
-    }
-
     /// An empty scope is every application, and a named one is only its own -
     /// including over a namespace whose metadata has not synced and so names none.
     #[test]
@@ -1376,14 +1357,14 @@ mod tests {
 
         let root = PrivateKey::from([0x34; 32]);
         let everything = KnownDeviceCert {
-            scope: scoped(&root, &proof, Vec::new()),
+            scope: device_scope(&root, &proof.statement, Vec::new(), 0),
             proof: proof.clone(),
         };
         assert!(everything.covers(Some(one)));
         assert!(everything.covers(None));
 
         let narrow = KnownDeviceCert {
-            scope: scoped(&root, &proof, vec![one]),
+            scope: device_scope(&root, &proof.statement, vec![one], 0),
             proof,
         };
         assert!(narrow.covers(Some(one)));

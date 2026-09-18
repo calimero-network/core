@@ -37,31 +37,17 @@ use sha2::{Digest, Sha256};
 
 /// A joiner credential. Note this test asserts the projection's fold matches the
 /// LIVE membership resolver — and the projection now keys `MemberAdded` by
-/// `cert.account` rather than a key-derived stand-in, so the account here is
-/// load-bearing, not filler.
-/// The joiner's credential, derived DETERMINISTICALLY from its signing key.
-///
-/// Deterministic because the op names the account this certifies and later
-/// assertions have to name the same one; a fresh random root per call would make
-/// every mention a different principal.
 /// The root-signed scope a link carries; empty, so it reaches every group.
 fn link_scope(
     root_sk: &PrivateKey,
     cert: &calimero_account::DeviceCert,
 ) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
-    Box::new(calimero_account::AccountProof {
-        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
-        chain: vec![],
-        statement: calimero_account::DeviceScope::sign(
-            root_sk,
-            cert.account,
-            cert.device,
-            vec![],
-            0,
-            0,
-        )
-        .expect("the account root signs its device's scope"),
-    })
+    Box::new(calimero_context::test_support::device_scope(
+        root_sk,
+        cert,
+        &[],
+        0,
+    ))
 }
 
 fn test_join_account_for(
@@ -383,10 +369,8 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         Some(true),
         "authoritative grant resolver agrees the joiner is a member after the join"
     );
-    // The account plane under the membership one: the two must also agree about
-    // which account the joiner's KEY speaks for, since every at-cut gate resolves
-    // that first and a plane that answers differently from live authorises a
-    // different principal.
+    // Every at-cut gate resolves the author's account first, so a plane that
+    // answers differently from live authorises a different principal.
     assert_eq!(
         proj.device_account_at_cut(&store, ns, &joiner, &[id2]),
         calimero_governance_store::member_account_in_namespace(&store, &ns, &joiner).unwrap(),
@@ -1914,19 +1898,12 @@ fn scope_at(
     cert: &calimero_account::DeviceCert,
     scope_epoch: u32,
 ) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
-    Box::new(calimero_account::AccountProof {
-        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
-        chain: vec![],
-        statement: calimero_account::DeviceScope::sign(
-            root_sk,
-            cert.account,
-            cert.device,
-            vec![],
-            scope_epoch,
-            0,
-        )
-        .expect("the account root signs its device's scope"),
-    })
+    Box::new(calimero_context::test_support::device_scope(
+        root_sk,
+        cert,
+        &[],
+        scope_epoch,
+    ))
 }
 
 /// A namespace with `admin` enrolled as its genesis admin, ready for at-cut
@@ -1949,13 +1926,8 @@ fn a_namespace_admined_by(
 /// **A device its account narrowed out of a namespace speaks for nobody there at
 /// the cut — and the projection says so exactly where live does.**
 ///
-/// The at-cut gates resolve an author through the projection's account plane
-/// before they ever look at a live row, so a plane that folds every link and no
-/// narrowing keeps authorising a device on every OTHER replica: only the
-/// narrowed device's own node refuses, which a modified client skips.
-///
-/// Live is the `AccountBindingRepository`, the same rows the apply handler for
-/// the link and the narrowing writes through.
+/// A plane that folds every link and no narrowing goes on authorising the device
+/// on every OTHER replica; only its own node refuses.
 #[test]
 fn a_narrowed_device_resolves_to_nobody_at_the_cut_exactly_as_live() {
     let store = store();

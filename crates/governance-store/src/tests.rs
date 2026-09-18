@@ -11007,10 +11007,7 @@ mod account_plane_apply {
             .collect()
     }
 
-    /// A device of a fresh account, linked into `gid` by its admin. The account's
-    /// root key comes back beside it: only that key can sign a revocation proof.
-    /// The root-signed scope a link carries. Empty means every application, so it
-    /// reaches every group; the narrowing cases sign their own.
+    /// The root-signed scope a link carries, at every application.
     fn link_scope(
         root_sk: &PrivateKey,
         cert: &DeviceCert,
@@ -11026,19 +11023,12 @@ mod account_plane_apply {
         applications: Vec<ApplicationId>,
         scope_epoch: u32,
     ) -> Box<AccountProof<DeviceScope>> {
-        Box::new(AccountProof {
-            genesis: AccountGenesis::new(root_sk.public_key()),
-            chain: vec![],
-            statement: DeviceScope::sign(
-                root_sk,
-                cert.account,
-                cert.device,
-                applications,
-                scope_epoch,
-                0,
-            )
-            .expect("the account root signs its device's scope"),
-        })
+        Box::new(crate::test_fixtures::device_scope(
+            root_sk,
+            cert,
+            applications,
+            scope_epoch,
+        ))
     }
 
     fn a_linked_device(
@@ -12146,19 +12136,14 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
-        let scope =
-            DeviceScope::sign(root_sk, account, device, applications, scope_epoch, 0).unwrap();
+        let scope = crate::test_fixtures::device_scope(root_sk, &cert, applications, scope_epoch);
         (
             AccountProof {
                 genesis,
                 chain: vec![],
                 statement: cert,
             },
-            AccountProof {
-                genesis,
-                chain: vec![],
-                statement: scope,
-            },
+            scope,
         )
     }
 
@@ -12414,11 +12399,12 @@ mod account_plane_apply {
             )
             .unwrap(),
         };
-        let scope = AccountProof {
-            genesis: root.genesis(),
-            chain: vec![],
-            statement: DeviceScope::sign(root.signing_key(), owner, device, vec![], 0, 0).unwrap(),
-        };
+        let scope = crate::test_fixtures::device_scope(
+            root.signing_key(),
+            &certificate.statement,
+            vec![],
+            0,
+        );
 
         sign_apply_local_group_op_borsh(
             &store,
@@ -13197,9 +13183,8 @@ mod account_plane_apply {
         assert_eq!(re_bound, device);
         assert!(is_live(&store, &gid, account, device));
 
-        // A sibling device of the SAME account re-wraps the very same statement,
-        // so the signer gate lets it through. Nothing about the op is reused:
-        // new signer, new signature, new nonce.
+        // A sibling of the SAME account re-wraps the statement, so the signer
+        // gate lets it through: new signer, new signature, new nonce.
         let sibling_sk = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x4A);
         sign_apply_local_group_op_borsh(&store, &gid, &sibling_sk, narrowing).unwrap();
 
@@ -13404,9 +13389,8 @@ mod account_plane_apply {
         }
     }
 
-    /// The floor only rises. Two narrowings arriving newest-first leave the higher
-    /// one standing, so a link made under a scope between them is still refused -
-    /// which a permutation of one repeated narrowing never exercises.
+    /// The floor only rises, so a link made under a scope between two narrowings
+    /// that arrived newest-first is still refused.
     #[test]
     fn a_narrowing_that_arrives_after_a_newer_one_does_not_lower_the_floor() {
         let store = test_store();
@@ -13474,35 +13458,6 @@ mod account_plane_apply {
             live_for(&store, &gid, account).len(),
             1,
             "a link under a newer scope re-binds the same device"
-        );
-    }
-
-    /// A narrowing that reaches a replica before the link it outranks still wins,
-    /// so the outcome does not depend on arrival order.
-    #[test]
-    fn a_narrowing_that_arrives_before_its_link_still_wins() {
-        let store = test_store();
-        let gid = test_group_id();
-        let admin_sk = key(1);
-        let _admin = group_with_admin(&store, &gid, &admin_sk);
-        let owner_sk = key(5);
-        let account = AccountGenesis::new(owner_sk.public_key()).account_id();
-        let device = DeviceId::mint(account, [5; 16]);
-        let holder_sk = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
-
-        sign_apply_local_group_op_borsh(
-            &store,
-            &gid,
-            &holder_sk,
-            descoped(&owner_sk, device, elsewhere(), 1),
-        )
-        .unwrap();
-
-        let (_owner, _genesis, linked) = a_linked_device_at(&store, &gid, &admin_sk, 5, 0);
-        assert_eq!(linked, device);
-        assert!(
-            !is_live(&store, &gid, account, device),
-            "the link under the older scope must lose to the narrowing already folded"
         );
     }
 

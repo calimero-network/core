@@ -452,19 +452,8 @@ mod tests {
             chain: vec![],
             statement: cert,
         };
-        let scope = AccountProof {
-            genesis: adopted.genesis,
-            chain: vec![],
-            statement: calimero_account::DeviceScope::sign(
-                &holder_root,
-                adopted.account,
-                adopted.device(),
-                vec![],
-                0,
-                0,
-            )
-            .expect("the account root signs the device's scope"),
-        };
+        let scope =
+            calimero_governance_store::test_fixtures::device_scope(&holder_root, &cert, vec![], 0);
         let _recorded = calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
             .record(&proof, &scope)
             .expect("fold the certified op");

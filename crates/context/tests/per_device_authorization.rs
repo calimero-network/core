@@ -39,19 +39,12 @@ fn link_scope(
     root_sk: &PrivateKey,
     cert: &calimero_account::DeviceCert,
 ) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
-    Box::new(calimero_account::AccountProof {
-        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
-        chain: vec![],
-        statement: calimero_account::DeviceScope::sign(
-            root_sk,
-            cert.account,
-            cert.device,
-            vec![],
-            0,
-            0,
-        )
-        .expect("the account root signs its device's scope"),
-    })
+    Box::new(calimero_context::test_support::device_scope(
+        root_sk,
+        cert,
+        &[],
+        0,
+    ))
 }
 
 fn store() -> Store {

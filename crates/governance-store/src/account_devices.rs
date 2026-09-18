@@ -140,7 +140,7 @@ mod tests {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
 
-    use crate::test_fixtures::test_store;
+    use crate::test_fixtures::{device_scope, test_store};
     use crate::{AccountBindingRepository, AccountDeviceRegistry, NodeDeviceRepository};
 
     const NS: [u8; 32] = [0x4D; 32];
@@ -181,19 +181,12 @@ mod tests {
         let root = NodeDeviceRepository::new(store)
             .provision_account_root()
             .expect("this node's root");
-        AccountProof {
-            genesis: root.genesis(),
-            chain: vec![],
-            statement: DeviceScope::sign(
-                root.signing_key(),
-                root.account(),
-                DeviceId::from([device; 32]),
-                applications.to_vec(),
-                scope_epoch,
-                0,
-            )
-            .expect("the account root signs its own device scope"),
-        }
+        device_scope(
+            root.signing_key(),
+            &proof(store, device).statement,
+            applications.to_vec(),
+            scope_epoch,
+        )
     }
 
     /// The epoch rule: only a higher one supersedes.
@@ -237,9 +230,8 @@ mod tests {
         assert_eq!(cert.scope.statement.scope_epoch, 1);
     }
 
-    /// Two statements the same root signed at one epoch - what two racing scope
-    /// replacements produce. Replicas fold them in either order, so the survivor
-    /// may not depend on which arrived first.
+    /// Two statements the same root signed at one epoch, as two racing scope
+    /// replacements produce: the survivor may not depend on arrival order.
     #[test]
     fn two_scopes_at_one_epoch_converge_whichever_order_they_arrive_in() {
         let store = test_store();

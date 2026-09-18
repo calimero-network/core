@@ -98,13 +98,10 @@ fn refuse_the_root_holders_own_device(store: &Store, device: DeviceId) -> EyreRe
 }
 
 /// Every participating namespace `applications` no longer reaches, bound or not:
-/// the descope is what writes the scope floor there, so a racing sibling link or
-/// a replayed stale one is refused at apply on every replica.
+/// the descope is what writes the scope floor there. Never the account namespace.
 ///
-/// Never the account namespace: that is where the device's certificate and every
-/// scope statement live, and no scope names it.
-/// Each is paired with the application it targets here, which the op carries so
-/// every replica decides the narrowing against one reading of it.
+/// Paired with the application each targets here, which the op carries so every
+/// replica decides the narrowing against one reading of it.
 fn namespaces_left_behind(
     store: &Store,
     namespaces: &[ContextGroupId],
@@ -223,9 +220,8 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                         Ok(key_rotated) => {
                             outcomes.push((*namespace, BindOutcome::Descoped { key_rotated }));
                         }
-                        // One namespace failing must not withhold the narrowing
-                        // from the rest, and the caller is told which one: nothing
-                        // re-drives it, so a repeat of the same request is the repair.
+                        // One failure must not withhold the narrowing from the
+                        // rest; nothing re-drives it, so a repeat is the repair.
                         Err(err) => {
                             warn!(
                                 ?err, ?namespace, %device,
@@ -528,9 +524,8 @@ mod tests {
         )));
     }
 
-    /// The floor is written where nothing is bound too, which is what refuses a
-    /// racing sibling link or a replayed stale one on every replica - rather than
-    /// only where this node happened to see a binding at narrowing time.
+    /// The floor is written where nothing is bound too, so a racing sibling link
+    /// is refused on every replica, not only where a binding happened to be seen.
     #[actix::test]
     async fn a_namespace_the_device_was_never_bound_in_still_takes_the_floor() {
         let store = a_holder_of_two_namespaces();
@@ -594,8 +589,7 @@ mod tests {
     }
 
     /// The holder's own device signs every scope statement, so narrowing it would
-    /// publish its own withdrawal. Refused before anything is signed, for `all`
-    /// as much as for `only`: neither has anything to replace.
+    /// publish its own withdrawal - for `all` as much as for `only`.
     #[actix::test]
     async fn the_device_holding_the_account_root_cannot_be_rescoped() {
         let store = a_holder_of_two_namespaces();
@@ -682,7 +676,12 @@ mod tests {
         assert!(registry
             .record(
                 &known.proof,
-                &crate::test_support::device_scope(root.signing_key(), &known.proof, &[], u32::MAX),
+                &crate::test_support::device_scope(
+                    root.signing_key(),
+                    &known.proof.statement,
+                    &[],
+                    u32::MAX
+                ),
             )
             .expect("put the device at the last epoch"));
 

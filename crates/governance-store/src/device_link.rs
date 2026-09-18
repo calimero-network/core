@@ -323,9 +323,8 @@ pub async fn withdraw_device_in(
     op: GroupOp,
 ) -> EyreResult<bool> {
     let what = op.op_kind_label();
-    // All three questions are about THIS namespace, so all three are answered
-    // where the op is going. A failed read costs the rotation, never the
-    // withdrawal; a namespace the device was never bound in has no key to rotate.
+    // Answered where the op is going: a failed read costs the rotation, never
+    // the withdrawal.
     let is_admin_here = member_account_in_namespace(store, namespace, &signer_sk.public_key())
         .ok()
         .flatten()
@@ -378,10 +377,9 @@ mod tests {
 
     use super::*;
     use crate::test_fixtures::{
-        enrol_member, namespace_publish_fixture, test_group_id, test_store,
+        device_scope, enrol_member, namespace_publish_fixture, test_group_id, test_store,
     };
     use crate::{AccountBindingRepository, MembershipRepository};
-    use calimero_account::DeviceScope;
 
     const APP_ONE: [u8; 32] = [0x11; 32];
     const APP_TWO: [u8; 32] = [0x22; 32];
@@ -425,35 +423,13 @@ mod tests {
 
     fn known(root_sk: &PrivateKey, seed: u8, applications: Vec<[u8; 32]>) -> KnownDeviceCert {
         let proof = certify(root_sk, seed, [seed ^ 0xFF; 32]);
-        let scope = scope_for(
+        let scope = device_scope(
             root_sk,
-            &proof,
+            &proof.statement,
             applications.into_iter().map(app).collect(),
             0,
         );
         KnownDeviceCert { proof, scope }
-    }
-
-    /// The root-signed scope a registry row - and every link made under it - carries.
-    fn scope_for(
-        root_sk: &PrivateKey,
-        proof: &AccountProof<DeviceCert>,
-        applications: Vec<calimero_primitives::application::ApplicationId>,
-        scope_epoch: u32,
-    ) -> AccountProof<DeviceScope> {
-        AccountProof {
-            genesis: proof.genesis,
-            chain: vec![],
-            statement: DeviceScope::sign(
-                root_sk,
-                proof.statement.account,
-                proof.statement.device,
-                applications,
-                scope_epoch,
-                0,
-            )
-            .expect("sign the scope"),
-        }
     }
 
     /// Put a device in the account namespace's registry, the way the certified
@@ -472,7 +448,7 @@ mod tests {
         let applications: Vec<_> = applications.iter().copied().map(app).collect();
         // The SAME root that signed the certificate: a scope from another root
         // does not authorise this device, which is what the apply gate checks.
-        let scope = scope_for(root_sk, proof, applications, 0);
+        let scope = device_scope(root_sk, &proof.statement, applications, 0);
         let _recorded = AccountDeviceRegistry::new(store, namespace)
             .record(proof, &scope)
             .expect("record the device in the registry");
@@ -741,7 +717,7 @@ mod tests {
             .expect("sign"),
         };
         let cert = KnownDeviceCert {
-            scope: scope_for(root.signing_key(), &own_proof, Vec::new(), 0),
+            scope: device_scope(root.signing_key(), &own_proof.statement, Vec::new(), 0),
             proof: own_proof,
         };
 
@@ -813,7 +789,7 @@ mod tests {
         let root = account_root_of(&sk.public_key());
         let proof = certify(&root, 0x77, [0x77; 32]);
         let cert = KnownDeviceCert {
-            scope: scope_for(&root, &proof, Vec::new(), 0),
+            scope: device_scope(&root, &proof.statement, Vec::new(), 0),
             proof,
         };
         let _key_id = GroupKeyring::new(&store, repaired)
@@ -1037,7 +1013,7 @@ mod tests {
         let cert = certify(&root, 0x7B, [0x7B; 32]);
         let account_namespace = ContextGroupId::from(ACCOUNT_NS);
         let _recorded = AccountDeviceRegistry::new(&store, account_namespace)
-            .record(&cert, &scope_for(&root, &cert, Vec::new(), 0))
+            .record(&cert, &device_scope(&root, &cert.statement, Vec::new(), 0))
             .expect("record the device in a registry nothing names yet");
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
@@ -1111,9 +1087,8 @@ mod tests {
         );
     }
 
-    /// A link whose apply refused it is not a link. The local apply is the
-    /// durable write, so reporting "linked" off the publish alone tells a caller
-    /// a namespace is reachable when the binding is not there.
+    /// A link whose apply refused it is not a link: the binding row is the durable
+    /// write, so reporting off the publish alone overstates what the caller has.
     #[actix::test]
     async fn a_link_the_apply_refused_is_not_reported_as_linked() {
         let (store, node_client, ack_router, ns_id, _admin_sk, _tmp, _msgs) =
@@ -1215,9 +1190,8 @@ mod tests {
         );
     }
 
-    /// A descope into a namespace the device was never bound in is still
-    /// published - that is what writes the scope floor there - but there is no
-    /// key it ever held, so nothing is rotated.
+    /// A descope is published even where the device was never bound - that writes
+    /// the floor - but there is no key it held, so nothing is rotated.
     #[actix::test]
     async fn a_withdrawal_where_nothing_is_bound_rotates_nothing() {
         let (store, node_client, ack_router, ns_id, admin_sk, _tmp, _msgs) =
@@ -1245,19 +1219,7 @@ mod tests {
                     account: cert.statement.account,
                     device,
                     application: Some(app(APP_ONE)),
-                    scope: Box::new(AccountProof {
-                        genesis: cert.genesis,
-                        chain: vec![],
-                        statement: DeviceScope::sign(
-                            &root,
-                            cert.statement.account,
-                            device,
-                            vec![app(APP_TWO)],
-                            1,
-                            0,
-                        )
-                        .expect("sign the replacement scope"),
-                    }),
+                    scope: Box::new(device_scope(&root, &cert.statement, vec![app(APP_TWO)], 1,)),
                 },
             )
             .await

@@ -123,6 +123,7 @@ mod tests {
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::test_fixtures::device_scope;
     use calimero_governance_store::{AccountDeviceRegistry, AccountRoot};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
@@ -180,19 +181,7 @@ mod tests {
             chain: vec![],
             statement: cert,
         };
-        let scope = AccountProof {
-            genesis,
-            chain: vec![],
-            statement: calimero_account::DeviceScope::sign(
-                root.signing_key(),
-                genesis.account_id(),
-                device_id,
-                applications.to_vec(),
-                0,
-                0,
-            )
-            .expect("the account root signs its own device scope"),
-        };
+        let scope = device_scope(root.signing_key(), &cert, applications.to_vec(), 0);
         let _recorded = AccountDeviceRegistry::new(store, namespace)
             .record(&proof, &scope)
             .expect("record the device in the account namespace");
@@ -444,19 +433,7 @@ mod tests {
             chain: vec![],
             statement: cert,
         };
-        let scope = AccountProof {
-            genesis,
-            chain: vec![],
-            statement: calimero_account::DeviceScope::sign(
-                root.signing_key(),
-                genesis.account_id(),
-                device,
-                vec![narrow, wide],
-                1,
-                0,
-            )
-            .expect("sign the scope"),
-        };
+        let scope = device_scope(root.signing_key(), &cert, vec![narrow, wide], 1);
         assert!(AccountDeviceRegistry::new(&store, namespace)
             .record(&proof, &scope)
             .expect("record"));
@@ -498,19 +475,7 @@ mod tests {
             chain: vec![],
             statement: cert,
         };
-        let scope = AccountProof {
-            genesis,
-            chain: vec![],
-            statement: calimero_account::DeviceScope::sign(
-                root.signing_key(),
-                genesis.account_id(),
-                device,
-                vec![app],
-                0,
-                0,
-            )
-            .expect("sign the scope"),
-        };
+        let scope = device_scope(root.signing_key(), &cert, vec![app], 0);
         assert!(AccountDeviceRegistry::new(&store, namespace)
             .record(&proof, &scope)
             .expect("record"));
