@@ -72,7 +72,6 @@ pub enum GroupSubCommands {
     #[command(alias = "del")]
     Delete(delete::DeleteCommand),
     Members(members::MembersCommand),
-    #[command(alias = "member-devices", about = "List the devices of each member")]
     MemberDevices(member_devices::MemberDevicesCommand),
     Contexts(contexts::ContextsCommand),
     Metadata(metadata::MetadataCommand),
