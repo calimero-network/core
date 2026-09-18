@@ -10,6 +10,7 @@ Development and debugging tools for Calimero infrastructure.
 | `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
+| `storage-cost` | `storage-cost` | Deterministic storage row counts per collection operation; the blocking cost gate |
 
 Everything here is a Rust crate.
 
@@ -227,6 +228,33 @@ calimero-abi/
     ├── diff.rs               # Schema diffing
     └── embed.rs              # Schema embedding
 ```
+
+## storage-cost - Storage Cost Gate
+
+Counts the storage rows (reads, writes, removes) each collection operation issues,
+through a counting `RuntimeEnv`, and diffs them against a committed snapshot. Row
+counts are deterministic, so any delta blocks the PR, in either direction. Byte
+counts are not (entity ids are random) and are never gated.
+
+```bash
+# The gate CI runs (storage-cost job in ci-checks.yml)
+cargo test -p storage-cost --release
+./scripts/check-storage-cost.sh
+
+# Accept an intended change: regenerate, then commit so the delta is in the diff
+cargo run -p storage-cost --bin storage-cost --release > tools/storage-cost/storage-costs.json
+```
+
+### Common Gotchas
+
+- Always measure in **release**. Debug builds add `ChildTrie::debug_reconcile` reads
+  whose number follows the random ids, so debug counts are higher than the snapshot
+  and vary; `tests/reproducible.rs` is ignored in debug for that reason.
+- Adding a workload means declaring its `CostShape` and `tolerance_pct` in
+  `src/workloads.rs`; `tests/flat_curve.rs` checks the shape and
+  `tests/reproducible.rs` re-derives the tolerance in both directions.
+- Never regenerate the snapshot just to turn the gate green. A moved row should be
+  explained in the PR as a regression, an improvement or an intended change.
 
 ## JIT Index
 
