@@ -7,7 +7,8 @@ use core::cmp::Ordering;
 use calimero_account::{AccountProof, DeviceCert, DeviceId, DeviceScope};
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::{
-    GroupAccountDevice, GroupAccountDeviceValue, GROUP_ACCOUNT_DEVICE_PREFIX,
+    GroupAccountDevice, GroupAccountDeviceLabel, GroupAccountDeviceLabelValue,
+    GroupAccountDeviceValue, GROUP_ACCOUNT_DEVICE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -22,6 +23,18 @@ fn supersedes(stored: &DeviceScope, offered: &DeviceScope) -> bool {
         Ordering::Greater => true,
         Ordering::Less => false,
         Ordering::Equal => offered.signature < stored.signature,
+    }
+}
+
+/// Does `label` at `epoch` replace `stored`? The same rule the scope uses, with
+/// the name itself standing in for the signature: a higher epoch wins, and at an
+/// equal one the lower name does, so two replicas folding a race in opposite
+/// orders keep the same row.
+fn label_supersedes(stored: &GroupAccountDeviceLabelValue, label: &str, epoch: u32) -> bool {
+    match epoch.cmp(&stored.label_epoch) {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => label < stored.label.as_str(),
     }
 }
 
@@ -66,6 +79,42 @@ impl<'a> AccountDeviceRegistry<'a> {
             },
         )?;
         Ok(true)
+    }
+
+    /// Record `label` for `device` at `epoch`. `false` means the stored name
+    /// already stands, which makes a re-gossiped op a no-op.
+    ///
+    /// Written whether or not the device has a registry row: the name may arrive
+    /// before the certificate, and dropping it would make the outcome depend on
+    /// arrival order.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn record_label(&self, device: DeviceId, label: &str, epoch: u32) -> EyreResult<bool> {
+        let key = GroupAccountDeviceLabel::new(self.namespace.to_bytes(), *device.as_bytes());
+        let mut handle = self.store.handle();
+        if let Some(stored) = handle.get::<GroupAccountDeviceLabel>(&key)? {
+            if !label_supersedes(&stored, label, epoch) {
+                return Ok(false);
+            }
+        }
+        handle.put(
+            &key,
+            &GroupAccountDeviceLabelValue {
+                label: label.to_owned(),
+                label_epoch: epoch,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// The name in force for `device`, if the account has given it one.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn label(&self, device: DeviceId) -> EyreResult<Option<GroupAccountDeviceLabelValue>> {
+        let key = GroupAccountDeviceLabel::new(self.namespace.to_bytes(), *device.as_bytes());
+        Ok(self.store.handle().get(&key)?)
     }
 
     /// The row for `device`: its certificate and the scope in force for it.
@@ -302,6 +351,58 @@ mod tests {
                 .expect("read")
                 .is_some(),
             "the row itself survives; only the served set drops it"
+        );
+    }
+
+    /// The epoch rule again, for the name: only a higher one supersedes, and a
+    /// re-stated label changes nothing.
+    #[test]
+    fn a_higher_label_epoch_supersedes_and_nothing_else_does() {
+        let store = test_store();
+        let registry = AccountDeviceRegistry::new(&store, ContextGroupId::from(NS));
+        let device = DeviceId::from([0x61; 32]);
+
+        assert!(registry.record_label(device, "Phone", 0).expect("first"));
+        assert!(
+            !registry
+                .record_label(device, "Phone", 0)
+                .expect("re-stated"),
+            "re-stating the stored name changes nothing, as a re-gossiped op does"
+        );
+        assert!(registry.record_label(device, "Laptop", 1).expect("rename"));
+        assert!(
+            !registry.record_label(device, "Phone", 0).expect("stale"),
+            "an epoch below the stored one never supersedes it"
+        );
+
+        let stored = registry.label(device).expect("read").expect("a row");
+        assert_eq!(stored.label, "Laptop");
+        assert_eq!(stored.label_epoch, 1);
+    }
+
+    /// Two names minted at one epoch - what two devices renaming at once
+    /// produce. Replicas fold them in either order, so the survivor may not
+    /// depend on which arrived first.
+    #[test]
+    fn two_labels_at_one_epoch_converge_whichever_order_they_arrive_in() {
+        let store = test_store();
+        let device = DeviceId::from([0x61; 32]);
+
+        let mut survivors = Vec::new();
+        for (namespace, order) in [
+            (ContextGroupId::from(NS), ["Kitchen", "Study"]),
+            (ContextGroupId::from([0x4E; 32]), ["Study", "Kitchen"]),
+        ] {
+            let registry = AccountDeviceRegistry::new(&store, namespace);
+            for label in order {
+                let _recorded = registry.record_label(device, label, 4).expect("record");
+            }
+            survivors.push(registry.label(device).expect("read").expect("a row").label);
+        }
+
+        assert_eq!(
+            survivors[0], survivors[1],
+            "the same pair of names has to leave the same row whichever order it lands in"
         );
     }
 
