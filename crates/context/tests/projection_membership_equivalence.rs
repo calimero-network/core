@@ -1980,6 +1980,7 @@ fn a_narrowed_device_resolves_to_nobody_at_the_cut_exactly_as_live() {
     let descope = |epoch| GroupOp::AccountDeviceDescoped {
         account,
         device: cert.device,
+        application: None,
         scope: scope_at(&root_sk, &cert, epoch),
     };
     let envelope = ns_group_envelope(ns.to_bytes(), device_key, ns);
@@ -2138,6 +2139,7 @@ fn a_narrowing_leaves_the_device_bound_in_the_namespace_it_still_reaches() {
         Some(&GroupOp::AccountDeviceDescoped {
             account,
             device: cert.device,
+            application: None,
             scope: scope_at(&root_sk, &cert, 2),
         }),
         narrowed,

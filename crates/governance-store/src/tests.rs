@@ -12676,17 +12676,38 @@ mod account_plane_apply {
         );
     }
 
-    /// The narrowing op for `device`, carrying the scope `root_sk`'s account signed.
+    /// The narrowing op for `device`, carrying the scope `root_sk`'s account
+    /// signed and the application the publisher read here - `test_meta`'s target,
+    /// as a publisher that has folded this group's metadata would resolve it.
     fn descoped(
         root_sk: &PrivateKey,
         device: DeviceId,
         applications: Vec<ApplicationId>,
         scope_epoch: u32,
     ) -> GroupOp {
+        descoped_carrying(
+            root_sk,
+            device,
+            applications,
+            scope_epoch,
+            Some(ApplicationId::from([0xCC; 32])),
+        )
+    }
+
+    /// [`descoped`] with the carried application chosen, for the replica-divergence
+    /// question the live read used to answer differently on either side.
+    fn descoped_carrying(
+        root_sk: &PrivateKey,
+        device: DeviceId,
+        applications: Vec<ApplicationId>,
+        scope_epoch: u32,
+        application: Option<ApplicationId>,
+    ) -> GroupOp {
         let (_cert, scope) = certified(root_sk, device, applications, scope_epoch);
         GroupOp::AccountDeviceDescoped {
             account: AccountGenesis::new(root_sk.public_key()).account_id(),
             device,
+            application,
             scope: Box::new(scope),
         }
     }
@@ -12858,6 +12879,69 @@ mod account_plane_apply {
         assert_eq!(events, vec![]);
     }
 
+    /// The op carries the application its publisher resolved, so a replica whose
+    /// metadata row has since moved - or never arrived - reaches the same verdict.
+    /// Read live, the target the group happens to hold decides, and two replicas at
+    /// different fold depths unbind and keep the same device with nothing to
+    /// reconcile them.
+    #[test]
+    fn a_narrowing_does_not_depend_on_the_replicas_live_target() {
+        let moved = ApplicationId::from([0xEE; 32]);
+        let verdicts: Vec<_> = [Some(moved), None]
+            .into_iter()
+            .map(|target| {
+                let store = test_store();
+                let gid = test_group_id();
+                let admin_sk = key(1);
+                let _admin = group_with_admin(&store, &gid, &admin_sk);
+                let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+                // What this replica happens to hold: the target moved on to the
+                // very application the replacement scope names, or no row at all.
+                let meta = MetaRepository::new(&store);
+                match target {
+                    Some(application) => {
+                        let mut row = meta.load(&gid).unwrap().expect("the fixture wrote one");
+                        row.target.application_id = application;
+                        meta.save(&gid, &row).unwrap();
+                    }
+                    None => meta.delete(&gid).unwrap(),
+                }
+
+                let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+                    &store,
+                    &gid,
+                    &owner_sk.public_key(),
+                    // Resolved by a publisher that read the group's real target.
+                    &descoped_carrying(
+                        &owner_sk,
+                        device,
+                        vec![moved],
+                        1,
+                        Some(ApplicationId::from([0xCC; 32])),
+                    ),
+                    &CUT,
+                    &FixedAuthorizer(true),
+                )
+                .unwrap();
+                (is_live(&store, &gid, genesis.account_id(), device), events)
+            })
+            .collect();
+
+        assert!(
+            !verdicts[0].0 && !verdicts[1].0,
+            "the carried application decides, so both replicas unbind the device"
+        );
+        assert_eq!(
+            verdicts[0].1.len(),
+            1,
+            "a replica whose target moved still takes the narrowing"
+        );
+        assert_eq!(
+            verdicts[0].1, verdicts[1].1,
+            "and owes the same rotation as one that never folded the metadata"
+        );
+    }
+
     /// A device is never descoped from its own account namespace: that is where
     /// its certificate and every scope statement live, and no scope names it.
     ///
@@ -12935,6 +13019,7 @@ mod account_plane_apply {
         let forged = GroupOp::AccountDeviceDescoped {
             account,
             device,
+            application: Some(ApplicationId::from([0xCC; 32])),
             scope,
         };
 
@@ -12975,6 +13060,7 @@ mod account_plane_apply {
             &GroupOp::AccountDeviceDescoped {
                 account: other,
                 device,
+                application: Some(ApplicationId::from([0xCC; 32])),
                 scope: Box::new(scope),
             },
             &CUT,

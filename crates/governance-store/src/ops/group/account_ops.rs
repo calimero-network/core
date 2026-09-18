@@ -527,6 +527,7 @@ pub(crate) fn apply_device_descoped(
     ctx: &mut GroupApplyCtx<'_>,
     account: &AccountId,
     device: &DeviceId,
+    application: Option<ApplicationId>,
     scope: &AccountProof<DeviceScope>,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
@@ -543,9 +544,9 @@ pub(crate) fn apply_device_descoped(
                        "account device descoped: a device keeps its account namespace");
         return Ok(());
     }
-    let application = crate::MetaRepository::new(ctx.store())
-        .load(&group_id)?
-        .map(|meta| meta.target.application_id);
+    // The op's own application, not this replica's live metadata row: that row
+    // moves under `TargetApplicationSet`, so two replicas at different fold
+    // depths would answer this question differently and never reconcile.
     if calimero_account::scope_covers(&scope.statement.applications, application) {
         tracing::warn!(group_id = ?group_id, %device,
                        "account device descoped: the carried scope still reaches this group");

@@ -103,12 +103,14 @@ fn refuse_the_root_holders_own_device(store: &Store, device: DeviceId) -> EyreRe
 ///
 /// Never the account namespace: that is where the device's certificate and every
 /// scope statement live, and no scope names it.
+/// Each is paired with the application it targets here, which the op carries so
+/// every replica decides the narrowing against one reading of it.
 fn namespaces_left_behind(
     store: &Store,
     namespaces: &[ContextGroupId],
     account_namespace: ContextGroupId,
     applications: &[ApplicationId],
-) -> EyreResult<Vec<ContextGroupId>> {
+) -> EyreResult<Vec<(ContextGroupId, Option<ApplicationId>)>> {
     let meta = MetaRepository::new(store);
     let mut left = Vec::new();
     for namespace in namespaces {
@@ -117,7 +119,7 @@ fn namespaces_left_behind(
         }
         let application = meta.load(namespace)?.map(|meta| meta.target.application_id);
         if !scope_covers(applications, application) {
-            left.push(*namespace);
+            left.push((*namespace, application));
         }
     }
     Ok(left)
@@ -200,10 +202,11 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                 let left =
                     namespaces_left_behind(&store, &namespaces, account_namespace, &applications)?;
                 let mut outcomes = Vec::with_capacity(namespaces.len());
-                for namespace in &left {
+                for (namespace, application) in &left {
                     let op = GroupOp::AccountDeviceDescoped {
                         account,
                         device,
+                        application: *application,
                         scope: Box::new(cached.scope.clone()),
                     };
                     match calimero_governance_store::withdraw_device_in(
@@ -243,7 +246,7 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                 )
                 .await;
                 for (namespace, outcome) in bound {
-                    if left.contains(&namespace) {
+                    if left.iter().any(|(left, _)| *left == namespace) {
                         continue;
                     }
                     outcomes.push((namespace, outcome));

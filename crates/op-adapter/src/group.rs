@@ -97,10 +97,13 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         // avoid. It records a scope floor instead, so a later link under a wider
         // scope re-binds the same device. A statement that does not authorise
         // this device is not a narrowing of it, and folds as nothing.
+        // `application` is dropped: the projected payload records only the scope
+        // floor, which the epoch alone decides.
         GroupOp::AccountDeviceDescoped {
             account,
             device,
             scope,
+            ..
         } => scope
             .authorises(*account, *device)
             .ok()

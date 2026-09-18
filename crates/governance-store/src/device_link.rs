@@ -1244,6 +1244,7 @@ mod tests {
                 GroupOp::AccountDeviceDescoped {
                     account: cert.statement.account,
                     device,
+                    application: Some(app(APP_ONE)),
                     scope: Box::new(AccountProof {
                         genesis: cert.genesis,
                         chain: vec![],

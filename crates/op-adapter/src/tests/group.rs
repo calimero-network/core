@@ -288,6 +288,7 @@ fn a_governance_descope_carries_its_scope_epoch_and_only_for_its_own_device() {
             &GroupOp::AccountDeviceDescoped {
                 account,
                 device,
+                application: None,
                 scope: scope(device),
             },
         ),
@@ -305,6 +306,7 @@ fn a_governance_descope_carries_its_scope_epoch_and_only_for_its_own_device() {
             &GroupOp::AccountDeviceDescoped {
                 account,
                 device,
+                application: None,
                 scope: scope(sibling),
             },
         ),

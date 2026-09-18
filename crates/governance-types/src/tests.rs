@@ -2370,6 +2370,7 @@ fn an_oversized_descoped_application_list_is_refused() {
         GroupOp::AccountDeviceDescoped {
             account,
             device,
+            application: None,
             scope: Box::new(AccountProof {
                 genesis,
                 chain: vec![],
@@ -2399,9 +2400,11 @@ fn the_descoped_op_is_the_last_ordinal_and_round_trips() {
         0,
     )
     .expect("sign");
+    let target = ApplicationId::from([0x2F; 32]);
     let op = GroupOp::AccountDeviceDescoped {
         account,
         device,
+        application: Some(target),
         scope: Box::new(AccountProof {
             genesis,
             chain: vec![],
@@ -2414,7 +2417,8 @@ fn the_descoped_op_is_the_last_ordinal_and_round_trips() {
     let decoded: GroupOp = borsh::from_slice(&bytes).expect("decode");
     assert!(matches!(
         decoded,
-        GroupOp::AccountDeviceDescoped { ref scope, .. } if scope.statement.scope_epoch == 3
+        GroupOp::AccountDeviceDescoped { ref scope, application, .. }
+            if scope.statement.scope_epoch == 3 && application == Some(target)
     ));
     assert_eq!(op.op_kind_label(), "account_device_descoped");
 }
