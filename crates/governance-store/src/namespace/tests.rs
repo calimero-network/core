@@ -5234,7 +5234,7 @@ fn ackable_members_counts_this_accounts_other_device() {
     )
     .expect("the root certifies a second device");
     let _bound = crate::AccountBindingRepository::new(&store)
-        .apply_link(&gid, &genesis, &[], &cert)
+        .apply_link(&gid, &genesis, &[], &cert, crate::JOIN_SCOPE_EPOCH)
         .expect("store the binding")
         .expect("the binding is admissible");
 
@@ -5308,7 +5308,7 @@ fn ackable_members_ignores_a_revoked_sibling_device() {
     .expect("the root certifies a second device");
     let bindings = crate::AccountBindingRepository::new(&store);
     let _bound = bindings
-        .apply_link(&gid, &genesis, &[], &cert)
+        .apply_link(&gid, &genesis, &[], &cert, crate::JOIN_SCOPE_EPOCH)
         .expect("store the binding")
         .expect("the binding is admissible");
     bindings
