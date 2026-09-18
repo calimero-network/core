@@ -148,6 +148,9 @@ pub enum OpPayload {
         chain: Vec<RootKeyHandoff>,
         /// The root-signed grant being folded.
         cert: DeviceCert,
+        /// Epoch of the root-signed scope the link was made under; `0` when it
+        /// carries none (a join, a genesis). Ordered against the descope floor.
+        scope_epoch: u32,
     },
     /// Withdraw a device from an account, at this cut.
     ///
@@ -228,5 +231,20 @@ pub enum OpPayload {
     Opaque {
         /// The group whose key would decrypt this op.
         group: ContextGroupId,
+    },
+
+    /// Unbind a device in this scope: its account replaced the scope with one that
+    /// no longer reaches here.
+    ///
+    /// Not terminal, unlike [`Self::DeviceRevoked`]: the id is not spent, and a
+    /// link above the floor this raises binds it again.
+    DeviceDescoped {
+        /// The account whose device it is; the floor is keyed by both, so another
+        /// account's statement cannot raise this device's.
+        account: AccountId,
+        /// The device being unbound here.
+        device: DeviceId,
+        /// Epoch of the root-signed scope that stopped reaching this scope.
+        scope_epoch: u32,
     },
 }

@@ -48,6 +48,19 @@ fn a_governance_device_link_reaches_the_projection() {
             chain: vec![],
             cert,
             endorsement: AccountMemberEndorsement::sign(&root, account).expect("sign endorsement"),
+            scope: Box::new(calimero_account::AccountProof {
+                genesis,
+                chain: vec![],
+                statement: calimero_account::DeviceScope::sign(
+                    &root,
+                    account,
+                    device,
+                    vec![],
+                    0,
+                    0,
+                )
+                .expect("sign scope"),
+            }),
         },
     )
     .expect("the account ops must map to a unified payload, not fold to Noop");
@@ -244,4 +257,102 @@ fn membership_plane_fold_add_remove_readd() {
         None,
         "final removal drops the member"
     );
+}
+
+/// The payload carries the epoch, not the proof, so this encoder is where the
+/// root signature is checked - and a statement naming another device is not one.
+#[test]
+fn a_governance_descope_carries_its_scope_epoch_and_only_for_its_own_device() {
+    let root = PrivateKey::from([2u8; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [6u8; 16]);
+    let group = ContextGroupId::from([9u8; 32]);
+    let scope = |device| {
+        Box::new(calimero_account::AccountProof {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(&root, account, device, vec![], 4, 0)
+                .expect("sign scope"),
+        })
+    };
+
+    assert_eq!(
+        payload_from_group_op(
+            group,
+            &GroupOp::AccountDeviceDescoped {
+                account,
+                device,
+                application: None,
+                scope: scope(device),
+            },
+        ),
+        Some(OpPayload::DeviceDescoped {
+            account,
+            device,
+            scope_epoch: 4,
+        })
+    );
+
+    let sibling = DeviceId::mint(account, [7u8; 16]);
+    assert_eq!(
+        payload_from_group_op(
+            group,
+            &GroupOp::AccountDeviceDescoped {
+                account,
+                device,
+                application: None,
+                scope: scope(sibling),
+            },
+        ),
+        None,
+        "a statement that does not authorise this device is not a narrowing of it"
+    );
+}
+
+/// A link folded at epoch 0 would be unbindable by any statement the account
+/// signs afterwards.
+#[test]
+fn a_governance_device_link_carries_its_scope_epoch() {
+    let root = PrivateKey::from([3u8; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [8u8; 16]);
+    let cert = DeviceCert::sign(
+        &root,
+        account,
+        device,
+        &PrivateKey::from([8u8; 32]).public_key(),
+        &KemPublicKey::from([8u8; 32]),
+        0,
+        0,
+    )
+    .expect("sign cert");
+
+    let payload = payload_from_group_op(
+        ContextGroupId::from([9u8; 32]),
+        &GroupOp::AccountDeviceLinked {
+            genesis,
+            chain: vec![],
+            cert,
+            endorsement: AccountMemberEndorsement::sign(&root, account).expect("sign endorsement"),
+            scope: Box::new(calimero_account::AccountProof {
+                genesis,
+                chain: vec![],
+                statement: calimero_account::DeviceScope::sign(
+                    &root,
+                    account,
+                    device,
+                    vec![],
+                    7,
+                    0,
+                )
+                .expect("sign scope"),
+            }),
+        },
+    );
+    assert!(matches!(
+        payload,
+        Some(OpPayload::DeviceLinked { scope_epoch: 7, .. })
+    ));
 }

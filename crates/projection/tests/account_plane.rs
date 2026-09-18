@@ -127,6 +127,11 @@ impl Account {
 
     /// The `DeviceLinked` op this device would author into a scope.
     fn link_op(&self, device: &Device, ns: u64, parents: Vec<[u8; 32]>) -> Op {
+        self.link_op_at(device, ns, parents, 0)
+    }
+
+    /// The same link, made under a root-signed scope at `scope_epoch`.
+    fn link_op_at(&self, device: &Device, ns: u64, parents: Vec<[u8; 32]>, scope_epoch: u32) -> Op {
         device.sign_op(
             ns,
             parents,
@@ -134,6 +139,28 @@ impl Account {
                 genesis: self.genesis,
                 chain: self.chain.clone(),
                 cert: device.cert,
+                scope_epoch,
+            },
+        )
+    }
+
+    /// The narrowing this account's `signer` publishes to take `device` out of
+    /// this scope at `scope_epoch`.
+    fn descope_op(
+        &self,
+        device: &Device,
+        signer: &Device,
+        ns: u64,
+        parents: Vec<[u8; 32]>,
+        scope_epoch: u32,
+    ) -> Op {
+        signer.sign_op(
+            ns,
+            parents,
+            OpPayload::DeviceDescoped {
+                account: self.id,
+                device: device.id,
+                scope_epoch,
             },
         )
     }
@@ -467,6 +494,7 @@ fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
             genesis: victim.genesis, // public data
             chain: vec![forged],
             cert: phone.cert, // not signable by Mallory; the link WILL be refused
+            scope_epoch: 0,
         },
     );
     fx.push(poison);
@@ -504,6 +532,7 @@ fn an_overlong_handoff_chain_absorbs_nothing() {
             genesis: alice.genesis,
             chain: padded,
             cert: phone.cert,
+            scope_epoch: 0,
         },
     );
     fx.push(link);
@@ -565,6 +594,7 @@ fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
             genesis: victim.genesis,
             chain: vec![forged],
             cert: phone.cert,
+            scope_epoch: 0,
         },
     ));
 
@@ -682,6 +712,7 @@ fn the_adversarial_account_workload_converges() {
                 genesis: alice.genesis,
                 chain: vec![forged_handoff],
                 cert: honest.cert,
+                scope_epoch: 0,
             },
         ),
     ];
@@ -1201,6 +1232,7 @@ fn a_link_must_be_signed_by_the_device_it_enrolls() {
             genesis: alice.genesis,
             chain: alice.chain.clone(),
             cert: laptop.cert,
+            scope_epoch: 0,
         },
     );
     assert_eq!(
@@ -1226,6 +1258,7 @@ fn a_certificate_cannot_be_replayed_onto_another_account() {
             genesis: mallory.genesis,
             chain: vec![],
             cert: phone.cert,
+            scope_epoch: 0,
         },
     );
     assert!(
@@ -1467,6 +1500,7 @@ fn no_unauthorized_op_writes_another_accounts_plane_state() {
                     genesis: victim.genesis,
                     chain: vec![forged],
                     cert: phone.cert,
+                    scope_epoch: 0,
                 },
             )],
         ),
@@ -1479,6 +1513,7 @@ fn no_unauthorized_op_writes_another_accounts_plane_state() {
                     genesis: victim.genesis,
                     chain: vec![],
                     cert: mallory_device.cert,
+                    scope_epoch: 0,
                 },
             )],
         ),
@@ -1604,6 +1639,101 @@ fn a_revocation_tombstone_is_written_unconditionally_and_only_authz_stops_it() {
     );
 }
 
+// ------------------------------------------------------------------ scope --
+
+/// A narrowing withdraws the binding without spending the device id, and a
+/// re-link made under a wider scope binds the same device again.
+///
+/// The property the descope exists for: unlike a revocation, it is not terminal.
+#[test]
+fn a_narrowing_withdraws_a_binding_and_a_wider_scope_restores_it() {
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let phone = alice.enroll(11, 0);
+    let laptop = alice.enroll(12, 0);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(alice.link_op_at(&phone, 40, fx.head.clone(), 1));
+    fx.push(alice.link_op(&laptop, 41, fx.head.clone()));
+    assert!(ScopeState::from_ops(&fx.log)
+        .acl_view()
+        .devices
+        .contains_key(&phone.id));
+
+    fx.push(alice.descope_op(&phone, &laptop, 50, fx.head.clone(), 2));
+    let view = ScopeState::from_ops(&fx.log).acl_view();
+    assert!(
+        !view.devices.contains_key(&phone.id),
+        "a narrowed device speaks for nobody in this scope"
+    );
+    assert!(
+        !view.revoked_devices.contains(&phone.id),
+        "and the id is not spent — that is what separates this from a revocation"
+    );
+    assert!(
+        view.devices.contains_key(&laptop.id),
+        "the account's other devices are untouched"
+    );
+
+    fx.push(alice.link_op_at(&phone, 60, fx.head.clone(), 3));
+    assert!(
+        ScopeState::from_ops(&fx.log)
+            .acl_view()
+            .devices
+            .contains_key(&phone.id),
+        "a link above the floor re-binds the same device, with no re-enrolment"
+    );
+}
+
+/// A narrowing signed under a scope the binding already outranks changes
+/// nothing: only a strictly higher epoch supersedes.
+#[test]
+fn a_narrowing_below_the_link_leaves_the_binding_standing() {
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let phone = alice.enroll(11, 0);
+    let laptop = alice.enroll(12, 0);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(alice.link_op_at(&phone, 40, fx.head.clone(), 5));
+    fx.push(alice.link_op(&laptop, 41, fx.head.clone()));
+    fx.push(alice.descope_op(&phone, &laptop, 50, fx.head.clone(), 2));
+
+    assert!(
+        ScopeState::from_ops(&fx.log)
+            .acl_view()
+            .devices
+            .contains_key(&phone.id),
+        "a statement the account has already superseded cannot unbind"
+    );
+}
+
+/// The floor is keyed by account AND device, so another account's root cannot
+/// raise it — the same rule the live store's floor key hashes both into.
+#[test]
+fn another_accounts_narrowing_cannot_withdraw_this_binding() {
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let mallory = Account::new(20);
+    let phone = alice.enroll(11, 0);
+    let mallory_device = mallory.enroll(21, 0);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
+    fx.push(alice.link_op(&phone, 40, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 41, fx.head.clone()));
+
+    // Mallory's statement names its OWN account beside Alice's device.
+    fx.push(mallory.descope_op(&phone, &mallory_device, 50, fx.head.clone(), 9));
+    assert!(
+        ScopeState::from_ops(&fx.log)
+            .acl_view()
+            .devices
+            .contains_key(&phone.id),
+        "a floor raised under another account's key is not this device's floor"
+    );
+}
+
 // ------------------------------------------------------------ convergence --
 
 #[test]
@@ -1632,8 +1762,11 @@ fn the_account_plane_converges_under_every_delivery_order() {
     let base = fx.head.clone();
     let mut ops = vec![
         alice.link_op(&a_phone, 40, base.clone()),
-        alice.link_op(&a_laptop, 41, base.clone()),
+        alice.link_op_at(&a_laptop, 41, base.clone(), 1),
         bob.link_op(&b_phone, 42, base.clone()),
+        // A narrowing of the laptop that its own link outranks, so the two are
+        // order-sensitive in the direction the floor decides.
+        alice.descope_op(&a_laptop, &a_phone, 43, base.clone(), 1),
     ];
     ops.push(a_laptop.sign_op(
         50,
@@ -1674,7 +1807,7 @@ fn the_account_plane_converges_under_every_delivery_order() {
         );
         checked += 1;
     });
-    assert_eq!(checked, 120, "all 5! orders should have been exercised");
+    assert_eq!(checked, 720, "all 6! orders should have been exercised");
 }
 
 #[test]

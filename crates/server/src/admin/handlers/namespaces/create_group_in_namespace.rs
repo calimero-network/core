@@ -64,6 +64,12 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     }
 
+    // Before `participate_in`, which mints rather than refuses: a device the
+    // account narrowed out of this namespace must not author a subgroup here.
+    if let Err(err) = calimero_context::account_follow::require_reach(&state.store, &namespace_id) {
+        return parse_api_error(err).into_response();
+    }
+
     let (resolved_ns_id, signer_pk, sk_bytes) =
         match NamespaceRepository::new(&state.store).participate_in(&namespace_id) {
             Ok(r) => r,

@@ -1176,7 +1176,7 @@ mod recipient_tests {
         repo.record_endorser(&gid, account, &account)
             .expect("endorse");
         let device = repo
-            .apply_link(&gid, &genesis, &[], &cert)
+            .apply_link(&gid, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("admitted")
             .device;
@@ -1309,7 +1309,7 @@ mod recipient_tests {
         repo.record_endorser(&gid, account, &account)
             .expect("endorse");
         let device = repo
-            .apply_link(&gid, &genesis, &[], &cert)
+            .apply_link(&gid, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("admitted")
             .device;

@@ -19,7 +19,7 @@
 //! keys were unchanged.
 
 use calimero_account::{
-    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey,
+    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope, KemPublicKey,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
@@ -28,9 +28,9 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountDeviceCert, NodeAccountNamespace, NodeAccountNamespaceValue, NodeAccountRoot,
-    NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
-    NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
+    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
+    NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -372,8 +372,8 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
 pub struct KnownDeviceCert {
     /// The proof exactly as a link op carries it: genesis, handoff chain, cert.
     pub proof: AccountProof<DeviceCert>,
-    /// Applications this device may speak for. **Empty means all of them.**
-    pub applications: Vec<ApplicationId>,
+    /// The root-signed scope in force, which a link re-presents unchanged.
+    pub scope: AccountProof<DeviceScope>,
 }
 
 impl KnownDeviceCert {
@@ -383,6 +383,12 @@ impl KnownDeviceCert {
         self.proof.statement.device
     }
 
+    /// Applications this device may speak for. **Empty means all of them.**
+    #[must_use]
+    pub fn applications(&self) -> &[ApplicationId] {
+        &self.scope.statement.applications
+    }
+
     /// Does this device's scope reach a namespace serving `application`?
     ///
     /// `None` is a namespace whose metadata has not synced yet, so it names no
@@ -390,8 +396,7 @@ impl KnownDeviceCert {
     /// the pairing fan-out gives such a namespace.
     #[must_use]
     pub fn covers(&self, application: Option<ApplicationId>) -> bool {
-        self.applications.is_empty()
-            || application.is_some_and(|app| self.applications.contains(&app))
+        calimero_account::scope_covers(self.applications(), application)
     }
 }
 
@@ -1136,7 +1141,7 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store scan or read failure.
-    pub fn legacy_device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+    pub fn legacy_device_certs(&self) -> EyreResult<Vec<NodeAccountDeviceCertValue>> {
         let keys = collect_keys_with_prefix(
             self.store,
             NodeAccountDeviceCert::new([0u8; 32]),
@@ -1147,10 +1152,7 @@ impl<'a> NodeDeviceRepository<'a> {
         let mut certs = Vec::with_capacity(keys.len());
         for key in keys {
             if let Some(value) = handle.get::<NodeAccountDeviceCert>(&key)? {
-                certs.push(KnownDeviceCert {
-                    proof: value.proof,
-                    applications: value.applications,
-                });
+                certs.push(value);
             }
         }
         Ok(certs)
@@ -1307,7 +1309,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::test_fixtures::{test_group_id, test_store, test_store_without_account_root};
+    use crate::test_fixtures::{
+        device_scope, test_group_id, test_store, test_store_without_account_root,
+    };
     use crate::AccountBindingRepository;
     use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
@@ -1351,16 +1355,17 @@ mod tests {
         let two = ApplicationId::from([0x72; 32]);
         let proof = certified(&PrivateKey::from([0x34; 32]), [0x44; 32], [0x54; 32]);
 
+        let root = PrivateKey::from([0x34; 32]);
         let everything = KnownDeviceCert {
+            scope: device_scope(&root, &proof.statement, Vec::new(), 0),
             proof: proof.clone(),
-            applications: Vec::new(),
         };
         assert!(everything.covers(Some(one)));
         assert!(everything.covers(None));
 
         let narrow = KnownDeviceCert {
+            scope: device_scope(&root, &proof.statement, vec![one], 0),
             proof,
-            applications: vec![one],
         };
         assert!(narrow.covers(Some(one)));
         assert!(!narrow.covers(Some(two)));
@@ -1535,7 +1540,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(store)
-            .apply_link(ns, &held.genesis, &[], &cert)
+            .apply_link(ns, &held.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
         held
@@ -1666,7 +1671,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &alice, &[], &cert)
+            .apply_link(&ns, &alice, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2116,7 +2121,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .apply_link(&ns, &mine.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
         assert!(
@@ -2409,7 +2414,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .apply_link(&ns, &mine.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2464,7 +2469,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &alice, &[], &cert)
+            .apply_link(&ns, &alice, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2568,7 +2573,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(store)
-            .apply_link(ns, &genesis, &[], &cert)
+            .apply_link(ns, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
         device
@@ -2659,7 +2664,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .apply_link(&ns, &mine.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2696,7 +2701,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &alice, &[], &cert)
+            .apply_link(&ns, &alice, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -3074,7 +3079,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&refuses, &paired.genesis, &[], &cert)
+            .apply_link(&refuses, &paired.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 

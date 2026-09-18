@@ -44,6 +44,26 @@ use super::super::*;
 /// `SyncManager::recover_missing_group_keys` across two nodes and a partition,
 /// which is a merobox scenario (`account-pairing-missed-publish`) rather than
 /// anything a single store can show.
+/// The root-signed scope a link carries; empty, so it reaches every group.
+fn link_scope(
+    root_sk: &calimero_primitives::identity::PrivateKey,
+    cert: &calimero_account::DeviceCert,
+    scope_epoch: u32,
+) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
+    Box::new(calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            vec![],
+            scope_epoch,
+            0,
+        )
+        .expect("the account root signs its device's scope"),
+    })
+}
 #[test]
 fn a_key_delivery_is_sealed_at_the_publish_boundary() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
@@ -7384,7 +7404,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
         .record_endorser(&ns_gid, account, &account)
         .unwrap();
     let _ = bindings
-        .apply_link(&ns_gid, &genesis, &[], &cert)
+        .apply_link(&ns_gid, &genesis, &[], &cert, 0)
         .unwrap()
         .expect("admitted");
 
@@ -8242,6 +8262,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
             &squatter.genesis,
             &squatter.chain,
             &squatter.statement,
+            0,
         )
         .expect("seed the conflicting device claim");
 
@@ -8643,6 +8664,7 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
             &account.genesis,
             &account.chain,
             &account.statement,
+            0,
         )
         .expect("store")
         .expect("admitted");
@@ -8699,6 +8721,7 @@ fn a_revoked_device_resolves_to_nothing() {
             &account.genesis,
             &account.chain,
             &account.statement,
+            0,
         )
         .expect("store")
         .expect("admitted");
@@ -9089,6 +9112,7 @@ fn provisioning_the_signing_key_joins_nothing() {
 /// readiness problem at the caller. A FAIL would mean the re-drive itself has a
 /// gap for this op, which would be a live bug on cleartext master too.
 #[test]
+
 fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
     use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
@@ -9149,6 +9173,7 @@ fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
         chain: vec![],
         cert,
         endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+        scope: link_scope(root.signing_key(), &cert, 0),
     };
 
     // Encrypted under the namespace key, exactly as `publish_link_and_key` sends
@@ -9258,6 +9283,7 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
         chain: vec![],
         cert,
         endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+        scope: link_scope(root.signing_key(), &cert, 0),
     };
 
     let namespace_key = [0x66u8; 32];

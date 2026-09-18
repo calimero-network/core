@@ -33,7 +33,7 @@ use calimero_context_client::group::{
 };
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{revoke_device_in, NamespaceRepository, NodeDeviceRepository};
+use calimero_governance_store::{withdraw_device_in, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -218,7 +218,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
                         }
                     }
 
-                    match revoke_device_in(
+                    match withdraw_device_in(
                         &store,
                         &node_client,
                         &ack_router,

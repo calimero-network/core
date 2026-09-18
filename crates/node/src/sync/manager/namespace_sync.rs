@@ -2418,7 +2418,7 @@ impl SyncManager {
 
         if let Some(namespace) = devices.account_namespace()? {
             let registry = calimero_governance_store::AccountDeviceRegistry::new(store, namespace);
-            if let Some((known, _epoch)) = registry.device(device)? {
+            if let Some(known) = registry.device(device)? {
                 if known.proof.statement.sign_pk == answering_identity {
                     return Ok(borsh::to_vec(&known.proof)?);
                 }
@@ -3283,8 +3283,21 @@ mod own_device_proof_tests {
             .expect("follow the account namespace");
         let answering = PrivateKey::from([0x42; 32]).public_key();
         let proof = certify(&root_sk, &held, answering);
+        let scope = calimero_account::AccountProof {
+            genesis: proof.genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                &root_sk,
+                proof.statement.account,
+                proof.statement.device,
+                vec![],
+                0,
+                0,
+            )
+            .expect("the account root signs the device's scope"),
+        };
         assert!(AccountDeviceRegistry::new(&store, ns())
-            .record(&proof, &[], 0)
+            .record(&proof, &scope)
             .expect("record the row"));
 
         let bytes =

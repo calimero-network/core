@@ -31,6 +31,29 @@ pub fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
     (root_sk, genesis)
 }
 
+/// The root-signed scope a registry row - and every link made under it - carries.
+/// `root_sk` is the same root that signed `cert`, so it names the same genesis.
+pub fn device_scope(
+    root_sk: &PrivateKey,
+    cert: &calimero_account::DeviceCert,
+    applications: Vec<ApplicationId>,
+    scope_epoch: u32,
+) -> calimero_account::AccountProof<calimero_account::DeviceScope> {
+    calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            applications,
+            scope_epoch,
+            0,
+        )
+        .expect("the account root signs its device's scope"),
+    }
+}
+
 /// The agreement secret a fixture-issued device holds, derived from the device
 /// seed so any test can recover it.
 ///
@@ -310,6 +333,7 @@ pub fn enrol_member(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicK
             &credential.genesis,
             &credential.chain,
             &credential.statement,
+            0,
         )
         .expect("store the binding");
     bindings
@@ -562,6 +586,7 @@ pub fn record_credential(
             &credential.genesis,
             &credential.chain,
             &credential.statement,
+            0,
         )
         .expect("record the binding");
 }
