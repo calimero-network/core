@@ -16,10 +16,10 @@ use crate::group::{
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
     GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
-    JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest,
-    LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
+    JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LabelDeviceRequest,
+    LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
     RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest,
     RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
@@ -591,6 +591,10 @@ pub enum ContextMessage {
     RescopeDevice {
         request: RescopeDeviceRequest,
         outcome: oneshot::Sender<<RescopeDeviceRequest as Message>::Result>,
+    },
+    LabelDevice {
+        request: LabelDeviceRequest,
+        outcome: oneshot::Sender<<LabelDeviceRequest as Message>::Result>,
     },
     RotateGroupKey {
         request: RotateGroupKeyRequest,

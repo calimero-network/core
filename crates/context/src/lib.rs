@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use actix::prelude::{ActorResponse, WrapFuture};
 use actix::{Actor, AsyncContext};
@@ -440,6 +440,12 @@ pub struct ContextManager {
     /// existing one is still active (e.g. sleeping in its backoff delay).
     active_propagators: HashSet<ContextGroupId>,
 
+    /// When this node last published a name for each device, so a rename loop
+    /// cannot turn one admin call per keystroke into one op per keystroke.
+    /// Node-local and never consulted by an apply: two nodes with different
+    /// clocks must still fold the same ops to the same row.
+    pub(crate) device_label_published: HashMap<calimero_account::DeviceId, Instant>,
+
     /// Per-namespace governance DAG. Single DAG per namespace containing both
     /// root ops and encrypted group-scoped ops.
     ///
@@ -506,6 +512,7 @@ impl ContextManager {
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
+            device_label_published: HashMap::new(),
             namespace_dags: BoundedCache::new(MAX_CACHED_NAMESPACE_DAGS, "namespace_dags"),
             ack_router,
             config: ContextManagerConfig::default(),
