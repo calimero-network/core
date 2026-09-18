@@ -311,6 +311,45 @@ jobs:
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary$suffix"
           done
 
+      # `calimero-tee-verify` cannot join $BINARIES: those are expanded as
+      # `-p <name>`, and this is a *binary target* inside
+      # `calimero-tee-attestation`, behind the `cli` feature. That feature is off
+      # by default so an ordinary library build pulls no async runtime, which is
+      # exactly why nothing published it until now.
+      #
+      # It ships because mdma's manager has to verify the TDX quote a fleet node
+      # submits at registration, and the manager is Python — it shells out to
+      # this. Without it on PATH the manager fails closed: `POST
+      # /api/fleet/nodes/register` returns 503 and the node replicates but never
+      # becomes a relay. That is the state the cloud deployment was in.
+      #
+      # Linux only, because that is the one consumer (a linux/amd64 container
+      # image). Building it for macOS and Windows would add release surface
+      # nobody fetches, and a break there would red a release over a binary no
+      # one asked for — the same reasoning WINDOWS_BINARIES already applies.
+      - name: Build calimero-tee-verify (Linux only)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          # The same property the merod guard above protects, for the binary
+          # that JUDGES quotes rather than produces them. With `mock-attestation`
+          # compiled in, `is_mock_quote` / `verify_mock_attestation` exist and a
+          # MOCK_TDX_QUOTE_V1 blob verifies — so a released verifier carrying it
+          # would accept a forged quote from anyone who could post one. With it
+          # off, that blob fails real DCAP parsing and is rejected.
+          if cargo tree -e features -p calimero-tee-attestation --features cli | grep -q 'mock-attestation'; then
+            echo "::error::mock-attestation leaked into the released calimero-tee-verify"
+            exit 1
+          fi
+          echo "OK: mock-attestation is not enabled in calimero-tee-verify"
+
+          cargo build -p calimero-tee-attestation --bin calimero-tee-verify \
+            --features cli --release --target ${{ matrix.target }}
+
+          # Same `<binary>_<target>.tar.gz` shape as every other asset, so a
+          # consumer resolves it by target triple exactly as it resolves merod.
+          tar -czf artifacts/calimero-tee-verify_${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release calimero-tee-verify
+
       - name: Build profiling binaries (with frame pointers and debug symbols)
         if: ${{ (github.event_name != 'pull_request' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         run: |
