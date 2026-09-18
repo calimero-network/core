@@ -30,6 +30,9 @@ pub(crate) const DEVICE_REVOCATION_SIGN_DOMAIN: &[u8] = b"calimero.device.revoca
 /// Domain for a root-signed device scope.
 pub(crate) const DEVICE_SCOPE_SIGN_DOMAIN: &[u8] = b"calimero.device.scope.v1";
 
+/// Domain for a root-signed device label.
+pub(crate) const DEVICE_LABEL_SIGN_DOMAIN: &[u8] = b"calimero.device.label.v1";
+
 /// Domain for a pairing device's statement over the key material it minted.
 pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v1";
 
@@ -80,6 +83,7 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     ACCOUNT_ENDORSEMENT_SIGN_DOMAIN,
     DEVICE_REVOCATION_SIGN_DOMAIN,
     DEVICE_SCOPE_SIGN_DOMAIN,
+    DEVICE_LABEL_SIGN_DOMAIN,
     PAIRING_STATEMENT_SIGN_DOMAIN,
     PAIRING_CONFIRMATION_DOMAIN,
     WARRANT_SIGN_DOMAIN,

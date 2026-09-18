@@ -420,6 +420,29 @@ It records the highest scope epoch a link was made under and the highest epoch a
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
 
+**A device carries a name, and the name replicates.**
+A node-local alias names a device on one machine only, so a phone named on the laptop still shows as an id on the phone.
+The replicated name is a separate field, set through its own route:
+
+```bash
+PUT /admin-api/account/devices/<DEVICE_ID>/label
+{ "label": "Work laptop" }
+```
+
+It publishes `AccountDeviceLabelled` into the account namespace alone, and `GET /admin-api/account/devices` carries the result as each entry's `label`.
+The name is display only - it gates nothing, which is why it is the one account op the unified plane does not fold at all.
+Who may set it follows from who can sign: the node holding the account root attaches a root-signed statement and may name any device of the account, while a paired device holds no root and so may name only itself, where its own binding in the account namespace is the authority.
+Asking a paired node to name another device is a `403` rather than a publish nobody would accept.
+A device the account revoked has no live binding left, so it cannot rename itself on its way out, though the name it already carries stays in the listing beside its `revoked: true`.
+Names converge the way scopes do: the higher label epoch wins, and two minted at one epoch tie on the name itself, so replicas folding a race in opposite orders keep the same row.
+The name is bounded at the trust boundary rather than at the route alone - trimmed, non-empty, at most 64 bytes and free of control characters - because it is rendered verbatim beside other devices, where a newline forges the rows around it.
+Renames are also spaced out per device by a node-local cooldown, answered as `429`; it is deliberately not part of the apply, so two nodes with different clocks still fold the same ops to the same row.
+
+**A revoked device can say why it is unpaired.**
+Folding its own withdrawal is what releases a device's row, after which the node simply stops being paired and has nothing to point at.
+So the release records the account and device it lost, and `GET /admin-api/identity` reports it as `revokedFrom`.
+The field is absent on a node no revocation has reached, and it is dropped the moment the node pairs again or gets an account root of its own, since the question it answers has stopped being asked.
+
 **A device paired before all this has to learn the id once.**
 The desktop shows a link code carrying the root key and the account namespace id; running the idempotent `pair-init` on it mints nothing and starts the device following the account namespace.
 A relink on the holder then binds it there and publishes its certificate, and from that point the device converges like any other.

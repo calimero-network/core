@@ -356,3 +356,26 @@ fn a_governance_device_link_carries_its_scope_epoch() {
         Some(OpPayload::DeviceLinked { scope_epoch: 7, .. })
     ));
 }
+
+/// Pinned because a fold arm for it would put a rename into the scope root, and
+/// make a cosmetic edit a divergence.
+#[test]
+fn a_device_label_is_not_projected() {
+    let root = PrivateKey::from([0x41; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [0x42; 16]);
+
+    let payload = payload_from_group_op(
+        ContextGroupId::from([0x43; 32]),
+        &GroupOp::AccountDeviceLabelled {
+            account,
+            device,
+            label: "Work laptop".to_owned(),
+            label_epoch: 0,
+            root_proof: None,
+        },
+    );
+
+    assert!(payload.is_none());
+}

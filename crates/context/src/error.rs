@@ -247,6 +247,40 @@ pub enum ContextError {
         device: String,
     },
 
+    /// A `400`: the name is empty, untrimmed, too long, or carries control
+    /// characters, any of which would render as something other than a name.
+    #[error(
+        "a device name must be trimmed, non-empty, at most {limit} bytes and free \
+         of control characters"
+    )]
+    DeviceLabelInvalid {
+        /// The cap the wire format puts on a device label.
+        limit: usize,
+    },
+
+    /// A `403`: a paired device holds no account root, so it can sign a
+    /// statement about no device but its own.
+    #[error(
+        "this node may name only its own device ({own}), not {device}; run the \
+         rename on the node holding the account root"
+    )]
+    DeviceLabelNotOwn {
+        /// The device the caller named (for the message only).
+        device: String,
+        /// The device this node presents (for the message only).
+        own: String,
+    },
+
+    /// A `429`: renaming is cheap to ask for and costs a published op each time,
+    /// so this node spaces out its own.
+    #[error("device {device} was renamed less than {cooldown_secs}s ago; try again shortly")]
+    DeviceRenamedTooRecently {
+        /// The device the caller named (for the message only).
+        device: String,
+        /// How long this node makes a caller wait between renames.
+        cooldown_secs: u64,
+    },
+
     /// A `403`: the account replaced this device's scope with one that no longer
     /// reaches the namespace, so it may read on but must not author there.
     #[error(

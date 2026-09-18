@@ -27,6 +27,7 @@ struct Draft {
     signing_key: PublicKey,
     applications: Vec<ApplicationId>,
     namespaces: Vec<ContextGroupId>,
+    label: Option<String>,
 }
 
 /// Every device of this node's own account, joined from the account namespace's
@@ -52,13 +53,17 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
     // Replicated, so a device that is not the holder sees every sibling here.
     // Unfiltered on purpose: a revoked device is reported as revoked, not hidden.
     if let Some(namespace) = devices.account_namespace()? {
-        for cert in AccountDeviceRegistry::new(store, namespace).all_devices()? {
+        let registry = AccountDeviceRegistry::new(store, namespace);
+        for cert in registry.all_devices()? {
             let _replaced = by_device.insert(
                 cert.device(),
                 Draft {
                     signing_key: cert.proof.statement.sign_pk,
                     applications: cert.applications().to_vec(),
                     namespaces: Vec::new(),
+                    // Kept for a revoked device too, like the row it sits
+                    // beside: a settings UI renders the name it was known by.
+                    label: registry.label(cert.device())?.map(|row| row.label),
                 },
             );
         }
@@ -74,6 +79,7 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
                     // application" this scope already means when a cert says it.
                     applications: Vec::new(),
                     namespaces: Vec::new(),
+                    label: None,
                 })
                 .namespaces
                 .push(namespace);
@@ -93,6 +99,7 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
                 .into_iter()
                 .map(|namespace| hex::encode(namespace.to_bytes()))
                 .collect(),
+            label: draft.label,
         });
     }
     Ok(Some(entries))
@@ -394,6 +401,61 @@ mod tests {
             .find(|entry| entry.device_id == device)
             .expect("the certified device is reported");
         assert!(entry.namespaces.is_empty());
+    }
+
+    /// The name comes from the replicated registry, not from anything local, and
+    /// it survives revocation beside the row it names.
+    #[test]
+    fn a_named_device_reports_its_name_even_once_revoked() {
+        let (store, root) = seeded_account();
+        let device = remember_cert(
+            &store,
+            &root,
+            [0x11; 32],
+            &PrivateKey::from([0x22; 32]).public_key(),
+            &[],
+        );
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a holder names an account namespace");
+
+        let unnamed = collect(&store).expect("collect").expect("has account");
+        let entry = unnamed
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the device is reported");
+        assert_eq!(
+            entry.label, None,
+            "a device the account never named reports none, not a placeholder"
+        );
+
+        assert!(AccountDeviceRegistry::new(&store, namespace)
+            .record_label(device, "Work laptop", 0)
+            .expect("name it"));
+
+        let named = collect(&store).expect("collect").expect("has account");
+        let entry = named
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the named device is reported");
+        assert_eq!(entry.label.as_deref(), Some("Work laptop"));
+
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns(NS_A), device)
+            .expect("tombstone the device");
+
+        let after = collect(&store).expect("collect").expect("has account");
+        let entry = after
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the revoked device is still reported");
+        assert!(entry.revoked);
+        assert_eq!(
+            entry.label.as_deref(),
+            Some("Work laptop"),
+            "a revoked device is listed, so it is listed under the name it was known by"
+        );
     }
 
     #[test]
