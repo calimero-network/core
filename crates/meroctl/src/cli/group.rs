@@ -10,6 +10,7 @@ pub mod get;
 pub mod join_context;
 pub mod leave;
 pub mod leave_context;
+pub mod member_devices;
 pub mod members;
 pub mod metadata;
 pub mod reparent;
@@ -71,6 +72,7 @@ pub enum GroupSubCommands {
     #[command(alias = "del")]
     Delete(delete::DeleteCommand),
     Members(members::MembersCommand),
+    MemberDevices(member_devices::MemberDevicesCommand),
     Contexts(contexts::ContextsCommand),
     Metadata(metadata::MetadataCommand),
     MemberMetadata(metadata::MemberMetadataCommand),
@@ -95,6 +97,7 @@ impl GroupCommand {
             GroupSubCommands::Get,
             GroupSubCommands::Delete,
             GroupSubCommands::Members,
+            GroupSubCommands::MemberDevices,
             GroupSubCommands::Contexts,
             GroupSubCommands::Metadata,
             GroupSubCommands::MemberMetadata,
