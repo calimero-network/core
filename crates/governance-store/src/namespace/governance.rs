@@ -81,11 +81,25 @@ pub(crate) fn ackable_members(
         return 0;
     }
     let group_id = ContextGroupId::from(namespace_id.to_bytes());
+    // One scan answers both halves: `member_account_in_namespace` is this same
+    // lookup over the same rows, the namespace root being its own namespace.
+    let bindings = match crate::AccountBindingRepository::new(store).live_bindings(&group_id) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+            tracing::warn!(
+                %err,
+                namespace_id = %hex::encode(namespace_id.as_bytes()),
+                "could not read namespace bindings; assuming an ack may come"
+            );
+            return known_subscribers;
+        }
+    };
     // Without the signer's own account every member row reads as somebody else,
     // so fail open loudly rather than wait out a timeout nobody can end.
-    let Some(own) = crate::member_account_in_namespace(store, &group_id, signer_pk)
-        .ok()
-        .flatten()
+    let Some(own) = bindings
+        .iter()
+        .find(|b| b.sign_pk == *signer_pk)
+        .map(|b| b.account)
     else {
         tracing::warn!(
             namespace_id = %hex::encode(namespace_id.as_bytes()),
@@ -94,14 +108,10 @@ pub(crate) fn ackable_members(
         return known_subscribers;
     };
     // This account's other devices count too: a linked device acks like any member.
-    let siblings = crate::AccountBindingRepository::new(store)
-        .live_bindings(&group_id)
-        .map_or(0, |bound| {
-            bound
-                .iter()
-                .filter(|b| b.account == own && b.sign_pk != *signer_pk)
-                .count()
-        });
+    let siblings = bindings
+        .iter()
+        .filter(|b| b.account == own && b.sign_pk != *signer_pk)
+        .count();
     match MembershipRepository::new(store).namespace_accounts(namespace_id) {
         Ok(accounts) => {
             siblings
