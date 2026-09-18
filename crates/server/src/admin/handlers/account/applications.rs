@@ -215,9 +215,8 @@ mod tests {
         assert_eq!(applications[0].application_id, app);
     }
 
-    /// A device the account narrowed must stop reporting the application it lost:
-    /// its participation row stays for a later widening, so participation alone is
-    /// not the same question as "is this application still this device's".
+    /// The participation row stays for a later widening, so participation alone
+    /// does not answer "is this application still this device's".
     #[test]
     fn a_narrowed_device_reports_only_the_applications_it_still_reaches() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));

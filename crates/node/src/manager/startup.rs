@@ -49,10 +49,7 @@ impl NodeManager {
                     Ok(groups) => {
                         for group in groups {
                             // Membership is the account's, and a narrowed device
-                            // of that account reaches fewer namespaces than the
-                            // account does - so this set needs the scope filter
-                            // as much as the device set below. A read that fails
-                            // counts as reaching, as `node_reaches` does.
+                            // of it reaches fewer namespaces than the account does.
                             if !calimero_context::account_follow::node_reaches(
                                 &datastore,
                                 &group.group_id,
@@ -102,10 +99,9 @@ impl NodeManager {
         let _handle = ctx.spawn(
             async move {
                 // Participation, not the device row: the device is node-level now,
-                // so it says nothing about which namespaces to subscribe to. It
-                // is filtered by this device's own scope, which the account-follow
-                // sweep is dropping topics for at the same moment in another
-                // actor - unfiltered, whichever of the two finished last decided.
+                // so it says nothing about which namespaces to subscribe to.
+                // Filtered by this device's scope: unfiltered, this races the
+                // account-follow sweep dropping topics in another actor.
                 let namespaces = match calimero_context::account_follow::namespaces_in_reach(
                     &datastore,
                 ) {

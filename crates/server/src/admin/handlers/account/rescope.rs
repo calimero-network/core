@@ -67,9 +67,8 @@ pub async fn handler(
             let mut skipped = Vec::new();
             for (namespace, outcome) in &resp.outcomes {
                 let namespace_id = hex::encode(namespace.to_bytes());
-                // The wire names are produced here and the match is exhaustive on
-                // purpose: a new outcome has to be given a name rather than fall
-                // into a catch-all and be reported as something it is not.
+                // Exhaustive on purpose: a new outcome gets a wire name rather
+                // than falling into a catch-all and being misreported.
                 let reason = match *outcome {
                     BindOutcome::Descoped { key_rotated } => {
                         descoped.push(RescopeDescopeApiEntry {

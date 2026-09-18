@@ -278,10 +278,8 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 _ => Err(Rejected::NotRootAdmin),
             }
         }
-        // Only the account may narrow its own device: the scope statement rides
-        // in the clear on every link, so without this any member could replay a
-        // superseded one. A sibling device of the same account still can, and
-        // the account re-widening is the remedy.
+        // Only the account may narrow its own device: the statement rides in the
+        // clear on every link, so any member could otherwise replay a superseded one.
         OpPayload::DeviceDescoped {
             account, device, ..
         } => {

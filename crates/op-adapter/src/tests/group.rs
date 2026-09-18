@@ -259,13 +259,8 @@ fn membership_plane_fold_add_remove_readd() {
     );
 }
 
-/// A narrowing must reach the projection as its own payload, carrying the epoch
-/// of the statement that authorised it - and a statement naming another device
-/// must not become one at all.
-///
-/// The epoch is what the fold orders the narrowing against the link with, and
-/// this encoder is where the root signature behind it is checked: the payload
-/// carries the number, not the proof.
+/// The payload carries the epoch, not the proof, so this encoder is where the
+/// root signature is checked - and a statement naming another device is not one.
 #[test]
 fn a_governance_descope_carries_its_scope_epoch_and_only_for_its_own_device() {
     let root = PrivateKey::from([2u8; 32]);
@@ -315,9 +310,8 @@ fn a_governance_descope_carries_its_scope_epoch_and_only_for_its_own_device() {
     );
 }
 
-/// The link carries the epoch its scope was minted at, which is what a later
-/// narrowing has to outrank - a link folded at 0 would be unbindable by any
-/// statement the account signs afterwards.
+/// A link folded at epoch 0 would be unbindable by any statement the account
+/// signs afterwards.
 #[test]
 fn a_governance_device_link_carries_its_scope_epoch() {
     let root = PrivateKey::from([3u8; 32]);

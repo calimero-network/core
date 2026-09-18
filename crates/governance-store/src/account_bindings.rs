@@ -1441,9 +1441,8 @@ mod tests {
         repo.clear_all_for_group(&gid).expect("clear again");
     }
 
-    /// The two equal-epoch boundaries the floor rules turn on, stated once:
-    /// a link AT the floor is refused, and a narrowing AT the binding's stamp
-    /// leaves it bound.
+    /// A link AT the floor is refused; a narrowing AT the binding's stamp leaves
+    /// it bound.
     #[test]
     fn an_equal_scope_epoch_neither_links_nor_unbinds() {
         let store = test_store();

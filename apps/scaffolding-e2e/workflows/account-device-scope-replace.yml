@@ -26,9 +26,8 @@ steps:
     username: dev
     password: dev-password
 
-  # App A is the bundle, because a node that is a member of nothing can only
-  # complete acquisition for one; app B is only ever the application to be
-  # narrowed out of.
+  # App A is the bundle: a node that is a member of nothing can only complete
+  # acquisition for one. App B is only ever the application narrowed out of.
   - name: Install app A (the bundle) on node-1
     type: install_application
     node: scope-replace-node-1
@@ -73,10 +72,8 @@ steps:
     group_id: '{{ns_a1}}'
     service_name: store-a
 
-  # Namespace B1 gets no context: a context against the raw-wasm bundle cannot
-  # name a service, and a scenario that installs the multi-service bundle has to
-  # name one at every `create_context`. Nothing below reads a context in B1 -
-  # the narrowing is asserted on the namespace and device rows.
+  # No context in B1: one against the raw-wasm bundle cannot name a service, and
+  # the narrowing is asserted on the namespace and device rows anyway.
 
   - name: What node-1 speaks as
     type: node_identity

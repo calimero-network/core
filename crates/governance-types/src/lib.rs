@@ -179,11 +179,9 @@ id_newtype! {
 /// `GroupOp::AccountNamespaceLeft`; no prior ordinal moves, so a v12 peer fails
 /// at the version gate rather than partway through a DAG.
 ///
-/// v14: appends `GroupOp::AccountDeviceDescoped` (carrying the application its
-/// publisher resolved, so the apply needs no live read), and `AccountDeviceLinked`
-/// gains the root-signed `scope` the link was made under, so the descope apply
-/// can order itself against it. That is a layout change to an existing variant,
-/// so a v13 peer must reject at the version gate rather than mis-decode.
+/// v14: appends `GroupOp::AccountDeviceDescoped`, and `AccountDeviceLinked` gains
+/// the root-signed `scope` it was made under - a layout change to an existing
+/// variant, so a v13 peer must reject at the gate rather than mis-decode.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 14;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
@@ -671,10 +669,8 @@ pub enum GroupOp {
         account: AccountId,
         /// The device losing its binding in this group.
         device: DeviceId,
-        /// The application this group targeted when the publisher resolved it,
-        /// `None` for a group targeting nothing. Carried rather than read live at
-        /// apply, so a target moved concurrently cannot make two replicas decide
-        /// the same narrowing differently.
+        /// The application this group targeted when the publisher resolved it.
+        /// Carried, not read live: a moved target would split the replicas.
         application: Option<ApplicationId>,
         /// The replacement scope, root-signed. Boxed like the certified op's
         /// proofs: inline it makes the variant too large.

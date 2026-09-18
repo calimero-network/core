@@ -238,9 +238,8 @@ mod tests {
         assert_eq!(rows, vec![[0x01; 32]]);
     }
 
-    /// A device the account narrowed must stop listing the namespace it lost, and
-    /// list it again the moment a wider statement arrives - its participation row
-    /// and local state never move, so nothing has to be re-paired.
+    /// Listed again the moment a wider statement arrives: the participation row and
+    /// local state never move, so nothing has to be re-paired.
     #[test]
     fn a_narrowed_device_lists_only_what_its_scope_still_covers() {
         let app_kept = ApplicationId::from([0x10; 32]);

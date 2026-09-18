@@ -148,9 +148,8 @@ pub enum OpPayload {
         chain: Vec<RootKeyHandoff>,
         /// The root-signed grant being folded.
         cert: DeviceCert,
-        /// The epoch of the root-signed scope the link was made under; `0` for a
-        /// link that carries none (a join, a genesis). Ordered against
-        /// [`Self::DeviceDescoped`]'s floor when the view is read.
+        /// Epoch of the root-signed scope the link was made under; `0` when it
+        /// carries none (a join, a genesis). Ordered against the descope floor.
         scope_epoch: u32,
     },
     /// Withdraw a device from an account, at this cut.
@@ -234,26 +233,18 @@ pub enum OpPayload {
         group: ContextGroupId,
     },
 
-    /// Unbind a device from its account **in this scope**, because the account
-    /// replaced its scope with one that no longer reaches here.
+    /// Unbind a device in this scope: its account replaced the scope with one that
+    /// no longer reaches here.
     ///
-    /// Not terminal, unlike [`Self::DeviceRevoked`]: the device id is not spent,
-    /// and a later link made under a higher scope epoch binds it again. What the
-    /// fold keeps is a per-`(account, device)` floor — the highest epoch narrowed
-    /// away — and a binding stands only while the link that made it was minted
-    /// above the floor. Both halves are a max over the folded set, so the plane
-    /// stays order-independent.
-    ///
-    /// Scope-wide, matching the live plane it mirrors: binding rows are read per
-    /// namespace, and a narrowing is published into the namespace the new scope
-    /// stopped reaching, never into one group of it.
+    /// Not terminal, unlike [`Self::DeviceRevoked`]: the id is not spent, and a
+    /// link above the floor this raises binds it again.
     DeviceDescoped {
-        /// The account whose device it is; the floor is keyed by both, so
-        /// another account's statement cannot raise this device's.
+        /// The account whose device it is; the floor is keyed by both, so another
+        /// account's statement cannot raise this device's.
         account: AccountId,
         /// The device being unbound here.
         device: DeviceId,
-        /// The epoch of the root-signed scope that stopped reaching this scope.
+        /// Epoch of the root-signed scope that stopped reaching this scope.
         scope_epoch: u32,
     },
 }

@@ -119,8 +119,8 @@ pub struct ScopeState {
     // structures is a join-semilattice on its own — grow-only maps of
     // self-certifying genesis records and of handoffs keyed by the epoch they
     // depart from, a grow-only set of revocation tombstones, and two maps of
-    // scope epochs joined by max — so
-    // the fold is order-independent by construction rather than by tie-break.
+    // scope epochs joined by max — so the fold is order-independent by
+    // construction rather than by tie-break.
     // That matters because the LWW tie-break is where ordering bugs concentrate;
     // the account plane simply cannot have them.
     /// Self-certifying account roots, learned from the `DeviceLinked` ops that
@@ -140,16 +140,11 @@ pub struct ScopeState {
     /// grow-only — see `AclView::revoked_devices` for why revocation lives in
     /// its own set instead of as a flag on the binding.
     revoked_devices: BTreeSet<DeviceId>,
-    /// The highest scope epoch any folded link for a device was minted under.
-    ///
-    /// A max rather than a field on the binding: a re-link under a wider scope
-    /// re-states the same certificate, which `fold_device_link` refuses as an
-    /// unadvanced device epoch, so the binding it would update is not rewritten.
+    /// Highest scope epoch any folded link for a device was minted under. A max
+    /// beside the binding, since a re-link under a wider scope never rewrites one.
     device_scope_epoch: BTreeMap<DeviceId, u32>,
-    /// Per-`(account, device)` scope floor: the highest epoch a narrowing took
-    /// this device out of this scope at. Also a max, and recorded whether or not
-    /// anything is bound, so a narrowing that folds before the link it outranks
-    /// still wins.
+    /// Per-`(account, device)` floor: the highest epoch a narrowing took this
+    /// device out at, recorded whether or not anything is bound.
     device_scope_floor: BTreeMap<(AccountId, DeviceId), u32>,
 }
 
@@ -512,10 +507,8 @@ impl ScopeState {
                 scope_epoch,
             } => self.fold_device_linked(genesis, chain, cert, *scope_epoch),
 
-            // The deny direction, so it is written unconditionally like the
-            // revocation tombstone above, and for the same reason: a narrowing
-            // that folds before the link it outranks must still win. `authorize`
-            // is what refuses one a stranger signed.
+            // The deny direction, written unconditionally like the revocation
+            // tombstone: a narrowing folded before its link must still win.
             OpPayload::DeviceDescoped {
                 account,
                 device,
@@ -543,8 +536,7 @@ impl ScopeState {
                 cert,
             } => {
                 self.fold_member_added(*group, *member, role, stamp);
-                // A join carries no scope statement, so it binds at epoch 0 —
-                // the same stamp the live join apply writes.
+                // A join carries no scope statement: epoch 0, as the live apply writes.
                 self.fold_device_linked(genesis, chain, cert, 0);
             }
             OpPayload::DeviceRevoked { device, .. } => {
@@ -684,10 +676,7 @@ impl ScopeState {
             cert,
         );
         // Raised for every credential this scope can verify, including one the
-        // binding rules then refuse — a re-link under a wider scope re-states a
-        // certificate already bound, so the binding does not move while the
-        // epoch it was minted under does. Gating this on admission instead would
-        // read what had folded so far, and the floor comparison must not.
+        // binding rules then refuse: gating on admission would read the fold so far.
         if !matches!(
             admitted,
             Err(calimero_authz::Rejected::CredentialInvalid { .. })
@@ -806,14 +795,10 @@ impl ScopeState {
         by_seed.into_values().collect()
     }
 
-    /// Has a narrowing withdrawn this binding — was the highest link epoch for
-    /// the device at or below the floor its account raised?
+    /// Has a narrowing withdrawn this binding? Read here rather than at fold time,
+    /// like supersession, so the answer is a function of the op set, not its order.
     ///
-    /// Read here rather than applied at fold time, exactly like supersession:
-    /// both the floor and the link epoch are a max over the folded set, so
-    /// comparing them once the whole cut is in makes the answer a function of
-    /// the op set instead of its arrival order. A link AT the floor is under it,
-    /// the same threshold the live apply refuses a link at.
+    /// A link AT the floor is under it, the threshold the live apply refuses at.
     fn is_descoped(&self, device: DeviceId, binding: &DeviceBinding) -> bool {
         self.device_scope_floor
             .get(&(binding.account, device))
@@ -1222,10 +1207,8 @@ impl ScopeState {
         for device in &self.revoked_devices {
             hasher.update(device.as_bytes());
         }
-        // The scope plane, hashed for the same reason as the rest of the account
-        // plane: a narrowing changes who may write without touching an entity,
-        // so leaving it out would let sync report "converged" while two nodes
-        // disagree about which groups a device still speaks in.
+        // A narrowing changes who may write without touching an entity, so leaving
+        // it unhashed would let sync report "converged" over that disagreement.
         for (device, epoch) in &self.device_scope_epoch {
             hasher.update(device.as_bytes());
             hasher.update(epoch.to_le_bytes());
