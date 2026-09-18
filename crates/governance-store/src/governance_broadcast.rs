@@ -367,8 +367,8 @@ pub struct DeliveryReport {
 ///
 /// `Ready` means an owner/admin/TEE node provably received the op (a
 /// signed ack arrived from one). `Degraded` and `Solo` both mean the op
-/// applied locally and will reach peers via sync; they differ only in
-/// whether any member able to ack was known. None of the three is a
+/// applied locally and will reach peers via sync; `Solo` is the case where
+/// no member able to ack was known at all. None of the three is a
 /// failure — the apply already happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishReadiness {
@@ -376,7 +376,8 @@ pub enum PublishReadiness {
     Solo,
     /// At least one owner / admin / TEE node acked the op.
     Ready,
-    /// Applied locally, but no authoritative node acked.
+    /// Applied locally, but no owner/admin/TEE ack arrived. A plain member's
+    /// ack does not lift this, so a namespace of members reports it always.
     Degraded,
 }
 
