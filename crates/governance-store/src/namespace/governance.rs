@@ -81,16 +81,25 @@ pub(crate) fn ackable_members(
         return 0;
     }
     let group_id = ContextGroupId::from(namespace_id.to_bytes());
-    let own = crate::member_account_in_namespace(store, &group_id, signer_pk)
+    // Without the signer's own account every member row reads as somebody else,
+    // so fail open loudly rather than wait out a timeout nobody can end.
+    let Some(own) = crate::member_account_in_namespace(store, &group_id, signer_pk)
         .ok()
-        .flatten();
+        .flatten()
+    else {
+        tracing::warn!(
+            namespace_id = %hex::encode(namespace_id.as_bytes()),
+            "publishing key has no live binding here; assuming an ack may come"
+        );
+        return known_subscribers;
+    };
     // This account's other devices count too: a linked device acks like any member.
     let siblings = crate::AccountBindingRepository::new(store)
         .live_bindings(&group_id)
         .map_or(0, |bound| {
             bound
                 .iter()
-                .filter(|b| Some(b.account) == own && b.sign_pk != *signer_pk)
+                .filter(|b| b.account == own && b.sign_pk != *signer_pk)
                 .count()
         });
     match MembershipRepository::new(store).namespace_accounts(namespace_id) {
@@ -98,7 +107,7 @@ pub(crate) fn ackable_members(
             siblings
                 + accounts
                     .into_iter()
-                    .filter(|account| Some(*account) != own)
+                    .filter(|account| *account != own)
                     .count()
         }
         // A membership read that failed is not evidence that nobody can ack;

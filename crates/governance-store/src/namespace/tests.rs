@@ -5239,6 +5239,22 @@ fn ackable_members_is_zero_when_this_node_is_the_only_member() {
     );
 }
 
+/// A key we cannot resolve to an account leaves us unable to tell our own
+/// membership row from anybody else's, so every subscriber has to count.
+#[test]
+fn ackable_members_fails_open_when_the_signer_is_unbound() {
+    let ns_id = [0xA5; 32];
+    let store = test_store();
+    let _admin = bootstrap_namespace_with_admin(&store, ns_id);
+    let stranger = PrivateKey::random(&mut rand::rng()).public_key();
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &stranger, 3),
+        3,
+        "an unresolvable signer must not silently make the namespace look solo"
+    );
+}
+
 /// An offline member is still a member; with nobody on the topic the publish
 /// would only reach `NoPeersSubscribed`, so it must not wait.
 #[test]
