@@ -1,9 +1,8 @@
 //! `LabelDeviceRequest` handler - give a device of this account a name, so every
 //! device of the account renders the same one.
 //!
-//! Two authorities, and which one this node has decides what it may name: the
-//! account root signs a statement about any device, while a paired device has
-//! only its own binding and so names only itself.
+//! What this node holds decides what it may name, so the refusals live in
+//! `authority_for` rather than spread across the publish below.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,13 +24,10 @@ use crate::error::ContextError;
 use crate::handlers::relink_device::resolve_device;
 use crate::ContextManager;
 
-const DEVICE_RENAME_COOLDOWN: Duration = Duration::from_secs(10); // how long this node makes one device's renames wait on each other
+const DEVICE_RENAME_COOLDOWN: Duration = Duration::from_secs(10); // one device's renames wait this long on each other
 
 /// What this node may publish for `device`: the account it speaks for, the
 /// account namespace to publish into, and the root's statement when it holds one.
-///
-/// Every refusal lives here, in the order a caller can act on: wrong machine,
-/// unknown device, spent id, somebody else's device.
 fn authority_for(
     store: &Store,
     device: DeviceId,
@@ -41,8 +37,7 @@ fn authority_for(
     let devices = NodeDeviceRepository::new(store);
     if devices.holder_root()?.is_some() {
         // Shared with the relink and the rescope, so all three refuse an unknown
-        // or spent device identically - and it hands back the certificate whose
-        // anchor the statement below has to reuse.
+        // or spent device identically, and it yields the anchor reused below.
         let (root, cached) = resolve_device(store, device)?;
         let statement = DeviceLabel::sign(
             root.signing_key(),
@@ -82,6 +77,20 @@ fn authority_for(
     Ok((held.account, namespace, None))
 }
 
+/// One past the epoch in force for `device`: minting at the stored epoch would
+/// tie rather than supersede, and tell the caller a rename landed that did not.
+fn next_label_epoch(store: &Store, device: DeviceId) -> EyreResult<u32> {
+    let Some(namespace) = NodeDeviceRepository::new(store).account_namespace()? else {
+        return Ok(0);
+    };
+    let Some(row) = AccountDeviceRegistry::new(store, namespace).label(device)? else {
+        return Ok(0);
+    };
+    row.label_epoch
+        .checked_add(1)
+        .ok_or_else(|| eyre::eyre!("device {device} is at the last name epoch there is"))
+}
+
 impl Handler<LabelDeviceRequest> for ContextManager {
     type Result = ActorResponse<Self, <LabelDeviceRequest as Message>::Result>;
 
@@ -109,23 +118,8 @@ impl Handler<LabelDeviceRequest> for ContextManager {
         }
 
         let store = self.datastore.clone();
-        let registry_epoch = match NodeDeviceRepository::new(&store).account_namespace() {
-            Ok(Some(namespace)) => AccountDeviceRegistry::new(&store, namespace).label(device),
-            Ok(None) => Ok(None),
-            Err(err) => Err(err),
-        };
-        let label_epoch = match registry_epoch {
-            // Never saturating: a name minted at the epoch already in force
-            // supersedes nothing, and the caller would be told it had.
-            Ok(Some(row)) => match row.label_epoch.checked_add(1) {
-                Some(epoch) => epoch,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "device {device} is at the last name epoch there is"
-                    )))
-                }
-            },
-            Ok(None) => 0,
+        let label_epoch = match next_label_epoch(&store, device) {
+            Ok(epoch) => epoch,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
@@ -167,9 +161,8 @@ impl Handler<LabelDeviceRequest> for ContextManager {
                 .await?
                 .observe("label_device", "AccountDeviceLabelled");
 
-                // The op's own local apply is the only durable write, and an apply
-                // that refuses the name warns rather than failing - so the row is
-                // what says it landed.
+                // An apply that refuses the name warns rather than failing, so the
+                // row it writes is the only thing that says the rename landed.
                 let stored = AccountDeviceRegistry::new(&store, namespace).label(device)?;
                 if !stored.is_some_and(|row| row.label == label && row.label_epoch == label_epoch) {
                     eyre::bail!("the account namespace did not take the name for {device}");
@@ -260,8 +253,6 @@ mod tests {
             .map(|row| row.label)
     }
 
-    /// Refused before anything is signed, and by the same rule the op's own
-    /// bounds check applies to a hostile peer's.
     #[actix::test]
     async fn a_name_that_is_not_a_name_is_refused() {
         let store = a_holder();
@@ -289,8 +280,6 @@ mod tests {
         assert_eq!(stored_label(&store, device), None);
     }
 
-    /// The holder names a device that is not its own, which takes the root's
-    /// statement - and the row every device of the account reads is what moves.
     #[actix::test]
     async fn the_holder_names_a_device_and_the_registry_carries_it() {
         let store = a_holder();
@@ -316,8 +305,6 @@ mod tests {
         assert_eq!(stored_label(&store, device).as_deref(), Some("Work laptop"));
     }
 
-    /// One admin call per keystroke must not become one published op per
-    /// keystroke, and the refusal has to name the wait rather than fail silently.
     #[actix::test]
     async fn a_second_rename_inside_the_cooldown_is_refused() {
         let store = a_holder();
@@ -358,9 +345,6 @@ mod tests {
         assert_eq!(stored_label(&store, device).as_deref(), Some("First"));
     }
 
-    /// A paired device holds no root, so it can sign a statement about no device
-    /// but its own - and being asked to name a sibling is a refusal, not a publish
-    /// nobody would accept.
     #[actix::test]
     async fn a_paired_node_may_name_only_its_own_device() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));

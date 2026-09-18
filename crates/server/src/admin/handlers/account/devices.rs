@@ -403,9 +403,8 @@ mod tests {
         assert!(entry.namespaces.is_empty());
     }
 
-    /// The name is replicated, so it comes from the registry rather than from
-    /// anything this node happens to hold locally - and it survives revocation,
-    /// beside the row it names.
+    /// The name comes from the replicated registry, not from anything local, and
+    /// it survives revocation beside the row it names.
     #[test]
     fn a_named_device_reports_its_name_even_once_revoked() {
         let (store, root) = seeded_account();
@@ -420,6 +419,17 @@ mod tests {
             .account_namespace()
             .expect("read")
             .expect("a holder names an account namespace");
+
+        let unnamed = collect(&store).expect("collect").expect("has account");
+        let entry = unnamed
+            .iter()
+            .find(|entry| entry.device_id == device)
+            .expect("the device is reported");
+        assert_eq!(
+            entry.label, None,
+            "a device the account never named reports none, not a placeholder"
+        );
+
         assert!(AccountDeviceRegistry::new(&store, namespace)
             .record_label(device, "Work laptop", 0)
             .expect("name it"));
@@ -446,27 +456,6 @@ mod tests {
             Some("Work laptop"),
             "a revoked device is listed, so it is listed under the name it was known by"
         );
-    }
-
-    /// A device the account never named reports none, rather than a placeholder a
-    /// UI would have to recognise.
-    #[test]
-    fn an_unnamed_device_reports_no_name() {
-        let (store, root) = seeded_account();
-        let device = remember_cert(
-            &store,
-            &root,
-            [0x11; 32],
-            &PrivateKey::from([0x22; 32]).public_key(),
-            &[],
-        );
-
-        let entries = collect(&store).expect("collect").expect("has account");
-        let entry = entries
-            .iter()
-            .find(|entry| entry.device_id == device)
-            .expect("the device is reported");
-        assert_eq!(entry.label, None);
     }
 
     #[test]

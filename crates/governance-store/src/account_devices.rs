@@ -26,10 +26,8 @@ fn supersedes(stored: &DeviceScope, offered: &DeviceScope) -> bool {
     }
 }
 
-/// Does `label` at `epoch` replace `stored`? The same rule the scope uses, with
-/// the name itself standing in for the signature: a higher epoch wins, and at an
-/// equal one the lower name does, so two replicas folding a race in opposite
-/// orders keep the same row.
+/// A higher epoch wins, and at an equal one the lower name does, so two replicas
+/// folding a race in opposite orders keep the same row.
 fn label_supersedes(stored: &GroupAccountDeviceLabelValue, label: &str, epoch: u32) -> bool {
     match epoch.cmp(&stored.label_epoch) {
         Ordering::Greater => true,
@@ -84,9 +82,8 @@ impl<'a> AccountDeviceRegistry<'a> {
     /// Record `label` for `device` at `epoch`. `false` means the stored name
     /// already stands, which makes a re-gossiped op a no-op.
     ///
-    /// Written whether or not the device has a registry row: the name may arrive
-    /// before the certificate, and dropping it would make the outcome depend on
-    /// arrival order.
+    /// Written with or without a registry row: the name may arrive before the
+    /// certificate, and dropping it would make the outcome depend on that order.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
@@ -354,8 +351,6 @@ mod tests {
         );
     }
 
-    /// The epoch rule again, for the name: only a higher one supersedes, and a
-    /// re-stated label changes nothing.
     #[test]
     fn a_higher_label_epoch_supersedes_and_nothing_else_does() {
         let store = test_store();
@@ -380,9 +375,8 @@ mod tests {
         assert_eq!(stored.label_epoch, 1);
     }
 
-    /// Two names minted at one epoch - what two devices renaming at once
-    /// produce. Replicas fold them in either order, so the survivor may not
-    /// depend on which arrived first.
+    /// Two names at one epoch is what two devices renaming at once produce, and
+    /// replicas fold them in either order.
     #[test]
     fn two_labels_at_one_epoch_converge_whichever_order_they_arrive_in() {
         let store = test_store();

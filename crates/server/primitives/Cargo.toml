@@ -19,5 +19,4 @@ tdx-quote.workspace = true
 
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
-calimero-governance-types.workspace = true
 calimero-primitives.workspace = true

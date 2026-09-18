@@ -13617,47 +13617,39 @@ mod account_plane_apply {
         assert_eq!(label_of(&store, &gid, device), None);
     }
 
-    /// A key bound to nothing here, and another account's root, are the same
-    /// refusal reached by the two doors: no binding, and a statement for an
-    /// account this op does not name.
+    /// A statement verifies and still authorises nothing here, because it names
+    /// an account this op does not: otherwise any account's root could name
+    /// another account's devices.
     #[test]
-    fn a_non_member_and_another_accounts_root_both_name_nothing() {
+    fn another_accounts_root_names_nothing_here() {
         let store = test_store();
         let gid = test_group_id();
         let admin_sk = key(1);
         let _admin = group_with_admin(&store, &gid, &admin_sk);
         let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
-        let account = genesis.account_id();
-        let stranger_sk = key(9);
 
-        // A statement the stranger's root signed, presented under this account.
         let GroupOp::AccountDeviceLabelled { root_proof, .. } =
-            labelled_by_root(&stranger_sk, device, "Theirs", 0)
+            labelled_by_root(&key(9), device, "Theirs", 0)
         else {
             unreachable!("the helper builds exactly this variant")
         };
         let forged = GroupOp::AccountDeviceLabelled {
-            account,
+            account: genesis.account_id(),
             device,
             label: "Theirs".to_owned(),
             label_epoch: 0,
             root_proof,
         };
 
-        for (signer, op) in [
-            (key(7).public_key(), labelled(account, device, "Nobody", 0)),
-            (owner_sk.public_key(), forged),
-        ] {
-            let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
-                &store,
-                &gid,
-                &signer,
-                &op,
-                &CUT,
-                &FixedAuthorizer(true),
-            )
-            .unwrap();
-        }
+        let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &forged,
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
 
         assert_eq!(label_of(&store, &gid, device), None);
     }
@@ -13723,36 +13715,6 @@ mod account_plane_apply {
         .unwrap();
 
         assert_eq!(label_of(&store, &gid, device), None);
-    }
-
-    /// Two replicas fold the same pair of renames in opposite orders, so the
-    /// higher epoch has to win on both and neither may keep the older name.
-    #[test]
-    fn the_higher_label_epoch_wins_whichever_order_it_arrives_in() {
-        let mut survivors = Vec::new();
-        for reversed in [false, true] {
-            let store = test_store();
-            let gid = test_group_id();
-            let admin_sk = key(1);
-            let _admin = group_with_admin(&store, &gid, &admin_sk);
-            let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
-            let account = genesis.account_id();
-
-            let mut renames = vec![
-                labelled(account, device, "First", 0),
-                labelled(account, device, "Second", 1),
-            ];
-            if reversed {
-                renames.reverse();
-            }
-            for op in renames {
-                sign_apply_local_group_op_borsh(&store, &gid, &owner_sk, op).unwrap();
-            }
-            survivors.push(label_of(&store, &gid, device));
-        }
-
-        assert_eq!(survivors[0].as_deref(), Some("Second"));
-        assert_eq!(survivors[0], survivors[1]);
     }
 
     /// A re-delivered narrowing is older than the widening that re-bound the

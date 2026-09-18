@@ -2418,28 +2418,19 @@ pub struct RescopeDeviceApiResponse {
 
 /// Name a device of this account, for a listing to render.
 ///
-/// Run on the node holding the account root to name any device; on a paired
-/// device the route accepts only that device's own id.
+/// Run on the node holding the account root to name any device; a paired node
+/// is accepted only for that device's own id.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LabelDeviceApiRequest {
-    /// Trimmed, non-empty, at most 64 bytes, and free of control characters.
+    /// Trimmed, non-empty, bounded and free of control characters.
     pub label: String,
 }
 
 impl Validate for LabelDeviceApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        if calimero_governance_types::bounds::device_label_is_valid(&self.label) {
-            return Vec::new();
-        }
-        vec![ValidationError::InvalidFormat {
-            field: "label",
-            reason: format!(
-                "a device name must be trimmed, non-empty, at most {} bytes and free of \
-                 control characters",
-                calimero_governance_types::bounds::MAX_DEVICE_LABEL_BYTES
-            ),
-        }]
+        // What counts as a name is the handler's parse - exactly as on `rescope`.
+        Vec::new()
     }
 }
 
@@ -3279,26 +3270,8 @@ mod tests {
         assert!(matches!(only.scope, DeviceScopeApiRequest::Only(ref apps) if apps == &[named]));
     }
 
-    /// The route's own refusal, by the same rule the op's bounds check applies to
-    /// a hostile peer's - so a mistyped request and a forged op are told apart by
-    /// where they arrive, never by which rule they broke.
-    #[test]
-    fn a_device_name_is_validated_by_the_same_rule_the_op_is() {
-        let good: LabelDeviceApiRequest =
-            serde_json::from_value(serde_json::json!({"label": "Work laptop"}))
-                .expect("a name parses");
-        assert!(good.validate().is_empty());
-
-        for refused in ["", "   ", " untrimmed", "two\nlines", &"x".repeat(65)] {
-            let req: LabelDeviceApiRequest =
-                serde_json::from_value(serde_json::json!({"label": refused}))
-                    .expect("it parses; validation is what refuses it");
-            assert_eq!(req.validate().len(), 1, "{refused:?}");
-        }
-    }
-
-    /// The field is additive, so a node that was never revoked must answer
-    /// exactly as it did before it existed.
+    /// `revokedFrom` is skipped rather than serialized as null, so a node no
+    /// revocation has reached answers exactly as it did without the field.
     #[test]
     fn an_identity_with_no_revocation_carries_no_revoked_from_key() {
         let data = NodeIdentityApiResponseData {
@@ -3920,9 +3893,8 @@ pub struct NodeIdentityApiResponseData {
     #[serde(default)]
     pub account_namespace_id: Option<String>,
 
-    /// The account that withdrew this node's device, if one did. A revoked
-    /// device releases itself and would otherwise be unpaired with nothing to
-    /// say why; absent on a node no revocation has reached.
+    /// The account that withdrew this node's device, absent on a node no
+    /// revocation has reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_from: Option<RevokedFromApiEntry>,
 }

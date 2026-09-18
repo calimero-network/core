@@ -38,16 +38,16 @@ fn a_label_cannot_be_replayed_onto_another_account_device_text_or_epoch() {
     let other_device = DeviceId::mint(account, [0x23; 16]);
 
     let honest = DeviceLabel::sign(&root, account, device, "Phone".to_owned(), 1, 0).expect("sign");
+    let presented = |genesis, statement| AccountProof {
+        genesis,
+        chain: vec![],
+        statement,
+    };
 
     // Named in the payload AND checked before verification, so a proof for one
     // device can never be presented as another's.
-    let proof = AccountProof {
-        genesis,
-        chain: vec![],
-        statement: honest.clone(),
-    };
     assert!(matches!(
-        proof.authorises(account, other_device),
+        presented(genesis, honest.clone()).authorises(account, other_device),
         Err(AccountError::LabelDeviceMismatch { .. })
     ));
 
@@ -55,13 +55,8 @@ fn a_label_cannot_be_replayed_onto_another_account_device_text_or_epoch() {
     // text is the only thing this statement carries.
     let mut renamed = honest.clone();
     renamed.label = "Not your phone".to_owned();
-    let proof = AccountProof {
-        genesis,
-        chain: vec![],
-        statement: renamed,
-    };
     assert!(matches!(
-        proof.authorises(account, device),
+        presented(genesis, renamed).authorises(account, device),
         Err(AccountError::LabelSignatureInvalid)
     ));
 
@@ -69,39 +64,30 @@ fn a_label_cannot_be_replayed_onto_another_account_device_text_or_epoch() {
     // epoch would be a way to pin a name nobody can replace.
     let mut bumped = honest.clone();
     bumped.label_epoch = 9;
-    let proof = AccountProof {
-        genesis,
-        chain: vec![],
-        statement: bumped,
-    };
     assert!(matches!(
-        proof.authorises(account, device),
+        presented(genesis, bumped).authorises(account, device),
         Err(AccountError::LabelSignatureInvalid)
     ));
 
     // And it is bound to the account that minted it.
     let elsewhere = AccountGenesis::new(key(2).public_key());
-    let proof = AccountProof {
-        genesis: elsewhere,
-        chain: vec![],
-        statement: honest.clone(),
-    };
     assert!(matches!(
-        proof.authorises(elsewhere.account_id(), device),
+        presented(elsewhere, honest).authorises(elsewhere.account_id(), device),
         Err(AccountError::LabelAccountMismatch)
     ));
 
     // The root is the only key that can state any of it.
-    let stranger = PrivateKey::from([9u8; 32]);
-    let forged =
-        DeviceLabel::sign(&stranger, account, device, "Phone".to_owned(), 1, 0).expect("sign");
-    let proof = AccountProof {
-        genesis,
-        chain: vec![],
-        statement: forged,
-    };
+    let forged = DeviceLabel::sign(
+        &PrivateKey::from([9u8; 32]),
+        account,
+        device,
+        "Phone".to_owned(),
+        1,
+        0,
+    )
+    .expect("sign");
     assert!(matches!(
-        proof.authorises(account, device),
+        presented(genesis, forged).authorises(account, device),
         Err(AccountError::LabelSignatureInvalid)
     ));
 }

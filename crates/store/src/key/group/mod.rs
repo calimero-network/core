@@ -2590,8 +2590,7 @@ impl Debug for GroupAccountDevice {
 pub const GROUP_ACCOUNT_DEVICE_LABEL_PREFIX: u8 = 0x53;
 
 /// The name one device of the account carries, keyed exactly like its registry
-/// row. A key of its own rather than a field on [`GroupAccountDeviceValue`], so
-/// a rename never rewrites the certificate and scope stored beside it.
+/// row. Its own key so a rename never rewrites the certificate and scope beside it.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDeviceLabel(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
@@ -2602,20 +2601,6 @@ impl GroupAccountDeviceLabel {
         Self(Key(GenericArray::from([GROUP_ACCOUNT_DEVICE_LABEL_PREFIX])
             .concat(GenericArray::from(group_id))
             .concat(GenericArray::from(device_id))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn device_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        id
     }
 }
 
@@ -2639,22 +2624,12 @@ impl FromKeyParts for GroupAccountDeviceLabel {
     }
 }
 
-impl Debug for GroupAccountDeviceLabel {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupAccountDeviceLabel")
-            .field("group_id", &self.group_id())
-            .field("device_id", &self.device_id())
-            .finish()
-    }
-}
-
 /// The name in force for a device, and the epoch that orders it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupAccountDeviceLabelValue {
-    /// What the device is called.
     pub label: String,
-    /// Only a higher epoch supersedes; an equal one ties on the label itself.
+    /// The account's own ordering of this device's names, not a store clock.
     pub label_epoch: u32,
 }
 
@@ -2979,8 +2954,7 @@ impl FromKeyParts for NodeDeviceCertificate {
 pub const NODE_REVOKED_FROM_PREFIX: u8 = 0x54;
 
 /// The account and device this node was last revoked out of, a node-local
-/// singleton: a revoked device releases itself and would otherwise be unpaired
-/// with nothing to say why.
+/// singleton: a released device would otherwise be unpaired with nothing to say why.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeRevokedFrom(Key<(GroupPrefix,)>);
@@ -3018,19 +2992,11 @@ impl FromKeyParts for NodeRevokedFrom {
     }
 }
 
-impl Debug for NodeRevokedFrom {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("NodeRevokedFrom").finish()
-    }
-}
-
 /// Which account withdrew this node's device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeRevokedFromValue {
-    /// The account the device spoke for.
     pub account_id: [u8; 32],
-    /// The device that was withdrawn.
     pub device_id: [u8; 32],
 }
 
