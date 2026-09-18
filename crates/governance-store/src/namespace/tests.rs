@@ -5179,7 +5179,7 @@ fn two_member_namespace(ns_id: [u8; 32]) -> (Store, PrivateKey) {
 }
 
 /// The cross-node read-after-write case: a second member is subscribed, so the
-/// publish must wait for its ack even though it has never sent a beacon.
+/// publish must wait for its ack.
 #[test]
 fn ackable_members_counts_a_second_member_behind_a_subscriber() {
     let ns_id = [0xA1; 32];
@@ -5273,9 +5273,9 @@ fn min_acks_after_local_mutation_waits_only_for_a_member_that_can_ack() {
     assert_eq!(
         super::governance::min_acks_after_local_mutation(0),
         0,
-        "with nobody able to ack — a non-member subscriber, or a member whose \
-         beacon went stale — waiting can only end in NoAckReceived after the \
-         local DAG has already advanced"
+        "with no member able to ack - only a non-member subscriber, say - \
+         waiting can only end in NoAckReceived after the local DAG has \
+         already advanced"
     );
     assert_eq!(
         super::governance::min_acks_after_local_mutation(1),

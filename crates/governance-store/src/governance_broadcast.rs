@@ -681,8 +681,8 @@ pub async fn publish_and_await_ack_namespace(
         //
         //   * `min_acks == 0` — caller opted out of confirmation, so
         //     "delivered to no one" is a legitimate Ok-with-empty result.
-        //     Solo namespaces (no member holds a fresh readiness
-        //     beacon) compute this min_acks and reach
+        //     Solo namespaces (no member able to ack was known)
+        //     compute this min_acks and reach
         //     this arm. Matches the legacy
         //     `NodeClient::publish_signed_namespace_op` semantics that
         //     warned and returned Ok rather than propagating.

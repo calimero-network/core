@@ -825,9 +825,8 @@ async fn publish_does_not_wait_on_a_subscriber_that_cannot_ack() {
 /// The other half, and the cross-node read-after-write guarantee: a second
 /// member is subscribed, so the publish waits for its ack and records it.
 ///
-/// Deliberately no readiness beacon: a member that just joined has not beaconed
-/// yet (the emitter is silent for the first `boot_grace`), and the wait must
-/// hold anyway.
+/// Membership alone drives the wait: a member that has just joined and sent
+/// nothing yet still has to be waited for.
 #[actix::test]
 async fn publish_waits_for_and_records_an_ackable_member() {
     let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
