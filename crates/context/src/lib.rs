@@ -643,6 +643,10 @@ impl ContextManager {
             eyre::bail!("group '{group_id:?}' not found");
         }
 
+        // Before the identity read, which answers for a namespace this device was
+        // narrowed out of: it keeps its identity so a widening needs no re-pairing.
+        crate::account_follow::require_reach(&self.datastore, group_id)?;
+
         let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
             eyre::eyre!(
                 "this node has no signing identity for {group_id:?}; it does not take part there"

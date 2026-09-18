@@ -23,6 +23,7 @@
   "POST /admin-api/namespaces/{namespace_id}/account/revoke",
   "POST /admin-api/namespaces/{namespace_id}/join",
   "POST /admin-api/namespaces/{namespace_id}/leave",
+  "PUT /admin-api/account/devices/{device_id}/scope",
   "PUT /admin-api/groups/{group_id}/members/{account}/auto-follow",
   "PUT /admin-api/groups/{group_id}/members/{account}/capabilities",
   "PUT /admin-api/groups/{group_id}/members/{account}/metadata",

@@ -41,7 +41,7 @@ cargo test -p calimero-op op_payload_discriminants_are_pinned -- --nocapture
 | `OpPayload` | enum | The change itself, across four planes: data, access-control, membership, admin/namespace, plus a capability plane and a graph-only `Noop` - NOT `#[non_exhaustive]` |
 | `scope_root(entities_root, acl_hash, groups_root)` | fn | Combines the three projection component hashes into the one convergence root for a scope |
 
-`OpPayload` variants: `Put`, `Delete` (data); `SetWriters` (access-control); `MemberAdded`, `MemberRemoved` (membership); `AdminChanged`, `PolicyUpdated`, `SubgroupCreated`, `SubgroupReparented`, `SubgroupDeleted`, `SubgroupVisibilitySet` (admin/namespace); `DefaultCapabilitiesSet`, `MemberCapabilitySet` (capability); `Noop` (graph-only, no projection effect); `DeviceLinked`, `DeviceRevoked`, `AccountKeysRotated`, `MemberJoinedWithDevice` (account plane, appended after `Noop` - see the append-only rule below).
+`OpPayload` variants: `Put`, `Delete` (data); `SetWriters` (access-control); `MemberAdded`, `MemberRemoved` (membership); `AdminChanged`, `PolicyUpdated`, `SubgroupCreated`, `SubgroupReparented`, `SubgroupDeleted`, `SubgroupVisibilitySet` (admin/namespace); `DefaultCapabilitiesSet`, `MemberCapabilitySet` (capability); `Noop` (graph-only, no projection effect); `DeviceLinked`, `DeviceRevoked`, `AccountKeysRotated`, `MemberJoinedWithDevice`, `DeviceDescoped` (account plane, appended after `Noop` - see the append-only rule below; `DeviceDescoped` is last of all, after `Opaque`).
 
 ## Mental Model
 

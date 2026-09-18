@@ -442,7 +442,13 @@ mod tests {
         let proof: JoinAccountCredential =
             borsh::from_slice(&certify(root_sk, store, None, signing_pk)).expect("decode");
         AccountBindingRepository::new(store)
-            .apply_link(ns, &proof.genesis, &[], &proof.statement)
+            .apply_link(
+                ns,
+                &proof.genesis,
+                &[],
+                &proof.statement,
+                calimero_governance_store::JOIN_SCOPE_EPOCH,
+            )
             .expect("store")
             .expect("admissible");
         repo.remember_own_link(&proof).expect("keep the own link");

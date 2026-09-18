@@ -454,6 +454,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &joiner_credential.genesis,
                     &joiner_credential.chain,
                     &joiner_credential.statement,
+                    calimero_governance_store::JOIN_SCOPE_EPOCH,
                 )? {
                     warn!(
                         ?group_id,

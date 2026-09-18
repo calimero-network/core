@@ -111,8 +111,13 @@ fn bind_founder(
     account: &calimero_context_client::local_governance::JoinAccountCredential,
 ) -> EyreResult<()> {
     let bindings = crate::AccountBindingRepository::new(store);
-    let outcome =
-        bindings.apply_link(ns_gid, &account.genesis, &account.chain, &account.statement)?;
+    let outcome = bindings.apply_link(
+        ns_gid,
+        &account.genesis,
+        &account.chain,
+        &account.statement,
+        crate::JOIN_SCOPE_EPOCH,
+    )?;
     if let Err(rejected) = &outcome {
         if rejected.is_permanent() {
             // Refuse the genesis rather than establish a namespace its founder

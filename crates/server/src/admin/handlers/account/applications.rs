@@ -36,7 +36,11 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountApplicationApiEntry>>>
     let meta = MetaRepository::new(store);
     let mut by_application: BTreeMap<ApplicationId, Vec<ContextGroupId>> = BTreeMap::new();
     for namespace in NamespaceRepository::new(store).participating_namespaces()? {
-        if Some(namespace) == account_namespace {
+        // Participation outlives a narrowing, so it alone does not say the
+        // application is still this device's to speak for.
+        if Some(namespace) == account_namespace
+            || !calimero_context::account_follow::node_reaches(store, &namespace)?
+        {
             continue;
         }
         if let Some(value) = meta.load(&namespace)? {
@@ -209,6 +213,57 @@ mod tests {
 
         assert_eq!(applications.len(), 1);
         assert_eq!(applications[0].application_id, app);
+    }
+
+    /// The participation row stays for a later widening, so participation alone
+    /// does not answer "is this application still this device's".
+    #[test]
+    fn a_narrowed_device_reports_only_the_applications_it_still_reaches() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespaces = NamespaceRepository::new(&store);
+        let meta = MetaRepository::new(&store);
+        let app_kept = ApplicationId::from([0x11; 32]);
+        let app_lost = ApplicationId::from([0x22; 32]);
+        for (namespace, application) in [(NS_A, app_kept), (NS_B, app_lost)] {
+            namespaces.note_participation(&ns(namespace)).expect("join");
+            meta.save(&ns(namespace), &meta_for(application))
+                .expect("save meta");
+        }
+        let account_namespace = ns(NS_C);
+        let (device, root_sk) = calimero_context::test_support::paired_device_scoped_to(
+            &store,
+            &account_namespace,
+            &[],
+        );
+
+        let reported = |store: &Store| -> Vec<ApplicationId> {
+            let mut applications: Vec<_> = collect(store)
+                .expect("collect")
+                .expect("has account")
+                .iter()
+                .map(|entry| entry.application_id)
+                .collect();
+            applications.sort();
+            applications
+        };
+        let mut both = vec![app_kept, app_lost];
+        both.sort();
+        assert_eq!(reported(&store), both);
+
+        calimero_context::test_support::rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app_kept],
+            1,
+        );
+
+        assert_eq!(
+            reported(&store),
+            vec![app_kept],
+            "an application this device was narrowed out of is no longer its own"
+        );
     }
 
     #[test]

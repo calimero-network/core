@@ -4,11 +4,11 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::DeviceId;
-use calimero_context_client::group::{BindOutcome, RelinkDeviceRequest};
+use calimero_context_client::group::{BindOutcome, RescopeDeviceRequest, ScopeRequest};
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
-    RelinkDeviceApiRequest, RelinkDeviceApiResponse, RelinkDeviceApiResponseData,
-    RelinkOutcomeApiEntry, RelinkSkipApiEntry,
+    DeviceScopeApiRequest, RelinkOutcomeApiEntry, RelinkSkipApiEntry, RescopeDescopeApiEntry,
+    RescopeDeviceApiRequest, RescopeDeviceApiResponse, RescopeDeviceApiResponseData,
 };
 use reqwest::StatusCode;
 use tracing::info;
@@ -18,60 +18,65 @@ use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
-/// Repair or widen the reach of a device this account already certified.
+/// Replace the scope of a device this account already certified.
 ///
-/// Run on the node that holds the account - it is the only one with the stored
-/// certificate, and the only one whose root signed it. The device is not
-/// consulted and need not be online.
+/// Run on the node that holds the account root - it is the only one whose key can
+/// sign the replacement. The device is not consulted and need not be online.
 pub async fn handler(
     Path(device_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    ValidatedJson(req): ValidatedJson<RelinkDeviceApiRequest>,
+    ValidatedJson(req): ValidatedJson<RescopeDeviceApiRequest>,
 ) -> impl IntoResponse {
     let device = match decode32(&device_id_str, "deviceId") {
         Ok(bytes) => DeviceId::from(bytes),
         Err(err) => return err.into_response(),
     };
 
-    let mut applications = Vec::with_capacity(req.applications.len());
-    for application_id in &req.applications {
-        match application_id.parse::<ApplicationId>() {
-            Ok(id) => applications.push(id),
-            Err(_) => {
-                return ApiError {
-                    status_code: StatusCode::BAD_REQUEST,
-                    message: format!("Invalid application id: {application_id}"),
+    let scope = match req.scope {
+        DeviceScopeApiRequest::All => ScopeRequest::All,
+        DeviceScopeApiRequest::Only(named) => {
+            let mut applications = Vec::with_capacity(named.len());
+            for application_id in &named {
+                match application_id.parse::<ApplicationId>() {
+                    Ok(id) => applications.push(id),
+                    Err(_) => {
+                        return ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: format!("Invalid application id: {application_id}"),
+                        }
+                        .into_response()
+                    }
                 }
-                .into_response()
             }
+            ScopeRequest::Only(applications)
         }
-    }
+    };
 
-    info!(
-        device = %device_id_str,
-        extending_by = applications.len(),
-        "relinking a device of this account"
-    );
+    info!(device = %device_id_str, "replacing a device's scope");
 
     let result = state
         .ctx_client
-        .relink_device(RelinkDeviceRequest {
-            device,
-            applications,
-        })
+        .rescope_device(RescopeDeviceRequest { device, scope })
         .await
         .map_err(parse_api_error);
 
     match result {
         Ok(resp) => {
+            let mut descoped = Vec::new();
             let mut linked_in = Vec::new();
             let mut skipped = Vec::new();
             for (namespace, outcome) in &resp.outcomes {
                 let namespace_id = hex::encode(namespace.to_bytes());
-                // The wire names are produced here and the match is exhaustive on
-                // purpose: a new outcome has to be given a name rather than fall
-                // into a catch-all and be reported as something it is not.
+                // Exhaustive on purpose: a new outcome gets a wire name rather
+                // than falling into a catch-all and being misreported.
                 let reason = match *outcome {
+                    BindOutcome::Descoped { key_rotated } => {
+                        descoped.push(RescopeDescopeApiEntry {
+                            namespace_id,
+                            key_rotated,
+                        });
+                        continue;
+                    }
                     BindOutcome::Linked { key_delivered } => {
                         linked_in.push(RelinkOutcomeApiEntry {
                             namespace_id,
@@ -79,8 +84,6 @@ pub async fn handler(
                         });
                         continue;
                     }
-                    // A relink never narrows, so it never produces one.
-                    BindOutcome::Descoped { .. } => "descoped",
                     BindOutcome::OutOfScope => "outOfScope",
                     BindOutcome::AlreadyBound => "alreadyBound",
                     BindOutcome::NoScopeKey => "noScopeKey",
@@ -97,16 +100,16 @@ pub async fn handler(
             info!(
                 account = %resp.account,
                 device = %resp.device,
-                linked = linked_in.len(),
-                skipped = skipped.len(),
-                "device relinked"
+                applications = resp.applications.len(),
+                "device rescoped"
             );
             ApiResponse {
-                payload: RelinkDeviceApiResponse {
-                    data: RelinkDeviceApiResponseData {
+                payload: RescopeDeviceApiResponse {
+                    data: RescopeDeviceApiResponseData {
                         account_id: hex::encode(resp.account.as_bytes()),
                         device_id: hex::encode(resp.device.as_bytes()),
                         applications: resp.applications.iter().map(ToString::to_string).collect(),
+                        descoped,
                         linked_in,
                         skipped,
                     },

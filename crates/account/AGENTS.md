@@ -159,6 +159,7 @@ and a `Verified<T>` is one that has been checked.
 | `DeviceScope::sign(root_sk, account, device, applications, scope_epoch, key_epoch)` | fn | Mint one; `scope_epoch` is what orders two scopes for the same device |
 | `SignedDeviceScope` | alias | `AccountProof<DeviceScope>` - the wire-carried proof |
 | `VerifiedDeviceScope` | alias | `Verified<DeviceScope>` |
+| `scope_covers(applications, application)` | fn | The one place empty-means-all is decided; shared by every reader of a scope |
 | `AccountMemberEndorsement` | struct | A granted member key's signed statement that an account is theirs |
 | `AccountMemberEndorsement::sign(member_sk, account)` | fn | Mint one; the endorser is derived from the key, never named by the caller |
 | `AccountMemberEndorsement::verify()` | fn | Internal validity only; yields `VerifiedEndorsement`, which is where a gate reads the endorser's key from |

@@ -57,15 +57,34 @@ async fn record_holder_device(
             return;
         }
     };
+    let scope = match crate::account_namespace::next_device_scope(
+        datastore,
+        Some(namespace_id),
+        root,
+        &credential,
+        &[],
+    ) {
+        Ok(scope) => scope,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not sign this device's own scope"
+            );
+            return;
+        }
+    };
+    let known = calimero_governance_store::KnownDeviceCert {
+        proof: *credential,
+        scope,
+    };
     let _recorded = publish_device_certified(
         datastore,
         node_client,
         ack_router,
         namespace_id,
         signer_sk,
-        root,
-        &credential,
-        &[],
+        &known,
         "ensure_account_namespace",
     )
     .await;
@@ -218,13 +237,14 @@ mod tests {
             .get()
             .expect("read")
             .expect("creating the namespace minted this node's device");
-        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
             .device(own.device())
             .expect("read")
             .expect("the holder is in its own registry");
+        let epoch = recorded.scope.statement.scope_epoch;
         assert_eq!(epoch, 0);
         assert!(
-            recorded.applications.is_empty(),
+            recorded.applications().is_empty(),
             "the holder speaks for every application"
         );
         assert_eq!(recorded.proof.statement.device, own.device());
@@ -259,13 +279,14 @@ mod tests {
             .expect("a second call finds the namespace");
         assert_eq!(again, Some(namespace));
 
-        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
             .device(own.device())
             .expect("read")
             .expect("the holder's row is back");
+        let epoch = recorded.scope.statement.scope_epoch;
         assert_eq!(epoch, 0, "nothing stored, so the statement starts over");
         assert!(
-            recorded.applications.is_empty(),
+            recorded.applications().is_empty(),
             "the holder speaks for every application"
         );
     }

@@ -37,6 +37,11 @@ impl PredefinedEntry for key::GroupRevokedDevice {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupDeviceScopeFloor {
+    type Codec = Borsh;
+    type DataType<'a> = u32;
+}
+
 impl PredefinedEntry for key::GroupAccountKey {
     type Codec = Borsh;
     type DataType<'a> = key::GroupAccountKeyValue;
