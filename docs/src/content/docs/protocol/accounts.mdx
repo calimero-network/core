@@ -397,6 +397,8 @@ PUT /admin-api/account/devices/<DEVICE_ID>/scope
 
 It records the replacement in the account namespace first, so every other device judges the change against it, then publishes `AccountDeviceDescoped` into every namespace this node takes part in that the new scope no longer reaches - whether or not the device was bound there, since that op is also what writes the scope floor - then binds the device into the ones it now does.
 The narrowing is **not** a revocation: it deletes the binding row and leaves no tombstone, so the `DeviceId` survives and a later widening re-binds the same device.
+The op carries the application the publisher resolved for that namespace rather than having each replica read its own metadata row, which a concurrent `TargetApplicationSet` moves: read live, two replicas at different fold depths would reach opposite verdicts about the same narrowing with nothing to reconcile them.
+The device also leaves the contexts of every namespace it stopped covering, and the widening re-joins them, so the narrowing cuts reads as well as writes and is still reversible without re-pairing.
 A revocation would spend that id in every namespace at once, which is the difference between taking one application away and destroying the device.
 The rotation rides along where this node is an admin of the namespace *and* the device actually held a binding there, and is left owed otherwise; the response reports it per namespace, as `descoped`, `linkedIn` and `skipped` lists shaped like relink's.
 `linkedIn` names a namespace whose binding row is actually there after the publish, and a namespace whose link was published but not recorded - or whose narrowing did not publish at all - is reported under `skipped` with reason `failed`, since nothing re-drives it and repeating the same request is the repair.
@@ -536,6 +538,11 @@ Which account a revocation names is read from the group's own device binding, ne
 The proof accepts **any** epoch its carried chain resolves, not merely the newest. That asymmetry with certificate verification is deliberate: filtering superseded epochs would mean rotating an account's root silently *un-revokes* every device it had withdrawn. The cost is that a compromised old root can still revoke — accepted, because whoever holds any root key of an account can already sign a handoff and take it over.
 
 **Cutting off authorship is not enough on its own.** A revoked device already holds the current scope key, so without a rotation it stops writing and goes on reading — a silent reader. The rotation therefore rides on the same operation. Only an admin may rotate (peers accept a rotation sidecar only from an admin at the cut), so a self-service revocation locks the device out of writing immediately and leaves the rotation owed.
+
+**And the rotation is not the only thing the cut rests on**, because a sync session sends storage entities in the clear rather than under the scope key.
+A peer is served only where the key it dials with resolves to a live account binding in the group that owns the context; the `ContextIdentity` row a join leaves behind is local bookkeeping that no withdrawal deletes, so it authorizes nothing remote.
+The initiator applies the same answer before dialing, and a peer it has never observed authoring is still dialed, so a legitimately new one still gets its first sync.
+On the withdrawn device itself the withdrawal is followed by a `leave_context` in every context of the namespace it lost — the ordinary local opt-out, reversed by a later widening's re-join — and the node's start-up sweep re-subscribes a context only where it still holds a signing identity for it, so neither a withdrawal nor a plain leave is undone by a restart.
 
 ### Revoking with only the account root
 

@@ -315,6 +315,7 @@ cargo test -p calimero-node --test network_simulation
   falling back to a cleartext publish would make "sealed" and "leaked" the
   same silence, and an older responder that cannot decode the payload
   lands in exactly that branch.
+- **A remote sync peer is authorized through its account binding, never through a `ContextIdentity` row.** That row is written by a join and deleted by nothing on the device plane — not by a revocation, not by a scope narrowing — so it outlives both, and a sync session sends storage entities in the clear. `remote_peer_may_read` is the one gate the responder (`verify_inbound_member`) and the initiator (`initiate_sync`) share: where a group owns the context it is `peer_is_group_member`, binding-aware and inheritance-aware; where none does, there is no binding plane to ask and the row is the only membership record there is. Do not re-add a raw-key fast path to the remote side — `ContextClient::has_member` keeps one for its local callers, and that is what made a withdrawn device a silent reader. The initiator half is best-effort by design: peer discovery is topic-based, so a peer this node has never observed authoring is dialed anyway and the responder stays load-bearing.
 - `add_blob`'s `expected_size` asserts a length the caller already
   knows; it is never a ceiling. Passing a cap through it rejects every
   correct blob under that cap. Bound a stream where the bytes arrive

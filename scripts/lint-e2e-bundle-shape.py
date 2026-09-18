@@ -11,6 +11,10 @@ multi-service `.mpk` installs fine, then every `create_context` returns HTTP 500
 with "bundle manifest declares no top-level wasm" — a message that names the
 bundle, not the scenario that chose it. Sixty-four scenarios failed that way at
 once, and the shape only became clear from a node-log artifact.
+
+A scenario may install both shapes, so the check follows the application id an
+install step captured rather than flagging every context in the file; a context
+whose id cannot be traced back to one install step is treated as multi-service.
 """
 
 import sys
@@ -38,8 +42,11 @@ def multi_service_packages():
 
 
 def installed_packages(steps, multi):
-    """Multi-service package ids a scenario's install steps name."""
+    """Multi-service package ids a scenario's install steps name, and the
+    `{{var}}` placeholders those steps bound the ids to."""
     used = set()
+    multi_vars = set()
+    single_vars = set()
     for step in steps:
         path = step.get("path")
         if step.get("type") != "install_application" or not path:
@@ -47,12 +54,28 @@ def installed_packages(steps, multi):
         stem = Path(path).name
         if not stem.endswith(".mpk"):
             continue
+        captured = {
+            name
+            for name, field in (step.get("outputs") or {}).items()
+            if field == "applicationId"
+        }
         # `<package>-<version>.mpk`; longest id wins so `-multi` beats its prefix.
-        for package in sorted(multi, key=len, reverse=True):
-            if stem.startswith(package + "-"):
-                used.add(package)
-                break
-    return used
+        package = next(
+            (p for p in sorted(multi, key=len, reverse=True) if stem.startswith(p + "-")),
+            None,
+        )
+        if package:
+            used.add(package)
+            multi_vars |= captured
+        else:
+            single_vars |= captured
+    return used, multi_vars, single_vars - multi_vars
+
+
+def names_a_single_service_app(step, single_vars):
+    """Does this context name an application a single-service install captured?"""
+    application = str(step.get("application_id") or "")
+    return any("{{" + var + "}}" == application for var in single_vars)
 
 
 def check(scenario, multi):
@@ -62,7 +85,7 @@ def check(scenario, multi):
         return [f"{scenario.relative_to(ROOT)}: unparseable ({exc})"]
 
     steps = [s for s in (doc.get("steps") or []) if isinstance(s, dict)]
-    used = installed_packages(steps, multi)
+    used, multi_vars, single_vars = installed_packages(steps, multi)
     if not used:
         return []
 
@@ -78,7 +101,9 @@ def check(scenario, multi):
                 f"{scenario.relative_to(ROOT)}: step '{label}' uses create_mesh, which "
                 f"cannot name a service, against multi-service bundle {named}"
             )
-        elif not step.get("service_name"):
+        elif not step.get("service_name") and not names_a_single_service_app(
+            step, single_vars
+        ):
             problems.append(
                 f"{scenario.relative_to(ROOT)}: step '{label}' omits service_name "
                 f"against multi-service bundle {named}"

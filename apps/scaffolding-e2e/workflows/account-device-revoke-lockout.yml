@@ -398,17 +398,10 @@ steps:
       - account-revoke-node-2
     context_id: '{{context_id}}'
 
-  # NOT asserted, because it does not happen. The rotation this revocation owes
-  # is never discharged by anything: `AccountDeviceUnlinked`'s apply neither
-  # marks a `PendingRotationRepository` row nor emits an `OpEvent`, and the
-  # rotation listener reacts only to `OpEvent::MemberRemoved`, whose pending rows
-  # are written solely by member-left. So a device revoked by a non-admin account
-  # holder keeps the scope key — and therefore READ access — indefinitely.
-  # Tracked as calimero-network/core#3457.
-  #
-  # What this scenario does still prove is the half that works: the device stops
-  # WRITING at once, below. The read half is the gap, tracked separately rather
-  # than asserted here as though it were covered.
+  # The rotation a non-admin holder's revocation owes stays owed until an admin
+  # discharges it, so the revoked device keeps the scope key it holds. That no
+  # longer buys it anything: it leaves the contexts of the namespace it lost, so
+  # the read below is refused rather than merely stale.
 
   # ── Phase 6: the revoked device is out, the survivor is not ───────
 
@@ -493,26 +486,20 @@ steps:
   # pre-rotation key with nothing buffered — so it never asks, and asserting on the
   # responder's refusal would be waiting for a line no code path emits here.
   #
-  # What the feature actually promises is observable directly: a revoked device
-  # must not go on reading. It is frozen at the state it had, so the survivor's
-  # post-rotation write is invisible to it — this read returns the value from
-  # BEFORE the revocation. A device that had recovered the key would return
-  # `laptop-still-works` and fail here, which is exactly the "silent reader" this
-  # whole scenario exists to catch.
-  - name: The revoked device reads the group as it was, not as it is
+  # What the feature promises is observable directly, and it is now the strong
+  # form: the revoked device leaves the contexts of every namespace it lost, so it
+  # has no identity left to read with. It used to be frozen at the state it had,
+  # which cut the writes and left the key — and the sync plane, which sends
+  # entities in the clear, went on serving it. A read that SUCCEEDS here is the
+  # silent reader this whole scenario exists to catch.
+  - name: The revoked device cannot read the context at all
     type: call
     node: account-revoke-node-3
     context_id: '{{context_id}}'
     method: get
     args:
       key: from-laptop
-    outputs:
-      revoked_view: result
-
-  - name: The revoked device cannot read past the rotation
-    type: json_assert
-    statements:
-      - 'json_equal({{revoked_view}}, {"output": "laptop-wrote-this"})'
+    expected_failure: true
 
   # Accepted by the revoked node itself, like the write above; nothing reads this
   # one back.

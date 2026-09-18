@@ -98,7 +98,7 @@ async fn run(
     if let Some((account_namespace, own)) = own_registry_scope(&store) {
         let (covered, uncovered) = namespaces_in_scope(&store, account_namespace, &own);
         for namespace in covered {
-            follow(&store, &node_client, &context_client, namespace).await;
+            let _followed = follow(&store, &node_client, namespace).await;
         }
         // A device offline while its scope shrank folds the narrowing with no
         // listener up, so the sweep is the only thing that lets those topics go.
@@ -144,7 +144,7 @@ async fn run(
                 let context_client = context_client.clone();
                 let _ = tasks.spawn(async move {
                     if follows_on_gain(&store, group_id, application) {
-                        follow(&store, &node_client, &context_client, namespace).await;
+                        follow_and_rejoin(&store, &node_client, &context_client, namespace).await;
                     }
                 });
             }
@@ -189,7 +189,7 @@ async fn run(
                     let (covered, uncovered) =
                         namespaces_this_scope_decides(&store, group_id, device);
                     for namespace in covered {
-                        follow(&store, &node_client, &context_client, namespace).await;
+                        follow_and_rejoin(&store, &node_client, &context_client, namespace).await;
                     }
                     for namespace in uncovered {
                         unfollow(&store, &node_client, &context_client, namespace).await;
@@ -734,9 +734,40 @@ async fn carry_into(
     }
 }
 
-/// This node's OWN device lost its binding in `group_id`: drop the namespace and
-/// everything under it. Nothing for any other device, for the account namespace
-/// (which no scope names) or on a node holding the account root.
+/// Did this node just lose `namespace` because of what happened to `device`?
+///
+/// Two shapes. It still holds the device row and its scope no longer reaches
+/// here - decided against the scope in force, not against the event, since a
+/// narrowing and the widening that reverses it both publish here. Or the unlink
+/// apply has already released that row, which it does for this node's own device
+/// and no other, before this event is ever seen.
+///
+/// Never the account namespace, which no scope names, and never on a node
+/// holding the account root.
+fn lost_the_namespace(store: &Store, namespace: ContextGroupId, device: DeviceId) -> bool {
+    let devices = NodeDeviceRepository::new(store);
+    if devices.account_namespace().ok().flatten() == Some(namespace) {
+        return false;
+    }
+    let revoked_here = AccountBindingRepository::new(store)
+        .is_revoked(&namespace, device)
+        .unwrap_or(false);
+    match devices.get() {
+        // Every node that has joined anything holds a device row, so one holding
+        // none against a fresh tombstone held the device that tombstone names.
+        Ok(None) => revoked_here,
+        Ok(Some(held)) if held.device() == device => {
+            // A failed root read counts as holding it, as `namespaces_in_scope`
+            // has it: the cost of guessing wrong is every topic.
+            matches!(devices.holder_root(), Ok(None))
+                && (revoked_here || !node_reaches(store, &namespace).unwrap_or(true))
+        }
+        _ => false,
+    }
+}
+
+/// Drop `group_id` and everything under it when this node's own device lost its
+/// binding there.
 async fn drop_what_this_device_lost(
     store: &Store,
     node_client: &NodeClient,
@@ -744,17 +775,8 @@ async fn drop_what_this_device_lost(
     group_id: [u8; 32],
     device: DeviceId,
 ) {
-    let devices = NodeDeviceRepository::new(store);
-    if !matches!(devices.get(), Ok(Some(held)) if held.device() == device) {
-        return;
-    }
-    // A failed read counts as holding the root, as `namespaces_in_scope` has it:
-    // the cost of guessing wrong is every topic.
-    if !matches!(devices.holder_root(), Ok(None)) {
-        return;
-    }
     let namespace = ContextGroupId::from(group_id);
-    if devices.account_namespace().ok().flatten() == Some(namespace) {
+    if !lost_the_namespace(store, namespace, device) {
         return;
     }
     info!(?namespace, %device, "account-follow: this device lost its binding here; leaving");
@@ -818,30 +840,42 @@ async fn unfollow(
     }
 }
 
-/// Take `namespace` up again, contexts included.
-///
-/// `auto_follow` re-joins on `ContextRegistered` alone, so a context registered
-/// before this scope widened would never come back; joining what is already
-/// there is what makes a widening reversible without re-pairing.
-async fn follow(
-    store: &Store,
-    node_client: &NodeClient,
-    context_client: &ContextClient,
-    namespace: ContextGroupId,
-) {
+/// Take part in `namespace` and listen on it.
+async fn follow(store: &Store, node_client: &NodeClient, namespace: ContextGroupId) -> bool {
     match crate::handlers::follow_namespace::follow(store, node_client, &namespace).await {
-        Ok(_identity) => info!(
-            ?namespace,
-            "account-follow: following a namespace the account gained"
-        ),
+        Ok(_identity) => {
+            info!(
+                ?namespace,
+                "account-follow: following a namespace the account gained"
+            );
+            true
+        }
         Err(err) => {
             warn!(
                 ?err,
                 ?namespace,
                 "account-follow: failed to follow a namespace the account gained"
             );
-            return;
+            false
         }
+    }
+}
+
+/// [`follow`], plus the contexts already registered under `namespace`.
+///
+/// `auto_follow` re-joins on `ContextRegistered` alone, so a context registered
+/// before this scope widened would never come back; joining what is already
+/// there is what makes a widening reversible without re-pairing. Only for an
+/// event that says the account gained something - a start-up sweep running this
+/// would undo every `leave_context` the operator meant to keep.
+async fn follow_and_rejoin(
+    store: &Store,
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    namespace: ContextGroupId,
+) {
+    if !follow(store, node_client, namespace).await {
+        return;
     }
     for context_id in contexts_of(store, namespace) {
         if let Err(err) = context_client
@@ -1536,6 +1570,61 @@ mod tests {
                 ))
                 .expect("read the membership marker"),
             "and the contexts under it left, or the device keeps syncing them"
+        );
+    }
+
+    /// The revocation half of the same arm, and it cannot lean on the scope: a
+    /// revoked device's registry row still names every application, so only the
+    /// tombstone says it lost this namespace.
+    #[actix::test]
+    async fn this_devices_own_revocation_leaves_the_namespaces_contexts() {
+        let store = store();
+        let (_account_namespace, device, root_sk) = a_device_scoped_to(&store, &[]);
+        let dropped = ContextGroupId::from([0x9D; 32]);
+        let context_id = calimero_primitives::context::ContextId::from([0x9E; 32]);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&dropped)
+            .expect("this node takes part in it");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&dropped, device)
+            .expect("the tombstone the unlink apply writes");
+        calimero_governance_store::register_context_in_group(&store, &dropped, &context_id)
+            .expect("register a context under the namespace being dropped");
+        let member = root_sk.public_key();
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextIdentity::new(context_id, member),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some([0x9F; 32]),
+                },
+            )
+            .expect("this device has joined that context");
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::DeviceRevoked {
+            group_id: dropped.to_bytes(),
+            account: AccountGenesis::new(root_sk.public_key()).account_id(),
+            device,
+            proof: None,
+        });
+
+        let seen = unsubscribes_until(&mut harness, |seen| seen.contains(&topic(dropped))).await;
+        listener.abort();
+
+        assert!(
+            seen.contains(&topic(dropped)),
+            "a revoked device has to unfollow where it was revoked; got: {seen:?}"
+        );
+        assert!(
+            !store
+                .handle()
+                .has(&calimero_store::key::ContextIdentity::new(
+                    context_id, member
+                ))
+                .expect("read the membership marker"),
+            "and leave the contexts under it, or it keeps syncing them"
         );
     }
 
