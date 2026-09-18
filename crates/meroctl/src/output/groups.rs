@@ -6,13 +6,13 @@ use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
     JoinContextApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
     LeaveContextApiResponse, LeaveGroupApiResponse, LeaveNamespaceApiResponse,
-    ListGroupContextsApiResponse, ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse,
-    ListNamespacesApiResponse, ListSubgroupsApiResponse, NamespaceApiResponse,
-    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
-    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
-    SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
-    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    ListGroupContextsApiResponse, ListGroupMembersApiResponse, ListMemberDevicesApiResponse,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
+    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
+    PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
+    RevokeDeviceApiResponse, SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse,
+    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
+    SyncGroupApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -345,6 +345,42 @@ impl Report for DeleteGroupApiResponse {
             "Successfully deleted group (deleted: {})",
             self.data.is_deleted
         )]);
+        println!("{table}");
+    }
+}
+
+impl Report for ListMemberDevicesApiResponse {
+    fn report(&self) {
+        if self.members.is_empty() {
+            println!("No member devices found in group");
+            return;
+        }
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Account").fg(Color::Blue),
+            Cell::new("Device").fg(Color::Blue),
+            Cell::new("Signing key").fg(Color::Blue),
+        ]);
+        for member in &self.members {
+            if member.devices.is_empty() {
+                // A member with no device is a real state, not a gap in the
+                // listing: they are authorized and nothing of theirs has
+                // enrolled yet. Dropping the row would read as "not a member".
+                let _ = table.add_row(vec![
+                    member.account.to_string(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                ]);
+                continue;
+            }
+            for device in &member.devices {
+                let _ = table.add_row(vec![
+                    member.account.to_string(),
+                    device.device_id.to_string(),
+                    device.signing_key.to_string(),
+                ]);
+            }
+        }
         println!("{table}");
     }
 }
