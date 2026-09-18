@@ -55,11 +55,24 @@ pub(crate) fn apply_device_linked(
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
 
-    // The scope decides two things no other gate here can: that the root meant
-    // this device to reach this namespace, and which epoch the binding is stamped
-    // at, which is what a later descope orders itself against.
-    if !scope_reaches_here(ctx, cert, scope, "device link")? {
+    // Which namespaces the root meant this device to reach, and the epoch the
+    // binding is stamped at, which a later descope orders itself against.
+    if let Err(err) = scope.authorises(cert.account, cert.device) {
+        tracing::warn!(group_id = ?group_id, account = %cert.account, device = %cert.device,
+                       %err, "device link: the scope did not authorise this device");
         return Ok(());
+    }
+    // The account namespace is exempt, recognised node-locally: pairing publishes a
+    // device's first link there BEFORE the certificate that would name it.
+    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? != Some(group_id) {
+        let application = crate::MetaRepository::new(ctx.store())
+            .load(&group_id)?
+            .map(|meta| meta.target.application_id);
+        if !calimero_account::scope_covers(&scope.statement.applications, application) {
+            tracing::warn!(group_id = ?group_id, device = %cert.device,
+                           "device link: the carried scope does not reach this group");
+            return Ok(());
+        }
     }
 
     // The policy gate, in three steps: the endorsement is about this account, it
@@ -162,59 +175,6 @@ pub(crate) fn apply_device_linked(
         }
     }
     Ok(())
-}
-
-/// Is this group the account's own namespace - where its certificates and every
-/// scope statement live, and which no scope names?
-///
-/// Answered from the registry row the account's own `AccountDeviceCertified`
-/// wrote, which is replicated and causally precedes every descope citing it. The
-/// namespace id itself is hashed from the account's secret root, so no replica
-/// can recompute it from the op, and reading the node-local row that names it
-/// would let one node delete a binding its peers keep.
-fn is_the_accounts_own_namespace(
-    ctx: &GroupApplyCtx<'_>,
-    account: AccountId,
-    device: DeviceId,
-) -> EyreResult<bool> {
-    Ok(
-        crate::AccountDeviceRegistry::new(ctx.store(), *ctx.group_id())
-            .device(device)?
-            .is_some_and(|known| known.proof.statement.account == account),
-    )
-}
-
-/// Does `scope` authorise `cert`'s device, and reach this group? Shared with the
-/// descope so the two cannot disagree about which namespaces a scope speaks for.
-fn scope_reaches_here(
-    ctx: &GroupApplyCtx<'_>,
-    cert: &DeviceCert,
-    scope: &AccountProof<DeviceScope>,
-    what: &str,
-) -> EyreResult<bool> {
-    let group_id = *ctx.group_id();
-    if let Err(err) = scope.authorises(cert.account, cert.device) {
-        tracing::warn!(group_id = ?group_id, account = %cert.account, device = %cert.device,
-                       %err, what, "the scope did not authorise this device");
-        return Ok(false);
-    }
-    // The account namespace targets no application, so every scope but the widest
-    // reads as not covering it - and it is where the statements themselves live.
-    // Node-local here and not on the descope path: pairing publishes a device's
-    // first link into the account namespace BEFORE the certificate that would
-    // name it, so there is no replicated row to recognise it by yet.
-    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? == Some(group_id) {
-        return Ok(true);
-    }
-    let application = crate::MetaRepository::new(ctx.store())
-        .load(&group_id)?
-        .map(|meta| meta.target.application_id);
-    if !calimero_account::scope_covers(&scope.statement.applications, application) {
-        tracing::warn!(group_id = ?group_id, device = %cert.device, what,
-                       "the carried scope does not reach this group");
-        return Ok(false);
-    }
-    Ok(true)
 }
 
 /// Keep the proof if this link is about THIS node's device. Best-effort: a
@@ -539,28 +499,29 @@ pub(crate) fn apply_device_descoped(
                        "account device descoped: the scope did not authorise this device");
         return Ok(());
     }
-    if is_the_accounts_own_namespace(ctx, *account, *device)? {
+    // A device keeps its account namespace, recognised here by the REPLICATED
+    // registry row: a node-local read would drop a binding this node's peers keep.
+    if crate::AccountDeviceRegistry::new(ctx.store(), group_id)
+        .device(*device)?
+        .is_some_and(|known| known.proof.statement.account == *account)
+    {
         tracing::warn!(group_id = ?group_id, %device,
                        "account device descoped: a device keeps its account namespace");
         return Ok(());
     }
-    // The op's own application, not this replica's live metadata row: that row
-    // moves under `TargetApplicationSet`, so two replicas at different fold
-    // depths would answer this question differently and never reconcile.
+    // The op's own application, not the live metadata row: that row moves under
+    // `TargetApplicationSet`, so two replicas would answer differently.
     if calimero_account::scope_covers(&scope.statement.applications, application) {
         tracing::warn!(group_id = ?group_id, %device,
                        "account device descoped: the carried scope still reaches this group");
         return Ok(());
     }
 
-    // Only the account may narrow its own device. The statement is public - it
-    // rides in the clear on every link - so without this any member could replay a
-    // superseded one; a sibling device of the same account still can, and the
-    // account root re-widening is the remedy for that.
+    // Only the account may narrow its own device: the statement rides in the clear
+    // on every link, so any member could otherwise replay a superseded one.
     //
-    // Order-safe because the signer resolves through its own binding here, and
-    // that link causally precedes any descope it publishes; an unresolvable
-    // signer refuses rather than passing.
+    // Order-safe: the signer resolves through its own binding, which causally
+    // precedes any descope it publishes.
     if !ctx.signer_is(account)? {
         tracing::warn!(group_id = ?group_id, %account, %device, signer = %ctx.signer(),
                        "account device descoped: the signer does not speak for this account");

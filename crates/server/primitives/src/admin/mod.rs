@@ -2373,17 +2373,9 @@ pub enum DeviceScopeApiRequest {
 
 impl Validate for RescopeDeviceApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        match &self.scope {
-            DeviceScopeApiRequest::Only(applications) if applications.is_empty() => {
-                vec![ValidationError::InvalidFormat {
-                    field: "scope.only",
-                    reason: "name at least one application, or ask for `all`".to_owned(),
-                }]
-            }
-            // Whether a string names an application at all is the handler's
-            // parse, exactly as on `relink`.
-            _ => Vec::new(),
-        }
+        // What a string names, and whether an empty `only` is a scope at all, is
+        // the handler's parse - exactly as on `relink`.
+        Vec::new()
     }
 }
 
@@ -3222,26 +3214,19 @@ pub struct SetSubgroupVisibilityApiResponse {}
 mod tests {
     use super::*;
 
-    /// The two shapes the route accepts, and the one it must refuse: an empty
-    /// `only` means every application on the wire, so it may never be a request.
+    /// The two shapes the route accepts. An empty `only` is refused by the
+    /// handler, which answers `ScopeReplacementEmpty` as a `400`.
     #[test]
-    fn a_scope_replacement_reads_all_and_only_and_refuses_an_empty_only() {
+    fn a_scope_replacement_reads_all_and_only() {
         let all: RescopeDeviceApiRequest =
             serde_json::from_value(serde_json::json!({"scope": "all"})).expect("`all` is a scope");
         assert!(matches!(all.scope, DeviceScopeApiRequest::All));
-        assert!(all.validate().is_empty());
 
         let named = hex::encode([0x11; 32]);
         let only: RescopeDeviceApiRequest =
             serde_json::from_value(serde_json::json!({"scope": {"only": [named.clone()]}}))
                 .expect("`only` is a scope");
         assert!(matches!(only.scope, DeviceScopeApiRequest::Only(ref apps) if apps == &[named]));
-        assert!(only.validate().is_empty());
-
-        let empty: RescopeDeviceApiRequest =
-            serde_json::from_value(serde_json::json!({"scope": {"only": []}}))
-                .expect("it parses; validation is what refuses it");
-        assert_eq!(empty.validate().len(), 1);
     }
 
     #[test]
