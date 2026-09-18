@@ -413,6 +413,12 @@ pub(crate) fn setup(
             "/account/devices/{device_id}/scope",
             put(account::rescope::handler),
         )
+        // The name every device of the account renders, as opposed to whatever
+        // alias one node happens to hold locally.
+        .route(
+            "/account/devices/{device_id}/label",
+            put(account::label::handler),
+        )
         .route(
             "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
@@ -776,13 +782,16 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::PairingCodeMismatch { .. }
         | Refusal::ScopeReplacementEmpty
         | Refusal::ScopeReplacementTooLarge { .. }
-        | Refusal::ScopeReplacementUnknownApplication { .. } => StatusCode::BAD_REQUEST,
+        | Refusal::ScopeReplacementUnknownApplication { .. }
+        | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
         | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,
         Refusal::PairingNotTheAccountHolder { .. }
         | Refusal::PairingDeviceRevoked { .. }
-        | Refusal::ScopeReplacementHoldsTheRoot { .. } => StatusCode::FORBIDDEN,
+        | Refusal::ScopeReplacementHoldsTheRoot { .. }
+        | Refusal::DeviceLabelNotOwn { .. } => StatusCode::FORBIDDEN,
+        Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
         Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
         _ => return None,
     })

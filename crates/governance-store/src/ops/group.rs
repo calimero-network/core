@@ -110,6 +110,20 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             application,
             scope,
         } => account_ops::apply_device_descoped(ctx, account, device, *application, scope)?,
+        GroupOp::AccountDeviceLabelled {
+            account,
+            device,
+            label,
+            label_epoch,
+            root_proof,
+        } => account_ops::apply_device_labelled(
+            ctx,
+            account,
+            device,
+            label,
+            *label_epoch,
+            root_proof.as_deref(),
+        )?,
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,

@@ -35,6 +35,7 @@ pub mod issue_ownership_proof;
 pub mod join_context;
 pub mod join_group;
 pub mod join_subgroup_inheritance;
+pub mod label_device;
 pub mod leave_context;
 pub mod leave_group;
 pub mod leave_namespace;
@@ -211,6 +212,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RescopeDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::LabelDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RotateGroupKey { request, outcome } => {
