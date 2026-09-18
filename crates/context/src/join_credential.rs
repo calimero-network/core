@@ -32,7 +32,7 @@
 use calimero_account::DeviceCert;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::NodeDeviceRepository;
+use calimero_governance_store::{NodeDeviceError, NodeDeviceRepository};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{Result as EyreResult, WrapErr as _};
@@ -66,6 +66,7 @@ pub fn build(
     signing_pk: &PublicKey,
 ) -> EyreResult<Box<JoinAccountCredential>> {
     let devices = NodeDeviceRepository::new(datastore);
+    refuse_a_spent_rootless_device(&devices)?;
     // The existing row, READ not minted. Minting is what needs a root, and the
     // ordering is forced: a certificate is signed over a device id, a signing key
     // and an agreement key, so the device has to exist before anybody can certify
@@ -154,6 +155,35 @@ pub fn build(
     }))
 }
 
+/// Refuse a revoked device on a rootless node: the fold releases a device only
+/// where a root is left to speak as. Typed, so the API answers a client error.
+fn refuse_a_spent_rootless_device(devices: &NodeDeviceRepository<'_>) -> EyreResult<()> {
+    let Some(held) = devices
+        .get()
+        .wrap_err("join credential: could not read this node's device row")?
+    else {
+        return Ok(());
+    };
+    if devices
+        .account_root()
+        .wrap_err("join credential: could not read this node's account root")?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let revoked_in = devices
+        .revoked_in(held.device())
+        .wrap_err("join credential: could not read this device's revocations")?;
+    if revoked_in.is_empty() {
+        return Ok(());
+    }
+    eyre::bail!(NodeDeviceError::Revoked {
+        device: held.device().to_string(),
+        account: held.account.to_string(),
+        namespaces: format!("{revoked_in:?}"),
+    })
+}
+
 /// Refuse an imported certificate that does not describe THIS node.
 ///
 /// Every field here is one a peer checks and this node cannot see the result of: a
@@ -176,30 +206,30 @@ fn certificate_matches_this_node(
     // certificate names another then `account_for_group` and this credential
     // disagree about who the node is — one resolver answering differently from the
     // other is the failure the account plane is least able to diagnose.
-    eyre::ensure!(
-        cert.account == enrolled.account,
-        "the imported certificate is for account {} but this node's device belongs to {}; \
-         import the certificate signed for THIS node's account",
-        cert.account,
-        enrolled.account,
-    );
-    eyre::ensure!(
-        cert.device == enrolled.device(),
-        "the imported certificate is for device {} but this node is {}",
-        cert.device,
-        enrolled.device(),
-    );
-    eyre::ensure!(
-        &cert.sign_pk == signing_pk,
-        "the imported certificate certifies a signing key this node does not author with; \
-         it was signed over another node's key",
-    );
-    eyre::ensure!(
-        cert.kem_pk == enrolled.kem_public_key(),
-        "the imported certificate names an agreement key that is not this device's, so \
-         scope keys wrapped to it could not be opened here",
-    );
-    Ok(())
+    let reason = if cert.account != enrolled.account {
+        format!(
+            "it is for account {} but this node's device belongs to {}; import the \
+             certificate signed for THIS node's account",
+            cert.account, enrolled.account,
+        )
+    } else if cert.device != enrolled.device() {
+        format!(
+            "it is for device {} but this node is {}",
+            cert.device,
+            enrolled.device(),
+        )
+    } else if &cert.sign_pk != signing_pk {
+        "it certifies a signing key this node does not author with; it was signed over \
+         another node's key"
+            .to_owned()
+    } else if cert.kem_pk != enrolled.kem_public_key() {
+        "it names an agreement key that is not this device's, so scope keys wrapped to it \
+         could not be opened here"
+            .to_owned()
+    } else {
+        return Ok(());
+    };
+    Err(NodeDeviceError::ImportedCertificateMismatch { reason }.into())
 }
 
 #[cfg(test)]
@@ -207,7 +237,9 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_account::{AccountGenesis, DeviceCert};
-    use calimero_governance_store::NodeDeviceRepository;
+    use calimero_governance_store::{
+        AccountBindingRepository, NamespaceRepository, NodeDeviceError, NodeDeviceRepository,
+    };
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
@@ -386,6 +418,101 @@ mod tests {
             credential.verify(root.account()).map(|_| ()),
             Ok(()),
             "the account root must be what signed it"
+        );
+    }
+
+    /// Link the held device into `ns` as the holder of `root_sk` would, and fold
+    /// the link the way the receiving node does.
+    fn pair_held_device(
+        store: &Store,
+        ns: &ContextGroupId,
+        root_sk: &PrivateKey,
+        signing_pk: &PublicKey,
+    ) -> calimero_governance_store::NodeDevice {
+        let repo = NodeDeviceRepository::new(store);
+        NamespaceRepository::new(store)
+            .note_participation(ns)
+            .expect("take part in the namespace");
+        let held = repo
+            .ensure_enrolled_into(
+                std::slice::from_ref(ns),
+                AccountGenesis::new(root_sk.public_key()),
+            )
+            .expect("pair-init mints the device");
+        let proof: JoinAccountCredential =
+            borsh::from_slice(&certify(root_sk, store, None, signing_pk)).expect("decode");
+        AccountBindingRepository::new(store)
+            .apply_link(
+                ns,
+                &proof.genesis,
+                &[],
+                &proof.statement,
+                calimero_governance_store::JOIN_SCOPE_EPOCH,
+            )
+            .expect("store")
+            .expect("admissible");
+        repo.remember_own_link(&proof).expect("keep the own link");
+        held
+    }
+
+    /// The certificate follows the device it names. Once a paired device is
+    /// revoked and released, the node writes as its own account again; once it is
+    /// re-paired, it presents the NEW certificate rather than the spent one.
+    #[test]
+    fn a_revoked_device_falls_back_to_its_own_root_and_a_re_pair_presents_the_new_certificate() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let repo = NodeDeviceRepository::new(&store);
+        let own_root = repo.provision_account_root().expect("this node's root");
+        let alice = PrivateKey::from([0x31; 32]);
+        let ns = ContextGroupId::from([0xAA; 32]);
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+
+        let first = pair_held_device(&store, &ns, &alice, &signing_pk);
+        let paired = build(&store, &ns, &signing_pk).expect("a paired device presents its link");
+        assert_eq!(paired.statement.device, first.device());
+
+        // What folding the withdrawal does; the credential path only reads after it.
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, first.device())
+            .expect("tombstone");
+        assert!(repo
+            .release_revoked_device(first.device())
+            .expect("release the withdrawn device"));
+
+        let own = build(&store, &ns, &signing_pk)
+            .expect("a released device leaves the node speaking as its own account");
+        assert_eq!(own.statement.account, own_root.account());
+        assert_ne!(own.statement.device, first.device());
+
+        let second = pair_held_device(&store, &ns, &alice, &signing_pk);
+        assert_ne!(second.device(), first.device());
+        let re_paired = build(&store, &ns, &signing_pk)
+            .expect("the re-paired device presents the certificate signed for it");
+        assert_eq!(re_paired.statement.device, second.device());
+        assert_eq!(re_paired.statement.account, second.account);
+    }
+
+    /// A root-free node has nothing to fall back to, so the refusal is typed: the
+    /// admin API answers it as a client error that names the revocation.
+    #[test]
+    fn a_revoked_root_free_device_is_refused_with_a_typed_error() {
+        let alice = PrivateKey::from([0x31; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0xAA; 32]);
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+        let held = pair_held_device(&store, &ns, &alice, &signing_pk);
+
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, held.device())
+            .expect("tombstone");
+
+        let err = build(&store, &ns, &signing_pk).expect_err("nothing left to present");
+        assert!(
+            matches!(
+                err.downcast_ref::<NodeDeviceError>(),
+                Some(NodeDeviceError::Revoked { .. })
+            ),
+            "{err:#}"
         );
     }
 }

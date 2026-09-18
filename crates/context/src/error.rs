@@ -195,4 +195,67 @@ pub enum ContextError {
         /// Debug rendering of the namespaces holding a tombstone for it.
         namespaces: String,
     },
+
+    /// A `400`: an empty list means every application on the wire, so accepting
+    /// it would turn the narrowest-looking request into the widest one.
+    #[error(
+        "a scope replacement must name at least one application; ask for every \
+         application explicitly instead"
+    )]
+    ScopeReplacementEmpty,
+
+    /// A `400`: the list is longer than a scope statement may carry, so it could
+    /// never be signed into one.
+    #[error("a scope replacement may name at most {limit} applications")]
+    ScopeReplacementTooLarge {
+        /// The cap the wire format puts on a scope statement.
+        limit: usize,
+    },
+
+    /// A `400`: the list names an application no namespace of this account
+    /// targets, so the replacement would reach nothing and descope everywhere.
+    #[error(
+        "this account takes part in no namespace targeting application \
+         {application}, so naming it in a scope replacement would leave the \
+         device reaching nothing"
+    )]
+    ScopeReplacementUnknownApplication {
+        /// The application the caller named (for the message only).
+        application: String,
+    },
+
+    /// A `409`: scope epochs only ever rise, and this device's has reached the
+    /// last one there is, so no further statement can supersede what it holds.
+    #[error(
+        "device {device} is at the last scope epoch there is, so its scope can no \
+         longer be replaced; revoke it and pair the machine afresh"
+    )]
+    ScopeEpochExhausted {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
+    /// A `403`: the named device is the one holding the account root, which signs
+    /// every scope statement - including any that would narrow itself.
+    #[error(
+        "device {device} holds the account root, so it always acts for every \
+         application and there is nothing to replace; name one of the account's \
+         paired devices instead"
+    )]
+    ScopeReplacementHoldsTheRoot {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
+    /// A `403`: the account replaced this device's scope with one that no longer
+    /// reaches the namespace, so it may read on but must not author there.
+    #[error(
+        "this device's account narrowed its application scope out of the namespace \
+         owning group '{group_id}', so it may no longer write there; widen the scope \
+         with `PUT /admin-api/account/devices/{{id}}/scope` from the account holder"
+    )]
+    DeviceOutOfScope {
+        /// Hex rendering of the target group id (for the message only).
+        group_id: String,
+    },
 }

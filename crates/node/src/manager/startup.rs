@@ -35,6 +35,7 @@ impl NodeManager {
 
         let node_client = self.clients.node.clone();
         let context_client = self.clients.context.clone();
+        let datastore = self.datastore.clone();
 
         let _handle = ctx.spawn(
             async move {
@@ -47,6 +48,17 @@ impl NodeManager {
                 {
                     Ok(groups) => {
                         for group in groups {
+                            // Membership is the account's, and a narrowed device
+                            // of it reaches fewer namespaces than the account does.
+                            if !calimero_context::account_follow::node_reaches(
+                                &datastore,
+                                &group.group_id,
+                            )
+                            .unwrap_or(true)
+                            {
+                                debug!(?group.group_id, "this device's scope no longer reaches this namespace; not subscribing");
+                                continue;
+                            }
                             let ns_bytes = group.group_id.to_bytes();
                             if let Err(err) = node_client.subscribe_namespace(ns_bytes).await {
                                 error!(?group.group_id, %err, "Failed to subscribe to group topic");
@@ -88,11 +100,11 @@ impl NodeManager {
             async move {
                 // Participation, not the device row: the device is node-level now,
                 // so it says nothing about which namespaces to subscribe to.
-                let namespaces = match calimero_governance_store::NamespaceRepository::new(
+                // Filtered by this device's scope: unfiltered, this races the
+                // account-follow sweep dropping topics in another actor.
+                let namespaces = match calimero_context::account_follow::namespaces_in_reach(
                     &datastore,
-                )
-                .participating_namespaces()
-                {
+                ) {
                     Ok(namespaces) => namespaces,
                     Err(err) => {
                         error!(%err, "Failed to list namespaces for startup subscription");

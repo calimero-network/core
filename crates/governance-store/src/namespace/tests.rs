@@ -44,6 +44,26 @@ use super::super::*;
 /// `SyncManager::recover_missing_group_keys` across two nodes and a partition,
 /// which is a merobox scenario (`account-pairing-missed-publish`) rather than
 /// anything a single store can show.
+/// The root-signed scope a link carries; empty, so it reaches every group.
+fn link_scope(
+    root_sk: &calimero_primitives::identity::PrivateKey,
+    cert: &calimero_account::DeviceCert,
+    scope_epoch: u32,
+) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
+    Box::new(calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            vec![],
+            scope_epoch,
+            0,
+        )
+        .expect("the account root signs its device's scope"),
+    })
+}
 #[test]
 fn a_key_delivery_is_sealed_at_the_publish_boundary() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
@@ -460,7 +480,7 @@ async fn the_publish_only_path_also_feeds_the_local_apply_path() {
     // here — the feed fires before the publish is awaited, which is the point
     // (the local DAG must not wait on the network for an op authored here).
     let _ = NamespaceGovernance::new(&store, ns_id)
-        .sign_and_publish_post_gate(&node_client, &ack_router, &sk, op, 0, 0, true)
+        .sign_and_publish_post_gate(&node_client, &ack_router, &sk, op, 0, true)
         .await;
 
     let fed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -5165,13 +5185,185 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     );
 }
 
+/// A namespace with `admin` (this node) and a second member account.
+fn two_member_namespace(ns_id: [u8; 32]) -> (Store, PrivateKey) {
+    let store = test_store();
+    let (admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let peer = PrivateKey::random(&mut rand::rng()).public_key();
+    let peer_account = enrol_member(&store, &gid, &peer);
+    MembershipRepository::new(&store)
+        .add_member(&gid, &peer_account, GroupMemberRole::Member)
+        .expect("plant the second member");
+    (store, admin_sk)
+}
+
+/// The cross-node read-after-write case: a second member is subscribed, so the
+/// publish must wait for its ack.
 #[test]
-fn min_acks_after_local_mutation_uses_publish_time_subscribers() {
-    let min_acks = super::governance::min_acks_after_local_mutation(1, 0);
+fn ackable_members_counts_a_second_member_behind_a_subscriber() {
+    let ns_id = [0xA1; 32];
+    let (store, admin_sk) = two_member_namespace(ns_id);
 
     assert_eq!(
-        min_acks, 0,
-        "subscriber departure after the readiness gate must use min_acks=0 to avoid NoAckReceived after local DAG mutation"
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        1
+    );
+}
+
+/// The account's own second device is a peer too: a write on the laptop has to be
+/// readable on the phone when the call returns, exactly as across two accounts.
+#[test]
+fn ackable_members_counts_this_accounts_other_device() {
+    let ns_id = [0xA4; 32];
+    let store = test_store();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let root_sk = PrivateKey::from(*admin_pk);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+    let sibling = PrivateKey::random(&mut rand::rng()).public_key();
+    let cert = calimero_account::DeviceCert::sign(
+        &root_sk,
+        account,
+        calimero_account::DeviceId::mint(account, [9; 16]),
+        &sibling,
+        &calimero_account::KemPublicKey::from([9; 32]),
+        0,
+        0,
+    )
+    .expect("the root certifies a second device");
+    let _bound = crate::AccountBindingRepository::new(&store)
+        .apply_link(&gid, &genesis, &[], &cert, crate::JOIN_SCOPE_EPOCH)
+        .expect("store the binding")
+        .expect("the binding is admissible");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        1,
+        "a sibling device of this account can ack"
+    );
+}
+
+/// The pairing case: the only subscriber is a device that is not a member.
+#[test]
+fn ackable_members_is_zero_when_this_node_is_the_only_member() {
+    let ns_id = [0xA2; 32];
+    let store = test_store();
+    let (admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        0,
+        "our own account is not somebody who can ack our publish"
+    );
+}
+
+/// A removal publishes after it applies, so only the account this op removed is
+/// gone; the members left behind still have to be waited for.
+#[test]
+fn ackable_members_excludes_only_the_account_removed_by_this_op() {
+    let ns_id = [0xA6; 32];
+    let (store, admin_sk) = two_member_namespace(ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let leaver = PrivateKey::random(&mut rand::rng()).public_key();
+    let leaver_account = enrol_member(&store, &gid, &leaver);
+    let membership = MembershipRepository::new(&store);
+    membership
+        .add_member(&gid, &leaver_account, GroupMemberRole::Member)
+        .expect("plant the third member");
+    membership
+        .remove_member(&gid, &leaver_account)
+        .expect("remove the third member");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        1,
+        "the member that stayed can still ack"
+    );
+}
+
+/// Revocation withdraws the right to author, and an ack is authored: a device
+/// this account has retired cannot end the wait.
+#[test]
+fn ackable_members_ignores_a_revoked_sibling_device() {
+    let ns_id = [0xA7; 32];
+    let store = test_store();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let root_sk = PrivateKey::from(*admin_pk);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+    let device = calimero_account::DeviceId::mint(account, [9; 16]);
+    let sibling = PrivateKey::random(&mut rand::rng()).public_key();
+    let cert = calimero_account::DeviceCert::sign(
+        &root_sk,
+        account,
+        device,
+        &sibling,
+        &calimero_account::KemPublicKey::from([9; 32]),
+        0,
+        0,
+    )
+    .expect("the root certifies a second device");
+    let bindings = crate::AccountBindingRepository::new(&store);
+    let _bound = bindings
+        .apply_link(&gid, &genesis, &[], &cert, crate::JOIN_SCOPE_EPOCH)
+        .expect("store the binding")
+        .expect("the binding is admissible");
+    bindings
+        .apply_revocation(&gid, device)
+        .expect("retire the second device");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 1),
+        0,
+        "a revoked device is nobody to wait for"
+    );
+}
+
+/// A key we cannot resolve to an account leaves us unable to tell our own
+/// membership row from anybody else's, so every subscriber has to count.
+#[test]
+fn ackable_members_fails_open_when_the_signer_is_unbound() {
+    let ns_id = [0xA5; 32];
+    let store = test_store();
+    let _admin = bootstrap_namespace_with_admin(&store, ns_id);
+    let stranger = PrivateKey::random(&mut rand::rng()).public_key();
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &stranger, 3),
+        3,
+        "an unresolvable signer must not silently make the namespace look solo"
+    );
+}
+
+/// An offline member is still a member; with nobody on the topic the publish
+/// would only reach `NoPeersSubscribed`, so it must not wait.
+#[test]
+fn ackable_members_is_zero_without_a_subscriber() {
+    let ns_id = [0xA3; 32];
+    let (store, admin_sk) = two_member_namespace(ns_id);
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 0),
+        0
+    );
+}
+
+#[test]
+fn min_acks_after_local_mutation_waits_only_for_a_member_that_can_ack() {
+    assert_eq!(
+        super::governance::min_acks_after_local_mutation(0),
+        0,
+        "with no member able to ack - only a non-member subscriber, say - \
+         waiting can only end in NoAckReceived after the local DAG has \
+         already advanced"
+    );
+    assert_eq!(
+        super::governance::min_acks_after_local_mutation(1),
+        crate::governance_broadcast::DEFAULT_MIN_ACKS,
+        "a live member still gets waited for"
     );
 }
 
@@ -7212,7 +7404,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
         .record_endorser(&ns_gid, account, &account)
         .unwrap();
     let _ = bindings
-        .apply_link(&ns_gid, &genesis, &[], &cert)
+        .apply_link(&ns_gid, &genesis, &[], &cert, 0)
         .unwrap()
         .expect("admitted");
 
@@ -8070,6 +8262,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
             &squatter.genesis,
             &squatter.chain,
             &squatter.statement,
+            0,
         )
         .expect("seed the conflicting device claim");
 
@@ -8471,6 +8664,7 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
             &account.genesis,
             &account.chain,
             &account.statement,
+            0,
         )
         .expect("store")
         .expect("admitted");
@@ -8527,6 +8721,7 @@ fn a_revoked_device_resolves_to_nothing() {
             &account.genesis,
             &account.chain,
             &account.statement,
+            0,
         )
         .expect("store")
         .expect("admitted");
@@ -8917,6 +9112,7 @@ fn provisioning_the_signing_key_joins_nothing() {
 /// readiness problem at the caller. A FAIL would mean the re-drive itself has a
 /// gap for this op, which would be a live bug on cleartext master too.
 #[test]
+
 fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
     use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
@@ -8977,6 +9173,7 @@ fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
         chain: vec![],
         cert,
         endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+        scope: link_scope(root.signing_key(), &cert, 0),
     };
 
     // Encrypted under the namespace key, exactly as `publish_link_and_key` sends
@@ -9086,6 +9283,7 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
         chain: vec![],
         cert,
         endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+        scope: link_scope(root.signing_key(), &cert, 0),
     };
 
     let namespace_key = [0x66u8; 32];
@@ -11044,4 +11242,135 @@ fn redelivering_the_same_key_is_idempotent() {
     );
     let (current_id, current) = ring.load_current_key().unwrap().expect("current");
     assert_eq!((current_id, current), (first, key));
+}
+
+#[test]
+fn key_delivery_retry_folds_per_signer_not_in_causal_order() {
+    // #3974 asked, and left open, whether the KeyDelivery retry pass folds
+    // buffered ops in CAUSAL order. It does not, and this pins down exactly how
+    // far the guarantee goes — the answer decides whether publishing
+    // `DefaultCapabilitiesSet` at namespace creation is sufficient on its own.
+    //
+    // `collect_retry_candidates_for_group` sorts by `(signer_bytes, nonce)`.
+    // Within ONE signer that is publish order, so a namespace whose
+    // `DefaultCapabilitiesSet` and whose `MemberJoinedViaTeeAttestation` are
+    // signed by the same admin folds correctly: the mask is set before any row
+    // snapshots it. Across signers the sort groups by public key
+    // lexicographically, so a causally-LATER op from a signer whose key sorts
+    // lower applies FIRST.
+    //
+    // That is the gap. `add_member_with_keys` snapshots the group's default caps
+    // into a non-admin member's row at admission, so when a second admin admits
+    // the TEE relay, whether that row carries `CAN_AUTHOR_ON_BEHALF` is decided
+    // by how two public keys happen to compare — not by the DAG.
+    //
+    // The existing sort comment justifies per-signer ordering on the grounds
+    // that `last_nonce` is tracked per-(group, signer) and cross-signer causality
+    // was enforced at DAG-receive time. Both are true, and neither covers this:
+    // they are about nonce dedup and about what was ALLOWED to apply, not about a
+    // state dependency BETWEEN two signers' ops. This test exists so that
+    // reasoning is not re-derived from the sort comment a third time.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let namespace_id = [0xC1; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    // Two DISTINCT signers, picked so the causally-later one sorts LOWER. The
+    // search is over freshly generated keys rather than hardcoded bytes because
+    // a `PublicKey` must be a real point — and it terminates on the first draw
+    // roughly half the time.
+    let (creator_sk, admitter_sk) = loop {
+        let a = PrivateKey::random(&mut rng);
+        let b = PrivateKey::random(&mut rng);
+        let a_bytes: [u8; 32] = *a.public_key().as_ref();
+        let b_bytes: [u8; 32] = *b.public_key().as_ref();
+        if b_bytes < a_bytes {
+            break (a, b);
+        }
+    };
+
+    // No namespace identity is stored, so neither op is skipped as "this node's
+    // own" — both are peer ops, which is what a bootstrapping replica sees.
+    let group_key = [0xC2; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let mk = |sk: &PrivateKey, nonce: u64, op: &GroupOp| {
+        SignedNamespaceOp::sign(
+            sk,
+            namespace_id.into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    // Causally FIRST: the creator publishes the namespace default mask (what
+    // #3974 added). Buffered, because a bootstrapping replica has no key yet.
+    gov.store_operation(&mk(
+        &creator_sk,
+        1,
+        &GroupOp::DefaultCapabilitiesSet {
+            capabilities: MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+                | MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        },
+    ))
+    .unwrap();
+
+    // Causally SECOND: a different admin admits the TEE relay, whose row
+    // snapshots the mask above at apply time.
+    gov.store_operation(&mk(
+        &admitter_sk,
+        1,
+        &GroupOp::MemberJoinedViaTeeAttestation {
+            member: AccountId::from(*admitter_sk.public_key()),
+            quote_hash: [0xC3; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    ))
+    .unwrap();
+
+    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
+        .collect_retry_candidates_for_group(namespace_id)
+        .unwrap();
+
+    assert_eq!(
+        candidates.len(),
+        2,
+        "both buffered ops are retry candidates"
+    );
+    assert_eq!(
+        candidates[0].signed_op.signer,
+        admitter_sk.public_key(),
+        "the retry pass folds by signer bytes, so the causally-LATER admission \
+         sorts ahead of the DefaultCapabilitiesSet it depends on — the retry is \
+         not a topological fold, and #3974's publish alone does not make the \
+         replica's snapshot deterministic across signers"
+    );
+    assert_eq!(
+        candidates[1].signed_op.signer,
+        creator_sk.public_key(),
+        "and the mask that should have been folded first applies second"
+    );
 }

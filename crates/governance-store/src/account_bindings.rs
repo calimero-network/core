@@ -35,14 +35,19 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupAccountEndorser, GroupAccountKey, GroupAccountKeyValue, GroupDeviceBinding,
-    GroupDeviceBindingValue, GroupRevokedDevice,
+    GroupDeviceBindingValue, GroupDeviceScopeFloor, GroupRevokedDevice,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error as ThisError;
 
 use crate::collect_keys_with_prefix;
+
+/// Scope epoch stamped on a binding a join wrote: the join credential carries no
+/// scope statement, so the floor is what lets any later scope supersede it.
+pub const JOIN_SCOPE_EPOCH: u32 = 0;
 
 /// Why a credential was not recorded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ThisError)]
@@ -57,6 +62,14 @@ pub enum BindingRejected {
     /// A device may not be moved between accounts.
     #[error("device is already bound to a different account")]
     AccountReassignment,
+    /// The account narrowed this device out of the group at or after this scope.
+    #[error("device was narrowed out of this group at scope epoch {floor}; the link's scope is {offered}")]
+    ScopeNarrowed {
+        /// Scope epoch the incoming link was made under.
+        offered: u32,
+        /// Scope epoch of the latest narrowing recorded here.
+        floor: u32,
+    },
     /// The link does not advance the device's rotation epoch, so it would only
     /// let a retired certificate be replayed.
     #[error("device link at epoch {offered} does not supersede the stored {stored}")]
@@ -691,6 +704,7 @@ impl<'a> AccountBindingRepository<'a> {
         genesis: &AccountGenesis,
         chain: &[RootKeyHandoff],
         cert: &DeviceCert,
+        scope_epoch: u32,
     ) -> EyreResult<Result<DeviceBinding, BindingRejected>> {
         // Cap before the loop below, not just inside `verify_device_cert`. Each
         // `apply_rotation` costs an Ed25519 verification, and this runs first, so
@@ -721,6 +735,16 @@ impl<'a> AccountBindingRepository<'a> {
         if self.is_revoked(group, verified.device)? {
             return Ok(Err(BindingRejected::DeviceRevoked));
         }
+        // Consulted before the binding, like the tombstone: a narrowing that
+        // arrives before the stale link it outranks must still win.
+        if let Some(floor) = self.scope_floor(group, verified.account, verified.device)? {
+            if scope_epoch <= floor {
+                return Ok(Err(BindingRejected::ScopeNarrowed {
+                    offered: scope_epoch,
+                    floor,
+                }));
+            }
+        }
 
         match self.raw_binding(group, verified.device)? {
             Some(existing) => {
@@ -746,6 +770,17 @@ impl<'a> AccountBindingRepository<'a> {
                     && existing.device_epoch == verified.device_epoch
                     && existing.key_epoch == verified.key_epoch
                 {
+                    // The scope stamp still moves: a re-link under a newer scope
+                    // is what retires the descopes signed before it.
+                    if scope_epoch > existing.scope_epoch {
+                        self.store.handle().put(
+                            &GroupDeviceBinding::new(group.to_bytes(), *verified.device.as_bytes()),
+                            &GroupDeviceBindingValue {
+                                scope_epoch,
+                                ..existing
+                            },
+                        )?;
+                    }
                     return Ok(Ok(DeviceBinding {
                         device: verified.device,
                         account: verified.account,
@@ -784,6 +819,7 @@ impl<'a> AccountBindingRepository<'a> {
                 kem_pk: *verified.kem_pk.as_bytes(),
                 device_epoch: verified.device_epoch,
                 key_epoch: verified.key_epoch,
+                scope_epoch,
             },
         )?;
 
@@ -797,7 +833,7 @@ impl<'a> AccountBindingRepository<'a> {
     }
 
     /// Remove every account row under `group` — bindings, revocation
-    /// tombstones, and per-account root keys.
+    /// tombstones, per-account root keys, and the scope floors.
     ///
     /// Used by the group teardown so the account plane does not outlive the group
     /// it describes. The tombstones matter most: they are **terminal**, so a group
@@ -828,6 +864,12 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_ACCOUNT_KEY_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let floors = collect_keys_with_prefix(
+            self.store,
+            GroupDeviceScopeFloor::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_DEVICE_SCOPE_FLOOR_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
 
         let mut handle = self.store.handle();
         for key in bindings {
@@ -839,7 +881,57 @@ impl<'a> AccountBindingRepository<'a> {
         for key in accounts {
             handle.delete(&key)?;
         }
+        for key in floors {
+            handle.delete(&key)?;
+        }
         Ok(())
+    }
+
+    /// The scope epoch `device` was last narrowed out of `group` at, if ever.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn scope_floor(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<Option<u32>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&floor_key(group, account, device))?)
+    }
+
+    /// Narrow `device` out of `group` at `scope_epoch`: raise the floor whatever
+    /// is bound, and drop a binding made under an older scope. No tombstone.
+    ///
+    /// # Errors
+    /// Propagates the store failure.
+    pub fn narrow(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+        scope_epoch: u32,
+    ) -> EyreResult<bool> {
+        let key = floor_key(group, account, device);
+        let mut handle = self.store.handle();
+        if handle.get(&key)?.is_none_or(|floor| scope_epoch > floor) {
+            handle.put(&key, &scope_epoch)?;
+        }
+        match self.raw_binding(group, device)? {
+            Some(bound)
+                if bound.account == *account.as_bytes() && bound.scope_epoch < scope_epoch =>
+            {
+                handle.delete(&GroupDeviceBinding::new(
+                    group.to_bytes(),
+                    *device.as_bytes(),
+                ))?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// Withdraw a device.
@@ -863,6 +955,19 @@ impl<'a> AccountBindingRepository<'a> {
         ))?;
         Ok(())
     }
+}
+
+/// Account and device hashed into one slot: a statement from another account's
+/// root names a different slot, so it cannot raise this device's floor.
+fn floor_key(
+    group: &ContextGroupId,
+    account: AccountId,
+    device: DeviceId,
+) -> GroupDeviceScopeFloor {
+    let mut hasher = Sha256::new();
+    hasher.update(account.as_bytes());
+    hasher.update(device.as_bytes());
+    GroupDeviceScopeFloor::new(group.to_bytes(), hasher.finalize().into())
 }
 
 #[cfg(test)]
@@ -916,7 +1021,7 @@ mod tests {
         assert!(!repo.is_device_linked(&gid, never_linked).expect("query"));
 
         let bound = repo
-            .apply_link(&gid, &g, &[], &cert)
+            .apply_link(&gid, &g, &[], &cert, 0)
             .expect("store")
             .expect("admitted");
         assert!(repo.is_device_linked(&gid, bound.device).expect("query"));
@@ -937,7 +1042,7 @@ mod tests {
         let cert = cert_for(&g, &key(1), 5, 0, 0);
 
         let bound = repo
-            .apply_link(&gid, &g, &[], &cert)
+            .apply_link(&gid, &g, &[], &cert, 0)
             .expect("store")
             .expect("admitted");
         assert_eq!(bound.account, g.account_id());
@@ -958,7 +1063,7 @@ mod tests {
 
         for seed in [5u8, 6] {
             let _ = repo
-                .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), seed, 0, 0))
+                .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), seed, 0, 0), 0)
                 .expect("store")
                 .expect("admitted");
         }
@@ -981,7 +1086,7 @@ mod tests {
 
         repo.apply_revocation(&gid, cert.device).expect("revoke");
         assert_eq!(
-            repo.apply_link(&gid, &g, &[], &cert).expect("store"),
+            repo.apply_link(&gid, &g, &[], &cert, 0).expect("store"),
             Err(BindingRejected::DeviceRevoked)
         );
         assert!(repo.live_bindings(&gid).expect("read").is_empty());
@@ -995,7 +1100,7 @@ mod tests {
         let g = genesis_for(1);
         let cert = cert_for(&g, &key(1), 5, 0, 0);
 
-        let _ = repo.apply_link(&gid, &g, &[], &cert).expect("store");
+        let _ = repo.apply_link(&gid, &g, &[], &cert, 0).expect("store");
         repo.apply_revocation(&gid, cert.device).expect("revoke");
         assert!(repo.live_bindings(&gid).expect("read").is_empty());
     }
@@ -1011,7 +1116,7 @@ mod tests {
             let store = test_store();
             let gid = test_group_id();
             let repo = AccountBindingRepository::new(&store);
-            let _ = repo.apply_link(&gid, &g, &[], &cert).expect("store");
+            let _ = repo.apply_link(&gid, &g, &[], &cert, 0).expect("store");
             repo.apply_revocation(&gid, cert.device).expect("revoke");
             (
                 repo.live_bindings(&gid).expect("read"),
@@ -1023,7 +1128,7 @@ mod tests {
             let gid = test_group_id();
             let repo = AccountBindingRepository::new(&store);
             repo.apply_revocation(&gid, cert.device).expect("revoke");
-            let _ = repo.apply_link(&gid, &g, &[], &cert).expect("store");
+            let _ = repo.apply_link(&gid, &g, &[], &cert, 0).expect("store");
             (
                 repo.live_bindings(&gid).expect("read"),
                 repo.account_key(&gid, g.account_id()).expect("read"),
@@ -1081,7 +1186,7 @@ mod tests {
             let gid = test_group_id();
             let repo = AccountBindingRepository::new(&store);
             for cert in order {
-                let _ = repo.apply_link(&gid, &g, &[], cert).expect("store");
+                let _ = repo.apply_link(&gid, &g, &[], cert, 0).expect("store");
             }
             let mut live: Vec<DeviceId> = repo
                 .live_bindings(&gid)
@@ -1163,22 +1268,26 @@ mod tests {
             // The rotation is applied first in every run: it is what establishes
             // the epoch the certificates above claim, and `apply_rotation` needs
             // the account already learned, so its position is not free to vary.
-            let _ = repo.apply_link(&gid, &g, &[], &low_cert).expect("store");
+            let _ = repo.apply_link(&gid, &g, &[], &low_cert, 0).expect("store");
             repo.apply_rotation(&gid, &handoff)
                 .expect("store")
                 .expect("rotated");
             for step in order {
                 match step {
                     Step::LinkLow => {
-                        let _ = repo.apply_link(&gid, &g, &[handoff], &low_cert).expect("s");
+                        let _ = repo
+                            .apply_link(&gid, &g, &[handoff], &low_cert, 0)
+                            .expect("s");
                     }
                     Step::LinkHigh => {
                         let _ = repo
-                            .apply_link(&gid, &g, &[handoff], &high_cert)
+                            .apply_link(&gid, &g, &[handoff], &high_cert, 0)
                             .expect("s");
                     }
                     Step::LinkDoomed => {
-                        let _ = repo.apply_link(&gid, &g, &[handoff], &doomed).expect("s");
+                        let _ = repo
+                            .apply_link(&gid, &g, &[handoff], &doomed, 0)
+                            .expect("s");
                     }
                     Step::Revoke => repo.apply_revocation(&gid, doomed.device).expect("revoke"),
                 }
@@ -1243,7 +1352,7 @@ mod tests {
 
         // Learn the account, then rotate its root key.
         let _ = repo
-            .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0))
+            .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0), 0)
             .expect("store")
             .expect("admitted");
         let handoff =
@@ -1264,7 +1373,7 @@ mod tests {
         );
         // ...and a fresh certificate from the new key is.
         let _ = repo
-            .apply_link(&gid, &g, &[handoff], &cert_for(&g, &key(2), 6, 1, 0))
+            .apply_link(&gid, &g, &[handoff], &cert_for(&g, &key(2), 6, 1, 0), 0)
             .expect("store")
             .expect("admitted");
         assert_eq!(repo.live_bindings(&gid).expect("read").len(), 1);
@@ -1284,15 +1393,27 @@ mod tests {
         let live = cert_for(&g, &key(1), 5, 0, 0);
         let doomed = cert_for(&g, &key(1), 6, 0, 0);
         for cert in [&live, &doomed] {
-            let _ = repo.apply_link(&gid, &g, &[], cert).expect("store");
-            let _ = repo.apply_link(&other, &g, &[], cert).expect("store");
+            let _ = repo.apply_link(&gid, &g, &[], cert, 0).expect("store");
+            let _ = repo.apply_link(&other, &g, &[], cert, 0).expect("store");
         }
         repo.apply_revocation(&gid, doomed.device).expect("revoke");
         repo.apply_revocation(&other, doomed.device)
             .expect("revoke");
 
+        // A floor outliving the group would keep a device out of a group later
+        // recreated under the same id, with nothing in its history to explain why.
+        repo.narrow(&gid, g.account_id(), live.device, 3)
+            .expect("narrow");
+        repo.narrow(&other, g.account_id(), doomed.device, 3)
+            .expect("narrow");
+
         repo.clear_all_for_group(&gid).expect("clear");
 
+        assert_eq!(
+            repo.scope_floor(&gid, g.account_id(), live.device)
+                .expect("read"),
+            None
+        );
         assert!(repo.live_bindings(&gid).expect("read").is_empty());
         assert!(
             !repo.is_revoked(&gid, doomed.device).expect("read"),
@@ -1310,9 +1431,50 @@ mod tests {
             .account_key(&other, g.account_id())
             .expect("read")
             .is_some());
+        assert_eq!(
+            repo.scope_floor(&other, g.account_id(), doomed.device)
+                .expect("read"),
+            Some(3)
+        );
 
         // Idempotent.
         repo.clear_all_for_group(&gid).expect("clear again");
+    }
+
+    /// A link AT the floor is refused; a narrowing AT the binding's stamp leaves
+    /// it bound.
+    #[test]
+    fn an_equal_scope_epoch_neither_links_nor_unbinds() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let account = g.account_id();
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+
+        let _ = repo.apply_link(&gid, &g, &[], &cert, 2).expect("store");
+        assert!(
+            !repo.narrow(&gid, account, cert.device, 2).expect("narrow"),
+            "a narrowing at the epoch the binding was made under does not unbind it"
+        );
+        assert!(repo.is_device_linked(&gid, cert.device).expect("read"));
+
+        // A second device, so the floor raised for it is the one its link meets.
+        let sibling = cert_for(&g, &key(1), 6, 0, 0);
+        let _ = repo
+            .narrow(&gid, account, sibling.device, 4)
+            .expect("narrow");
+        assert!(
+            matches!(
+                repo.apply_link(&gid, &g, &[], &sibling, 4).expect("store"),
+                Err(BindingRejected::ScopeNarrowed { .. })
+            ),
+            "a link AT the floor is under it, not above it"
+        );
+        assert!(repo
+            .apply_link(&gid, &g, &[], &sibling, 5)
+            .expect("store")
+            .is_ok());
     }
 
     #[test]
@@ -1347,7 +1509,7 @@ mod tests {
 
         // Learn the account and roll it to epoch 1.
         let _ = repo
-            .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0))
+            .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0), 0)
             .expect("store")
             .expect("admitted");
         let first = RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
@@ -1387,7 +1549,7 @@ mod tests {
         // Signed by a key that was never this account's root.
         let cert = cert_for(&g, &key(99), 5, 0, 0);
         assert!(matches!(
-            repo.apply_link(&gid, &g, &[], &cert).expect("store"),
+            repo.apply_link(&gid, &g, &[], &cert, 0).expect("store"),
             Err(BindingRejected::CredentialInvalid(_))
         ));
     }
@@ -1400,7 +1562,7 @@ mod tests {
         let g = genesis_for(1);
 
         let v0 = cert_for(&g, &key(1), 5, 0, 0);
-        let _ = repo.apply_link(&gid, &g, &[], &v0).expect("store");
+        let _ = repo.apply_link(&gid, &g, &[], &v0, 0).expect("store");
 
         // Same device id, fresh keypair, higher epoch — accepted.
         let v1 = DeviceCert::sign(
@@ -1413,11 +1575,11 @@ mod tests {
             1,
         )
         .expect("sign");
-        let _ = repo.apply_link(&gid, &g, &[], &v1).expect("store");
+        let _ = repo.apply_link(&gid, &g, &[], &v1, 0).expect("store");
 
         // Replaying the epoch-0 certificate does not roll it back.
         assert_eq!(
-            repo.apply_link(&gid, &g, &[], &v0).expect("store"),
+            repo.apply_link(&gid, &g, &[], &v0, 0).expect("store"),
             Err(BindingRejected::EpochNotAdvanced {
                 offered: 0,
                 stored: 1
@@ -1437,7 +1599,7 @@ mod tests {
         let mallory = genesis_for(2);
 
         let cert = cert_for(&alice, &key(1), 5, 0, 0);
-        let _ = repo.apply_link(&gid, &alice, &[], &cert).expect("store");
+        let _ = repo.apply_link(&gid, &alice, &[], &cert, 0).expect("store");
 
         // Mallory certifies the same device id under his own account.
         let hijack = DeviceCert::sign(
@@ -1451,7 +1613,7 @@ mod tests {
         )
         .expect("sign");
         assert_eq!(
-            repo.apply_link(&gid, &mallory, &[], &hijack)
+            repo.apply_link(&gid, &mallory, &[], &hijack, 0)
                 .expect("store"),
             Err(BindingRejected::AccountReassignment)
         );
@@ -1491,7 +1653,7 @@ mod tests {
         repo.record_endorser(&gid, account, &member)
             .expect("endorse");
         let _ = repo
-            .apply_link(&gid, &genesis, &[], &cert)
+            .apply_link(&gid, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("admissible");
 
@@ -1532,24 +1694,24 @@ mod tests {
         let a = genesis_for(1);
         let b = genesis_for(2);
         let _ = repo
-            .apply_link(&gid, &a, &[], &cert_for(&a, &key(1), 5, 0, 0))
+            .apply_link(&gid, &a, &[], &cert_for(&a, &key(1), 5, 0, 0), 0)
             .expect("store")
             .expect("admitted");
         let revoked = cert_for(&a, &key(1), 6, 0, 0);
         let _ = repo
-            .apply_link(&gid, &a, &[], &revoked)
+            .apply_link(&gid, &a, &[], &revoked, 0)
             .expect("store")
             .expect("admitted");
         repo.apply_revocation(&gid, revoked.device).expect("revoke");
         let _ = repo
-            .apply_link(&gid, &b, &[], &cert_for(&b, &key(2), 7, 0, 0))
+            .apply_link(&gid, &b, &[], &cert_for(&b, &key(2), 7, 0, 0), 0)
             .expect("store")
             .expect("admitted");
 
         // A third account whose root rotates, superseding its epoch-0 device.
         let c = genesis_for(3);
         let _ = repo
-            .apply_link(&gid, &c, &[], &cert_for(&c, &key(3), 8, 0, 0))
+            .apply_link(&gid, &c, &[], &cert_for(&c, &key(3), 8, 0, 0), 0)
             .expect("store")
             .expect("admitted");
         let handoff = RootKeyHandoff::sign(&key(3), c.account_id(), 0, &key(4).public_key())
@@ -1609,10 +1771,10 @@ mod tests {
         let gid = test_group_id();
         let repo = AccountBindingRepository::new(&store);
         let _ = repo
-            .apply_link(&gid, &g, &[], &cert_for_device(low, 5))
+            .apply_link(&gid, &g, &[], &cert_for_device(low, 5), 0)
             .expect("store");
         let _ = repo
-            .apply_link(&gid, &g, &[], &cert_for_device(high, 6))
+            .apply_link(&gid, &g, &[], &cert_for_device(high, 6), 0)
             .expect("store");
 
         let map = repo.live_bindings_by_sign_pk(&gid).expect("map");

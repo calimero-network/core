@@ -57,7 +57,7 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
                 cert.device(),
                 Draft {
                     signing_key: cert.proof.statement.sign_pk,
-                    applications: cert.applications,
+                    applications: cert.applications().to_vec(),
                     namespaces: Vec::new(),
                 },
             );
@@ -123,6 +123,7 @@ mod tests {
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::test_fixtures::device_scope;
     use calimero_governance_store::{AccountDeviceRegistry, AccountRoot};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
@@ -175,16 +176,14 @@ mod tests {
             .account_namespace()
             .expect("read the account namespace")
             .expect("a store with an account root names one");
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = device_scope(root.signing_key(), &cert, applications.to_vec(), 0);
         let _recorded = AccountDeviceRegistry::new(store, namespace)
-            .record(
-                &AccountProof {
-                    genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                applications,
-                0,
-            )
+            .record(&proof, &scope)
             .expect("record the device in the account namespace");
         device_id
     }
@@ -209,7 +208,7 @@ mod tests {
         )
         .expect("the account root signs its own device cert");
         AccountBindingRepository::new(store)
-            .apply_link(namespace, &genesis, &[], &cert)
+            .apply_link(namespace, &genesis, &[], &cert, 0)
             .expect("the store write succeeds")
             .expect("the credential binds");
     }
@@ -429,16 +428,14 @@ mod tests {
             0,
         )
         .expect("sign");
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = device_scope(root.signing_key(), &cert, vec![narrow, wide], 1);
         assert!(AccountDeviceRegistry::new(&store, namespace)
-            .record(
-                &AccountProof {
-                    genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                &[narrow, wide],
-                1,
-            )
+            .record(&proof, &scope)
             .expect("record"));
 
         let entries = collect(&store).expect("collect").expect("has account");
@@ -473,16 +470,14 @@ mod tests {
             0,
         )
         .expect("sign");
+        let proof = AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope = device_scope(root.signing_key(), &cert, vec![app], 0);
         assert!(AccountDeviceRegistry::new(&store, namespace)
-            .record(
-                &AccountProof {
-                    genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                &[app],
-                0,
-            )
+            .record(&proof, &scope)
             .expect("record"));
 
         let entries = collect(&store).expect("collect").expect("has account");

@@ -2350,6 +2350,72 @@ pub struct RelinkDeviceApiResponse {
     pub data: RelinkDeviceApiResponseData,
 }
 
+/// Replace a device's scope, narrowing or widening what it reaches.
+///
+/// The counterpart of [`RelinkDeviceApiRequest`], which is add-only. Run on the
+/// node that holds the account root; the device need not be online.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RescopeDeviceApiRequest {
+    pub scope: DeviceScopeApiRequest,
+}
+
+/// `"all"`, or `{"only": ["<application id>", ...]}`. Tagged rather than a list
+/// whose emptiness means everything, which makes the slip the widest ask.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum DeviceScopeApiRequest {
+    /// Every application, now and later.
+    All,
+    /// Only these, hex-encoded. An empty list is refused.
+    Only(Vec<String>),
+}
+
+impl Validate for RescopeDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // What a string names, and whether an empty `only` is a scope at all, is
+        // the handler's parse - exactly as on `relink`.
+        Vec::new()
+    }
+}
+
+/// The scope the device now holds, and what each namespace did about it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescopeDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was rescoped.
+    pub device_id: String,
+    /// The scope after the request. Empty means every application.
+    pub applications: Vec<String>,
+    /// Namespaces the new scope no longer reaches, and whether the key rotated.
+    ///
+    /// Reported per namespace for the same reason `linkedIn` is: publication is
+    /// per-DAG, so which namespaces a replacement reached has to be visible.
+    pub descoped: Vec<RescopeDescopeApiEntry>,
+    /// Namespaces the device was linked into by this call.
+    pub linked_in: Vec<RelinkOutcomeApiEntry>,
+    /// Namespaces nothing was published into, and why.
+    pub skipped: Vec<RelinkSkipApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescopeDescopeApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// `false` means the device stopped writing there but still holds the key it
+    /// had, until an admin rotates.
+    pub key_rotated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescopeDeviceApiResponse {
+    pub data: RescopeDeviceApiResponseData,
+}
+
 /// One device of this account, joined from the node-local certificate cache and
 /// the live bindings of every namespace this node takes part in.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3147,6 +3213,21 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two shapes the route accepts. An empty `only` is refused by the
+    /// handler, which answers `ScopeReplacementEmpty` as a `400`.
+    #[test]
+    fn a_scope_replacement_reads_all_and_only() {
+        let all: RescopeDeviceApiRequest =
+            serde_json::from_value(serde_json::json!({"scope": "all"})).expect("`all` is a scope");
+        assert!(matches!(all.scope, DeviceScopeApiRequest::All));
+
+        let named = hex::encode([0x11; 32]);
+        let only: RescopeDeviceApiRequest =
+            serde_json::from_value(serde_json::json!({"scope": {"only": [named.clone()]}}))
+                .expect("`only` is a scope");
+        assert!(matches!(only.scope, DeviceScopeApiRequest::Only(ref apps) if apps == &[named]));
+    }
 
     #[test]
     fn create_device_id_alias_request_round_trips_through_json() {

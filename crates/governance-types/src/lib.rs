@@ -26,7 +26,7 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
+    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceRevocation, SignedDeviceScope,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -178,7 +178,11 @@ id_newtype! {
 /// v13: appends `GroupOp::AccountNamespaceGained` and
 /// `GroupOp::AccountNamespaceLeft`; no prior ordinal moves, so a v12 peer fails
 /// at the version gate rather than partway through a DAG.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 13;
+///
+/// v14: appends `GroupOp::AccountDeviceDescoped`, and `AccountDeviceLinked` gains
+/// the root-signed `scope` it was made under - a layout change to an existing
+/// variant, so a v13 peer must reject at the gate rather than mis-decode.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 14;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -527,14 +531,7 @@ pub enum GroupOp {
     //
     // Appended at the END, like every variant before them: borsh tags by source
     // order, so slotting one in beside the membership ops it belongs with would
-    // renumber every later variant and silently change the content hash — and
-    // therefore the signature — of every already-stored op that used one.
-    //
-    // `SIGNED_GROUP_OP_SCHEMA_VERSION` deliberately does NOT change. It is
-    // enforced strictly-equal on decode, so bumping it would make peers reject
-    // *every* op rather than just the ones they don't understand. Peers that
-    // predate these variants decode everything they already knew and fail only
-    // on an account op itself.
+    // renumber every later variant and change the content hash of every stored op.
     /// Bind a device to an account within this group.
     ///
     /// Self-contained: `genesis` hashes to `cert.account`, and `chain` carries
@@ -561,6 +558,9 @@ pub enum GroupOp {
         /// the *endorser* is a member instead of the root. Only a member can
         /// endorse and only the root can certify a device, so it takes both.
         endorsement: AccountMemberEndorsement,
+        /// The root-signed scope this link was made under. Carried, not looked
+        /// up: a project namespace does not fold the account namespace.
+        scope: Box<AccountProof<DeviceScope>>,
     },
     /// Withdraw a device from an account.
     ///
@@ -662,6 +662,20 @@ pub enum GroupOp {
         /// The namespace the account has left.
         namespace: ContextGroupId,
     },
+    /// Unbind a device whose account replaced its scope with one that no longer
+    /// reaches here. Not an unlink: that tombstone would spend the `DeviceId`.
+    AccountDeviceDescoped {
+        /// The account whose device is being unbound here.
+        account: AccountId,
+        /// The device losing its binding in this group.
+        device: DeviceId,
+        /// The application this group targeted when the publisher resolved it.
+        /// Carried, not read live: a moved target would split the replicas.
+        application: Option<ApplicationId>,
+        /// The replacement scope, root-signed. Boxed like the certified op's
+        /// proofs: inline it makes the variant too large.
+        scope: Box<SignedDeviceScope>,
+    },
 }
 
 impl GroupOp {
@@ -705,6 +719,7 @@ impl GroupOp {
             GroupOp::AccountDeviceCertified { .. } => "account_device_certified",
             GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
             GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
+            GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
         }
     }
 }
@@ -2088,11 +2103,23 @@ impl GroupOp {
             // Each handoff costs an Ed25519 verification in `root_key_at_epoch`,
             // reached from the wire before any authorization runs, so an
             // uncapped chain is verification amplification.
-            Self::AccountDeviceLinked { chain, .. } => check_bound(
-                "group_op.account_device_linked.chain",
-                chain.len(),
-                bounds::MAX_ROOT_KEY_HANDOFFS,
-            ),
+            Self::AccountDeviceLinked { chain, scope, .. } => {
+                check_bound(
+                    "group_op.account_device_linked.chain",
+                    chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_linked.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_linked.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
             Self::AccountDeviceCertified { certificate, scope } => {
                 check_bound(
                     "group_op.account_device_certified.certificate.chain",
@@ -2106,6 +2133,18 @@ impl GroupOp {
                 )?;
                 check_bound(
                     "group_op.account_device_certified.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
+            Self::AccountDeviceDescoped { scope, .. } => {
+                check_bound(
+                    "group_op.account_device_descoped.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_descoped.applications",
                     scope.statement.applications.len(),
                     bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
                 )
