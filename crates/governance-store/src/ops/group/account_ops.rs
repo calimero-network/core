@@ -70,7 +70,7 @@ pub(crate) fn apply_device_linked(
             .load(&group_id)?
             .map(|meta| meta.target.application_id);
         if !calimero_account::scope_covers(&scope.statement.applications, application) {
-            tracing::warn!(group_id = ?group_id, device = %cert.device,
+            tracing::warn!(group_id = ?group_id, device = %cert.device, ?application,
                            "device link: the carried scope does not reach this group");
             return Ok(());
         }
