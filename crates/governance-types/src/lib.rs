@@ -26,7 +26,8 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceRevocation, SignedDeviceScope,
+    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceLabel, SignedDeviceRevocation,
+    SignedDeviceScope,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -182,7 +183,9 @@ id_newtype! {
 /// v14: appends `GroupOp::AccountDeviceDescoped`, and `AccountDeviceLinked` gains
 /// the root-signed `scope` it was made under - a layout change to an existing
 /// variant, so a v13 peer must reject at the gate rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 14;
+///
+/// v15: appends `GroupOp::AccountDeviceLabelled`; no prior ordinal moves.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 15;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -676,6 +679,25 @@ pub enum GroupOp {
         /// proofs: inline it makes the variant too large.
         scope: Box<SignedDeviceScope>,
     },
+    /// Name a device of an account, for a listing to render.
+    ///
+    /// Display only: a label gates nothing, which is why it is the one account
+    /// op that is not projected onto the unified plane.
+    AccountDeviceLabelled {
+        /// The account whose device is being named.
+        account: AccountId,
+        /// The device being named.
+        device: DeviceId,
+        /// What to call it; bounded by [`GroupOp::validate`].
+        label: String,
+        /// Orders labels for this device; only a higher one supersedes.
+        label_epoch: u32,
+        /// The account root's own statement of the four fields above, checked
+        /// against them. Absent when the op's signer is `device` itself: only a
+        /// root-signed name may be given to a device other than the signer's own,
+        /// and a paired device holds no root, so it names only itself.
+        root_proof: Option<Box<SignedDeviceLabel>>,
+    },
 }
 
 impl GroupOp {
@@ -720,6 +742,7 @@ impl GroupOp {
             GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
             GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
             GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
+            GroupOp::AccountDeviceLabelled { .. } => "account_device_labelled",
         }
     }
 }
@@ -1959,6 +1982,23 @@ pub mod bounds {
     /// Max byte length of a registry coordinate (`package` / `version`). Mirrors
     /// the artifact-URL builder's own cap, applied here at decode instead.
     pub const MAX_COORD_BYTES: usize = 128;
+    /// Max byte length of a device label, which a settings listing renders.
+    pub const MAX_DEVICE_LABEL_BYTES: usize = 64;
+
+    /// Is `label` a usable device name: trimmed, non-empty, within
+    /// [`MAX_DEVICE_LABEL_BYTES`], and free of control characters.
+    ///
+    /// Shared by the op's bounds check and the route that mints one, so a
+    /// hostile peer and a mistyped request are refused by the same rule.
+    /// Control characters are out because the name is rendered verbatim beside
+    /// other devices, where a newline or an escape forges the rows around it.
+    #[must_use]
+    pub fn device_label_is_valid(label: &str) -> bool {
+        !label.is_empty()
+            && label.trim() == label
+            && label.len() <= MAX_DEVICE_LABEL_BYTES
+            && !label.chars().any(char::is_control)
+    }
 }
 
 /// Fail with [`GovernanceError::Bounds`] if `len > max`.
@@ -2136,6 +2176,26 @@ impl GroupOp {
                     scope.statement.applications.len(),
                     bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
                 )
+            }
+            Self::AccountDeviceLabelled {
+                label, root_proof, ..
+            } => {
+                if !bounds::device_label_is_valid(label) {
+                    return Err(GovernanceError::Bounds(format!(
+                        "group_op.account_device_labelled.label: {} bytes, max {}, trimmed and \
+                         printable",
+                        label.len(),
+                        bounds::MAX_DEVICE_LABEL_BYTES
+                    )));
+                }
+                match root_proof {
+                    Some(proof) => check_bound(
+                        "group_op.account_device_labelled.root_proof.chain",
+                        proof.chain.len(),
+                        bounds::MAX_ROOT_KEY_HANDOFFS,
+                    ),
+                    None => Ok(()),
+                }
             }
             Self::AccountDeviceDescoped { scope, .. } => {
                 check_bound(
