@@ -35,8 +35,6 @@ use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 
-/// A joiner credential. Note this test asserts the projection's fold matches the
-/// LIVE membership resolver — and the projection now keys `MemberAdded` by
 /// The root-signed scope a link carries; empty, so it reaches every group.
 fn link_scope(
     root_sk: &PrivateKey,
@@ -50,6 +48,15 @@ fn link_scope(
     ))
 }
 
+/// A joiner credential. Note this test asserts the projection's fold matches the
+/// LIVE membership resolver — and the projection now keys `MemberAdded` by
+/// `cert.account` rather than a key-derived stand-in, so the account here is
+/// load-bearing, not filler.
+/// The joiner's credential, derived DETERMINISTICALLY from its signing key.
+///
+/// Deterministic because the op names the account this certifies and later
+/// assertions have to name the same one; a fresh random root per call would make
+/// every mention a different principal.
 fn test_join_account_for(
     sign_pk: &calimero_primitives::identity::PublicKey,
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {

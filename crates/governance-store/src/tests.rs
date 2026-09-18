@@ -11031,6 +11031,8 @@ mod account_plane_apply {
         ))
     }
 
+    /// A device of a fresh account, linked into `gid` by its admin. The account's
+    /// root key comes back beside it: only that key can sign a revocation proof.
     fn a_linked_device(
         store: &Store,
         gid: &ContextGroupId,
