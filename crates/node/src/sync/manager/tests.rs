@@ -679,3 +679,204 @@ mod materialization_wait {
         ));
     }
 }
+
+// =========================================================================
+// Egress authorization for a remote sync peer.
+//
+// A sync session sends storage entities in the clear, so who may open one is
+// the only thing keeping a withdrawn device out of contexts it had joined. A
+// `ContextIdentity` row is not that gate: nothing on the device plane deletes
+// it, so it survives both a revocation and a scope narrowing.
+// =========================================================================
+
+mod remote_peer_egress {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_governance_store::{
+        register_context_in_group, AccountBindingRepository, CapabilitiesRepository,
+        MembershipRepository, NamespaceRepository,
+    };
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::super::{peer_worth_dialing, remote_peer_may_read_live};
+
+    const CONTEXT: [u8; 32] = [0x11; 32];
+    const GROUP: [u8; 32] = [0x22; 32];
+    const PARENT: [u8; 32] = [0x23; 32];
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// The row a join writes and nothing on the device plane ever deletes.
+    fn identity_row(store: &Store, context_id: ContextId, member: PublicKey) {
+        store
+            .handle()
+            .put(
+                &key::ContextIdentity::new(context_id, member),
+                &types::ContextIdentity { private_key: None },
+            )
+            .expect("write the membership marker");
+    }
+
+    /// A device of a fresh account, bound in `group` and holding a member row in
+    /// `member_of` with `role` - the shape every legitimate peer has.
+    fn a_bound_device(
+        store: &Store,
+        group: ContextGroupId,
+        member_of: ContextGroupId,
+        role: GroupMemberRole,
+        seed: u8,
+    ) -> (PublicKey, AccountId) {
+        let root = PrivateKey::from([seed; 32]);
+        let sign_sk = PrivateKey::from([seed ^ 0xFF; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [seed; 16]);
+        let cert = DeviceCert::sign(
+            &root,
+            account,
+            device,
+            &sign_sk.public_key(),
+            &KemPublicKey::from([seed; 32]),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _outcome = AccountBindingRepository::new(store)
+            .apply_link(&group, &genesis, &[], &cert, 0)
+            .expect("record the binding")
+            .expect("the link is admissible");
+        MembershipRepository::new(store)
+            .add_member(&member_of, &account, role)
+            .expect("record the member row");
+        (sign_sk.public_key(), account)
+    }
+
+    /// A group owning one context, with `member` bound and a member row for it.
+    fn a_group_with_a_member(role: GroupMemberRole) -> (Store, ContextId, PublicKey) {
+        let store = store();
+        let group = ContextGroupId::from(GROUP);
+        let context_id = ContextId::from(CONTEXT);
+        register_context_in_group(&store, &group, &context_id).expect("register the context");
+        let (member, _account) = a_bound_device(&store, group, group, role, 0x51);
+        identity_row(&store, context_id, member);
+        (store, context_id, member)
+    }
+
+    #[test]
+    fn an_invited_member_is_served() {
+        let (store, context_id, member) = a_group_with_a_member(GroupMemberRole::Member);
+        assert!(
+            remote_peer_may_read_live(&store, &context_id, &member).expect("read the rows"),
+            "an ordinary member of the owning group must still be served"
+        );
+    }
+
+    #[test]
+    fn a_tee_member_is_served() {
+        let (store, context_id, member) = a_group_with_a_member(GroupMemberRole::ReadOnlyTee);
+        assert!(
+            remote_peer_may_read_live(&store, &context_id, &member).expect("read the rows"),
+            "a read-only TEE member reads, so it must still be served"
+        );
+    }
+
+    #[test]
+    fn an_inherited_open_subgroup_member_is_served() {
+        let store = store();
+        let parent = ContextGroupId::from(PARENT);
+        let group = ContextGroupId::from(GROUP);
+        let context_id = ContextId::from(CONTEXT);
+        NamespaceRepository::new(&store)
+            .nest(&parent, &group)
+            .expect("nest the subgroup");
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&group, VisibilityMode::Open)
+            .expect("open the subgroup");
+        register_context_in_group(&store, &group, &context_id).expect("register the context");
+
+        // Bindings are namespace-keyed, and the member row is in the PARENT:
+        // the inheritance case, which has no direct row to be found by.
+        let (member, account) =
+            a_bound_device(&store, parent, parent, GroupMemberRole::Member, 0x52);
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &parent,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("grant the open-subgroup capability");
+
+        assert!(
+            remote_peer_may_read_live(&store, &context_id, &member).expect("read the rows"),
+            "an inheritance-eligible parent member must still be served"
+        );
+    }
+
+    #[test]
+    fn a_withdrawn_devices_identity_row_alone_does_not_serve_it() {
+        let (store, context_id, member) = a_group_with_a_member(GroupMemberRole::Member);
+        let group = ContextGroupId::from(GROUP);
+
+        // What a revocation or a narrowing leaves behind: the binding is gone,
+        // the member row is the account's and survives, and the identity row is
+        // never touched by either.
+        let binding = AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&group, &member)
+            .expect("read the binding")
+            .expect("the fixture bound it");
+        assert!(AccountBindingRepository::new(&store)
+            .narrow(&group, binding.account, binding.device, 1)
+            .expect("withdraw the device"));
+        assert!(
+            store
+                .handle()
+                .has(&key::ContextIdentity::new(context_id, member))
+                .expect("read the marker"),
+            "the identity row is what this gate must not trust"
+        );
+
+        assert!(
+            !remote_peer_may_read_live(&store, &context_id, &member).expect("read the rows"),
+            "a key with no live binding is nobody here, whatever rows it left behind"
+        );
+    }
+
+    #[test]
+    fn a_context_no_group_owns_still_answers_from_the_identity_row() {
+        // No binding plane to ask, so the row is the only membership record
+        // there is - and no device op can stale it, since none applies here.
+        let store = store();
+        let context_id = ContextId::from(CONTEXT);
+        let member = PrivateKey::from([0x53; 32]).public_key();
+        assert!(!remote_peer_may_read_live(&store, &context_id, &member).expect("read the rows"));
+        identity_row(&store, context_id, member);
+        assert!(remote_peer_may_read_live(&store, &context_id, &member).expect("read the rows"));
+    }
+
+    #[test]
+    fn an_unobserved_peer_is_still_dialed_and_an_unauthorized_one_is_not() {
+        let observed = BTreeSet::from([PrivateKey::from([0x54; 32]).public_key()]);
+        assert!(
+            peer_worth_dialing(None, |_| false),
+            "a peer we have never observed authoring gets its first sync"
+        );
+        assert!(
+            peer_worth_dialing(Some(&BTreeSet::new()), |_| false),
+            "and so does one observed hosting nothing"
+        );
+        assert!(peer_worth_dialing(Some(&observed), |_| true));
+        assert!(
+            !peer_worth_dialing(Some(&observed), |_| false),
+            "a peer whose every observed identity lost its authority is skipped"
+        );
+    }
+}

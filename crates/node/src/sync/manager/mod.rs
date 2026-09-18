@@ -3,7 +3,7 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use calimero_app_downloader::registry::RegistryMode;
@@ -1186,6 +1186,18 @@ impl SyncManager {
         peer_id: PeerId,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
         let start = Instant::now();
+
+        // Egress gate: a sync session hands over storage entities in the clear,
+        // so a peer whose observed identities may no longer read here is not
+        // dialed at all. Best-effort on purpose - peer discovery is topic-based
+        // and a legitimately new peer has authored nothing yet, so an unobserved
+        // one is still dialed and the responder's own check stays load-bearing.
+        if !peer_worth_dialing(self.state_access.peer_identities(&peer_id).as_ref(), |id| {
+            self.remote_peer_may_read(&context_id, id).unwrap_or(true)
+        }) {
+            debug!(%context_id, %peer_id, "peer hosts no identity authorized here; not syncing");
+            bail!("peer {peer_id} hosts no identity authorized for context {context_id}");
+        }
 
         debug!(%context_id, %peer_id, "Attempting to sync with peer");
 
@@ -3305,6 +3317,21 @@ impl SyncManager {
         }
     }
 
+    /// Read authorization for a REMOTE sync peer, with the projection cross-check
+    /// where a group owns the context. The one gate the responder and the
+    /// initiator share, so what a node refuses to serve it also refuses to dial.
+    fn remote_peer_may_read(
+        &self,
+        context_id: &ContextId,
+        their_identity: &PublicKey,
+    ) -> eyre::Result<bool> {
+        let store = self.context_client.datastore();
+        match calimero_governance_store::get_group_for_context(store, context_id)? {
+            Some(group_id) => self.peer_is_group_member(store, group_id, their_identity),
+            None => remote_peer_may_read_live(store, context_id, their_identity),
+        }
+    }
+
     /// Inbound-sync membership authorization via the unified projection — current
     /// state, direct OR inherited (open-subgroup parent walk) — with the live
     /// resolver kept as the gated cross-check. The projection's verdict decides;
@@ -3321,18 +3348,7 @@ impl SyncManager {
         group_id: calimero_context_config::types::ContextGroupId,
         their_identity: &PublicKey,
     ) -> eyre::Result<bool> {
-        // The peer presents a signing key; membership names the account it acts
-        // as. A key bound to no account here is not a member — the same verdict,
-        // reached without inventing a principal for it.
-        let Some(their_account) = calimero_governance_store::member_account_in_namespace(
-            store,
-            &group_id,
-            their_identity,
-        )?
-        else {
-            return Ok(false);
-        };
-        let live = MembershipRepository::new(store).is_member(&group_id, &their_account)?;
+        let live = live_group_membership(store, group_id, their_identity)?;
         let Some(heads) =
             calimero_context::scope_projection::ScopeProjections::namespace_current_heads(
                 store, group_id,
@@ -3354,11 +3370,14 @@ impl SyncManager {
     }
 
     /// Authorize the dialing peer as a sync-eligible member of `context_id` —
-    /// direct context/group membership, or inheritance-eligible parent
-    /// membership (`Open` subgroups). On an unknown member, refresh context
-    /// config and request a one-shot governance catch-up from the peer before
-    /// giving up. Returns `Ok(false)` (caller should close the stream) only if
-    /// the peer is still unauthorized afterward.
+    /// direct or inheritance-eligible (`Open` subgroups) membership of the group
+    /// that owns it. On an unknown member, refresh context config and request a
+    /// one-shot governance catch-up from the peer before giving up. Returns
+    /// `Ok(false)` (caller should close the stream) only if the peer is still
+    /// unauthorized afterward.
+    ///
+    /// A sync session sends storage entities in the clear, so this is the only
+    /// thing standing between a withdrawn device and everything it had joined.
     async fn verify_inbound_member(
         &self,
         context_id: ContextId,
@@ -3367,67 +3386,23 @@ impl SyncManager {
     ) -> eyre::Result<bool> {
         let mut _updated = None;
 
-        // Issue #2256: also accept inheritance-eligible parent members
-        // for sync auth. `has_member` only knows direct context-membership
-        // and direct group-membership; the parent-walk for `Open` subgroups
-        // lives in `calimero-context::group_store`, which we have access
-        // to here at the node layer.
+        // Issue #2256: inheritance-eligible parent members (`Open` subgroups)
+        // count too; the parent walk lives behind `peer_is_group_member`.
         //
-        // Resolve the owning group fresh here (not cached from the
-        // materialisation wait): authorization must read current governance
-        // state, since a group reparent during the wait could otherwise be
-        // evaluated against a stale binding.
-        let is_inherited_member = || -> eyre::Result<bool> {
-            let store = self.context_client.datastore();
-            let Some(group_id) =
-                calimero_governance_store::get_group_for_context(store, &context_id)?
-            else {
-                return Ok(false);
-            };
-            self.peer_is_group_member(store, group_id, &their_identity)
-        };
+        // Resolved fresh at every attempt, not captured once: the whole point of
+        // the retries below is that the peer may have joined DURING the
+        // intervening catch-up, which is exactly when its binding first becomes
+        // resolvable here.
+        let may_read = || self.remote_peer_may_read(&context_id, &their_identity);
 
-        // `has_member`'s account-keyed arm needs the account the peer's key acts
-        // as; this crate can resolve it, `calimero-context-client` cannot.
-        //
-        // Re-resolved at every attempt rather than captured once. The whole point
-        // of the retries below is that the peer may have joined DURING the
-        // intervening catch-up — which is exactly when their binding first
-        // becomes resolvable here. A value read before the catch-up would carry
-        // its own staleness into every retry, so the account-keyed arm would keep
-        // being handed the `None` that provoked the catch-up in the first place
-        // and only the key-keyed fallback could rescue a peer who did just join.
-        let their_account = || {
-            let store = self.context_client.datastore();
-            calimero_governance_store::get_group_for_context(store, &context_id)
-                .ok()
-                .flatten()
-                .and_then(|gid| {
-                    calimero_governance_store::member_account_in_namespace(
-                        store,
-                        &gid,
-                        &their_identity,
-                    )
-                    .ok()
-                    .flatten()
-                })
-        };
-        if !self
-            .context_client
-            .has_member(&context_id, &their_identity, their_account())?
-            && !is_inherited_member()?
-        {
+        if !may_read()? {
             _updated = Some(
                 self.context_client
                     .sync_context_config(context_id, None)
                     .await?,
             );
 
-            if !self
-                .context_client
-                .has_member(&context_id, &their_identity, their_account())?
-                && !is_inherited_member()?
-            {
+            if !may_read()? {
                 // The peer may have just published MemberAdded for themselves
                 // (or their side of the governance DAG is ahead of ours) and
                 // gossipsub hasn't delivered it yet. Instead of waiting and
@@ -3443,11 +3418,7 @@ impl SyncManager {
                 self.request_governance_catchup_from_peer(peer_id, &context_id, &their_identity)
                     .await;
 
-                if !self
-                    .context_client
-                    .has_member(&context_id, &their_identity, their_account())?
-                    && !is_inherited_member()?
-                {
+                if !may_read()? {
                     // Catch-up didn't resolve it (peer returned nothing, peer
                     // also doesn't know, or the op chain isn't valid locally).
                     // Close gracefully — the initiator retries on their next
@@ -4516,6 +4487,57 @@ mod pending_upgrade_tests {
             super::pending_upgrade_staged_bytecode(&store, &no_row),
             None
         );
+    }
+}
+
+/// Live membership for a peer's signing key in `group_id`: the account the
+/// namespace binds that key to, then that account's direct-or-inherited
+/// membership. A key with no live binding is nobody here, which is how a
+/// withdrawn device stops counting as a member.
+pub(crate) fn live_group_membership(
+    store: &calimero_store::Store,
+    group_id: calimero_context_config::types::ContextGroupId,
+    their_identity: &PublicKey,
+) -> eyre::Result<bool> {
+    let Some(their_account) =
+        calimero_governance_store::member_account_in_namespace(store, &group_id, their_identity)?
+    else {
+        return Ok(false);
+    };
+    MembershipRepository::new(store).is_member(&group_id, &their_account)
+}
+
+/// Is `peer` worth dialing for a context? Only when at least one identity it has
+/// been observed signing with may still read there.
+///
+/// A peer observed hosting nothing - never seen authoring here - is dialed
+/// anyway: the first sync is what makes it observable, so gating on an empty set
+/// would lock out every legitimately new peer.
+pub(crate) fn peer_worth_dialing(
+    hosted: Option<&BTreeSet<PublicKey>>,
+    may_read: impl Fn(&PublicKey) -> bool,
+) -> bool {
+    hosted.is_none_or(|hosted| hosted.is_empty() || hosted.iter().any(may_read))
+}
+
+/// Read authorization for a REMOTE sync peer, decided on live rows.
+///
+/// A bare `ContextIdentity` row is local bookkeeping that outlives a device's
+/// withdrawal, so it authorizes a remote peer only where no group owns the
+/// context and there is no binding plane to ask instead.
+pub(crate) fn remote_peer_may_read_live(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    their_identity: &PublicKey,
+) -> eyre::Result<bool> {
+    match calimero_governance_store::get_group_for_context(store, context_id)? {
+        Some(group_id) => live_group_membership(store, group_id, their_identity),
+        None => Ok(store
+            .handle()
+            .has(&calimero_store::key::ContextIdentity::new(
+                *context_id,
+                *their_identity,
+            ))?),
     }
 }
 
