@@ -15,6 +15,7 @@ impl NodeManager {
     pub(super) fn setup_startup_subscriptions(&self, ctx: &mut actix::Context<Self>) {
         let node_client = self.clients.node.clone();
         let contexts = self.clients.context.get_context_ids(None);
+        let datastore = self.datastore.clone();
 
         let _handle = ctx.spawn(
             async move {
@@ -24,6 +25,11 @@ impl NodeManager {
                         error!("Failed to get context ID");
                         continue;
                     };
+
+                    if !holds_a_local_identity(&datastore, &context_id) {
+                        debug!(%context_id, "no local signing identity for this context; not subscribing");
+                        continue;
+                    }
 
                     if let Err(err) = node_client.subscribe(&context_id).await {
                         error!(%context_id, %err, "Failed to subscribe to context");
@@ -304,6 +310,70 @@ impl NodeManager {
                     .into_actor(act),
                 );
             },
+        );
+    }
+}
+
+/// Does this node hold a signing identity for `context_id`?
+///
+/// The membership gate at start-up. A `ContextMeta` row outlives both a
+/// `leave_context` and a device's withdrawal, so subscribing on it alone
+/// resurrects either. A read that fails counts as holding one: the cost of
+/// guessing wrong is a whole context.
+fn holds_a_local_identity(store: &calimero_store::Store, context_id: &ContextId) -> bool {
+    calimero_governance_store::find_local_signing_identities(store, context_id)
+        .map_or(true, |identities| !identities.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::holds_a_local_identity;
+
+    const CONTEXT: [u8; 32] = [0x71; 32];
+
+    fn signing_row(store: &Store, context_id: ContextId, member: PublicKey, private: [u8; 32]) {
+        store
+            .handle()
+            .put(
+                &key::ContextIdentity::new(context_id, member),
+                &types::ContextIdentity {
+                    private_key: Some(private),
+                },
+            )
+            .expect("write the signing identity");
+    }
+
+    /// The row a `leave_context` deletes is the one this gate reads, so a leave
+    /// survives a restart instead of being undone by the start-up sweep - and a
+    /// withdrawn device does not come back subscribed either.
+    #[test]
+    fn a_context_with_no_signing_identity_is_not_subscribed() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from(CONTEXT);
+        let member = PrivateKey::from([0x72; 32]).public_key();
+
+        assert!(
+            !holds_a_local_identity(&store, &context_id),
+            "a ContextMeta row alone is not membership"
+        );
+
+        signing_row(&store, context_id, member, [0x73; 32]);
+        assert!(holds_a_local_identity(&store, &context_id));
+
+        store
+            .handle()
+            .delete(&key::ContextIdentity::new(context_id, member))
+            .expect("leave the context");
+        assert!(
+            !holds_a_local_identity(&store, &context_id),
+            "once the identity row is gone the sweep must leave the context alone"
         );
     }
 }

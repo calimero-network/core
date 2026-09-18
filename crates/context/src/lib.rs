@@ -826,6 +826,7 @@ impl Actor for ContextManager {
         account_follow::spawn(
             self.datastore.clone(),
             self.node_client.clone(),
+            self.context_client.clone(),
             Arc::clone(&self.ack_router),
         );
 

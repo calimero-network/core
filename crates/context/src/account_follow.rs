@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use calimero_account::{AccountId, DeviceId, SignedDeviceRevocation};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::group::{JoinContextRequest, LeaveContextRequest};
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
@@ -24,6 +26,7 @@ use calimero_governance_store::{
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -46,7 +49,12 @@ static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 ///
 /// Subscribes before spawning, as `auto_follow::spawn` does: an event fired
 /// before the task's first poll would be lost until the next restart.
-pub fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) {
+pub fn spawn(
+    store: Store,
+    node_client: NodeClient,
+    context_client: ContextClient,
+    ack_router: Arc<AckRouter>,
+) {
     let mut slot = HANDLE.lock().expect("account-follow HANDLE poisoned");
     if slot.as_ref().is_some_and(|abort| !abort.is_finished()) {
         debug!("account-follow handler already running; skipping re-spawn");
@@ -55,7 +63,7 @@ pub fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) 
     let rx = op_events::subscribe();
     *slot = Some(
         tokio::spawn(async move {
-            run(rx, store, node_client, ack_router).await;
+            run(rx, store, node_client, context_client, ack_router).await;
         })
         .abort_handle(),
     );
@@ -77,6 +85,7 @@ async fn run(
     mut rx: broadcast::Receiver<OpEvent>,
     store: Store,
     node_client: NodeClient,
+    context_client: ContextClient,
     ack_router: Arc<AckRouter>,
 ) {
     info!("account-follow handler started");
@@ -84,17 +93,17 @@ async fn run(
     // Nothing re-drives a gain or a leave applied while no listener was up - a
     // lagged recv, or a restart's shutdown-to-spawn window - so a start sweeps both.
     for namespace in namespaces_the_account_left(&store) {
-        unfollow(&node_client, namespace).await;
+        unfollow(&store, &node_client, &context_client, namespace).await;
     }
     if let Some((account_namespace, own)) = own_registry_scope(&store) {
         let (covered, uncovered) = namespaces_in_scope(&store, account_namespace, &own);
         for namespace in covered {
-            follow(&store, &node_client, namespace).await;
+            follow(&store, &node_client, &context_client, namespace).await;
         }
         // A device offline while its scope shrank folds the narrowing with no
         // listener up, so the sweep is the only thing that lets those topics go.
         for namespace in uncovered {
-            unfollow(&node_client, namespace).await;
+            unfollow(&store, &node_client, &context_client, namespace).await;
         }
     }
 
@@ -132,9 +141,10 @@ async fn run(
             } => {
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let context_client = context_client.clone();
                 let _ = tasks.spawn(async move {
                     if follows_on_gain(&store, group_id, application) {
-                        follow(&store, &node_client, namespace).await;
+                        follow(&store, &node_client, &context_client, namespace).await;
                     }
                 });
             }
@@ -144,8 +154,16 @@ async fn run(
             } => {
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let context_client = context_client.clone();
                 let _ = tasks.spawn(async move {
-                    handle_namespace_left(&store, &node_client, group_id, namespace).await;
+                    handle_namespace_left(
+                        &store,
+                        &node_client,
+                        &context_client,
+                        group_id,
+                        namespace,
+                    )
+                    .await;
                 });
             }
             OpEvent::AccountDeviceCertified { group_id, device } => {
@@ -166,37 +184,73 @@ async fn run(
                 });
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let context_client = context_client.clone();
                 let _ = tasks.spawn(async move {
                     let (covered, uncovered) =
                         namespaces_this_scope_decides(&store, group_id, device);
                     for namespace in covered {
-                        follow(&store, &node_client, namespace).await;
+                        follow(&store, &node_client, &context_client, namespace).await;
                     }
                     for namespace in uncovered {
-                        unfollow(&node_client, namespace).await;
+                        unfollow(&store, &node_client, &context_client, namespace).await;
                     }
                 });
             }
-            // Only a proof-bearing revocation carries: an admin one authorises
-            // nothing outside the group whose admin gate let it through.
             OpEvent::DeviceRevoked {
                 group_id,
                 account,
                 device,
-                proof: Some(proof),
+                proof,
+            } => {
+                // Only a proof-bearing revocation carries: an admin one authorises
+                // nothing outside the group whose admin gate let it through.
+                if let Some(proof) = proof {
+                    let store = store.clone();
+                    let node_client = node_client.clone();
+                    let ack_router = Arc::clone(&ack_router);
+                    let _ = tasks.spawn(async move {
+                        handle_revocation_carry(
+                            &store,
+                            &node_client,
+                            &ack_router,
+                            group_id,
+                            account,
+                            device,
+                            *proof,
+                        )
+                        .await;
+                    });
+                }
+                let store = store.clone();
+                let node_client = node_client.clone();
+                let context_client = context_client.clone();
+                let _ = tasks.spawn(async move {
+                    drop_what_this_device_lost(
+                        &store,
+                        &node_client,
+                        &context_client,
+                        group_id,
+                        device,
+                    )
+                    .await;
+                });
+            }
+            // The narrowing's own signal, and the one that travels on the topic
+            // being dropped: it can land before or after the statement that
+            // certified it, so either is enough to let this namespace go.
+            OpEvent::DeviceDescoped {
+                group_id, device, ..
             } => {
                 let store = store.clone();
                 let node_client = node_client.clone();
-                let ack_router = Arc::clone(&ack_router);
+                let context_client = context_client.clone();
                 let _ = tasks.spawn(async move {
-                    handle_revocation_carry(
+                    drop_what_this_device_lost(
                         &store,
                         &node_client,
-                        &ack_router,
+                        &context_client,
                         group_id,
-                        account,
                         device,
-                        *proof,
                     )
                     .await;
                 });
@@ -680,9 +734,37 @@ async fn carry_into(
     }
 }
 
+/// This node's OWN device lost its binding in `group_id`: drop the namespace and
+/// everything under it. Nothing for any other device, for the account namespace
+/// (which no scope names) or on a node holding the account root.
+async fn drop_what_this_device_lost(
+    store: &Store,
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    group_id: [u8; 32],
+    device: DeviceId,
+) {
+    let devices = NodeDeviceRepository::new(store);
+    if !matches!(devices.get(), Ok(Some(held)) if held.device() == device) {
+        return;
+    }
+    // A failed read counts as holding the root, as `namespaces_in_scope` has it:
+    // the cost of guessing wrong is every topic.
+    if !matches!(devices.holder_root(), Ok(None)) {
+        return;
+    }
+    let namespace = ContextGroupId::from(group_id);
+    if devices.account_namespace().ok().flatten() == Some(namespace) {
+        return;
+    }
+    info!(?namespace, %device, "account-follow: this device lost its binding here; leaving");
+    unfollow(store, node_client, context_client, namespace).await;
+}
+
 async fn handle_namespace_left(
     store: &Store,
     node_client: &NodeClient,
+    context_client: &ContextClient,
     group_id: [u8; 32],
     namespace: ContextGroupId,
 ) {
@@ -698,11 +780,31 @@ async fn handle_namespace_left(
             "account-follow: failed to pull a namespace before unfollowing it"
         );
     }
-    unfollow(node_client, namespace).await;
+    unfollow(store, node_client, context_client, namespace).await;
 }
 
-/// Drop `namespace`'s topic.
-async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
+/// Drop `namespace`: leave what it holds, then drop its topic.
+///
+/// The topic alone is not the whole subscription. A context keeps its own
+/// `ContextIdentity` row, its own topic and its own sync sessions, so dropping
+/// only the namespace leaves a withdrawn device reading every context it had
+/// already joined. `leave_context` is the existing opt-out and reverses cleanly:
+/// a widening re-joins through [`follow`].
+async fn unfollow(
+    store: &Store,
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    namespace: ContextGroupId,
+) {
+    for context_id in contexts_of(store, namespace) {
+        if let Err(err) = context_client
+            .leave_context(LeaveContextRequest { context_id })
+            .await
+        {
+            warn!(?err, ?namespace, %context_id,
+                  "account-follow: failed to leave a context of a namespace being dropped");
+        }
+    }
     match node_client
         .unsubscribe_namespace(namespace.to_bytes())
         .await
@@ -716,17 +818,55 @@ async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
     }
 }
 
-async fn follow(store: &Store, node_client: &NodeClient, namespace: ContextGroupId) {
+/// Take `namespace` up again, contexts included.
+///
+/// `auto_follow` re-joins on `ContextRegistered` alone, so a context registered
+/// before this scope widened would never come back; joining what is already
+/// there is what makes a widening reversible without re-pairing.
+async fn follow(
+    store: &Store,
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    namespace: ContextGroupId,
+) {
     match crate::handlers::follow_namespace::follow(store, node_client, &namespace).await {
         Ok(_identity) => info!(
             ?namespace,
             "account-follow: following a namespace the account gained"
         ),
-        Err(err) => warn!(
-            ?err,
-            ?namespace,
-            "account-follow: failed to follow a namespace the account gained"
-        ),
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace,
+                "account-follow: failed to follow a namespace the account gained"
+            );
+            return;
+        }
+    }
+    for context_id in contexts_of(store, namespace) {
+        if let Err(err) = context_client
+            .join_context(JoinContextRequest { context_id })
+            .await
+        {
+            warn!(?err, ?namespace, %context_id,
+                  "account-follow: failed to re-join a context of a namespace taken up again");
+        }
+    }
+}
+
+/// Every context registered under `namespace`. Empty on a read fault: the
+/// namespace half of the follow still runs, and the next start asks again.
+fn contexts_of(store: &Store, namespace: ContextGroupId) -> Vec<ContextId> {
+    match calimero_governance_store::enumerate_group_contexts(store, &namespace, 0, usize::MAX) {
+        Ok(contexts) => contexts,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace,
+                "account-follow: failed to enumerate a namespace's contexts"
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -1234,6 +1374,7 @@ mod tests {
             op_events::subscribe(),
             store.clone(),
             harness.node_client.clone(),
+            harness.context_client.clone(),
             Arc::clone(harness.context_client.ack_router()),
         ))
     }
@@ -1346,6 +1487,55 @@ mod tests {
         assert!(
             seen.contains(&topic(dropped)),
             "this device's own scope arriving has to drop what it no longer covers; got: {seen:?}"
+        );
+    }
+
+    /// A namespace's topic is not the whole subscription: every context under it
+    /// keeps its own identity row, its own topic and its own sync sessions, so a
+    /// withdrawn device that only dropped the namespace goes on reading each of
+    /// them. The revocation arm is the same call on the same event shape.
+    #[actix::test]
+    async fn this_devices_own_descope_leaves_the_namespaces_contexts() {
+        let store = store();
+        let (_account_namespace, device, root_sk) = a_device_scoped_to(&store, &[app(0x11)]);
+        let dropped = ContextGroupId::from([0x9A; 32]);
+        let context_id = calimero_primitives::context::ContextId::from([0x9B; 32]);
+        calimero_governance_store::register_context_in_group(&store, &dropped, &context_id)
+            .expect("register a context under the namespace being dropped");
+        let member = root_sk.public_key();
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextIdentity::new(context_id, member),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some([0x9C; 32]),
+                },
+            )
+            .expect("this device has joined that context");
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::DeviceDescoped {
+            group_id: dropped.to_bytes(),
+            account: AccountGenesis::new(root_sk.public_key()).account_id(),
+            device,
+        });
+
+        let seen = unsubscribes_until(&mut harness, |seen| seen.contains(&topic(dropped))).await;
+        listener.abort();
+
+        assert!(
+            seen.contains(&topic(dropped)),
+            "the narrowed-away namespace has to be unfollowed; got: {seen:?}"
+        );
+        assert!(
+            !store
+                .handle()
+                .has(&calimero_store::key::ContextIdentity::new(
+                    context_id, member
+                ))
+                .expect("read the membership marker"),
+            "and the contexts under it left, or the device keeps syncing them"
         );
     }
 
