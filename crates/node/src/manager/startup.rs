@@ -35,6 +35,7 @@ impl NodeManager {
 
         let node_client = self.clients.node.clone();
         let context_client = self.clients.context.clone();
+        let datastore = self.datastore.clone();
 
         let _handle = ctx.spawn(
             async move {
@@ -47,6 +48,20 @@ impl NodeManager {
                 {
                     Ok(groups) => {
                         for group in groups {
+                            // Membership is the account's, and a narrowed device
+                            // of that account reaches fewer namespaces than the
+                            // account does - so this set needs the scope filter
+                            // as much as the device set below. A read that fails
+                            // counts as reaching, as `node_reaches` does.
+                            if !calimero_context::account_follow::node_reaches(
+                                &datastore,
+                                &group.group_id,
+                            )
+                            .unwrap_or(true)
+                            {
+                                debug!(?group.group_id, "this device's scope no longer reaches this namespace; not subscribing");
+                                continue;
+                            }
                             let ns_bytes = group.group_id.to_bytes();
                             if let Err(err) = node_client.subscribe_namespace(ns_bytes).await {
                                 error!(?group.group_id, %err, "Failed to subscribe to group topic");
