@@ -414,6 +414,8 @@ The old link is just as replayable as the old narrowing, so a narrowing also rec
 A link made under a scope at or below the floor is refused, which is what keeps a stale link from re-binding a device the account narrowed out, and what lets a narrowing win when it arrives before the link it outranks.
 The floor is keyed by account and device together, so a statement signed by another account's root cannot raise it, and only the account's own key may publish the narrowing at all - the apply refuses one signed by any other member of the namespace.
 The same statement on the link is what moves scope enforcement off the publisher: a link into a namespace the scope does not reach is refused when it applies, not merely declined by a well-behaved sender.
+The projection's account plane folds the narrowing under the same ordering, because the at-cut gates resolve an author through that plane before they read a single live row: a plane that folded every link and no narrowing would keep authorising a narrowed device on every *other* replica, leaving only its own node refusing.
+It records the highest scope epoch a link was made under and the highest epoch a narrowing raised, and withdraws the binding when the view is read - both sides a maximum over the folded set, so the answer is a function of the ops rather than of the order they arrived in.
 
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
