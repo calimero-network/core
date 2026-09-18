@@ -4,7 +4,7 @@
       "applications": [],
       "deviceId": "2222222222222222222222222222222222222222222222222222222222222222",
       "isSelf": true,
-      "label": null,
+      "label": "Work laptop",
       "namespaces": [
         "7777777777777777777777777777777777777777777777777777777777777777"
       ],
@@ -17,7 +17,6 @@
       ],
       "deviceId": "9999999999999999999999999999999999999999999999999999999999999999",
       "isSelf": false,
-      "label": null,
       "namespaces": [],
       "revoked": true,
       "signingKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

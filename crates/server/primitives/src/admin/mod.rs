@@ -2473,7 +2473,7 @@ pub struct AccountDeviceApiEntry {
     pub namespaces: Vec<String>,
     /// The replicated name the account gave this device, absent while it has
     /// none. Every device of the account reads the same one.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
