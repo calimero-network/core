@@ -116,9 +116,10 @@ pub struct ScopeState {
     // --- account plane ---
     //
     // Unlike every plane above, this one carries **no LWW stamps**. Each of its
-    // three structures is a join-semilattice on its own — a grow-only map of
-    // self-certifying genesis records, a grow-only map of handoffs keyed by the
-    // epoch they depart from, and a grow-only set of revocation tombstones — so
+    // structures is a join-semilattice on its own — grow-only maps of
+    // self-certifying genesis records and of handoffs keyed by the epoch they
+    // depart from, a grow-only set of revocation tombstones, and two maps of
+    // scope epochs joined by max — so
     // the fold is order-independent by construction rather than by tie-break.
     // That matters because the LWW tie-break is where ordering bugs concentrate;
     // the account plane simply cannot have them.
@@ -139,6 +140,17 @@ pub struct ScopeState {
     /// grow-only — see `AclView::revoked_devices` for why revocation lives in
     /// its own set instead of as a flag on the binding.
     revoked_devices: BTreeSet<DeviceId>,
+    /// The highest scope epoch any folded link for a device was minted under.
+    ///
+    /// A max rather than a field on the binding: a re-link under a wider scope
+    /// re-states the same certificate, which `fold_device_link` refuses as an
+    /// unadvanced device epoch, so the binding it would update is not rewritten.
+    device_scope_epoch: BTreeMap<DeviceId, u32>,
+    /// Per-`(account, device)` scope floor: the highest epoch a narrowing took
+    /// this device out of this scope at. Also a max, and recorded whether or not
+    /// anything is bound, so a narrowing that folds before the link it outranks
+    /// still wins.
+    device_scope_floor: BTreeMap<(AccountId, DeviceId), u32>,
 }
 
 /// The result of walking a cut's causal ancestry: the ops reached, and what
@@ -341,7 +353,7 @@ impl ScopeState {
     /// | plane | arms | checked where | why |
     /// | --- | --- | --- | --- |
     /// | account | `DeviceLinked`, `AccountKeysRotated` | **here** | op-local: a genesis hashes to the id it claims, a certificate is signed by the account root, a handoff by the departing root, and ownership is a field comparison. All answerable from the op, so all answerable identically on every replica mid-fold |
-    /// | account | `DeviceRevoked` | **authz only** | two legitimate authors (the account, or any root admin), and "is the author an admin" is a question about the *cut*. See the arm |
+    /// | account | `DeviceRevoked`, `DeviceDescoped` | **authz only** | both are the deny direction and both name an author question the fold cannot answer. The descope's own op-local rule — that the statement is root-signed for this account and device — is checked where the payload is built, in `calimero-op-adapter`, which carries the proof this payload does not |
     /// | data, ACL, governance | everything else | **authz only** | every rule is relational — was the author a writer / member / admin *at this cut*. A streaming fold has no cut, so an answer here would depend on how much had folded, which is a split root |
     ///
     /// The consequence for the third row: folding a raw log that contains
@@ -497,7 +509,24 @@ impl ScopeState {
                 genesis,
                 chain,
                 cert,
-            } => self.fold_device_linked(genesis, chain, cert),
+                scope_epoch,
+            } => self.fold_device_linked(genesis, chain, cert, *scope_epoch),
+
+            // The deny direction, so it is written unconditionally like the
+            // revocation tombstone above, and for the same reason: a narrowing
+            // that folds before the link it outranks must still win. `authorize`
+            // is what refuses one a stranger signed.
+            OpPayload::DeviceDescoped {
+                account,
+                device,
+                scope_epoch,
+            } => {
+                let floor = self
+                    .device_scope_floor
+                    .entry((*account, *device))
+                    .or_default();
+                *floor = (*floor).max(*scope_epoch);
+            }
 
             // Both halves of a join, folded by the very same code the separate
             // `MemberAdded` and `DeviceLinked` arms run. Neither half is
@@ -514,7 +543,9 @@ impl ScopeState {
                 cert,
             } => {
                 self.fold_member_added(*group, *member, role, stamp);
-                self.fold_device_linked(genesis, chain, cert);
+                // A join carries no scope statement, so it binds at epoch 0 —
+                // the same stamp the live join apply writes.
+                self.fold_device_linked(genesis, chain, cert, 0);
             }
             OpPayload::DeviceRevoked { device, .. } => {
                 // The one account-plane arm with NO ownership gate, and the only
@@ -612,6 +643,7 @@ impl ScopeState {
         genesis: &AccountGenesis,
         chain: &[RootKeyHandoff],
         cert: &DeviceCert,
+        scope_epoch: u32,
     ) {
         // Learn the account FIRST, and unconditionally — the genesis is
         // self-certifying (it hashes to the id it claims), so absorbing it is
@@ -644,13 +676,26 @@ impl ScopeState {
         // root-key rotation is applied when the view is read (see
         // `live_devices`), because it depends on the account's FINAL epoch —
         // which this fold cannot know mid-stream.
-        let Ok(verified) = calimero_authz::fold_device_link(
+        let admitted = calimero_authz::fold_device_link(
             &self.devices,
             &self.revoked_devices,
             genesis,
             chain,
             cert,
-        ) else {
+        );
+        // Raised for every credential this scope can verify, including one the
+        // binding rules then refuse — a re-link under a wider scope re-states a
+        // certificate already bound, so the binding does not move while the
+        // epoch it was minted under does. Gating this on admission instead would
+        // read what had folded so far, and the floor comparison must not.
+        if !matches!(
+            admitted,
+            Err(calimero_authz::Rejected::CredentialInvalid { .. })
+        ) {
+            let recorded = self.device_scope_epoch.entry(cert.device).or_default();
+            *recorded = (*recorded).max(scope_epoch);
+        }
+        let Ok(verified) = admitted else {
             // Deterministically inadmissible on every node, so ignoring it keeps
             // the projection convergent. The op still occupies its place in the
             // causal graph.
@@ -711,7 +756,7 @@ impl ScopeState {
     }
 
     /// Device bindings that are actually in force, once the account's final
-    /// root-key epoch is known.
+    /// root-key epoch and scope floor are known.
     ///
     /// A binding minted under a root key the account has since rotated past is
     /// dropped here rather than at fold time. That placement is what makes the
@@ -730,10 +775,11 @@ impl ScopeState {
         &self,
         accounts: &BTreeMap<AccountId, AccountBinding>,
     ) -> BTreeMap<DeviceId, DeviceBinding> {
-        let unsuperseded = self.devices.iter().filter(|(_, binding)| {
+        let unsuperseded = self.devices.iter().filter(|(device, binding)| {
             accounts
                 .get(&binding.account)
                 .is_none_or(|account| binding.key_epoch >= account.epoch)
+                && !self.is_descoped(**device, binding)
         });
 
         // Replica-seed uniqueness, applied HERE for the same reason supersession
@@ -758,6 +804,22 @@ impl ScopeState {
                 .or_insert((*device, *binding));
         }
         by_seed.into_values().collect()
+    }
+
+    /// Has a narrowing withdrawn this binding — was the highest link epoch for
+    /// the device at or below the floor its account raised?
+    ///
+    /// Read here rather than applied at fold time, exactly like supersession:
+    /// both the floor and the link epoch are a max over the folded set, so
+    /// comparing them once the whole cut is in makes the answer a function of
+    /// the op set instead of its arrival order. A link AT the floor is under it,
+    /// the same threshold the live apply refuses a link at.
+    fn is_descoped(&self, device: DeviceId, binding: &DeviceBinding) -> bool {
+        self.device_scope_floor
+            .get(&(binding.account, device))
+            .is_some_and(|floor| {
+                self.device_scope_epoch.get(&device).copied().unwrap_or(0) <= *floor
+            })
     }
 
     /// Resolve every known account's current root key by walking its handoff
@@ -813,6 +875,7 @@ impl ScopeState {
         // Resolved once and shared with `live_devices`, which needs the same
         // answer — see its doc comment for why paying twice matters.
         let accounts = self.resolved_accounts();
+        let devices = self.live_devices(&accounts);
         let subgroups = self
             .subgroups
             .iter()
@@ -837,7 +900,7 @@ impl ScopeState {
             member_caps: self.member_caps.clone(),
             subgroups,
             group_admin: self.group_admin.clone(),
-            devices: self.live_devices(&accounts),
+            devices,
             accounts,
             revoked_devices: self.revoked_devices.clone(),
         }
@@ -1158,6 +1221,19 @@ impl ScopeState {
         }
         for device in &self.revoked_devices {
             hasher.update(device.as_bytes());
+        }
+        // The scope plane, hashed for the same reason as the rest of the account
+        // plane: a narrowing changes who may write without touching an entity,
+        // so leaving it out would let sync report "converged" while two nodes
+        // disagree about which groups a device still speaks in.
+        for (device, epoch) in &self.device_scope_epoch {
+            hasher.update(device.as_bytes());
+            hasher.update(epoch.to_le_bytes());
+        }
+        for ((account, device), floor) in &self.device_scope_floor {
+            hasher.update(account.as_bytes());
+            hasher.update(device.as_bytes());
+            hasher.update(floor.to_le_bytes());
         }
         for (group, admin) in &self.group_admin {
             hasher.update(group.to_bytes());

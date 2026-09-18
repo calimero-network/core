@@ -2604,6 +2604,7 @@ mod tests {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
                 cert: account.statement,
+                scope_epoch: 0,
             },
             "open-subgroup inheritance join folds its credential and no membership"
         );

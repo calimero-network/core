@@ -107,6 +107,9 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
                 cert: account.statement,
+                // A join op carries no scope statement; it binds at epoch 0,
+                // as the live apply does.
+                scope_epoch: 0,
             }
         } else {
             OpPayload::Noop
@@ -183,6 +186,9 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
                 cert: account.statement,
+                // A join op carries no scope statement; it binds at epoch 0,
+                // as the live apply does.
+                scope_epoch: 0,
             }
         } else {
             OpPayload::Noop

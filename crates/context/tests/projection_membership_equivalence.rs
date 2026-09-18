@@ -383,6 +383,15 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         Some(true),
         "authoritative grant resolver agrees the joiner is a member after the join"
     );
+    // The account plane under the membership one: the two must also agree about
+    // which account the joiner's KEY speaks for, since every at-cut gate resolves
+    // that first and a plane that answers differently from live authorises a
+    // different principal.
+    assert_eq!(
+        proj.device_account_at_cut(&store, ns, &joiner, &[id2]),
+        calimero_governance_store::member_account_in_namespace(&store, &ns, &joiner).unwrap(),
+        "projection and live must bind the joiner's device to the same account"
+    );
 
     // (3) admin removes the joiner from the NAMESPACE ROOT only (a GroupOp on the
     // root). Live: removes the root row; the subgroup has no direct row, so the
@@ -1869,5 +1878,286 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
         proj.cut_ancestry_state(&ScopeId::from(ns.to_bytes()), &[hole.id()]),
         (true, false),
         "complete but unreadable, which is the state under test",
+    );
+}
+
+/// A device of `account`, certified by the root the test fixtures derive from
+/// that account's signing key, so a test can sign its scopes too.
+fn second_device_of(
+    member_key: &PublicKey,
+    seed: u8,
+) -> (
+    PrivateKey,
+    calimero_account::AccountGenesis,
+    calimero_account::DeviceCert,
+    PrivateKey,
+) {
+    let root_sk = PrivateKey::from(**member_key);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let device_sk = PrivateKey::from([seed; 32]);
+    let cert = calimero_account::DeviceCert::sign(
+        &root_sk,
+        genesis.account_id(),
+        calimero_account::DeviceId::mint(genesis.account_id(), [seed; 16]),
+        &device_sk.public_key(),
+        &calimero_account::KemPublicKey::from([seed ^ 0x5A; 32]),
+        0,
+        0,
+    )
+    .expect("the account root signs its device's certificate");
+    (root_sk, genesis, cert, device_sk)
+}
+
+/// The root-signed scope a link or a narrowing carries, at `scope_epoch`.
+fn scope_at(
+    root_sk: &PrivateKey,
+    cert: &calimero_account::DeviceCert,
+    scope_epoch: u32,
+) -> Box<calimero_account::AccountProof<calimero_account::DeviceScope>> {
+    Box::new(calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            vec![],
+            scope_epoch,
+            0,
+        )
+        .expect("the account root signs its device's scope"),
+    })
+}
+
+/// A namespace with `admin` enrolled as its genesis admin, ready for at-cut
+/// reads about it.
+fn a_namespace_admined_by(
+    store: &Store,
+    ns: ContextGroupId,
+    admin: &PublicKey,
+) -> calimero_account::AccountId {
+    let account = calimero_context::test_support::enrol(store, &ns, admin);
+    MetaRepository::new(store)
+        .save(&ns, &meta(account))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&ns, &account, GroupMemberRole::Admin)
+        .unwrap();
+    account
+}
+
+/// **A device its account narrowed out of a namespace speaks for nobody there at
+/// the cut — and the projection says so exactly where live does.**
+///
+/// The at-cut gates resolve an author through the projection's account plane
+/// before they ever look at a live row, so a plane that folds every link and no
+/// narrowing keeps authorising a device on every OTHER replica: only the
+/// narrowed device's own node refuses, which a modified client skips.
+///
+/// Live is the `AccountBindingRepository`, the same rows the apply handler for
+/// the link and the narrowing writes through.
+#[test]
+fn a_narrowed_device_resolves_to_nobody_at_the_cut_exactly_as_live() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let admin = admin_sk.public_key();
+    let ns = ContextGroupId::from([0x31; 32]);
+    let account = a_namespace_admined_by(&store, ns, &admin);
+
+    let (root_sk, genesis, cert, device_sk) = second_device_of(&admin, 0x71);
+    let device_key = device_sk.public_key();
+    let bindings = calimero_governance_store::AccountBindingRepository::new(&store);
+    let mut proj = ScopeProjections::new();
+
+    let link = |epoch| GroupOp::AccountDeviceLinked {
+        genesis,
+        chain: vec![],
+        cert,
+        endorsement: calimero_account::AccountMemberEndorsement::sign(&device_sk, cert.account)
+            .expect("endorse"),
+        scope: scope_at(&root_sk, &cert, epoch),
+    };
+    let descope = |epoch| GroupOp::AccountDeviceDescoped {
+        account,
+        device: cert.device,
+        scope: scope_at(&root_sk, &cert, epoch),
+    };
+    let envelope = ns_group_envelope(ns.to_bytes(), device_key, ns);
+
+    // (1) the device links under the scope at epoch 1, on both planes.
+    let _ = bindings
+        .apply_link(&ns, &genesis, &[], &cert, 1)
+        .expect("live records the link");
+    let linked = [0xE1; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &envelope,
+        Some(&link(1)),
+        linked,
+        hlc(1),
+        &[],
+    ));
+    assert_eq!(
+        calimero_governance_store::member_account_in_namespace(&store, &ns, &device_key).unwrap(),
+        Some(account),
+        "live binds the device to its account"
+    );
+    assert_eq!(
+        proj.device_account_at_cut(&store, ns, &device_key, &[linked]),
+        Some(account),
+        "and so must the cut the link is in"
+    );
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &device_key, &[linked]),
+        Some(true),
+        "a bound device of the admin's account authors as that admin"
+    );
+
+    // (2) the account narrows it out of this namespace at epoch 2.
+    let _ = bindings
+        .narrow(&ns, account, cert.device, 2)
+        .expect("live takes the narrowing");
+    let narrowed = [0xE2; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &envelope,
+        Some(&descope(2)),
+        narrowed,
+        hlc(2),
+        &[linked],
+    ));
+    assert_eq!(
+        calimero_governance_store::member_account_in_namespace(&store, &ns, &device_key).unwrap(),
+        None,
+        "live: the binding is gone"
+    );
+    assert_eq!(
+        proj.device_account_at_cut(&store, ns, &device_key, &[narrowed]),
+        None,
+        "the cut must agree, or every other replica keeps taking this device's writes"
+    );
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &device_key, &[narrowed]),
+        Some(false),
+        "and the admin gate with it"
+    );
+
+    // (3) a re-link under a wider scope binds the same device again.
+    let _ = bindings
+        .apply_link(&ns, &genesis, &[], &cert, 3)
+        .expect("live records the re-link");
+    let relinked = [0xE3; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &envelope,
+        Some(&link(3)),
+        relinked,
+        hlc(3),
+        &[narrowed],
+    ));
+    assert_eq!(
+        calimero_governance_store::member_account_in_namespace(&store, &ns, &device_key).unwrap(),
+        Some(account),
+        "live: a widening re-binds without re-enrolling"
+    );
+    assert_eq!(
+        proj.device_account_at_cut(&store, ns, &device_key, &[relinked]),
+        Some(account),
+        "the cut must restore it too, or a widening is a one-way door"
+    );
+
+    // (4) the superseded statement, replayed after the widening, unbinds nothing.
+    let _ = bindings
+        .narrow(&ns, account, cert.device, 2)
+        .expect("live re-reads the stale narrowing");
+    let replayed = [0xE4; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &envelope,
+        Some(&descope(2)),
+        replayed,
+        hlc(4),
+        &[relinked],
+    ));
+    assert_eq!(
+        calimero_governance_store::member_account_in_namespace(&store, &ns, &device_key).unwrap(),
+        Some(account),
+        "live: a statement the account has superseded cannot unbind"
+    );
+    assert_eq!(
+        proj.device_account_at_cut(&store, ns, &device_key, &[replayed]),
+        Some(account),
+        "and neither may the cut"
+    );
+}
+
+/// **A narrowing reaches the namespace it was published into, and no other.**
+///
+/// A scope replacement names the namespaces it stopped covering one at a time;
+/// a device narrowed out of one keeps every binding it holds elsewhere.
+#[test]
+fn a_narrowing_leaves_the_device_bound_in_the_namespace_it_still_reaches() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let admin = admin_sk.public_key();
+    let left = ContextGroupId::from([0x41; 32]);
+    let kept = ContextGroupId::from([0x42; 32]);
+    let account = a_namespace_admined_by(&store, left, &admin);
+    let _kept_account = a_namespace_admined_by(&store, kept, &admin);
+
+    let (root_sk, genesis, cert, device_sk) = second_device_of(&admin, 0x73);
+    let device_key = device_sk.public_key();
+    let bindings = calimero_governance_store::AccountBindingRepository::new(&store);
+    let mut proj = ScopeProjections::new();
+
+    let link = GroupOp::AccountDeviceLinked {
+        genesis,
+        chain: vec![],
+        cert,
+        endorsement: calimero_account::AccountMemberEndorsement::sign(&device_sk, cert.account)
+            .expect("endorse"),
+        scope: scope_at(&root_sk, &cert, 1),
+    };
+    let mut linked_in = |namespace: ContextGroupId, id: [u8; 32]| {
+        let _ = bindings
+            .apply_link(&namespace, &genesis, &[], &cert, 1)
+            .expect("live records the link");
+        proj.ingest_op(&op_from_namespace_op(
+            &ns_group_envelope(namespace.to_bytes(), device_key, namespace),
+            Some(&link),
+            id,
+            hlc(1),
+            &[],
+        ));
+    };
+    linked_in(left, [0xF1; 32]);
+    linked_in(kept, [0xF2; 32]);
+
+    let _ = bindings
+        .narrow(&left, account, cert.device, 2)
+        .expect("live takes the narrowing");
+    let narrowed = [0xF3; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &ns_group_envelope(left.to_bytes(), device_key, left),
+        Some(&GroupOp::AccountDeviceDescoped {
+            account,
+            device: cert.device,
+            scope: scope_at(&root_sk, &cert, 2),
+        }),
+        narrowed,
+        hlc(2),
+        &[[0xF1; 32]],
+    ));
+
+    assert_eq!(
+        proj.device_account_at_cut(&store, left, &device_key, &[narrowed]),
+        None,
+        "the namespace the narrowing was published into drops the binding"
+    );
+    assert_eq!(
+        calimero_governance_store::member_account_in_namespace(&store, &kept, &device_key).unwrap(),
+        Some(account),
+        "live keeps the other namespace's binding"
+    );
+    assert_eq!(
+        proj.device_account_at_cut(&store, kept, &device_key, &[[0xF2; 32]]),
+        Some(account),
+        "and so must its cut: one namespace's floor is not another's"
     );
 }

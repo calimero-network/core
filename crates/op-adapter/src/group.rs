@@ -67,11 +67,19 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             genesis,
             chain,
             cert,
+            scope,
             ..
         } => Some(OpPayload::DeviceLinked {
             genesis: *genesis,
             chain: chain.clone(),
             cert: *cert,
+            // The projected payload carries the epoch, not the proof, so this is
+            // where the statement is checked: an op whose scope is not
+            // root-signed for this account and device contributes no epoch, and
+            // therefore cannot lift a device back over a floor.
+            scope_epoch: scope
+                .authorises(cert.account, cert.device)
+                .map_or(0, |verified| verified.scope_epoch),
         }),
         // `proof` is dropped, like `endorsement` on the link above and for the
         // same reason: on the unified plane membership is keyed by `AccountId`,
@@ -85,9 +93,22 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             account: *account,
             device: *device,
         }),
-        // No `ScopeState` representation for per-namespace device scope yet, and
-        // `DeviceRevoked` is terminal - the property this op exists to avoid.
-        GroupOp::AccountDeviceDescoped { .. } => None,
+        // Not `DeviceRevoked`, which is terminal - the property this op exists to
+        // avoid. It records a scope floor instead, so a later link under a wider
+        // scope re-binds the same device. A statement that does not authorise
+        // this device is not a narrowing of it, and folds as nothing.
+        GroupOp::AccountDeviceDescoped {
+            account,
+            device,
+            scope,
+        } => scope
+            .authorises(*account, *device)
+            .ok()
+            .map(|verified| OpPayload::DeviceDescoped {
+                account: *account,
+                device: *device,
+                scope_epoch: verified.scope_epoch,
+            }),
         GroupOp::AccountKeysRotated { handoff } => {
             Some(OpPayload::AccountKeysRotated { handoff: *handoff })
         }

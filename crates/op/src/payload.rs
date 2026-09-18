@@ -148,6 +148,10 @@ pub enum OpPayload {
         chain: Vec<RootKeyHandoff>,
         /// The root-signed grant being folded.
         cert: DeviceCert,
+        /// The epoch of the root-signed scope the link was made under; `0` for a
+        /// link that carries none (a join, a genesis). Ordered against
+        /// [`Self::DeviceDescoped`]'s floor when the view is read.
+        scope_epoch: u32,
     },
     /// Withdraw a device from an account, at this cut.
     ///
@@ -228,5 +232,28 @@ pub enum OpPayload {
     Opaque {
         /// The group whose key would decrypt this op.
         group: ContextGroupId,
+    },
+
+    /// Unbind a device from its account **in this scope**, because the account
+    /// replaced its scope with one that no longer reaches here.
+    ///
+    /// Not terminal, unlike [`Self::DeviceRevoked`]: the device id is not spent,
+    /// and a later link made under a higher scope epoch binds it again. What the
+    /// fold keeps is a per-`(account, device)` floor — the highest epoch narrowed
+    /// away — and a binding stands only while the link that made it was minted
+    /// above the floor. Both halves are a max over the folded set, so the plane
+    /// stays order-independent.
+    ///
+    /// Scope-wide, matching the live plane it mirrors: binding rows are read per
+    /// namespace, and a narrowing is published into the namespace the new scope
+    /// stopped reaching, never into one group of it.
+    DeviceDescoped {
+        /// The account whose device it is; the floor is keyed by both, so
+        /// another account's statement cannot raise this device's.
+        account: AccountId,
+        /// The device being unbound here.
+        device: DeviceId,
+        /// The epoch of the root-signed scope that stopped reaching this scope.
+        scope_epoch: u32,
     },
 }
