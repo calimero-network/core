@@ -244,6 +244,27 @@ pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
     ))
 }
 
+/// The namespaces this node takes part in that its own scope still reaches.
+///
+/// What a start-up sweep may subscribe to and sync. Unfiltered, such a sweep
+/// races this listener's own start-up unfollow in another actor, and whichever
+/// finishes last decides - so a narrowed device goes on replicating a namespace
+/// it no longer covers until the next scope event.
+///
+/// # Errors
+/// Propagates the participation read and the reads behind [`node_reaches`].
+pub fn namespaces_in_reach(store: &Store) -> EyreResult<Vec<ContextGroupId>> {
+    let mut reached = Vec::new();
+    for namespace in NamespaceRepository::new(store).participating_namespaces()? {
+        if node_reaches(store, &namespace)? {
+            reached.push(namespace);
+        } else {
+            debug!(?namespace, "account-follow: this device's scope no longer reaches this namespace; not subscribing");
+        }
+    }
+    Ok(reached)
+}
+
 /// The authoring half of [`node_reaches`]: refuse a write into a namespace this
 /// device's account narrowed it out of, rather than answering locally and
 /// publishing something no peer will take.
@@ -733,9 +754,9 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        carry_into, follows_on_gain, namespaces_this_scope_decides, namespaces_to_bind_into,
-        namespaces_to_revoke_in, node_reaches, publish_sibling_link, run, signing_identity,
-        unfollows_on_left,
+        carry_into, follows_on_gain, namespaces_in_reach, namespaces_this_scope_decides,
+        namespaces_to_bind_into, namespaces_to_revoke_in, node_reaches, publish_sibling_link, run,
+        signing_identity, unfollows_on_left,
     };
     use crate::test_support::{actor, eventually, holder_device_scoped_to, rescope_paired_device};
 
@@ -877,6 +898,51 @@ mod tests {
         assert!(
             node_reaches(&store, &lost).expect("read the scope"),
             "a later statement at a wider scope reaches it again"
+        );
+    }
+
+    /// The start-up sweep must not re-subscribe a namespace this device's scope
+    /// stopped covering.
+    ///
+    /// The sweep and this listener's own unfollow run in different actors, so an
+    /// unfiltered sweep is a race whose winner decides whether a narrowed device
+    /// keeps replicating - and a restart is exactly when both run.
+    #[test]
+    fn the_startup_sweep_skips_a_namespace_this_scope_no_longer_covers() {
+        let store = store();
+        let (account_namespace, device, root_sk) = a_device_scoped_to(&store, &[]);
+        let kept = ns(0xD5);
+        let lost = ns(0xD6);
+        a_namespace_targeting(&store, kept, app(0x11));
+        a_namespace_targeting(&store, lost, app(0x22));
+
+        let reached = namespaces_in_reach(&store).expect("read the participating set");
+        assert!(
+            reached.contains(&kept) && reached.contains(&lost),
+            "a device scoped to everything sweeps both: {reached:?}"
+        );
+
+        rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app(0x11)],
+            1,
+        );
+
+        let reached = namespaces_in_reach(&store).expect("read the participating set");
+        assert!(
+            reached.contains(&kept),
+            "the covered namespace is still subscribed: {reached:?}"
+        );
+        assert!(
+            !reached.contains(&lost),
+            "the uncovered one must not be, or the sweep undoes the narrowing: {reached:?}"
+        );
+        assert!(
+            reached.contains(&account_namespace),
+            "the account namespace is reached by every device, narrowed or not"
         );
     }
 

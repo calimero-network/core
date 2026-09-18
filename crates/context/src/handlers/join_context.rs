@@ -579,7 +579,9 @@ impl Handler<JoinContextRequest> for ContextManager {
 /// network syncs on namespaces the node can never join into. `participating_namespaces`
 /// is keyed by namespace id, so the result is already distinct.
 fn namespaces_to_sync(datastore: &calimero_store::Store) -> eyre::Result<Vec<ContextGroupId>> {
-    NamespaceRepository::new(datastore).participating_namespaces()
+    // Minus the ones this device's scope stopped covering: re-subscribing there
+    // would replicate a namespace the account took this device out of.
+    crate::account_follow::namespaces_in_reach(datastore)
 }
 
 async fn sync_known_namespaces(

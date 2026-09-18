@@ -87,12 +87,13 @@ impl NodeManager {
         let _handle = ctx.spawn(
             async move {
                 // Participation, not the device row: the device is node-level now,
-                // so it says nothing about which namespaces to subscribe to.
-                let namespaces = match calimero_governance_store::NamespaceRepository::new(
+                // so it says nothing about which namespaces to subscribe to. It
+                // is filtered by this device's own scope, which the account-follow
+                // sweep is dropping topics for at the same moment in another
+                // actor - unfiltered, whichever of the two finished last decided.
+                let namespaces = match calimero_context::account_follow::namespaces_in_reach(
                     &datastore,
-                )
-                .participating_namespaces()
-                {
+                ) {
                     Ok(namespaces) => namespaces,
                     Err(err) => {
                         error!(%err, "Failed to list namespaces for startup subscription");
