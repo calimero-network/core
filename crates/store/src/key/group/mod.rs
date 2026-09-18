@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x52` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x54` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x53`**.
+// `0x55`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2586,6 +2586,78 @@ impl Debug for GroupAccountDevice {
     }
 }
 
+/// Prefix for [`GroupAccountDeviceLabel`].
+pub const GROUP_ACCOUNT_DEVICE_LABEL_PREFIX: u8 = 0x53;
+
+/// The name one device of the account carries, keyed exactly like its registry
+/// row. A key of its own rather than a field on [`GroupAccountDeviceValue`], so
+/// a rename never rewrites the certificate and scope stored beside it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDeviceLabel(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountDeviceLabel {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_DEVICE_LABEL_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountDeviceLabel {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountDeviceLabel {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountDeviceLabel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountDeviceLabel")
+            .field("group_id", &self.group_id())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// The name in force for a device, and the epoch that orders it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDeviceLabelValue {
+    /// What the device is called.
+    pub label: String,
+    /// Only a higher epoch supersedes; an equal one ties on the label itself.
+    pub label_epoch: u32,
+}
+
 /// Prefix for [`GroupAccountNamespace`].
 pub const GROUP_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x51;
 
@@ -2901,6 +2973,65 @@ impl FromKeyParts for NodeDeviceCertificate {
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
     }
+}
+
+/// Prefix for [`NodeRevokedFrom`].
+pub const NODE_REVOKED_FROM_PREFIX: u8 = 0x54;
+
+/// The account and device this node was last revoked out of, a node-local
+/// singleton: a revoked device releases itself and would otherwise be unpaired
+/// with nothing to say why.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeRevokedFrom(Key<(GroupPrefix,)>);
+
+impl NodeRevokedFrom {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_REVOKED_FROM_PREFIX])))
+    }
+}
+
+impl Default for NodeRevokedFrom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeRevokedFrom {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeRevokedFrom {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeRevokedFrom {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NodeRevokedFrom").finish()
+    }
+}
+
+/// Which account withdrew this node's device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeRevokedFromValue {
+    /// The account the device spoke for.
+    pub account_id: [u8; 32],
+    /// The device that was withdrawn.
+    pub device_id: [u8; 32],
 }
 
 /// Prefix for [`NodeAccountNamespace`].
