@@ -615,9 +615,6 @@ impl<'a> NodeDeviceRepository<'a> {
         .into();
 
         let doomed_certificate = calimero_store::key::NodeDeviceCertificate::new();
-        // An imported root is an account of this node's own, so whatever
-        // withdrew the last device has stopped being the answer to "why am I not
-        // paired".
         let revoked_from = NodeRevokedFrom::new();
         let mut tx = Transaction::default();
         tx.put(&root_key, root_bytes);
@@ -1495,9 +1492,8 @@ mod tests {
         );
     }
 
-    /// The release is silent from the operator's side: the node simply stops
-    /// being paired. The marker is the only thing that can say why, so it
-    /// outlives the row and is dropped only when the node pairs again.
+    /// The release is silent, so the marker has to outlive the row it released
+    /// and survive until the node pairs again.
     #[test]
     fn a_released_device_leaves_behind_what_revoked_it() {
         let (store, _root_sk, held) = paired_node_holding(0);

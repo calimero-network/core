@@ -1002,15 +1002,10 @@ impl Message for RescopeDeviceRequest {
 }
 
 /// Name a device of this node's own account, for a listing to render.
-///
-/// Run on the node holding the account root to name any device; on a paired
-/// device it may name only itself, since only the root can sign a statement
-/// about somebody else's device.
 #[derive(Debug)]
 pub struct LabelDeviceRequest {
     pub device: DeviceId,
-    /// Trimmed, non-empty, printable and short; the handler is where that is
-    /// refused with a reason, so a caller learns which rule it broke.
+    /// Refused by the handler, so a caller learns which rule it broke.
     pub label: String,
 }
 

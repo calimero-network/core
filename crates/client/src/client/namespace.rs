@@ -170,7 +170,7 @@ where
     /// Name a device of this account, so every device of it renders the same one.
     ///
     /// Run on the node holding the account root to name any device; a paired node
-    /// may name only its own.
+    /// may name only its own device.
     pub async fn label_device(
         &self,
         device_id: &str,

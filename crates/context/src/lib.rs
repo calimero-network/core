@@ -440,10 +440,8 @@ pub struct ContextManager {
     /// existing one is still active (e.g. sleeping in its backoff delay).
     active_propagators: HashSet<ContextGroupId>,
 
-    /// When this node last published a name for each device, so a rename loop
-    /// cannot turn one admin call per keystroke into one op per keystroke.
-    /// Node-local and never consulted by an apply: two nodes with different
-    /// clocks must still fold the same ops to the same row.
+    /// When this node last published a name for each device, so one admin call
+    /// per keystroke cannot become one published op per keystroke.
     pub(crate) device_label_published: HashMap<calimero_account::DeviceId, Instant>,
 
     /// Per-namespace governance DAG. Single DAG per namespace containing both

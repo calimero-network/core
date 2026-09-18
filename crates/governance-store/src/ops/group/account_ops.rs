@@ -555,19 +555,8 @@ pub(crate) fn apply_device_descoped(
 
 /// `GroupOp::AccountDeviceLabelled` - give a device of this account a name.
 ///
-/// Display only, so there is no at-cut question to ask and no plane to fold: the
-/// two authorities are both answerable from the op and this group's own rows.
-///
-/// **A root-signed statement** names any device of the account. It is
-/// self-certifying, exactly as a scope is, which is why a sibling device may
-/// carry the holder's rename without being anybody in particular here - and why
-/// the statement has to name the very fields the op carries, or a member who saw
-/// one could re-wrap it around any text at any epoch.
-///
-/// **Or the signer's own binding**, for a device naming itself. A paired device
-/// holds no root and so can produce no statement; its binding is all it has.
-/// `binding_for_sign_pk` reads the live set, so a revoked or superseded device
-/// resolves to nothing and cannot rename itself on its way out.
+/// A root-signed statement names any device of the account; without one the
+/// signer may name only the device its own live binding here resolves to.
 pub(crate) fn apply_device_labelled(
     ctx: &mut GroupApplyCtx<'_>,
     account: &AccountId,
@@ -580,6 +569,8 @@ pub(crate) fn apply_device_labelled(
 
     let authorised = match root_proof {
         Some(proof) => match proof.authorises(*account, *device) {
+            // The statement must name the very fields the op carries, or anyone
+            // who saw one could re-wrap it around any text at any epoch.
             Ok(verified) => verified.label == label && verified.label_epoch == label_epoch,
             Err(err) => {
                 tracing::warn!(group_id = ?group_id, %account, %device, %err,
@@ -587,6 +578,8 @@ pub(crate) fn apply_device_labelled(
                 false
             }
         },
+        // The live set, so a revoked or superseded device resolves to nothing and
+        // cannot rename itself on its way out.
         None => AccountBindingRepository::new(ctx.store())
             .binding_for_sign_pk(&group_id, ctx.signer())?
             .is_some_and(|binding| binding.device == *device && binding.account == *account),

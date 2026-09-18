@@ -16,9 +16,6 @@ use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 /// Name a device of this node's own account.
-///
-/// The node holding the account root may name any device of the account; a
-/// paired node holds no root and is refused for anything but its own device.
 pub async fn handler(
     Path(device_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,

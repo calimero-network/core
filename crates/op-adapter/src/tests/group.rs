@@ -357,9 +357,8 @@ fn a_governance_device_link_carries_its_scope_epoch() {
     ));
 }
 
-/// A name gates nothing, so it stays off the unified plane entirely - like every
-/// other display-only group op. Pinned, because adding a fold arm for it would
-/// put a rename into the scope root and make a cosmetic edit a divergence.
+/// Pinned because a fold arm for it would put a rename into the scope root, and
+/// make a cosmetic edit a divergence.
 #[test]
 fn a_device_label_is_not_projected() {
     let root = PrivateKey::from([0x41; 32]);
