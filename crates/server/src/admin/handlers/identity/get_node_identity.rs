@@ -5,7 +5,9 @@ use axum::Extension;
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_governance_store::{AccountDeviceRegistry, NodeDeviceRepository};
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{NodeIdentityApiResponse, NodeIdentityApiResponseData};
+use calimero_server_primitives::admin::{
+    NodeIdentityApiResponse, NodeIdentityApiResponseData, RevokedFromApiEntry,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use reqwest::StatusCode;
@@ -180,6 +182,23 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
     };
 
+    // A withdrawal releases this node's device silently, so without this the
+    // operator sees an unpaired node and no reason for it.
+    let revoked_from = match NodeDeviceRepository::new(store).revoked_from() {
+        Ok(marker) => marker.map(|(account, device)| RevokedFromApiEntry {
+            account_id: hex::encode(account.as_bytes()),
+            device_id: hex::encode(device.as_bytes()),
+        }),
+        Err(err) => {
+            error!(error = ?err, "Failed to read what withdrew this node's device");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read what withdrew this node's device".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: NodeIdentityApiResponse {
             data: NodeIdentityApiResponseData {
@@ -199,6 +218,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 holds_account_root,
                 device_certified,
                 account_namespace_id,
+                revoked_from,
             },
         },
     }

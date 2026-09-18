@@ -2416,6 +2416,52 @@ pub struct RescopeDeviceApiResponse {
     pub data: RescopeDeviceApiResponseData,
 }
 
+/// Name a device of this account, for a listing to render.
+///
+/// Run on the node holding the account root to name any device; on a paired
+/// device the route accepts only that device's own id.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LabelDeviceApiRequest {
+    /// Trimmed, non-empty, at most 64 bytes, and free of control characters.
+    pub label: String,
+}
+
+impl Validate for LabelDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        if calimero_governance_types::bounds::device_label_is_valid(&self.label) {
+            return Vec::new();
+        }
+        vec![ValidationError::InvalidFormat {
+            field: "label",
+            reason: format!(
+                "a device name must be trimmed, non-empty, at most {} bytes and free of \
+                 control characters",
+                calimero_governance_types::bounds::MAX_DEVICE_LABEL_BYTES
+            ),
+        }]
+    }
+}
+
+/// The name that was published, and the epoch that orders it against a rename
+/// another device of the account made at the same time.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was named.
+    pub device_id: String,
+    pub label: String,
+    pub label_epoch: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelDeviceApiResponse {
+    pub data: LabelDeviceApiResponseData,
+}
+
 /// One device of this account, joined from the node-local certificate cache and
 /// the live bindings of every namespace this node takes part in.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2434,6 +2480,10 @@ pub struct AccountDeviceApiEntry {
     /// Hex-encoded ids of the namespaces currently holding a live binding for
     /// this device. Empty for a certified device not yet bound anywhere.
     pub namespaces: Vec<String>,
+    /// The replicated name the account gave this device, absent while it has
+    /// none. Every device of the account reads the same one.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3229,6 +3279,56 @@ mod tests {
         assert!(matches!(only.scope, DeviceScopeApiRequest::Only(ref apps) if apps == &[named]));
     }
 
+    /// The route's own refusal, by the same rule the op's bounds check applies to
+    /// a hostile peer's - so a mistyped request and a forged op are told apart by
+    /// where they arrive, never by which rule they broke.
+    #[test]
+    fn a_device_name_is_validated_by_the_same_rule_the_op_is() {
+        let good: LabelDeviceApiRequest =
+            serde_json::from_value(serde_json::json!({"label": "Work laptop"}))
+                .expect("a name parses");
+        assert!(good.validate().is_empty());
+
+        for refused in ["", "   ", " untrimmed", "two\nlines", &"x".repeat(65)] {
+            let req: LabelDeviceApiRequest =
+                serde_json::from_value(serde_json::json!({"label": refused}))
+                    .expect("it parses; validation is what refuses it");
+            assert_eq!(req.validate().len(), 1, "{refused:?}");
+        }
+    }
+
+    /// The field is additive, so a node that was never revoked must answer
+    /// exactly as it did before it existed.
+    #[test]
+    fn an_identity_with_no_revocation_carries_no_revoked_from_key() {
+        let data = NodeIdentityApiResponseData {
+            account_id: hex::encode([0x11; 32]),
+            device_id: None,
+            public_key: hex::encode([0x22; 32]),
+            account_root_public_key: hex::encode([0x33; 32]),
+            device_agreement_key: None,
+            holds_account_root: true,
+            device_certified: false,
+            account_namespace_id: None,
+            revoked_from: None,
+        };
+        let json = serde_json::to_value(&data).expect("serialize");
+        assert!(json.get("revokedFrom").is_none());
+
+        let data = NodeIdentityApiResponseData {
+            revoked_from: Some(RevokedFromApiEntry {
+                account_id: hex::encode([0x44; 32]),
+                device_id: hex::encode([0x55; 32]),
+            }),
+            ..data
+        };
+        let json = serde_json::to_value(&data).expect("serialize");
+        assert_eq!(
+            json["revokedFrom"]["deviceId"],
+            serde_json::json!(hex::encode([0x55; 32]))
+        );
+    }
+
     #[test]
     fn create_device_id_alias_request_round_trips_through_json() {
         let device_id = DeviceId::from([0x11; 32]);
@@ -3819,6 +3919,22 @@ pub struct NodeIdentityApiResponseData {
     /// holder before it exists, so an invite can carry it; recorded at pair-init.
     #[serde(default)]
     pub account_namespace_id: Option<String>,
+
+    /// The account that withdrew this node's device, if one did. A revoked
+    /// device releases itself and would otherwise be unpaired with nothing to
+    /// say why; absent on a node no revocation has reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_from: Option<RevokedFromApiEntry>,
+}
+
+/// Which account withdrew this node's device, and which device it was.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokedFromApiEntry {
+    /// Hex-encoded `AccountId` the device spoke for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was withdrawn.
+    pub device_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
