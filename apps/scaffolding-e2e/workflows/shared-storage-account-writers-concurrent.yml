@@ -1,0 +1,364 @@
+name: E2E Shared Storage - Two Devices of One Account Writing CONCURRENTLY
+description: >
+  The over-the-wire answer to core#3965, which reported that a `SharedStorage`
+  cell written by two devices of ONE account leaves every replica holding the
+  same value on a DIFFERENT root hash.
+
+  It was filed off the in-process convergence harness, which at the time had no
+  signing identity: every `SharedMember` delta it exchanged failed signature
+  verification, and a verification failure is DROPPED by the sync merge rather
+  than raised. So each replica kept only its own local write — individually
+  valid, so the value invariant passed, and the roots differed because nothing
+  had merged. Indistinguishable from a CRDT divergence by inspection. The
+  harness now signs, and fails loudly on a dropped action; see
+  `crates/storage/tests/shared_two_devices_one_account.rs`.
+
+  This scenario is the independent check, on nodes that sign for themselves. It
+  is deliberately NOT a re-run of the unit test: merobox is the only place the
+  writer set is resolved at a delta's causal cut rather than from settled local
+  state, which is the half the harness cannot model.
+
+  Distinct from `shared-storage-account-writers-two-devices`, which proves the
+  same two-devices-of-one-account story SEQUENTIALLY — laptop writes, settle,
+  phone writes, settle. That ordering is exactly what a convergence question
+  must not have: applied one after another, even a merge rule that loses a write
+  agrees. This one has both devices write the same cell with no settle between,
+  so the two deltas are concurrent and the nodes have to reconcile them.
+
+  What carries the assertion:
+
+    * `wait_for_sync` over all three nodes after the concurrent pair. It gates on
+      the context STATE HASH, so it is the root-hash comparison core#3965 is
+      about — if two devices of one account really did leave the cluster on
+      split roots, this step times out and the scenario fails here.
+
+    * All three nodes then read the cell and must return the SAME value, which
+      is the second half: a hash can converge on a state that lost a write. The
+      value is not pinned to either writer's string, because which one survives
+      is the register's LWW rule and is not the scenario's business — only that
+      every node made the same choice, and that it is not the pre-write sentinel
+      (so the "converged" state is not just both writes vanishing).
+
+    * The writer set is byte-identical before and after, so nothing was granted
+      or rotated on either device's behalf to make the writes land.
+
+  A caveat worth stating rather than hiding: `parallel` issues the two calls
+  concurrently, but it cannot force the deltas to actually interleave on the
+  wire. A run where one write fully propagates before the other starts degrades
+  to the sequential case. That makes this weaker on an unlucky run, never wrong
+  — it cannot manufacture a failure, only miss one.
+
+  User-visible failure mode this guards against: "my laptop and my phone both
+  edited the same shared field, and now the two of them disagree forever."
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: shared-concurrent-node
+
+steps:
+  - name: Login on shared-concurrent-node-1
+    type: login
+    node: shared-concurrent-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on shared-concurrent-node-2
+    type: login
+    node: shared-concurrent-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on shared-concurrent-node-3
+    type: login
+    node: shared-concurrent-node-3
+    username: dev
+    password: dev-password
+
+  # ── Namespace, membership, context ────────────────────────────────
+
+  - name: Install application on shared-concurrent-node-1
+    type: install_application
+    node: shared-concurrent-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Node-1 creates the namespace
+    type: create_namespace
+    node: shared-concurrent-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: shared-concurrent-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: shared-concurrent-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  # The creator's account is the sole initial writer of `shared_data`.
+  - name: Node-1 creates the context
+    type: create_context
+    node: shared-concurrent-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: shared-concurrent-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle before reading node-2's account
+    type: wait_for_sync
+    nodes:
+      - shared-concurrent-node-1
+      - shared-concurrent-node-2
+    context_id: '{{context_id}}'
+
+  # ── Alice's first device ──────────────────────────────────────────
+  #
+  # After the context join, not before: a device link travels as an encrypted
+  # GroupOp, so the node must already hold the scope key.
+
+  - name: Node-2 enrolls a device for a fresh account
+    type: node_identity
+    node: shared-concurrent-node-2
+    outputs:
+      enrolled_account: accountId
+      root_key: accountRootPublicKey
+
+  - name: Settle after the link op
+    type: wait_for_sync
+    nodes:
+      - shared-concurrent-node-1
+      - shared-concurrent-node-2
+    context_id: '{{context_id}}'
+
+  - name: Read Alice's account off her laptop
+    type: call
+    node: shared-concurrent-node-2
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      alice_account: result.output
+
+  # One grant, to the ACCOUNT. Both of Alice's devices write under it; neither
+  # is named anywhere, which is the property being exercised.
+  - name: Node-1 grants Alice's account as a writer
+    type: call
+    node: shared-concurrent-node-1
+    context_id: '{{context_id}}'
+    method: shared_add_writer
+    args:
+      writer: '{{alice_account}}'
+
+  - name: Settle so the grant reaches the laptop
+    type: wait_for_sync
+    nodes:
+      - shared-concurrent-node-1
+      - shared-concurrent-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: The writer set as node-1 sees it before any concurrent write
+    type: call
+    node: shared-concurrent-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_before: result
+
+  # ── Alice's second device ─────────────────────────────────────────
+
+  - name: Install application on shared-concurrent-node-3
+    type: install_application
+    node: shared-concurrent-node-3
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Pair node-3 onto Alice's account
+    type: account_pair
+    node: shared-concurrent-node-3
+    holder: shared-concurrent-node-2
+    root_key: '{{root_key}}'
+    namespaces:
+      - '{{namespace_id}}'
+    outputs:
+      key_delivered: keyDelivered
+
+  - name: The pairing delivered a scope key
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+
+  - name: Node-3 follows the context as a device of Alice's account
+    type: join_context
+    node: shared-concurrent-node-3
+    context_id: '{{context_id}}'
+
+  - name: Settle after pairing
+    type: wait_for_sync
+    nodes:
+      - shared-concurrent-node-1
+      - shared-concurrent-node-2
+      - shared-concurrent-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read the account the phone speaks for
+    type: call
+    node: shared-concurrent-node-3
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      phone_account: result.output
+
+  # The precondition the whole scenario rests on. Two separate accounts would
+  # make the writes below an ordinary two-writer test, which is already covered.
+  - name: The phone speaks for the same account as the laptop
+    type: json_assert
+    statements:
+      - 'json_equal({{phone_account}}, {{alice_account}})'
+      - 'json_equal({{alice_account}}, {{enrolled_account}})'
+
+  # ── The sentinel ──────────────────────────────────────────────────
+  #
+  # A known value every node holds before the race, so "all three agree" below
+  # cannot be satisfied by both concurrent writes simply vanishing.
+
+  - name: Node-1 seeds a sentinel value
+    type: call
+    node: shared-concurrent-node-1
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: before-concurrent
+
+  - name: Settle so every node holds the sentinel
+    type: wait_for_sync
+    nodes:
+      - shared-concurrent-node-1
+      - shared-concurrent-node-2
+      - shared-concurrent-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: shared_get
+      equals:
+        output: before-concurrent
+
+  # ── The race ──────────────────────────────────────────────────────
+  #
+  # Both of Alice's devices write the SAME cell with no settle between them, so
+  # the two signed deltas are concurrent. Distinct values, because identical
+  # ones would converge even under a merge rule that dropped one.
+
+  - name: Both of Alice's devices write the shared value at once
+    type: parallel
+    mode: fail-slow
+    groups:
+      - name: Laptop_Write
+        steps:
+          - name: The laptop writes
+            type: call
+            node: shared-concurrent-node-2
+            context_id: '{{context_id}}'
+            method: shared_set
+            args:
+              value: from-laptop-concurrent
+      - name: Phone_Write
+        steps:
+          - name: The phone writes
+            type: call
+            node: shared-concurrent-node-3
+            context_id: '{{context_id}}'
+            method: shared_set
+            args:
+              value: from-phone-concurrent
+
+  # THE assertion for core#3965. `wait_for_sync` gates on the context state
+  # hash, so this is the root-hash comparison itself: two devices of one account
+  # that left the cluster on split roots cannot pass it, whatever each node's
+  # own read says. A generous timeout because a concurrent pair needs a merge
+  # round, not just delivery.
+  - name: All three nodes converge on one root hash after the concurrent writes
+    type: wait_for_sync
+    nodes:
+      - shared-concurrent-node-1
+      - shared-concurrent-node-2
+      - shared-concurrent-node-3
+    context_id: '{{context_id}}'
+    timeout: 90
+    trigger_sync: true
+
+  # ── What the converged root actually holds ────────────────────────
+  #
+  # A hash can converge on a state that lost a write, so the value is checked
+  # separately — and checked for AGREEMENT rather than against a fixed string:
+  # which of the two concurrent writes survives is the register's LWW rule, not
+  # this scenario's business.
+
+  - name: Node-1 reads the converged value
+    type: call
+    node: shared-concurrent-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      converged_n1: result
+
+  - name: Node-2 reads the converged value
+    type: call
+    node: shared-concurrent-node-2
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      converged_n2: result
+
+  - name: Node-3 reads the converged value
+    type: call
+    node: shared-concurrent-node-3
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      converged_n3: result
+
+  - name: The writer set as node-1 sees it after the concurrent writes
+    type: call
+    node: shared-concurrent-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_after: result
+
+  - name: Every node agrees, on a value one of the two devices actually wrote
+    type: json_assert
+    statements:
+      # Same answer everywhere — the read-side half of convergence.
+      - 'json_equal({{converged_n1}}, {{converged_n2}})'
+      - 'json_equal({{converged_n2}}, {{converged_n3}})'
+      # And not the pre-race sentinel, so "everyone agrees" is not both
+      # concurrent writes having been dropped in unison.
+      - 'json_not_equal({{converged_n1}}, {"output": "before-concurrent"})'
+      # Nothing was granted or rotated to make the writes land: one grant, made
+      # to the account, covered both devices for the whole race.
+      - 'json_equal({{writers_after}}, {{writers_before}})'
+
+stop_all_nodes: false

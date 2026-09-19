@@ -560,6 +560,7 @@ fn apply_child_action_lenient<S: StorageAdaptor>(
     match <Interface<S>>::apply_action(action, ctx) {
         Ok(()) => Ok(()),
         Err(e) if is_skippable_apply_rejection(&e) => {
+            record_dropped_action();
             tracing::warn!(
                 target: "storage::root",
                 %id,
@@ -573,6 +574,47 @@ fn apply_child_action_lenient<S: StorageAdaptor>(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Count of actions this thread has dropped in `apply_child_action_lenient`.
+///
+/// Dropping a rejected action is correct for a production merge — one bad
+/// action must not brick a whole batch — but it makes a *test* silently assert
+/// nothing. A convergence harness whose deltas are all refused sees every
+/// replica keep its own local write: the values are individually valid, so
+/// value-level invariants pass, and only the Merkle roots differ. That reads
+/// exactly like a CRDT divergence and is not one, which is how core#3965 was
+/// filed against `SharedStorage` when the harness was simply unable to sign.
+///
+/// So the drop is counted, and the convergence harness fails on a non-zero
+/// count instead of reporting the divergence it causes. Thread-local because
+/// the harness drives every replica on one thread; `feature = "testing"` so
+/// production keeps the bare `warn!`.
+#[cfg(any(test, feature = "testing"))]
+thread_local! {
+    static DROPPED_ACTIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(any(test, feature = "testing"))]
+fn record_dropped_action() {
+    DROPPED_ACTIONS.with(|c| c.set(c.get().saturating_add(1)));
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+const fn record_dropped_action() {}
+
+/// How many actions `apply_child_action_lenient` has dropped on this thread
+/// since the last [`reset_dropped_action_count`].
+#[cfg(any(test, feature = "testing"))]
+#[must_use]
+pub fn dropped_action_count() -> u64 {
+    DROPPED_ACTIONS.with(core::cell::Cell::get)
+}
+
+/// Zero the counter read by [`dropped_action_count`].
+#[cfg(any(test, feature = "testing"))]
+pub fn reset_dropped_action_count() {
+    DROPPED_ACTIONS.with(|c| c.set(0));
 }
 
 /// Whether a [`StorageError`] from `apply_action` is a per-action **verification

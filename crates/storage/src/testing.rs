@@ -68,9 +68,21 @@
 //!
 //! # Limitations
 //!
-//! - **`Shared` / `Authored` / `User` / `Frozen` storage** need the node's
-//!   signing identity (delta apply verifies signatures), which this bare
-//!   harness does not provide — test those with merobox workflows.
+//! - **`Shared` / `Authored` / `User` / `Frozen` storage** is covered: each
+//!   replica holds a real ed25519 device key, and the harness signs every
+//!   captured delta the way `calimero-context` does before a peer applies it.
+//!   What it still does NOT model is the causal cut — `effective_writers` is
+//!   always `None`, so writer sets resolve from settled local state rather than
+//!   from the rotation log at the delta's parents. A test about rotation
+//!   ORDERING still belongs in merobox.
+//!
+//!   Until 2026-09 this was not covered at all, and the way it failed is worth
+//!   knowing: an unverifiable action is *dropped* by the sync merge, not raised,
+//!   so replicas silently exchanged nothing and each kept its own local write —
+//!   values individually correct, roots different. That is indistinguishable
+//!   from a CRDT bug by inspection, and was reported as one (core#3965). The
+//!   harness now fails on a dropped action instead; see
+//!   [`allow_dropped_actions`](Converge::allow_dropped_actions).
 //! - Convergence is asserted via root-hash equality, not by reading values
 //!   (the harness is generic over `T` and can't name your accessors). A
 //!   matching root hash proves the full Merkle state converged.
@@ -87,12 +99,16 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use calimero_sdk::testing::with_identity;
+use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
-use crate::collections::{Mergeable, Root};
+use crate::action::Action;
+use crate::collections::{dropped_action_count, reset_dropped_action_count, Mergeable, Root};
+use crate::delta::StorageDelta;
 use crate::env::{self, RuntimeEnv};
 use crate::interface::ApplyContext;
 use crate::register_crdt_merge_for_test;
@@ -105,9 +121,14 @@ const CONTEXT_ID: [u8; 32] = [7u8; 32];
 const DEFAULT_SEED: u64 = 0xC0FFEE;
 
 /// Executor identity for the genesis (leader) install. Distinct from every
-/// replica's id ([1..=n]) so replica 0's local writes are genuinely concurrent
-/// with genesis from the storage layer's view, not a continuation of it.
-const GENESIS_EXECUTOR: [u8; 32] = [0xEEu8; 32];
+/// replica's, so replica 0's local writes are genuinely concurrent with genesis
+/// from the storage layer's view, not a continuation of it.
+///
+/// A real verifying key, for the same reason [`device_key_for`] is: the genesis
+/// install writes signed storage too, and a made-up id cannot verify.
+fn genesis_executor() -> [u8; 32] {
+    genesis_key().verifying_key().to_bytes()
+}
 
 /// Serializes harness runs across threads. A run mutates process-global state
 /// (the merge registry — cleared and repopulated below — and the rekey
@@ -175,12 +196,137 @@ const SHARED_ACCOUNT: [u8; 32] = {
     id
 };
 
-/// Executor identity for replica `r`. Distinct, non-zero, and deterministic so
-/// concurrent writes from different replicas genuinely diverge before merge.
+/// The ed25519 device key replica `r` signs its writes with.
+///
+/// A real keypair rather than a made-up 32 bytes, and that is load-bearing
+/// rather than tidy. `Shared`, `SharedMember`, `User` and `Authored` writes ship
+/// a signature the receiver verifies against the key the action names
+/// (`Interface::apply_action`'s `resolve_signer`), so a device id that is not
+/// a verifying key cannot verify — and a rejected action is *dropped*, not
+/// raised (`apply_child_action_lenient`). The harness therefore used to
+/// exchange deltas that every replica silently refused, leaving each holding its
+/// own local write: values individually correct, roots different. That is
+/// core#3965.
+///
+/// Seeded off the replica index so a failure is reproducible, and distinct per
+/// replica so per-writer CRDT state (counter slots, HLC seeds, LWW tiebreaks)
+/// stays genuinely per device.
+fn device_key_for(r: usize) -> SigningKey {
+    let mut seed = [0u8; 32];
+    seed[0] = (r as u8).wrapping_add(1);
+    // Domain-separates replica keys from the genesis key below, so a replica
+    // index that wraps to the genesis byte still gets its own key.
+    seed[31] = 0xD5;
+    SigningKey::from_bytes(&seed)
+}
+
+/// Executor identity for replica `r`: the public half of [`device_key_for`].
+/// Distinct, non-zero and deterministic, so concurrent writes from different
+/// replicas genuinely diverge before merge.
 fn executor_for(r: usize) -> [u8; 32] {
-    let mut id = [0u8; 32];
-    id[0] = (r as u8).wrapping_add(1);
-    id
+    device_key_for(r).verifying_key().to_bytes()
+}
+
+/// The genesis installer's signing key. Its own seed, so it collides with no
+/// replica's.
+fn genesis_key() -> SigningKey {
+    let mut seed = [0u8; 32];
+    seed[0] = 0xEE;
+    seed[31] = 0x6E;
+    SigningKey::from_bytes(&seed)
+}
+
+/// Sign every action in a captured delta that still carries the `[0; 64]`
+/// placeholder, exactly as a node's `sign_authorized_actions` does.
+///
+/// The storage layer stamps a placeholder for a write it has already authorized
+/// locally and leaves the signing to the layer that holds the key — which in
+/// production is `calimero-context` and here is the harness. The nonce is
+/// stamped BEFORE the payload is computed because `payload_for_signing` commits
+/// to it; signing first and stamping after signs a payload no receiver can
+/// reconstruct.
+///
+/// A delta that does not decode, or does not re-encode, is passed through
+/// untouched rather than panicking: it carries no signed action to fix, and the
+/// apply path is what should report a malformed one.
+fn sign_delta_actions(artifact: &[u8], key: &SigningKey) -> Vec<u8> {
+    use crate::entities::StorageType;
+
+    let Ok(mut delta) = borsh::from_slice::<StorageDelta>(artifact) else {
+        return artifact.to_vec();
+    };
+
+    let actions: &mut Vec<Action> = match &mut delta {
+        StorageDelta::Actions(actions) => actions,
+        StorageDelta::CausalActions { actions, .. } => actions,
+    };
+
+    for action in actions.iter_mut() {
+        let (metadata, nonce) = match action {
+            Action::Add { metadata, .. } | Action::Update { metadata, .. } => {
+                let nonce = *metadata.updated_at;
+                (metadata, nonce)
+            }
+            Action::DeleteRef {
+                metadata,
+                deleted_at,
+                ..
+            } => {
+                let nonce = *deleted_at;
+                (metadata, nonce)
+            }
+        };
+
+        let should_sign = match &mut metadata.storage_type {
+            StorageType::User {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::Shared {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::SharedMember {
+                signature_data: Some(sig_data),
+                ..
+            } => {
+                let placeholder = sig_data.signature == [0; 64];
+                if placeholder {
+                    sig_data.nonce = nonce;
+                }
+                placeholder
+            }
+            _ => false,
+        };
+        if !should_sign {
+            continue;
+        }
+
+        let signature = key.sign(&action.payload_for_signing()).to_bytes();
+        let metadata = match action {
+            Action::Add { metadata, .. }
+            | Action::Update { metadata, .. }
+            | Action::DeleteRef { metadata, .. } => metadata,
+        };
+        match &mut metadata.storage_type {
+            StorageType::User {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::Shared {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::SharedMember {
+                signature_data: Some(sig_data),
+                ..
+            } => sig_data.signature = signature,
+            // `should_sign` matched one of the three arms above.
+            _ => {}
+        }
+    }
+
+    borsh::to_vec(&delta).unwrap_or_else(|_| artifact.to_vec())
 }
 
 /// Builder for a CRDT convergence assertion. Construct with [`converge`].
@@ -202,6 +348,9 @@ pub struct Converge<T> {
     // Whether all replicas write as ONE account (distinct devices, one
     // principal) instead of one account each. See `one_account`.
     shared_account: bool,
+    // Whether a refused incoming action is acceptable for this run. Default
+    // false: a drop makes the run assert nothing. See `allow_dropped_actions`.
+    allow_dropped_actions: bool,
 }
 
 /// Start a CRDT convergence assertion for state type `T`, using [`Default`] as
@@ -237,6 +386,7 @@ where
         host_setup: None,
         invariants: Vec::new(),
         shared_account: false,
+        allow_dropped_actions: false,
     }
 }
 
@@ -267,6 +417,7 @@ where
         host_setup: Some(Box::new(|| calimero_sdk::event::register::<T>())),
         invariants: Vec::new(),
         shared_account: false,
+        allow_dropped_actions: false,
     }
 }
 
@@ -340,6 +491,18 @@ where
         self
     }
 
+    /// Permit this run to DROP incoming actions instead of applying them.
+    ///
+    /// Only for a run whose point is that a write gets refused — an unauthorized
+    /// writer, a forged signature, a revoked device. Everywhere else a drop means
+    /// the replicas never exchanged anything, so the assertion is vacuous and any
+    /// divergence it reports is the refusal rather than a merge bug; the harness
+    /// fails on it by default for that reason.
+    pub fn allow_dropped_actions(mut self) -> Self {
+        self.allow_dropped_actions = true;
+        self
+    }
+
     /// The account replica `r` writes as, honouring [`one_account`](Self::one_account).
     fn account_of(&self, r: usize) -> [u8; 32] {
         if self.shared_account {
@@ -379,8 +542,9 @@ where
         // into every replica so all replicas share identical ids + base hash.
         let genesis: Store = new_store();
         let genesis_account = self.account_of(usize::MAX);
-        with_identity(GENESIS_EXECUTOR, genesis_account, || {
-            env::with_runtime_env(env_for(&genesis, GENESIS_EXECUTOR, genesis_account), || {
+        let genesis_device = genesis_executor();
+        with_identity(genesis_device, genesis_account, || {
+            env::with_runtime_env(env_for(&genesis, genesis_device, genesis_account), || {
                 Root::new(|| (self.build)()).commit();
             });
         });
@@ -415,7 +579,11 @@ where
                         (self.ops[op_idx])(&mut app);
                         app.commit();
                         if let Some(artifact) = env::take_last_artifact() {
-                            replica_deltas.push(artifact);
+                            // Sign before the delta leaves its author, exactly
+                            // where a node signs: storage stamps a placeholder
+                            // for a write it authorized locally and leaves the
+                            // key to the layer above it.
+                            replica_deltas.push(sign_delta_actions(&artifact, &device_key_for(r)));
                         }
                     }
                 });
@@ -435,11 +603,20 @@ where
                 self.seed ^ 0xDEAD_BEEF ^ (r as u64).wrapping_mul(0x85EB_CA77),
             ));
 
+            reset_dropped_action_count();
             let failed = with_identity(executor_for(r), self.account_of(r), || {
                 env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
                     for (s, k) in foreign {
-                        Root::<T>::sync(&deltas[s][k], &ApplyContext::empty())
-                            .expect("converge: delta apply failed");
+                        // The account the delta's SIGNER speaks for — the
+                        // author's, not this replica's. Storage authorizes
+                        // accounts and authenticates keys and resolves neither,
+                        // so the caller owes it the bridge; `ApplyContext::empty()`
+                        // supplies none, and every signed action is then refused.
+                        let ctx = ApplyContext {
+                            signer_account: Some(AccountId::from(self.account_of(s))),
+                            ..ApplyContext::empty()
+                        };
+                        Root::<T>::sync(&deltas[s][k], &ctx).expect("converge: delta apply failed");
                     }
                     // Check value-level invariants while we're in this replica's env.
                     let app = Root::<T>::fetch().expect("converge: state vanished after sync");
@@ -451,6 +628,30 @@ where
                 })
             });
             hashes.push(env::root_hash());
+
+            // A dropped action is a silent no-op that LOOKS like divergence.
+            // `apply_child_action_lenient` refuses an unverifiable, unauthorized
+            // or stale action and continues the batch — right for a production
+            // merge, fatal for a test, because the replica then keeps only its
+            // own local write. Every value-level invariant still passes (the
+            // value is individually correct) and only the roots differ, which
+            // reads as a CRDT bug and is not one. core#3965 was filed that way.
+            // Fail here instead, where the cause is nameable.
+            let dropped = dropped_action_count();
+            assert!(
+                dropped == 0 || self.allow_dropped_actions,
+                "converge: replica {r} DROPPED {dropped} incoming action(s) instead of \
+                 applying them (seed = {:#x}).\n\
+                 The delta was refused as unverifiable, unauthorized or stale, so this \
+                 replica kept only its own local write. Any root-hash difference that \
+                 follows is that refusal, NOT a merge bug.\n\
+                 Usual causes: the writing identity is not in the writer set / is not \
+                 the entry's owner; or a test built its own `ApplyContext` without a \
+                 `signer_account`. If a run is SUPPOSED to refuse writes, say so with \
+                 `.allow_dropped_actions()`.",
+                self.seed,
+            );
+
             assert!(
                 failed.is_empty(),
                 "converge: replica {r} violated invariant(s) (seed = {:#x}): {}\n\

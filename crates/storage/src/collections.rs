@@ -61,6 +61,10 @@ pub use nested_map::NestedMapOps;
 mod root;
 #[doc(hidden)]
 pub use root::Root;
+/// Sync-merge drop accounting, for harnesses that must not silently assert
+/// nothing when every delta is refused.
+#[cfg(any(test, feature = "testing"))]
+pub use root::{dropped_action_count, reset_dropped_action_count};
 pub mod error;
 pub use error::StoreError;
 
