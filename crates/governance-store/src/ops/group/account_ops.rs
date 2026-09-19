@@ -1,5 +1,6 @@
-//! Apply handlers for the account plane: device link and certification, the
-//! account's namespace set, device revocation, and account root-key rotation.
+//! Apply handlers for the account plane: device link and certification, device
+//! naming, the account's namespace set, device revocation, and account root-key
+//! rotation.
 //!
 //! They share a file because they share one invariant, and separating them
 //! would let it drift: **every one of them must be idempotent and
@@ -18,7 +19,7 @@ use crate::op_events::OpEvent;
 use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
+    DeviceLabel, DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -69,7 +70,7 @@ pub(crate) fn apply_device_linked(
             .load(&group_id)?
             .map(|meta| meta.target.application_id);
         if !calimero_account::scope_covers(&scope.statement.applications, application) {
-            tracing::warn!(group_id = ?group_id, device = %cert.device,
+            tracing::warn!(group_id = ?group_id, device = %cert.device, ?application,
                            "device link: the carried scope does not reach this group");
             return Ok(());
         }
@@ -549,6 +550,60 @@ pub(crate) fn apply_device_descoped(
         scope_epoch = scope.statement.scope_epoch,
         "account device descoped"
     );
+    Ok(())
+}
+
+/// `GroupOp::AccountDeviceLabelled` - give a device of this account a name.
+///
+/// A root-signed statement names any device of the account; without one the
+/// signer may name only the device its own live binding here resolves to.
+pub(crate) fn apply_device_labelled(
+    ctx: &mut GroupApplyCtx<'_>,
+    account: &AccountId,
+    device: &DeviceId,
+    label: &str,
+    label_epoch: u32,
+    root_proof: Option<&AccountProof<DeviceLabel>>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+
+    let authorised = match root_proof {
+        Some(proof) => match proof.authorises(*account, *device) {
+            // The statement must name the very fields the op carries, or anyone
+            // who saw one could re-wrap it around any text at any epoch.
+            Ok(verified) => verified.label == label && verified.label_epoch == label_epoch,
+            Err(err) => {
+                tracing::warn!(group_id = ?group_id, %account, %device, %err,
+                               "account device labelled: the statement did not verify");
+                false
+            }
+        },
+        // The live set, so a revoked or superseded device resolves to nothing and
+        // cannot rename itself on its way out.
+        None => AccountBindingRepository::new(ctx.store())
+            .binding_for_sign_pk(&group_id, ctx.signer())?
+            .is_some_and(|binding| binding.device == *device && binding.account == *account),
+    };
+    if !authorised {
+        tracing::warn!(
+            group_id = ?group_id,
+            %account,
+            %device,
+            signer = %ctx.signer(),
+            root_signed = root_proof.is_some(),
+            "account device labelled: the signer may not name this device"
+        );
+        return Ok(());
+    }
+
+    if !crate::AccountDeviceRegistry::new(ctx.store(), group_id).record_label(
+        *device,
+        label,
+        label_epoch,
+    )? {
+        return Ok(());
+    }
+    tracing::info!(group_id = ?group_id, %device, label_epoch, "account device labelled");
     Ok(())
 }
 

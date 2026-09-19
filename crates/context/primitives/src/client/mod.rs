@@ -34,9 +34,9 @@ use crate::group::{
     GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
     IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
     JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
-    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
-    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LabelDeviceRequest,
+    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
+    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
     PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
@@ -2319,6 +2319,12 @@ impl ContextClient {
         RescopeDevice,
         RescopeDeviceRequest,
         eyre::Result<crate::group::RescopeDeviceResponse>
+    );
+    forward_to_actor!(
+        label_device,
+        LabelDevice,
+        LabelDeviceRequest,
+        eyre::Result<crate::group::LabelDeviceResponse>
     );
     forward_to_actor!(
         rotate_group_key,

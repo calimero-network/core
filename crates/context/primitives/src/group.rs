@@ -1001,6 +1001,47 @@ impl Message for RescopeDeviceRequest {
     type Result = eyre::Result<RescopeDeviceResponse>;
 }
 
+/// Name a device of this node's own account, for a listing to render.
+#[derive(Debug)]
+pub struct LabelDeviceRequest {
+    pub device: DeviceId,
+    /// Refused by the handler, so a caller learns which rule it broke.
+    pub label: String,
+}
+
+/// The name that was published, and the epoch that orders it.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct LabelDeviceResponse {
+    pub account: AccountId,
+    pub device: DeviceId,
+    pub label: String,
+    pub label_epoch: u32,
+}
+
+impl LabelDeviceResponse {
+    /// Exists because the struct is `#[non_exhaustive]` and the producer lives in
+    /// another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        label: String,
+        label_epoch: u32,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            label,
+            label_epoch,
+        }
+    }
+}
+
+impl Message for LabelDeviceRequest {
+    type Result = eyre::Result<LabelDeviceResponse>;
+}
+
 /// Withdraw a device from an account, terminally.
 ///
 /// Three ways to be authorized, and the third is why `proof` exists:

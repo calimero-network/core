@@ -30,7 +30,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
     NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
-    NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+    NodeDeviceIdentityValue, NodeRevokedFrom, NodeRevokedFromValue,
+    NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -488,6 +489,7 @@ impl<'a> NodeDeviceRepository<'a> {
                 root_secret: *secret.as_bytes(),
             },
         )?;
+        self.clear_revoked_from()?;
         Ok(AccountRoot { secret })
     }
 
@@ -613,8 +615,10 @@ impl<'a> NodeDeviceRepository<'a> {
         .into();
 
         let doomed_certificate = calimero_store::key::NodeDeviceCertificate::new();
+        let revoked_from = NodeRevokedFrom::new();
         let mut tx = Transaction::default();
         tx.put(&root_key, root_bytes);
+        tx.delete(&revoked_from);
         if doomed {
             tx.delete(&doomed_key);
             tx.delete(&doomed_certificate);
@@ -844,6 +848,42 @@ impl<'a> NodeDeviceRepository<'a> {
     /// speaking for the account that named it.
     fn clear_account_namespace(&self) -> EyreResult<()> {
         self.store.handle().delete(&NodeAccountNamespace::new())?;
+        Ok(())
+    }
+
+    /// The account and device a withdrawal took from this node, if one did.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn revoked_from(&self) -> EyreResult<Option<(AccountId, DeviceId)>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NodeRevokedFrom::new())?
+            .map(|value: NodeRevokedFromValue| {
+                (
+                    AccountId::from(value.account_id),
+                    DeviceId::from(value.device_id),
+                )
+            }))
+    }
+
+    /// Record why this node stopped being paired.
+    fn record_revoked_from(&self, account: AccountId, device: DeviceId) -> EyreResult<()> {
+        self.store.handle().put(
+            &NodeRevokedFrom::new(),
+            &NodeRevokedFromValue {
+                account_id: *account.as_bytes(),
+                device_id: *device.as_bytes(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Forget it: the node has a device or an account of its own again, so the
+    /// question the marker answers has stopped being asked.
+    fn clear_revoked_from(&self) -> EyreResult<()> {
+        self.store.handle().delete(&NodeRevokedFrom::new())?;
         Ok(())
     }
 
@@ -1082,6 +1122,7 @@ impl<'a> NodeDeviceRepository<'a> {
                 kem_secret: *kem_secret.as_bytes(),
             },
         )?;
+        self.clear_revoked_from()?;
 
         Ok(NodeDevice {
             account,
@@ -1223,6 +1264,9 @@ impl<'a> NodeDeviceRepository<'a> {
         if held.device() != device {
             return Ok(false);
         }
+        // Before the root gate, because a node that cannot release the row is
+        // just as withdrawn and has the same question to answer.
+        self.record_revoked_from(held.account, device)?;
         let Some(root) = self.account_root()? else {
             return Ok(false);
         };
@@ -1446,6 +1490,58 @@ mod tests {
             "and the namespace the withdrawn account named is not inherited by the next \
              pairing"
         );
+    }
+
+    /// The release is silent, so the marker has to outlive the row it released
+    /// and survive until the node pairs again.
+    #[test]
+    fn a_released_device_leaves_behind_what_revoked_it() {
+        let (store, _root_sk, held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.revoked_from().expect("read"), None);
+
+        assert!(repo
+            .release_revoked_device(held.device())
+            .expect("release the withdrawn device"));
+
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            Some((held.account, held.device()))
+        );
+
+        let _paired = repo
+            .adopt_account(AccountGenesis::new(root(0x53)))
+            .expect("pair elsewhere");
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            None,
+            "pairing again is what answers the question, so the marker goes with it"
+        );
+    }
+
+    /// A rootless node keeps the row it cannot release, but it is just as
+    /// withdrawn - so the reason has to be recorded either way.
+    #[test]
+    fn a_rootless_node_records_the_withdrawal_it_cannot_act_on() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root(0x31)))
+            .expect("adopt");
+
+        assert!(!repo
+            .release_revoked_device(held.device())
+            .expect("nothing to release into"));
+
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            Some((held.account, held.device()))
+        );
+        assert!(
+            repo.provision_account_root().is_ok(),
+            "minting a root of its own is the other way out"
+        );
+        assert_eq!(repo.revoked_from().expect("read"), None);
     }
 
     /// A node holding no root has nothing to release into, so the row stays and

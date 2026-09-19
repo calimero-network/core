@@ -13495,6 +13495,228 @@ mod account_plane_apply {
         );
     }
 
+    /// The op a device publishes to name itself: no statement, so the only
+    /// authority is the signer's own binding.
+    fn labelled(account: AccountId, device: DeviceId, label: &str, label_epoch: u32) -> GroupOp {
+        GroupOp::AccountDeviceLabelled {
+            account,
+            device,
+            label: label.to_owned(),
+            label_epoch,
+            root_proof: None,
+        }
+    }
+
+    /// The op the account holder publishes: the same four fields, restated by the
+    /// account root so the op needs no authority of its own.
+    fn labelled_by_root(
+        root_sk: &PrivateKey,
+        device: DeviceId,
+        label: &str,
+        label_epoch: u32,
+    ) -> GroupOp {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let statement = calimero_account::DeviceLabel::sign(
+            root_sk,
+            account,
+            device,
+            label.to_owned(),
+            label_epoch,
+            0,
+        )
+        .unwrap();
+        GroupOp::AccountDeviceLabelled {
+            account,
+            device,
+            label: label.to_owned(),
+            label_epoch,
+            root_proof: Some(Box::new(AccountProof {
+                genesis,
+                chain: vec![],
+                statement,
+            })),
+        }
+    }
+
+    /// The name this group holds for `device`, if any.
+    fn label_of(store: &Store, gid: &ContextGroupId, device: DeviceId) -> Option<String> {
+        AccountDeviceRegistry::new(store, *gid)
+            .label(device)
+            .unwrap()
+            .map(|row| row.label)
+    }
+
+    /// The account root may name any device of its account, and it proves that by
+    /// signing the name rather than by being anybody in particular here.
+    #[test]
+    fn the_account_root_may_name_any_device_of_its_account() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, _genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let sibling = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &sibling,
+            labelled_by_root(&owner_sk, device, "Work laptop", 0),
+        )
+        .unwrap();
+
+        assert_eq!(
+            label_of(&store, &gid, device).as_deref(),
+            Some("Work laptop")
+        );
+    }
+
+    /// A device names itself with no statement at all: its binding here is the
+    /// authority, which is all a paired device holding no root ever has.
+    #[test]
+    fn a_device_may_name_itself_without_a_root_statement() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            labelled(genesis.account_id(), device, "My phone", 0),
+        )
+        .unwrap();
+
+        assert_eq!(label_of(&store, &gid, device).as_deref(), Some("My phone"));
+    }
+
+    /// Naming a SIBLING takes the root's statement, and a device holds none.
+    /// Without this, one device of an account could rename every other.
+    #[test]
+    fn a_device_cannot_name_a_sibling_of_its_own_account() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let sibling = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
+
+        let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &sibling.public_key(),
+            &labelled(genesis.account_id(), device, "Not yours", 0),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert_eq!(label_of(&store, &gid, device), None);
+    }
+
+    /// A statement verifies and still authorises nothing here, because it names
+    /// an account this op does not: otherwise any account's root could name
+    /// another account's devices.
+    #[test]
+    fn another_accounts_root_names_nothing_here() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+
+        let GroupOp::AccountDeviceLabelled { root_proof, .. } =
+            labelled_by_root(&key(9), device, "Theirs", 0)
+        else {
+            unreachable!("the helper builds exactly this variant")
+        };
+        let forged = GroupOp::AccountDeviceLabelled {
+            account: genesis.account_id(),
+            device,
+            label: "Theirs".to_owned(),
+            label_epoch: 0,
+            root_proof,
+        };
+
+        let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &forged,
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert_eq!(label_of(&store, &gid, device), None);
+    }
+
+    /// A proof is authority over the four fields it names, never over four
+    /// others: without the match, a holder's name could be re-wrapped around any
+    /// text at any epoch by anyone who saw it.
+    #[test]
+    fn a_root_statement_does_not_authorise_a_name_it_did_not_sign() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+
+        let GroupOp::AccountDeviceLabelled { root_proof, .. } =
+            labelled_by_root(&owner_sk, device, "Work laptop", 0)
+        else {
+            unreachable!("the helper builds exactly this variant")
+        };
+        let rewrapped = GroupOp::AccountDeviceLabelled {
+            account: genesis.account_id(),
+            device,
+            label: "Rewritten".to_owned(),
+            label_epoch: 9,
+            root_proof,
+        };
+
+        let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &key(7).public_key(),
+            &rewrapped,
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert_eq!(label_of(&store, &gid, device), None);
+    }
+
+    /// Revocation withdraws the right to author, so a spent device cannot rename
+    /// itself on its way out.
+    #[test]
+    fn a_revoked_device_cannot_name_itself() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&gid, device)
+            .unwrap();
+
+        let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &labelled(genesis.account_id(), device, "Still mine", 0),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert_eq!(label_of(&store, &gid, device), None);
+    }
+
     /// A re-delivered narrowing is older than the widening that re-bound the
     /// device, so it must leave that binding alone.
     #[test]

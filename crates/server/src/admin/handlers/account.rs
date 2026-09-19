@@ -1,5 +1,6 @@
 pub mod applications;
 pub mod devices;
+pub mod label;
 pub mod pair_complete;
 pub mod pair_init;
 pub mod relink;

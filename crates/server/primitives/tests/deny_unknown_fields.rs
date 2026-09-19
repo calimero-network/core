@@ -60,6 +60,7 @@ fn every_request_body_is_a_closed_set() {
         admin::AccountPairCompleteApiRequest,
         admin::RelinkDeviceApiRequest,
         admin::RescopeDeviceApiRequest,
+        admin::LabelDeviceApiRequest,
         admin::RevokeDeviceApiRequest,
         admin::CreateNamespaceApiRequest,
         admin::DeleteNamespaceApiRequest,
