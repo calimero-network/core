@@ -10,7 +10,7 @@ use calimero_server_primitives::admin::{
     AccountPairCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceCompleteApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::admin::handlers::account::{decode32, decode64};
 use crate::admin::handlers::validation::ValidatedJson;
@@ -60,7 +60,7 @@ pub async fn handler(
         }
     }
 
-    info!(
+    debug!(
         applications = applications.len(),
         %device,
         "certifying and linking a paired device"
@@ -81,7 +81,7 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            info!(
+            debug!(
                 account = %resp.account,
                 device = %resp.device,
                 key_delivered = resp.key_delivered,

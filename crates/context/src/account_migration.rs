@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::account_namespace::publish_device_certified;
 use crate::handlers::ensure_account_namespace::ensure_account_namespace;
@@ -94,7 +94,7 @@ async fn run(
         if !publishes {
             continue;
         }
-        info!(
+        debug!(
             %device,
             applications = ?cert.applications,
             "publishing a cached device certificate into the account namespace"

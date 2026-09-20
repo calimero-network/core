@@ -16,7 +16,7 @@ use calimero_server_primitives::admin::{
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use reqwest::StatusCode;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
@@ -142,7 +142,7 @@ pub async fn handler(
     // The plaintext is the thing being protected, so nothing about it is logged
     // — not its content and not its length, which leaks the size of a namespace
     // set on its own.
-    info!(group_id=%group_id_str, account=%account_str, "Sealing a payload to an account root");
+    debug!(group_id=%group_id_str, account=%account_str, "Sealing a payload to an account root");
 
     match seal(&state.store, &group_id, account, plaintext) {
         Ok(Some((account_root_epoch, envelope))) => ApiResponse {

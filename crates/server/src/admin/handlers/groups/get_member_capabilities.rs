@@ -7,7 +7,7 @@ use calimero_context_client::group::GetMemberCapabilitiesRequest;
 use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiData, GetMemberCapabilitiesApiResponse,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -27,7 +27,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, identity=%account_str, "Getting member capabilities");
+    debug!(group_id=%group_id_str, identity=%account_str, "Getting member capabilities");
 
     let result = state
         .ctx_client
@@ -37,7 +37,7 @@ pub async fn handler(
 
     match result {
         Ok(response) => {
-            info!(group_id=%group_id_str, identity=%account_str, "Got member capabilities");
+            debug!(group_id=%group_id_str, identity=%account_str, "Got member capabilities");
             ApiResponse {
                 payload: GetMemberCapabilitiesApiResponse {
                     data: GetMemberCapabilitiesApiData {

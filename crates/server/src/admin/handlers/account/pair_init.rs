@@ -8,7 +8,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AccountPairInitApiRequest, PairDeviceInitApiResponse, PairDeviceInitApiResponseData,
 };
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -52,7 +52,7 @@ pub async fn handler(
         None => None,
     };
 
-    info!(
+    debug!(
         namespaces = namespaces.len(),
         account = %genesis.account_id(),
         "minting a device for an existing account"
@@ -70,7 +70,7 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            info!(
+            debug!(
                 account = %resp.account,
                 device = %resp.device,
                 "device minted; awaiting its certificate"

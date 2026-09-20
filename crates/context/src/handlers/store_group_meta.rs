@@ -4,7 +4,7 @@ use calimero_context_config::MemberCapabilities;
 use calimero_governance_store::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::ContextManager;
 
@@ -89,7 +89,7 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
             );
         }
 
-        info!(?group_id, %admin_identity, "stored group metadata from gossip");
+        debug!(?group_id, %admin_identity, "stored group metadata from gossip");
 
         ActorResponse::reply(Ok(()))
     }

@@ -21,7 +21,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::pair_device_complete::signing_identity;
@@ -248,7 +248,7 @@ impl Handler<RescopeDeviceRequest> for ContextManager {
                     outcomes.push((namespace, outcome));
                 }
 
-                info!(%account, %device, ?applications, ?outcomes, "replaced a device's scope");
+                debug!(%account, %device, ?applications, ?outcomes, "replaced a device's scope");
                 Ok(RescopeDeviceResponse::new(
                     account,
                     device,

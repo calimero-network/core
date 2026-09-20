@@ -11,7 +11,7 @@ use calimero_server_primitives::admin::{
     RescopeDeviceApiRequest, RescopeDeviceApiResponse, RescopeDeviceApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -52,7 +52,7 @@ pub async fn handler(
         }
     };
 
-    info!(device = %device_id_str, "replacing a device's scope");
+    debug!(device = %device_id_str, "replacing a device's scope");
 
     let result = state
         .ctx_client
@@ -97,7 +97,7 @@ pub async fn handler(
                 });
             }
 
-            info!(
+            debug!(
                 account = %resp.account,
                 device = %resp.device,
                 applications = resp.applications.len(),

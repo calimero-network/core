@@ -351,7 +351,7 @@ async fn handle_new_subgroup(
             warn!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: skip member — no admission verdict in root op-log");
             continue; // no verdict to reuse (membership row without a join op)
         };
-        info!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: admitting root TEE into new Restricted subgroup");
+        debug!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: admitting root TEE into new Restricted subgroup");
         admit_member_into_subgroup(context_client, store, &child_gid, &member, record).await;
     }
 }

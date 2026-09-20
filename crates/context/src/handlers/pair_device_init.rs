@@ -19,7 +19,7 @@ use calimero_account::PairingOffer;
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
 use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::identity::PrivateKey;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::handlers::follow_namespace::follow;
 use crate::handlers::pair_device_complete;
@@ -109,7 +109,7 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                     confirmation_code,
                 );
 
-                info!(
+                debug!(
                     namespaces = namespaces.len(),
                     account = %response.account,
                     device = %response.device,

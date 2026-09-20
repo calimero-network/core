@@ -10,7 +10,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use calimero_governance_store::registration_notify;
 
@@ -285,7 +285,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                                  account that one endorsed"
                             );
                         };
-                        info!(
+                        debug!(
                             target: "calimero::audit::group_membership",
                             group_id = %hex::encode(group_id.to_bytes()),
                             %joiner_identity,
