@@ -31,7 +31,7 @@ merod [--node <name>] <subcommand>     # --node only where a store is opened
 ├── account       # Account root: export, import, revoke-proof.
 │                 # export/import open the store directly — node must be STOPPED.
 │                 # warrant + login-statement never need --node; sign-cert,
-│                 # revoke-proof and link-proof need none with --from.
+│                 # revoke-proof and sign-with-root need none with --from.
 ├── init          # Initialize node configuration (mints the embedded-auth
 │                 # admin root key from --admin-user + password via
 │                 # file/stdin/env; --no-admin defers)
@@ -48,7 +48,7 @@ the node home a command opens, so everything that reads a config or a store
 requires it — `run`, `init`, `config`, `auth`, `kms`, `tee`, and the account
 commands that take their root from the store. The offline signers require
 nothing: `account warrant` and `account login-statement` are pure functions of
-their flags, and `sign-cert` / `revoke-proof` / `link-proof` reach the root
+their flags, and `sign-cert` / `revoke-proof` / `sign-with-root` reach the root
 through `--from <PHRASE>` without opening anything. Those five run with no
 `--node`, no `--home` and no init — from any directory, on a machine that has
 never held a node.

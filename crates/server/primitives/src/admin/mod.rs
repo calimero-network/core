@@ -2066,87 +2066,96 @@ pub struct AccountPairInitApiRequest {
     pub account_namespace: Option<String>,
 }
 
-// ---- Account Link Proof ----
+// ---- Sign with the account root, for an outside verifier ----
 //
-// The root-signed claim an outside verifier (the cloud's "Linked accounts", for
-// one) needs before it files an account under somebody's login. Not a device
-// credential: a `DeviceCert` is also a root signature, but it asserts that a
-// device was certified, and it is a static blob whoever holds a copy can
-// present. See `calimero_account::AccountLink`.
+// A verifier that is not a Calimero node — mdma, for one — defines its own wire
+// format and shipped before core did. Core's job here is to produce the exact
+// bytes that verifier already checks, so this takes the payload from the caller
+// and supplies only the domain.
+//
+// The domain is a NAME from a closed set rather than bytes, which is the whole
+// security property: see `calimero_account::ExternalSigningDomain`.
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AccountLinkProofApiRequest {
-    /// The verifier's challenge, 64 hex chars (32 bytes).
+pub struct AccountSignWithRootApiRequest {
+    /// Which verifier's domain to sign under, e.g. `mdma.account-link`.
     ///
-    /// Required, and there is no default: a proof minted without one is a bearer
-    /// token for whoever sees it, and the node cannot invent a value the verifier
-    /// will recognise.
-    pub challenge: String,
-    /// Who the proof is for: a web origin (`https://cloud.example`), a
-    /// code-signing id, or `cli`. Spelled exactly as the verifier spells it — it
-    /// is compared byte for byte, and the variant is part of the signature.
-    pub audience: String,
-    /// Seconds from now the proof stays honourable. Clamped to
-    /// `MAX_LINK_PROOF_VALIDITY_SECS`.
-    #[serde(default = "default_link_proof_validity_secs")]
-    pub valid_for_secs: u64,
+    /// A name, never the domain bytes. A caller that could send bytes could send
+    /// any bytes, and the account root is the one key that can certify a device
+    /// — so an unconstrained signing oracle over it is account takeover.
+    pub domain: String,
+    /// The bytes to sign after the domain, hex-encoded.
+    ///
+    /// Opaque to the node, which is the point: the caller knows the verifier's
+    /// format and core does not need to. For mdma this is the UTF-8 of the
+    /// challenge it issued.
+    pub payload: String,
 }
 
-/// Longest a link proof may be honourable, in seconds.
+/// Longest payload this will sign, in bytes.
 ///
-/// Clamped rather than rejected above it, matching the ownership proof's expiry
-/// handling: a caller asking for a year gets five minutes, not a 400. The root
-/// signs this, so a long-lived one is the most valuable single artifact the key
-/// produces — and the verifier has the challenge to re-ask with.
-pub const MAX_LINK_PROOF_VALIDITY_SECS: u64 = 5 * 60;
+/// A bound rather than none, because the payload is attacker-influenced and
+/// every byte is hashed into a signature. mdma's nonces are ~120 bytes; 4 KiB
+/// leaves room for a verifier with a larger statement without making this a
+/// general-purpose bulk signer.
+pub const MAX_EXTERNAL_SIGN_PAYLOAD_BYTES: usize = 4096;
 
-const fn default_link_proof_validity_secs() -> u64 {
-    MAX_LINK_PROOF_VALIDITY_SECS
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSignWithRootApiResponse {
+    pub data: AccountSignWithRootApiResponseData,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AccountLinkProofApiResponse {
-    pub data: AccountLinkProofApiResponseData,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountLinkProofApiResponseData {
-    /// The account the proof is about, 64 hex. Reported so a caller need not
-    /// decode the proof to learn what it just asked to be linked.
+pub struct AccountSignWithRootApiResponseData {
+    /// The account root's public key, 64 hex chars.
+    ///
+    /// Returned because every consumer needs it beside the signature and cannot
+    /// derive it themselves — the secret never leaves the node.
+    pub root_public_key: String,
+    /// The signature over `domain ‖ payload`, base64.
+    ///
+    /// Base64 rather than hex, matching what the verifiers consuming it expect;
+    /// mdma's `verify_login_proof` calls `base64.b64decode` on this field.
+    pub signature: String,
+    /// The account the signing key belongs to, 64 hex chars. Convenience: a
+    /// verifier derives the same value from `rootPublicKey`.
     pub account_id: String,
-    /// Hex borsh of `AccountProof<AccountLink>` — genesis, root-key chain, and
-    /// the signed statement. Self-contained: the verifier checks it against the
-    /// account id alone, with nothing from this node.
-    pub proof: String,
-    /// Unix seconds after which the verifier must refuse it.
-    pub expires_at: u64,
 }
 
-impl Validate for AccountLinkProofApiRequest {
+impl Validate for AccountSignWithRootApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if let Some(e) = validate_hex_string(&self.challenge, "challenge", 32) {
-            errors.push(e);
-        }
-
-        // An empty audience would sign a claim addressed to nobody, which every
-        // verifier comparing its own name against it must refuse — so it is a
-        // request that cannot succeed and is better refused here.
-        if self.audience.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "audience" });
-        } else if let Some(e) = validate_string_length(&self.audience, "audience", 256) {
-            errors.push(e);
-        }
-
-        // Zero is not a short proof, it is one already expired at issue.
-        if self.valid_for_secs == 0 {
+        // Resolved here as well as in the handler so an unknown domain is a 400
+        // listing what is accepted, rather than a bare failure deeper in.
+        if calimero_account::ExternalSigningDomain::from_name(&self.domain).is_none() {
             errors.push(ValidationError::InvalidFormat {
-                field: "validForSecs",
-                reason: "validForSecs must be at least 1".into(),
+                field: "domain",
+                reason: format!(
+                    "unknown signing domain; expected one of: {}",
+                    calimero_account::ExternalSigningDomain::names().join(", ")
+                ),
+            });
+        }
+
+        // Hex of any length, so no `validate_hex_string` (which pins a byte
+        // count). An odd-length or non-hex string is a caller bug worth naming.
+        if !self.payload.len().is_multiple_of(2)
+            || !self.payload.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            errors.push(ValidationError::InvalidFormat {
+                field: "payload",
+                reason: "payload must be an even-length hex string".into(),
+            });
+        } else if self.payload.len() / 2 > MAX_EXTERNAL_SIGN_PAYLOAD_BYTES {
+            errors.push(ValidationError::InvalidFormat {
+                field: "payload",
+                reason: format!(
+                    "payload must decode to at most {MAX_EXTERNAL_SIGN_PAYLOAD_BYTES} bytes"
+                ),
             });
         }
 

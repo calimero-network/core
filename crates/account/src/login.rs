@@ -106,7 +106,7 @@ impl Audience {
     /// Tag-prefixed so `WebOrigin("x")` and `CodeSigningId("x")` cannot produce
     /// the same preimage — without the tag, one audience could be presented as
     /// the other, which is exactly what the field exists to prevent.
-    pub(crate) fn signing_bytes(&self) -> Vec<u8> {
+    fn signing_bytes(&self) -> Vec<u8> {
         let (tag, body): (u8, &[u8]) = match self {
             Self::WebOrigin(origin) => (0, origin.as_bytes()),
             Self::CodeSigningId(id) => (1, id.as_bytes()),

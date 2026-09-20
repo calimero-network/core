@@ -53,8 +53,8 @@ enum AccountSubcommands {
     Warrant(WarrantCommand),
     /// Sign a session request offline, for a client that holds no node
     LoginStatement(LoginStatementCommand),
-    /// Prove to an outside verifier that this account is yours
-    LinkProof(LinkProofCommand),
+    /// Sign a verifier's payload with the account root, offline
+    SignWithRoot(SignWithRootCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -133,7 +133,7 @@ impl AccountCommand {
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
             AccountSubcommands::LoginStatement(cmd) => cmd.run(),
-            AccountSubcommands::LinkProof(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::SignWithRoot(cmd) => cmd.run(root_args).await,
         }
     }
 }
@@ -618,109 +618,85 @@ impl SignCertCommand {
     }
 }
 
-/// Prove account ownership to a verifier that is not a Calimero node.
+/// Sign a payload an outside verifier specified, with the account root.
 ///
-/// The gap this closes: an outside service — the cloud's "Linked accounts", say
-/// — cannot take somebody's word that an account is theirs, and nothing here
-/// produced a statement it could check. Every other root-signed credential in
-/// this crate is *about a device*: a certificate says the root certified one, a
-/// revocation says it withdrew one. Offered as proof of ownership, a certificate
-/// is both the wrong claim and a static blob anyone who has seen it can present.
+/// The offline counterpart to `POST /admin-api/account/sign-with-root`, and the
+/// cold-storage half of it: with `--from` this needs no node, no home and no
+/// init, which is the case a running node cannot serve — a root that lives on
+/// paper because it deliberately lives nowhere else.
 ///
-/// This signs the claim itself, with the key the account id is the content
-/// address of, addressed to one verifier and good only until it expires.
+/// **The verifier owns the format, not core.** mdma already specifies what the
+/// root must sign and shipped before this did, so the payload comes from the
+/// caller verbatim and this supplies only the domain. A signature core finds
+/// tidier is a signature that fails at the far end.
 ///
-/// **The proof is self-contained.** It carries the genesis and the root-key
-/// chain, so the verifier checks it from the account id alone — no node to ask,
-/// no membership to resolve, nothing folded. That is what makes a service with
-/// no Calimero infrastructure able to verify one.
-///
-/// **It is not a secret, and it is not a bearer token.** It authorises nothing;
-/// it asserts one account to one audience for one challenge. Presented anywhere
-/// else, the audience check refuses it.
-///
-/// With `--from` it needs no node at all: no home, no store, no init — the
-/// cold-storage case. Without it, the root is read from this node's store, so the
-/// node must be stopped.
-///
-/// **Epoch 0 only**, matching `revoke-proof` and the node-side path: nothing in
-/// the tree rotates an account root yet, so the chain is empty. An account whose
-/// root has rotated needs the chain up to the signing epoch, and nothing in this
-/// CLI can produce one.
+/// **`--domain` is a name from a closed set.** Signing caller-supplied bytes
+/// under a caller-supplied prefix is a signing oracle over the one key that can
+/// certify a device, which is account takeover. See
+/// `calimero_account::ExternalSigningDomain`.
 #[derive(Debug, Parser)]
-pub struct LinkProofCommand {
-    /// The verifier's challenge, 64 hex chars.
+pub struct SignWithRootCommand {
+    /// Which verifier's domain to sign under.
+    #[arg(long, value_name = "NAME", value_parser = parse_external_domain)]
+    domain: calimero_account::ExternalSigningDomain,
+
+    /// The bytes to sign after the domain, hex-encoded.
     ///
-    /// Obtained from the verifier immediately before signing. It is what stops a
-    /// proof being replayed; a verifier that issues none has no way to tell a
-    /// live claim from a captured one.
+    /// For mdma this is the hex of its challenge string — the nonce it sealed
+    /// and handed out, UTF-8 then hex. Hex rather than raw text because the
+    /// field is bytes: a verifier that signs something non-textual should not
+    /// need a second flag.
     #[arg(long, value_name = "HEX")]
-    challenge: String,
+    payload: String,
 
-    /// Who the proof is for: a web origin (`https://cloud.example`),
-    /// `codesign:<id>`, or `cli`.
-    ///
-    /// Spell an origin exactly as the verifier does; it is compared byte for
-    /// byte, and the variant is part of the signature — a proof minted for the
-    /// web origin `x` is not one minted for the code-signing id `x`.
-    #[arg(long, default_value = "cli")]
-    audience: String,
-
-    /// Seconds from now that the proof stays honourable.
-    #[arg(long, default_value_t = 300)]
-    valid_for: u64,
-
-    /// Read the root from a recovery phrase at PATH instead of this node's store.
-    ///
-    /// Skips the datastore entirely, so it works on a machine with no node.
+    /// Read the account root from a 24-word recovery phrase at PATH instead of
+    /// from a node's store. `-` reads the phrase from stdin.
     #[arg(long, value_name = "PATH")]
     from: Option<camino::Utf8PathBuf>,
 }
 
-impl LinkProofCommand {
+/// Resolve `--domain` at parse time, so an unknown name fails with clap's own
+/// error listing the accepted set rather than after a store has been opened.
+fn parse_external_domain(name: &str) -> Result<calimero_account::ExternalSigningDomain, String> {
+    calimero_account::ExternalSigningDomain::from_name(name).ok_or_else(|| {
+        format!(
+            "unknown signing domain; expected one of: {}",
+            calimero_account::ExternalSigningDomain::names().join(", ")
+        )
+    })
+}
+
+impl SignWithRootCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
-        let challenge = parse_key(&self.challenge, "challenge")?;
-        let audience = parse_audience(&self.audience);
+        let payload = hex::decode(self.payload.trim())
+            .wrap_err("--payload must be an even-length hex string")?;
 
         let root = resolve_root(root_args, self.from.as_ref()).await?;
-        let account = root.account();
 
-        let issued_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let expires_at = issued_at.saturating_add(self.valid_for);
+        let (public_key, signature) =
+            calimero_account::sign_external(root.signing_key(), self.domain, &payload)
+                .map_err(|err| eyre::eyre!("failed to sign: {err}"))?;
 
-        let link = calimero_account::AccountLink::sign(
-            root.signing_key(),
-            account,
-            audience,
-            challenge,
-            issued_at,
-            expires_at,
-            0,
-        )
-        .map_err(|err| eyre::eyre!("failed to sign the account link: {err}"))?;
-
-        let proof = calimero_account::SignedAccountLink {
-            genesis: root.genesis(),
-            chain: vec![],
-            statement: link,
-        };
-
-        let encoded = hex::encode(borsh::to_vec(&proof).wrap_err("Failed to encode the proof")?);
-
-        // The proof first and alone on its line, as `revoke-proof` and
-        // `sign-cert` emit theirs, so a caller can take it with `head -1`.
-        println!("{encoded}");
-        println!();
-        println!("Account: {account}");
-        println!("Audience: {}", self.audience);
-        println!("Expires: {expires_at}");
-        println!();
+        // Base64 for the signature and hex for the key, because that is the pair
+        // the consuming verifiers expect — mdma's `verify_login_proof` decodes
+        // exactly this way, and re-encoding at the client is a step that can be
+        // got wrong silently.
+        use base64::Engine as _;
         println!(
-            "Hand this to the verifier that issued the challenge. It checks the \
-             proof against the account id alone — it needs no node and nothing \
-             from this one."
+            "{}",
+            base64::engine::general_purpose::STANDARD.encode(signature)
+        );
+        println!();
+        println!("Account:    {}", root.account());
+        println!("Root key:   {}", hex::encode(public_key.digest()));
+        println!();
+        // The domain is printed without its trailing NUL, which is a separator
+        // rather than something a reader needs to see.
+        let domain_bytes = self.domain.as_bytes();
+        let printable = String::from_utf8_lossy(&domain_bytes[..domain_bytes.len() - 1]);
+        println!(
+            "Signed `{printable}` followed by the payload. Hand the signature and root key \n\
+             to the verifier that issued the payload; it needs nothing else from this machine."
         );
 
         Ok(())

@@ -112,12 +112,6 @@ pub enum AccountError {
         /// The device the caller is asking about.
         expected: DeviceId,
     },
-    /// The link names a different account than the genesis.
-    #[error("account link is for a different account than the supplied genesis")]
-    LinkAccountMismatch,
-    /// The link is not validly signed by the root key at its claimed epoch.
-    #[error("account link has an invalid signature for its claimed key epoch")]
-    LinkSignatureInvalid,
     /// The label names a different account than the genesis.
     #[error("device label is for a different account than the supplied genesis")]
     LabelAccountMismatch,
