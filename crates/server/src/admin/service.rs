@@ -390,8 +390,8 @@ pub(crate) fn setup(
         // endorsement node-level, so neither half ever named a namespace.
         .route("/account/pair-init", post(account::pair_init::handler))
         .route(
-            "/account/link-proof",
-            post(account::link_proof::handler),
+            "/account/sign-with-root",
+            post(account::sign_with_root::handler),
         )
         .route(
             "/account/pair-complete",

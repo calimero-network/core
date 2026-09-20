@@ -27,7 +27,7 @@ Subcommands: `init`, `config`, `run` (alias `up`), `kms`, `account`.
 
 Five `account` subcommands take no `--node` at all, because they open nothing:
 `warrant` and `login-statement` sign from their flags, and `sign-cert`,
-`revoke-proof` and `link-proof` reach the account root through `--from <PHRASE>`.
+`revoke-proof` and `sign-with-root` reach the account root through `--from <PHRASE>`.
 Those run from any directory on a machine that has never held a node — which is
 the point, since the root they sign with is meant to live off every node.
 
@@ -149,11 +149,11 @@ a machine with no node at all.
 
 ```sh
 # Store-backed: --node says which node's root to read.
-merod --node node1 account <export|import|device|sign-cert|revoke-proof|link-proof>
+merod --node node1 account <export|import|device|sign-cert|revoke-proof|sign-with-root>
 
 # Offline: no --node, no --home, no init.
 merod account <warrant|login-statement>
-merod account <sign-cert|revoke-proof|link-proof> --from ./phrase.txt
+merod account <sign-cert|revoke-proof|sign-with-root> --from ./phrase.txt
 ```
 
 <Aside type="caution" title="export, import and device need the node stopped">

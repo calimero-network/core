@@ -69,8 +69,8 @@ mod account;
 mod device;
 mod domain;
 mod error;
+mod external;
 mod label;
-mod link;
 mod login;
 mod pairing;
 mod revocation;
@@ -97,8 +97,8 @@ pub use crate::account::{
 };
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
+pub use crate::external::{sign_external, ExternalSigningDomain};
 pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
-pub use crate::link::{AccountLink, SignedAccountLink, VerifiedAccountLink};
 pub use crate::login::{Audience, LoginStatement};
 pub use crate::pairing::PairingOffer;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
@@ -118,5 +118,4 @@ pub use crate::warrant::{
 // no caller outside this crate, and an unused `pub fn` in a crate that forbids dead
 // code is a claim about an API nobody asked for. Re-export it when something needs it.
 pub use crate::device::verify_device_cert;
-pub use crate::link::verify_account_link;
 pub use crate::revocation::verify_device_revocation;

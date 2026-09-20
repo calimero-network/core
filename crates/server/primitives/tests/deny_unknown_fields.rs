@@ -57,6 +57,7 @@ fn every_request_body_is_a_closed_set() {
         admin::CreateGroupInvitationApiRequest,
         admin::JoinGroupApiRequest,
         admin::AccountPairInitApiRequest,
+        admin::AccountSignWithRootApiRequest,
         admin::AccountPairCompleteApiRequest,
         admin::RelinkDeviceApiRequest,
         admin::RescopeDeviceApiRequest,

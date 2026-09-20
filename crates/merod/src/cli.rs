@@ -99,7 +99,7 @@ pub struct RootArgs {
     ///
     /// Optional because several commands here touch no node at all. `account
     /// warrant` and `account login-statement` are pure functions of their
-    /// flags, and `account sign-cert`/`revoke-proof`/`link-proof` reach the
+    /// flags, and `account sign-cert`/`revoke-proof`/`sign-with-root` reach the
     /// account root from `--from <PHRASE>` without opening anything. Demanding
     /// a name they never read meant naming a node that need not exist — and a
     /// caller who obliged with a real one could reasonably think the command
@@ -171,11 +171,11 @@ mod tests {
             vec![
                 "merod",
                 "account",
-                "link-proof",
-                "--challenge",
-                &"a".repeat(64),
-                "--audience",
-                "https://cloud.example",
+                "sign-with-root",
+                "--domain",
+                "mdma.account-login",
+                "--payload",
+                "6e6f6e6365",
                 "--from",
                 "phrase.txt",
             ],

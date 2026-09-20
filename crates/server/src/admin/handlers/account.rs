@@ -1,11 +1,11 @@
 pub mod applications;
 pub mod devices;
 pub mod label;
-pub mod link_proof;
 pub mod pair_complete;
 pub mod pair_init;
 pub mod relink;
 pub mod rescope;
+pub mod sign_with_root;
 
 use reqwest::StatusCode;
 
