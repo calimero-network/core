@@ -778,7 +778,14 @@ impl RevokeProofCommand {
 /// CLI on a replacement machine generally cannot reproduce. Saying so is more
 /// useful than failing to decode a row.
 async fn open_store(root_args: &RootArgs) -> EyreResult<Store> {
-    let path = root_args.home.join(&root_args.node_name);
+    // The `--node`-less case reaches here only for a command that was *not*
+    // given `--from`, so the missing name is worth naming alongside the
+    // alternative: the offline signers want a phrase, not a node.
+    let path = root_args.node_home().wrap_err(
+        "This command reads the account root from a node's store. Pass \
+         `--from <PHRASE-FILE>` to sign from a recovery phrase instead, which \
+         needs no node.",
+    )?;
     if !ConfigFile::exists(&path) {
         bail!("Node is not initialized in {path:?}");
     }

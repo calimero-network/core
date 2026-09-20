@@ -357,7 +357,7 @@ impl InitCommand {
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
-        let path = root_args.home.join(root_args.node_name);
+        let path = root_args.node_home()?;
 
         // Idempotent short-circuit FIRST: a plain re-run against an already
         // initialized node stays a credential-free no-op (provisioning
@@ -806,7 +806,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("provisioned"),
+            node_name: Some(camino::Utf8PathBuf::from("provisioned")),
         };
 
         let init =
@@ -845,7 +845,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("rootless"),
+            node_name: Some(camino::Utf8PathBuf::from("rootless")),
         };
 
         let init = InitCommand::try_parse_from([

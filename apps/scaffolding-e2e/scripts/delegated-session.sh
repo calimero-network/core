@@ -73,7 +73,7 @@ echo "challenge: ${CHALLENGE}"
 # naming a session key it never signed over — refused, and confusingly so.
 # `--generate-session-key` mints the pair here precisely so this script does no
 # crypto of its own.
-SIGNED=$(offline_merod "${NODE}" account login-statement \
+SIGNED=$(offline_merod account login-statement \
     --challenge "${CHALLENGE}" \
     --node "${NODE_KEY}" \
     --device-secret "${DEVICE_SECRET}" \
@@ -156,7 +156,7 @@ INTENT_ARGS='{"key":"delegated","value":"written-by-a-keyholder"}'
 # the node that spends the warrant. The scenario granted it
 # `CAN_AUTHOR_ON_BEHALF` one step up; without that the POST below is refused,
 # which is exactly what `delegated-authorship.yml` asserts separately.
-WARRANT=$(offline_merod "${NODE}" account warrant \
+WARRANT=$(offline_merod account warrant \
     --context "${CONTEXT}" \
     --executor "${RELAY_ACCOUNT}" \
     --method set \
