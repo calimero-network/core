@@ -10,7 +10,7 @@ use calimero_server_primitives::admin::{
     AccountPairCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceCompleteApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::admin::handlers::account::{decode32, decode64};
 use crate::admin::handlers::validation::ValidatedJson;

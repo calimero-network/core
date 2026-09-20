@@ -5,7 +5,7 @@ use calimero_account::AccountId;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 // `CompilerConfig` brings `push_middleware`/`enable_perfmap` into scope for the
 // Cranelift config built in `create_engine`.
 use wasmer::sys::{CompilerConfig, Cranelift};
@@ -164,7 +164,7 @@ impl Engine {
                 .map(|v| v == "true")
                 .unwrap_or(false)
             {
-                info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
+                tracing::info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
                 config.enable_perfmap();
             }
         }

@@ -7,7 +7,7 @@ use calimero_context_client::group::GetMemberCapabilitiesRequest;
 use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiData, GetMemberCapabilitiesApiResponse,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::service::{parse_api_error, ApiResponse};

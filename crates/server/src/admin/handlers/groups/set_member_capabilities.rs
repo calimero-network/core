@@ -7,7 +7,7 @@ use calimero_context_client::group::SetMemberCapabilitiesRequest;
 use calimero_server_primitives::admin::{
     SetMemberCapabilitiesApiRequest, SetMemberCapabilitiesApiResponse,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;

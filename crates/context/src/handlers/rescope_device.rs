@@ -21,7 +21,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::error::ContextError;
 use crate::handlers::pair_device_complete::signing_identity;

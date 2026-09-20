@@ -7,7 +7,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;

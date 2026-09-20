@@ -8,7 +8,7 @@ use calimero_context_client::group::LabelDeviceRequest;
 use calimero_server_primitives::admin::{
     LabelDeviceApiRequest, LabelDeviceApiResponse, LabelDeviceApiResponseData,
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;

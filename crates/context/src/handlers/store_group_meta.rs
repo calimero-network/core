@@ -4,7 +4,7 @@ use calimero_context_config::MemberCapabilities;
 use calimero_governance_store::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::ContextManager;
 

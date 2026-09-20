@@ -10,7 +10,7 @@ use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use rand::RngExt;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;

@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;

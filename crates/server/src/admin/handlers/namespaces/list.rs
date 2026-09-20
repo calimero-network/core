@@ -8,7 +8,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, ListNamespacesQuery, NamespaceApiResponse,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiResponse};

@@ -7,7 +7,7 @@ use calimero_context_client::group::{GetMemberMetadataRequest, SetMemberMetadata
 use calimero_server_primitives::admin::{
     GetMetadataApiResponse, SetMemberMetadataApiRequest, SetMetadataApiResponse,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;

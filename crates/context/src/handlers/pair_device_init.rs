@@ -19,7 +19,7 @@ use calimero_account::PairingOffer;
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
 use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::identity::PrivateKey;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::handlers::follow_namespace::follow;
 use crate::handlers::pair_device_complete;

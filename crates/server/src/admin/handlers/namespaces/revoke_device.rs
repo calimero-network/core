@@ -10,7 +10,7 @@ use calimero_server_primitives::admin::{
     RevokeDeviceApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};

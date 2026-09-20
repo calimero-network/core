@@ -16,7 +16,7 @@ use calimero_server_primitives::admin::{
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use reqwest::StatusCode;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;

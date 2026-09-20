@@ -8,7 +8,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AccountPairInitApiRequest, PairDeviceInitApiResponse, PairDeviceInitApiResponseData,
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;
