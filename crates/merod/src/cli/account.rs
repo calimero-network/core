@@ -53,6 +53,8 @@ enum AccountSubcommands {
     Warrant(WarrantCommand),
     /// Sign a session request offline, for a client that holds no node
     LoginStatement(LoginStatementCommand),
+    /// Prove to an outside verifier that this account is yours
+    LinkProof(LinkProofCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -131,6 +133,7 @@ impl AccountCommand {
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
             AccountSubcommands::LoginStatement(cmd) => cmd.run(),
+            AccountSubcommands::LinkProof(cmd) => cmd.run(root_args).await,
         }
     }
 }
@@ -466,23 +469,12 @@ pub struct LoginStatementCommand {
 
 /// Map the `--audience` spelling onto the variant it names.
 ///
-/// Split out because it is the only branching this command does, and each arm
-/// binds a session to a different surface: getting it wrong hands a token
-/// obtained by one client to another, which is the whole reason the field is
-/// signed over.
-///
-/// A web origin is passed through verbatim rather than normalized. The verifier
-/// compares it byte for byte against what the browser sends, so "helpfully"
-/// stripping a trailing slash here would produce a statement the browser's own
-/// origin no longer matches.
+/// A thin alias over [`calimero_account::Audience::from_spelling`], kept because
+/// the call sites read better for it — the mapping itself lives in the crate so
+/// this command and the admin API cannot bind different surfaces for one string,
+/// which would hand a proof minted by one client to another.
 fn parse_audience(spelling: &str) -> calimero_account::Audience {
-    match spelling.trim() {
-        "cli" => calimero_account::Audience::Cli,
-        other if other.starts_with("http://") || other.starts_with("https://") => {
-            calimero_account::Audience::WebOrigin(other.to_owned())
-        }
-        other => calimero_account::Audience::CodeSigningId(other.to_owned()),
-    }
+    calimero_account::Audience::from_spelling(spelling)
 }
 
 impl LoginStatementCommand {
@@ -621,6 +613,115 @@ impl SignCertCommand {
         );
         println!();
         println!("  meroctl context intent <CONTEXT_ID> --credential <the hex above> ...");
+
+        Ok(())
+    }
+}
+
+/// Prove account ownership to a verifier that is not a Calimero node.
+///
+/// The gap this closes: an outside service — the cloud's "Linked accounts", say
+/// — cannot take somebody's word that an account is theirs, and nothing here
+/// produced a statement it could check. Every other root-signed credential in
+/// this crate is *about a device*: a certificate says the root certified one, a
+/// revocation says it withdrew one. Offered as proof of ownership, a certificate
+/// is both the wrong claim and a static blob anyone who has seen it can present.
+///
+/// This signs the claim itself, with the key the account id is the content
+/// address of, addressed to one verifier and good only until it expires.
+///
+/// **The proof is self-contained.** It carries the genesis and the root-key
+/// chain, so the verifier checks it from the account id alone — no node to ask,
+/// no membership to resolve, nothing folded. That is what makes a service with
+/// no Calimero infrastructure able to verify one.
+///
+/// **It is not a secret, and it is not a bearer token.** It authorises nothing;
+/// it asserts one account to one audience for one challenge. Presented anywhere
+/// else, the audience check refuses it.
+///
+/// With `--from` it needs no node at all: no home, no store, no init — the
+/// cold-storage case. Without it, the root is read from this node's store, so the
+/// node must be stopped.
+///
+/// **Epoch 0 only**, matching `revoke-proof` and the node-side path: nothing in
+/// the tree rotates an account root yet, so the chain is empty. An account whose
+/// root has rotated needs the chain up to the signing epoch, and nothing in this
+/// CLI can produce one.
+#[derive(Debug, Parser)]
+pub struct LinkProofCommand {
+    /// The verifier's challenge, 64 hex chars.
+    ///
+    /// Obtained from the verifier immediately before signing. It is what stops a
+    /// proof being replayed; a verifier that issues none has no way to tell a
+    /// live claim from a captured one.
+    #[arg(long, value_name = "HEX")]
+    challenge: String,
+
+    /// Who the proof is for: a web origin (`https://cloud.example`),
+    /// `codesign:<id>`, or `cli`.
+    ///
+    /// Spell an origin exactly as the verifier does; it is compared byte for
+    /// byte, and the variant is part of the signature — a proof minted for the
+    /// web origin `x` is not one minted for the code-signing id `x`.
+    #[arg(long, default_value = "cli")]
+    audience: String,
+
+    /// Seconds from now that the proof stays honourable.
+    #[arg(long, default_value_t = 300)]
+    valid_for: u64,
+
+    /// Read the root from a recovery phrase at PATH instead of this node's store.
+    ///
+    /// Skips the datastore entirely, so it works on a machine with no node.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+impl LinkProofCommand {
+    async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let challenge = parse_key(&self.challenge, "challenge")?;
+        let audience = parse_audience(&self.audience);
+
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+        let account = root.account();
+
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let expires_at = issued_at.saturating_add(self.valid_for);
+
+        let link = calimero_account::AccountLink::sign(
+            root.signing_key(),
+            account,
+            audience,
+            challenge,
+            issued_at,
+            expires_at,
+            0,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the account link: {err}"))?;
+
+        let proof = calimero_account::SignedAccountLink {
+            genesis: root.genesis(),
+            chain: vec![],
+            statement: link,
+        };
+
+        let encoded = hex::encode(borsh::to_vec(&proof).wrap_err("Failed to encode the proof")?);
+
+        // The proof first and alone on its line, as `revoke-proof` and
+        // `sign-cert` emit theirs, so a caller can take it with `head -1`.
+        println!("{encoded}");
+        println!();
+        println!("Account: {account}");
+        println!("Audience: {}", self.audience);
+        println!("Expires: {expires_at}");
+        println!();
+        println!(
+            "Hand this to the verifier that issued the challenge. It checks the \
+             proof against the account id alone — it needs no node and nothing \
+             from this one."
+        );
 
         Ok(())
     }

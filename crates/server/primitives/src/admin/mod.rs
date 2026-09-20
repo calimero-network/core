@@ -2066,6 +2066,94 @@ pub struct AccountPairInitApiRequest {
     pub account_namespace: Option<String>,
 }
 
+// ---- Account Link Proof ----
+//
+// The root-signed claim an outside verifier (the cloud's "Linked accounts", for
+// one) needs before it files an account under somebody's login. Not a device
+// credential: a `DeviceCert` is also a root signature, but it asserts that a
+// device was certified, and it is a static blob whoever holds a copy can
+// present. See `calimero_account::AccountLink`.
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountLinkProofApiRequest {
+    /// The verifier's challenge, 64 hex chars (32 bytes).
+    ///
+    /// Required, and there is no default: a proof minted without one is a bearer
+    /// token for whoever sees it, and the node cannot invent a value the verifier
+    /// will recognise.
+    pub challenge: String,
+    /// Who the proof is for: a web origin (`https://cloud.example`), a
+    /// code-signing id, or `cli`. Spelled exactly as the verifier spells it — it
+    /// is compared byte for byte, and the variant is part of the signature.
+    pub audience: String,
+    /// Seconds from now the proof stays honourable. Clamped to
+    /// `MAX_LINK_PROOF_VALIDITY_SECS`.
+    #[serde(default = "default_link_proof_validity_secs")]
+    pub valid_for_secs: u64,
+}
+
+/// Longest a link proof may be honourable, in seconds.
+///
+/// Clamped rather than rejected above it, matching the ownership proof's expiry
+/// handling: a caller asking for a year gets five minutes, not a 400. The root
+/// signs this, so a long-lived one is the most valuable single artifact the key
+/// produces — and the verifier has the challenge to re-ask with.
+pub const MAX_LINK_PROOF_VALIDITY_SECS: u64 = 5 * 60;
+
+const fn default_link_proof_validity_secs() -> u64 {
+    MAX_LINK_PROOF_VALIDITY_SECS
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountLinkProofApiResponse {
+    pub data: AccountLinkProofApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountLinkProofApiResponseData {
+    /// The account the proof is about, 64 hex. Reported so a caller need not
+    /// decode the proof to learn what it just asked to be linked.
+    pub account_id: String,
+    /// Hex borsh of `AccountProof<AccountLink>` — genesis, root-key chain, and
+    /// the signed statement. Self-contained: the verifier checks it against the
+    /// account id alone, with nothing from this node.
+    pub proof: String,
+    /// Unix seconds after which the verifier must refuse it.
+    pub expires_at: u64,
+}
+
+impl Validate for AccountLinkProofApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        if let Some(e) = validate_hex_string(&self.challenge, "challenge", 32) {
+            errors.push(e);
+        }
+
+        // An empty audience would sign a claim addressed to nobody, which every
+        // verifier comparing its own name against it must refuse — so it is a
+        // request that cannot succeed and is better refused here.
+        if self.audience.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "audience" });
+        } else if let Some(e) = validate_string_length(&self.audience, "audience", 256) {
+            errors.push(e);
+        }
+
+        // Zero is not a short proof, it is one already expired at issue.
+        if self.valid_for_secs == 0 {
+            errors.push(ValidationError::InvalidFormat {
+                field: "validForSecs",
+                reason: "validForSecs must be at least 1".into(),
+            });
+        }
+
+        errors
+    }
+}
+
 impl Validate for AccountPairInitApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();

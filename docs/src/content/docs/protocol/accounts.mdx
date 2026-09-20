@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
 
 ## Two words this page leans on
 
@@ -457,6 +458,93 @@ One more namespace per account - a topic, beacons and a DAG - created lazily at 
 The id is not computable from the public account id, but the namespace's genesis is cleartext and names the founder account, so anyone who *learns* the id can link it to the account and watch beacon timing for device liveness.
 Project topics leak the same class of metadata today, and the same mitigation applies to both: the id is only as private as the invite that carried it.
 Per-namespace revocation latency is unchanged - a namespace that has not folded the unlink still honours the old binding - and the `application` a gain records is only what the gainer had folded at that moment, which decides who follows, never what the namespace actually runs.
+
+## Proving an account is yours, to something that is not a node
+
+A service outside Calimero — a hosting dashboard listing the accounts a login
+owns, say — cannot take a client's word for which account is theirs, and it holds
+nothing it could check the claim against. It has no governance state, no
+membership rows, and no node to ask.
+
+**The claim is a root signature, and it has to be.** A device cannot make it: a
+device says what it is allowed to do, and the account root is the thing the
+`AccountId` is the content address of. So this is the one routine operation that
+reaches for the root, and it is shaped to stay a once-per-verifier act rather than
+a per-session one — sessions are what `LoginStatement` is for, and that is
+device-signed precisely so logging in never touches this key.
+
+**A device certificate is not a substitute**, though it is also a root signature
+and is the credential such a service is most likely to be offered. It asserts that
+the root certified *a device*, at some past moment, and it is a static blob:
+whoever obtained a copy can present it. What the verifier needs is a statement the
+account's own root made, to *that* verifier, now.
+
+```rust
+// crates/account/src/link.rs · domain calimero.account.link.v1 · ROOT-signed
+pub struct AccountLink {
+    pub account: AccountId,
+    pub audience: Audience,     // WebOrigin | CodeSigningId | Cli
+    pub challenge: [u8; 32],    // the verifier's, proving freshness
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub key_epoch: u32,
+    pub signature: [u8; 64],
+}
+```
+
+It travels as `AccountProof<AccountLink>` — genesis, root-key chain, statement —
+so the verifier checks it **from the account id alone**, with nothing from any
+node. That is what lets a service with no Calimero infrastructure verify one.
+
+### Getting one
+
+Against a running node, which is what a desktop app's "link account" button does:
+
+```http
+POST /admin-api/account/link-proof
+```
+
+```jsonc
+{
+  "challenge":     "<64 hex chars — the verifier's 32 bytes>",
+  "audience":      "https://cloud.example",   // exactly as the verifier spells it
+  "validForSecs":  300                        // clamped to 5 minutes
+}
+```
+
+```jsonc
+// 200
+{ "data": { "accountId": "<64 hex>", "proof": "<hex borsh>", "expiresAt": 1789470300 } }
+```
+
+Or offline, when the root is in cold storage — no node, no store, no init:
+
+```bash
+merod account link-proof --challenge <HEX> --audience https://cloud.example \
+  --from <phrase-file>
+```
+
+### What the verifier must check
+
+`verify_account_link` establishes that the account's root key, at the epoch the
+statement claims, signed these bytes. Three checks it cannot make are the
+verifier's, and all three are mandatory:
+
+- **the audience is its own name**, or a proof minted for one service files an
+  account at another;
+- **the challenge is one it issued and has not spent**, or a captured proof
+  replays;
+- **`expires_at` has not passed**, which needs a clock.
+
+A verifier that checks only the signature has established that the bytes are
+genuine — not that they were meant for it.
+
+<Aside type="caution">
+The proof is not a secret and not a bearer token: it authorises nothing, and
+asserts one account to one audience for one challenge. It is also not evidence of
+membership anywhere. Ownership of an account and standing inside a group are
+different questions, and only the second needs a causal cut.
+</Aside>
 
 ## Reading your account
 
