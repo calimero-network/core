@@ -27,10 +27,11 @@ cargo test -p merod
 ## CLI Structure
 
 ```
-merod --node <name> <subcommand>
+merod [--node <name>] <subcommand>     # --node only where a store is opened
 ├── account       # Account root: export, import, revoke-proof.
 │                 # export/import open the store directly — node must be STOPPED.
-│                 # revoke-proof needs no node at all with --from.
+│                 # warrant + login-statement never need --node; sign-cert,
+│                 # revoke-proof and link-proof need none with --from.
 ├── init          # Initialize node configuration (mints the embedded-auth
 │                 # admin root key from --admin-user + password via
 │                 # file/stdin/env; --no-admin defers)
@@ -41,6 +42,25 @@ merod --node <name> <subcommand>
 ```
 
 ## Account root: backup, restore, offline revocation (`merod account`)
+
+**`--node` is optional, and which commands need it is the whole rule.** It names
+the node home a command opens, so everything that reads a config or a store
+requires it — `run`, `init`, `config`, `auth`, `kms`, `tee`, and the account
+commands that take their root from the store. The offline signers require
+nothing: `account warrant` and `account login-statement` are pure functions of
+their flags, and `sign-cert` / `revoke-proof` / `link-proof` reach the root
+through `--from <PHRASE>` without opening anything. Those five run with no
+`--node`, no `--home` and no init — from any directory, on a machine that has
+never held a node.
+
+It was required until recently, which made the cold-storage path name a node
+that need not exist; a nonexistent name was accepted precisely because nothing
+read it. `RootArgs::node_home()` is now the one place `--node` becomes a path, so
+a command that needs a node fails on the missing name rather than silently
+addressing `$CALIMERO_HOME/` — the parent of every node home — and `open_store`
+adds the `--from` hint, since reaching it without `--node` means the caller
+wanted the offline path.
+
 
 The account root is the only key that can certify a replacement device after every
 device is lost, so this family of commands is the whole recovery story. `export`
@@ -107,10 +127,13 @@ mode to set, the command says so instead of claiming owner-only.
 ```bash
 # Sign a device revocation offline. --from reads the phrase, so this needs no
 # node, no home and no init — the lost-device case. Prints a hex proof.
-merod account revoke-proof --namespace <NS> --device <DEVICE_ID> --from phrase.txt
+# No --namespace: the proof names a device and the account that owns it, and one
+# root owns one account everywhere (see below).
+merod account revoke-proof --device <DEVICE_ID> --from phrase.txt
 
-# Without --from, the root comes from this node's store (so: stopped).
-merod --node node1 account revoke-proof --namespace <NS> --device <DEVICE_ID>
+# Without --from, the root comes from this node's store (so: stopped), and
+# --node is required to say which store.
+merod --node node1 account revoke-proof --device <DEVICE_ID>
 ```
 
 The proof is self-certifying, so any member node can publish it and needs no

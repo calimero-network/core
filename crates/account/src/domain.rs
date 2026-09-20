@@ -71,6 +71,17 @@ pub(crate) const WARRANT_INTENT_DOMAIN: &[u8] = b"calimero.warrant.intent.v1";
 /// exactly why they must not collide.
 pub(crate) const AUTH_LOGIN_SIGN_DOMAIN: &[u8] = b"calimero.auth.login.v1";
 
+/// Domain for the account root's assertion that an account is the signer's,
+/// addressed to one outside verifier.
+///
+/// Distinct from [`DEVICE_CERT_SIGN_DOMAIN`] for the reason that matters most
+/// here: both are signed by the same ROOT key, and a certificate is the
+/// credential an outside verifier is most likely to be offered as proof of
+/// ownership. A shared domain would let one be presented as the other, so a
+/// static certificate obtained by anyone would read as a live, addressed claim
+/// about the account.
+pub(crate) const ACCOUNT_LINK_SIGN_DOMAIN: &[u8] = b"calimero.account.link.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -89,4 +100,5 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     WARRANT_SIGN_DOMAIN,
     WARRANT_INTENT_DOMAIN,
     AUTH_LOGIN_SIGN_DOMAIN,
+    ACCOUNT_LINK_SIGN_DOMAIN,
 ];

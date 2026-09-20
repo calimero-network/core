@@ -35,24 +35,23 @@ node_url() {
     echo "http://127.0.0.1:${_hostport}"
 }
 
-# Run an offline `merod` subcommand against <node>'s home, in binary or Docker mode.
+# Run a node-free `merod` subcommand, in binary or Docker mode.
+#
+# `account warrant` and `account login-statement` sign from their flags alone --
+# no home, no store, no node. They take no node argument here because they read
+# none: this used to hunt for a node home with `find` and bind-mount it into the
+# container purely to satisfy merod's then-required `--node`, which those
+# commands never consulted. A home that is never opened cannot be the wrong one,
+# so the search (and its one past breakage, when merobox moved the home) went
+# with the flag.
 offline_merod() {
-    _node="$1"
-    shift
     if [ -x "${MEROD_BIN}" ]; then
-        # Searched, as node_url searches, and for the same reason: merobox nests
-        # the home one level deeper in binary mode, and has moved it before.
-        _config=$(find "data/${_node}" -name config.toml 2>/dev/null | head -1)
-        if [ -z "${_config}" ]; then
-            echo "no node home under data/${_node}" >&2
-            return 1
-        fi
-        "${MEROD_BIN}" --home "$(dirname "$(dirname "${_config}")")" \
-            --node "${_node}" "$@"
+        "${MEROD_BIN}" "$@"
         return
     fi
-    docker run --rm --user root --entrypoint "" \
-        -v "$(pwd)/data/${_node}:/app/data" -e CALIMERO_HOME=/app/data \
+    # No bind mount, so no `--user root`: that existed to reach a root-owned
+    # `data/` and the image's own `USER user` can run merod perfectly well.
+    docker run --rm --entrypoint "" \
         "${MEROD_IMAGE:-merod:local}" \
-        merod --home /app/data --node "${_node}" "$@"
+        merod "$@"
 }

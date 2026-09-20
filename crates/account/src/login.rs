@@ -78,12 +78,35 @@ pub enum Audience {
 }
 
 impl Audience {
+    /// Map a caller's spelling onto the variant it names.
+    ///
+    /// One copy, because two would be a drift nobody sees until a statement
+    /// minted by one client is refused for another: `merod` spells an audience on
+    /// a command line and the admin API spells it in JSON, and both must land on
+    /// the same variant for the same string or a signature binds a surface its
+    /// holder did not mean.
+    ///
+    /// A web origin is passed through verbatim rather than normalized. The
+    /// verifier compares it byte for byte against what the browser sends, so
+    /// "helpfully" stripping a trailing slash here would produce a statement the
+    /// browser's own origin no longer matches.
+    #[must_use]
+    pub fn from_spelling(spelling: &str) -> Self {
+        match spelling.trim() {
+            "cli" => Self::Cli,
+            other if other.starts_with("http://") || other.starts_with("https://") => {
+                Self::WebOrigin(other.to_owned())
+            }
+            other => Self::CodeSigningId(other.to_owned()),
+        }
+    }
+
     /// The bytes this variant contributes to the signing payload.
     ///
     /// Tag-prefixed so `WebOrigin("x")` and `CodeSigningId("x")` cannot produce
     /// the same preimage — without the tag, one audience could be presented as
     /// the other, which is exactly what the field exists to prevent.
-    fn signing_bytes(&self) -> Vec<u8> {
+    pub(crate) fn signing_bytes(&self) -> Vec<u8> {
         let (tag, body): (u8, &[u8]) = match self {
             Self::WebOrigin(origin) => (0, origin.as_bytes()),
             Self::CodeSigningId(id) => (1, id.as_bytes()),

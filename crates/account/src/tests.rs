@@ -12,6 +12,7 @@ mod account;
 mod device;
 mod domain;
 mod label;
+mod link;
 mod login;
 mod login_wire_fixture;
 mod pairing;

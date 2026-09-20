@@ -108,7 +108,7 @@ impl TeeCommand {
 impl TeeProbeCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         let json = self.json;
-        let path = root_args.home.join(&root_args.node_name);
+        let path = root_args.node_home()?;
         if !ConfigFile::exists(&path) {
             bail!("Node is not initialized in {:?}", path);
         }
