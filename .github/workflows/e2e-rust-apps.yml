@@ -191,11 +191,9 @@ jobs:
   # multi-step workflow runs there: node lifecycle, a root login, and the client
   # token seam asserted over real HTTP against a live merod.
   #
-  # Two things differ from the Linux job, both forced:
-  #   - merod is built here rather than extracted from the Docker image. There is
-  #     no Docker on this runner, and a Linux container would test Linux.
-  #   - merobox comes from pip, not `setup-merobox`. That action installs the
-  #     release binary, which is published for darwin and linux only.
+  # One thing differs from the Linux job, forced: merod is built here rather
+  # than extracted from the Docker image. There is no Docker on this runner,
+  # and a Linux container would test Linux.
   #
   # Not gated on `build-image`, unlike auth-seam: it shares nothing with it.
   windows-auth-seam:
@@ -234,17 +232,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Pinned exactly, like `setup-merobox` does: a floor would let a later
-      # release change what this gate means without anyone choosing it.
-      #
-      # Each of these releases fixed something that stopped a node running here:
-      # 0.6.73 native Windows process management (teardown called
-      # `signal.SIGKILL`, which does not exist there), 0.6.74 script steps run
-      # with a literal `/bin/sh`, and 0.6.75 a crash printing merobox's own
-      # emoji banner to a cp1252 stdout. The last of those is why this step no
-      # longer sets `PYTHONIOENCODING`.
       - name: Install merobox
-        run: pip install merobox==0.6.76
+        uses: ./.github/actions/setup-merobox
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         shell: bash
@@ -322,7 +311,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install merobox
-        run: pip install merobox==0.6.76
+        uses: ./.github/actions/setup-merobox
 
       # `cd` into the app first, exactly as the Linux matrix above does. The
       # scenario's `path: ../../dist/...` is resolved against the CWD, not
@@ -663,6 +652,9 @@ jobs:
           - workflow: account-pairing-application-scope
             file: workflows/account-pairing-application-scope.yml
             app: scaffolding-e2e
+          - workflow: account-device-scope-replace
+            file: workflows/account-device-scope-replace.yml
+            app: scaffolding-e2e
           - workflow: account-pairing-missed-publish
             file: workflows/account-pairing-missed-publish.yml
             app: scaffolding-e2e
@@ -753,6 +745,9 @@ jobs:
             app: scaffolding-e2e
           - workflow: shared-storage-account-writers-two-devices
             file: workflows/shared-storage-account-writers-two-devices.yml
+            app: scaffolding-e2e
+          - workflow: shared-storage-account-writers-concurrent
+            file: workflows/shared-storage-account-writers-concurrent.yml
             app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml

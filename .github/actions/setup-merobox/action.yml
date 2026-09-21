@@ -1,5 +1,5 @@
 name: Setup Merobox
-description: "Install the merobox release binary (Linux only)"
+description: "Install the pinned merobox: release binary on Linux, PyPI on Windows"
 
 runs:
   using: "composite"
@@ -9,33 +9,41 @@ runs:
       run: |
         set -euo pipefail
 
-        MEROBOX_VERSION="0.6.76"
+        # Windows lanes need >= 0.6.75: native process teardown, script steps
+        # without a literal `/bin/sh`, and a banner that survives cp1252 stdout.
+        MEROBOX_VERSION="0.6.77"
         TAG="v${MEROBOX_VERSION}"
 
-        case "$(uname -m)" in
-          x86_64) MEROBOX_ARCH="linux-x86-64" ;;
-          aarch64 | arm64) MEROBOX_ARCH="linux-aarch64" ;;
-          *) echo "::error::no merobox release binary for $(uname -m)"; exit 1 ;;
-        esac
+        # merobox publishes release binaries for linux and darwin only.
+        if [ "${RUNNER_OS}" = "Windows" ]; then
+          pip install "merobox==${MEROBOX_VERSION}"
+        else
+          case "$(uname -m)" in
+            x86_64) MEROBOX_ARCH="linux-x86-64" ;;
+            aarch64 | arm64) MEROBOX_ARCH="linux-aarch64" ;;
+            *) echo "::error::no merobox release binary for $(uname -m)"; exit 1 ;;
+          esac
 
-        ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
-        timeout 180 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox "$ASSET"
-        timeout 60 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox.sha256 "${ASSET}.sha256"
+          ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
+          timeout 180 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox "$ASSET"
+          timeout 60 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox.sha256 "${ASSET}.sha256"
 
-        EXPECTED_SHA="$(awk '{print $1}' /tmp/merobox.sha256)"
-        ACTUAL_SHA="$(sha256sum /tmp/merobox | awk '{print $1}')"
-        if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
-          echo "::error::merobox ${TAG} checksum mismatch: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}"
-          exit 1
+          EXPECTED_SHA="$(awk '{print $1}' /tmp/merobox.sha256)"
+          ACTUAL_SHA="$(sha256sum /tmp/merobox | awk '{print $1}')"
+          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            echo "::error::merobox ${TAG} checksum mismatch: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}"
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 /tmp/merobox "$HOME/.local/bin/merobox"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
         fi
 
-        mkdir -p "$HOME/.local/bin"
-        install -m 0755 /tmp/merobox "$HOME/.local/bin/merobox"
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-        export PATH="$HOME/.local/bin:$PATH"
         merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$HAVE_MEROBOX" != "$MEROBOX_VERSION" ]; then
-          echo "::error::merobox reports ${HAVE_MEROBOX} but ${MEROBOX_VERSION} is pinned — the ${TAG} asset does not carry the version it is named for"
+          echo "::error::merobox reports ${HAVE_MEROBOX} but ${MEROBOX_VERSION} is pinned"
           exit 1
         fi
