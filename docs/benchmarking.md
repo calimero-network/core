@@ -1,7 +1,7 @@
 # Benchmarking core
 
 Three tiers, and a timing result never gates a PR.
-Only deterministic counts and the compilability of bench code can fail one: the Tier 1 cost gate, the `bench-compile` job (`cargo bench --workspace --benches --no-run`), and the `rust` job's build and clippy passes, which compile and lint every bench file too.
+Only deterministic counts and the compilability of bench code can fail one: the Tier 1 cost gate, and the `rust` job's build and clippy passes, which compile and lint every bench file too.
 
 ## Tier 1 - cost gates (BLOCKING)
 
@@ -44,14 +44,14 @@ Treat `benchmark_all_scenarios` and `benchmark_scaling` as placeholders, not as 
 ## Adding a bench
 
 1. `benches/<question>.rs` in the crate that owns the code, one file per question, named for the question rather than the crate.
-2. `harness = false` on the `[[bench]]`, and `bench = false` on the crate's `[lib]`, `[[bin]]` and `[[test]]` targets, or libtest gets handed criterion's flags and rejects them.
+2. `harness = false` on the `[[bench]]`, and `bench = false` on the crate's `[lib]` and `[[bin]]` targets, or libtest gets handed criterion's flags and rejects them (a `[[test]]` target already defaults to `bench = false`).
 3. Module docs must say what question the bench answers and what answer would change a decision.
    A bench with no question gets deleted at the next cleanup.
 4. Never reach into a private function by copying its body.
    If it is worth benchmarking it is worth a `pub(crate)` seam, because a copied body stops tracking the original silently.
 5. Run `cargo bench --workspace --benches --no-run` before pushing.
 6. For a crate's *first* `[[bench]]`, add the crate to the `matrix.crate` list in `.github/workflows/benchmarks.yml` (`criterion` job).
-   `bench-compile` only proves every bench target still compiles, so a crate missing from that hand-maintained matrix silently gets no `master` baseline and never appears in a comparison.
+   Compiling a bench target proves nothing about the matrix, so a crate missing from that hand-maintained list silently gets no `master` baseline and never appears in a comparison.
 
 ## Reading the comparison
 

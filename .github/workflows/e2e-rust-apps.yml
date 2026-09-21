@@ -1049,31 +1049,31 @@ jobs:
           # per writer: RGA orders same-origin siblings by id, so back-to-back
           # writes would interleave correctly on their own and pose no question.
           #
-          # `registry_fetch: false`: the bundle is installed on every node before
+          # `registry_fetch: "false"`: the bundle is installed on every node before
           # isolation begins, because a node cut off from its peers cannot
           # lazily acquire bytecode.
           - workflow: fugue-collab-figure2
             file: workflows/fugue-collab-figure2.yml
             app: fugue-collab
-            registry_fetch: false
-          # Same `registry_fetch: false` reasoning for the four below: each
+            registry_fetch: "false"
+          # Same `registry_fetch: "false"` reasoning for the four below: each
           # installs the bundle on every node before any fault is injected.
           - workflow: fugue-collab-partition-heal
             file: workflows/fugue-collab-partition-heal.yml
             app: fugue-collab
-            registry_fetch: false
+            registry_fetch: "false"
           - workflow: fugue-collab-restart-mid-edit
             file: workflows/fugue-collab-restart-mid-edit.yml
             app: fugue-collab
-            registry_fetch: false
+            registry_fetch: "false"
           - workflow: fugue-collab-late-joiner
             file: workflows/fugue-collab-late-joiner.yml
             app: fugue-collab
-            registry_fetch: false
+            registry_fetch: "false"
           - workflow: fugue-collab-large-paste
             file: workflows/fugue-collab-large-paste.yml
             app: fugue-collab
-            registry_fetch: false
+            registry_fetch: "false"
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init
