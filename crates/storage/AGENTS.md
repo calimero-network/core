@@ -56,6 +56,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - A replica id derives from the device id, and a counter is never reused, because `FugueTree::integrate` keeps the first definition of a node.
 - Plain Fugue, not FugueMax; the residual ordering case is pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin`.
 - `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
+- A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing.
+  An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 

@@ -153,6 +153,26 @@ impl FugueTree {
         None
     }
 
+    /// The id of the live character at `index`.
+    #[must_use]
+    pub fn id_at(&self, index: usize) -> Option<RawId> {
+        self.nth_live(&self.traverse_all(), index)
+    }
+
+    /// How many live characters precede `id`, which may itself be tombstoned.
+    #[must_use]
+    pub fn live_before(&self, id: RawId) -> Option<usize> {
+        let _known = self.nodes.get(&id)?;
+        let count = self
+            .traverse_all()
+            .into_iter()
+            .flatten()
+            .take_while(|raw| *raw != id)
+            .filter(|raw| self.nodes.get(raw).is_some_and(|n| n.value.is_some()))
+            .count();
+        Some(count)
+    }
+
     /// The document text, tombstones skipped.
     #[must_use]
     pub fn values(&self) -> String {
