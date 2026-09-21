@@ -1737,7 +1737,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
             allowed_rtmr0: vec![],
             allowed_rtmr1: vec![],
             allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
         },
@@ -1929,7 +1929,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             allowed_rtmr0: vec![],
             allowed_rtmr1: vec![],
             allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
         },
@@ -8427,7 +8427,11 @@ fn a_tee_admission_binds_the_replicas_device() {
             allowed_rtmr0: vec![],
             allowed_rtmr1: vec![],
             allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            // RTMR3 is mandatory: it is the only measurement that identifies the
+            // image, since MRTD is shared by every profile of a release. This
+            // fixture is about device binding, so it names the value its own
+            // join op attests and nothing more.
+            allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
         },
@@ -8467,7 +8471,7 @@ fn a_tee_admission_binds_the_replicas_device() {
                 rtmr0: String::new(),
                 rtmr1: String::new(),
                 rtmr2: String::new(),
-                rtmr3: String::new(),
+                rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
                 account,
@@ -8535,7 +8539,11 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
             allowed_rtmr0: vec![],
             allowed_rtmr1: vec![],
             allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            // RTMR3 is mandatory: it is the only measurement that identifies the
+            // image, since MRTD is shared by every profile of a release. This
+            // fixture is about device binding, so it names the value its own
+            // join op attests and nothing more.
+            allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
         },
@@ -8575,7 +8583,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
                 rtmr0: String::new(),
                 rtmr1: String::new(),
                 rtmr2: String::new(),
-                rtmr3: String::new(),
+                rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
                 account: stolen,

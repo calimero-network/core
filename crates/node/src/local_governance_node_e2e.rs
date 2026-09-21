@@ -401,7 +401,9 @@ const MOCK_QUOTE_HEADER: &[u8] = b"MOCK_TDX_QUOTE_V1";
 
 /// The all-zero 48-byte measurement (96 hex chars) that `create_mock_quote`
 /// reports for `mrtd`/`rtmr*`. The owner's `TeeAdmissionPolicy` must allow this
-/// MRTD for the mock announcer to be admitted.
+/// value as both its MRTD **and** its RTMR3 for the mock announcer to be
+/// admitted: RTMR3 is mandatory because MRTD is shared by every image profile
+/// of a release, so it identifies the firmware rather than the image.
 const MOCK_MEASUREMENT_48_HEX: &str =
     "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
@@ -552,7 +554,11 @@ fn provision_tee_owner_with_sk(
             allowed_rtmr0: vec![],
             allowed_rtmr1: vec![],
             allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            // RTMR3 is mandatory: it is the only measurement that identifies the
+            // image, since MRTD is shared by every profile of a release.
+            // `create_mock_quote` reports the same all-zero 48 bytes for every
+            // register, so the policy names that value here too.
+            allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,
         },

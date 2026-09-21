@@ -94,11 +94,20 @@ steps:
 
   # accept_mock + the all-zero MRTD are the step defaults; set on the namespace
   # root (group id == namespace id).
+  #
+  # `allowed_rtmr3` is passed explicitly because the step defaults it to `[]`
+  # and an empty RTMR3 allowlist is now a REFUSAL rather than a skip. MRTD
+  # measures the virtual firmware, so it is identical across every image profile
+  # of a release -- only RTMR3 says which image ran, which is why the policy has
+  # to name one. `create_mock_quote` reports the same all-zero 48 bytes for
+  # every register, so this is the same value as the MRTD default.
   - name: Set the namespace-root TeeAdmissionPolicy to accept mock attestation
     type: set_tee_admission_policy
     node: blob-tee-owner
     group_id: "{{namespace_id}}"
     accept_mock: true
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
   - name: Let the policy settle
     type: wait

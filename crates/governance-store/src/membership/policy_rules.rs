@@ -58,6 +58,8 @@ pub const TEE_REJECT_RTMR0: &str = "rtmr0_not_allowed";
 pub const TEE_REJECT_RTMR1: &str = "rtmr1_not_allowed";
 pub const TEE_REJECT_RTMR2: &str = "rtmr2_not_allowed";
 pub const TEE_REJECT_RTMR3: &str = "rtmr3_not_allowed";
+/// The POLICY names no RTMR3 — an incomplete policy, not a refused node.
+pub const TEE_REJECT_RTMR3_EMPTY: &str = "rtmr3_allowlist_empty";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Each variant names the specific attestation field a policy rejected; the
@@ -68,6 +70,12 @@ pub const TEE_REJECT_RTMR3: &str = "rtmr3_not_allowed";
 )]
 pub enum MembershipPolicyRejection {
     MrtdNotAllowed,
+    /// The policy names no RTMR3 at all.
+    ///
+    /// Distinct from `Rtmr3NotAllowed` because the remedy is the opposite: the
+    /// node is not necessarily wrong, the POLICY is incomplete. Reporting it as
+    /// a mismatch would send an operator looking at the node's measurements.
+    Rtmr3AllowlistEmpty,
     TcbStatusNotAllowed,
     Rtmr0NotAllowed,
     Rtmr1NotAllowed,
@@ -106,6 +114,12 @@ impl std::fmt::Display for MembershipPolicyValidationError {
             }
             MembershipPolicyRejection::Rtmr3NotAllowed => {
                 "MemberJoinedViaTeeAttestation rejected: RTMR3 not in policy allowlist"
+            }
+            MembershipPolicyRejection::Rtmr3AllowlistEmpty => {
+                "MemberJoinedViaTeeAttestation rejected: the group's TEE admission policy names \
+                 no RTMR3. MRTD identifies the firmware, not the image -- it is the same for \
+                 every profile of a release -- so a policy without RTMR3 would admit any \
+                 profile. Set allowed_rtmr3 from the release's published-mrtds.json"
             }
         };
         write!(f, "{message}")
@@ -163,6 +177,24 @@ pub fn validate_tee_attestation_allowlists(
         });
     }
 
+    // RTMR3 IS MANDATORY HERE TOO, and this is the path that decides convergence.
+    //
+    // `admit_tee_node` is the requesting node's own gate; THIS runs on every
+    // peer replicating the op. Enforcing only in the actor would let a node
+    // publish an admission its peers then accept, so the allowlist would bind
+    // whoever happened to ask and nobody else.
+    //
+    // Empty is a refusal rather than a skip, unlike the RTMR0-2 loop below.
+    // MRTD identifies the firmware, not the image -- it is identical across
+    // every profile of a release and constant across most releases -- so RTMR3
+    // is the only field that names which image ran. A policy without it admits
+    // any profile, including debug images with SSH and an unlocked root.
+    if policy.allowed_rtmr3.is_empty() {
+        return Err(MembershipPolicyValidationError {
+            reason: MembershipPolicyRejection::Rtmr3AllowlistEmpty,
+        });
+    }
+
     for (allowlist, actual, reason) in [
         (
             &policy.allowed_rtmr0,
@@ -191,4 +223,108 @@ pub fn validate_tee_attestation_allowlists(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod rtmr3_is_mandatory {
+    //! RTMR3 is the only field that identifies the image.
+    //!
+    //! MRTD measures the virtual firmware, so it is identical across every
+    //! PROFILE of a release and constant across most RELEASES --
+    //! `locked-read-only` reported the same `c1ee9c16…` for 2.3.62, 2.3.63 and
+    //! 2.3.65, and every profile of each. A policy naming only an MRTD admits a
+    //! `debug` image, which carries no lockdown role: openssh-server, the
+    //! serial console and the rescue shell are present and root is not locked.
+    //!
+    //! `calimero-init` extends RTMR3 with
+    //! `calimero-rtmr3-v2:<role>:<profile>:<root_hash>`, so it names exactly one
+    //! (profile, release) pair -- and therefore changes every release, which is
+    //! the cost of pinning it.
+    //!
+    //! This is the OP-APPLY path: it runs on every peer replicating the op, so
+    //! it is what makes the allowlist bind anyone other than the node that
+    //! asked.
+
+    use super::*;
+
+    const MRTD: &str = "c1";
+    const RTMR3_LOCKED: &str = "74";
+    const RTMR3_DEBUG: &str = "cf";
+
+    fn policy(allowed_rtmr3: Vec<String>) -> TeeAllowlistPolicy {
+        TeeAllowlistPolicy {
+            allowed_mrtd: vec![MRTD.to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3,
+            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
+            accept_mock: false,
+        }
+    }
+
+    fn claims(rtmr3: &str) -> TeeAttestationClaims<'_> {
+        TeeAttestationClaims {
+            mrtd: MRTD,
+            rtmr0: "00",
+            rtmr1: "00",
+            rtmr2: "00",
+            rtmr3,
+            tcb_status: "UpToDate",
+        }
+    }
+
+    #[test]
+    fn a_policy_naming_no_rtmr3_admits_nobody() {
+        // Before this, an empty list meant "do not check", so the weakest policy
+        // was the one that looked simply unfilled.
+        let err = validate_tee_attestation_allowlists(&policy(vec![]), &claims(RTMR3_LOCKED))
+            .expect_err("an empty allowed_rtmr3 must refuse, not skip");
+        assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr3AllowlistEmpty);
+    }
+
+    #[test]
+    fn the_empty_case_is_not_reported_as_a_mismatch() {
+        // The remedy is the opposite: the POLICY is incomplete, not the node.
+        // Reporting a mismatch sends an operator to read the node's measurements.
+        let err = validate_tee_attestation_allowlists(&policy(vec![]), &claims(RTMR3_LOCKED))
+            .unwrap_err();
+        assert_ne!(err.reason(), MembershipPolicyRejection::Rtmr3NotAllowed);
+        assert!(
+            err.to_string().contains("names \nno RTMR3") || err.to_string().contains("no RTMR3")
+        );
+    }
+
+    #[test]
+    fn a_different_profile_is_refused_despite_a_matching_mrtd() {
+        // THE BUG. Same MRTD -- because every profile shares it -- and the
+        // policy was written for the locked image.
+        let err = validate_tee_attestation_allowlists(
+            &policy(vec![RTMR3_LOCKED.to_owned()]),
+            &claims(RTMR3_DEBUG),
+        )
+        .expect_err("a debug image must not pass a locked-image policy");
+        assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr3NotAllowed);
+    }
+
+    #[test]
+    fn the_named_profile_is_admitted() {
+        validate_tee_attestation_allowlists(
+            &policy(vec![RTMR3_LOCKED.to_owned()]),
+            &claims(RTMR3_LOCKED),
+        )
+        .expect("the profile the policy names must be admitted");
+    }
+
+    #[test]
+    fn several_releases_may_be_named_at_once() {
+        // RTMR3 folds in root_hash, so it changes every release. A policy is
+        // expected to carry one value per (profile, release) it accepts, which
+        // is how an upgrade lands without a window where nothing may join.
+        let previous = "aa";
+        let current = RTMR3_LOCKED;
+        let p = policy(vec![previous.to_owned(), current.to_owned()]);
+        validate_tee_attestation_allowlists(&p, &claims(previous)).expect("previous release");
+        validate_tee_attestation_allowlists(&p, &claims(current)).expect("current release");
+    }
 }
