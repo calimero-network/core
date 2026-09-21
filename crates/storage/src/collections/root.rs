@@ -576,22 +576,23 @@ fn apply_child_action_lenient<S: StorageAdaptor>(
     }
 }
 
-/// Count of actions this thread has dropped in `apply_child_action_lenient`.
-///
-/// Dropping a rejected action is correct for a production merge — one bad
-/// action must not brick a whole batch — but it makes a *test* silently assert
-/// nothing. A convergence harness whose deltas are all refused sees every
-/// replica keep its own local write: the values are individually valid, so
-/// value-level invariants pass, and only the Merkle roots differ. That reads
-/// exactly like a CRDT divergence and is not one, which is how core#3965 was
-/// filed against `SharedStorage` when the harness was simply unable to sign.
-///
-/// So the drop is counted, and the convergence harness fails on a non-zero
-/// count instead of reporting the divergence it causes. Thread-local because
-/// the harness drives every replica on one thread; `feature = "testing"` so
-/// production keeps the bare `warn!`.
 #[cfg(any(test, feature = "testing"))]
 thread_local! {
+    /// Count of actions this thread has dropped in `apply_child_action_lenient`.
+    ///
+    /// Dropping a rejected action is correct for a production merge — one bad
+    /// action must not brick a whole batch — but it makes a *test* silently
+    /// assert nothing. A convergence harness whose deltas are all refused sees
+    /// every replica keep its own local write: the values are individually
+    /// valid, so value-level invariants pass, and only the Merkle roots differ.
+    /// That reads exactly like a CRDT divergence and is not one, which is how
+    /// core#3965 was filed against `SharedStorage` when the harness was simply
+    /// unable to sign.
+    ///
+    /// So the drop is counted, and the convergence harness fails on a non-zero
+    /// count instead of reporting the divergence it causes. Thread-local
+    /// because the harness drives every replica on one thread;
+    /// `feature = "testing"` so production keeps the bare `warn!`.
     static DROPPED_ACTIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 

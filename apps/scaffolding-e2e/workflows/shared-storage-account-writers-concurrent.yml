@@ -273,7 +273,11 @@ steps:
 
   - name: Both of Alice's devices write the shared value at once
     type: parallel
-    mode: fail-slow
+    # `failure_mode`, not `mode`: `mode` is the load shape (burst/sustained/
+    # mixed) and rejects this value outright. fail-slow is what a race needs —
+    # under fail-fast one device's failure cancels the other's write, which
+    # degrades the scenario to a single writer and passes.
+    failure_mode: fail-slow
     groups:
       - name: Laptop_Write
         steps:
