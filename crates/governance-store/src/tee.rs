@@ -20,6 +20,67 @@ pub struct TeeAdmissionPolicy {
     pub accept_mock: bool,
 }
 
+/// One op-log entry that could not be decoded as a [`SignedGroupOp`].
+#[derive(Clone, Debug)]
+pub struct UndecodableOpLogEntry {
+    pub sequence: u64,
+    pub error: String,
+}
+
+/// What replaying a namespace's op log found when looking for its TEE
+/// admission policy.
+///
+/// Three states rather than an `Option`, because "no policy was ever set" and
+/// "a policy may be set but the log cannot be read" are opposite situations
+/// that used to collapse into the same `None`. The policy is not a
+/// materialized row -- it exists only as this replay -- so a single entry that
+/// does not decode does not degrade the answer, it can *erase* it. An operator
+/// who has set a policy would then be told to set one.
+#[derive(Debug)]
+pub enum TeeAdmissionPolicyRead {
+    /// A `TeeAdmissionPolicySet` was found. Note that entries which failed to
+    /// decode are logged even in this arm: one of them may have carried a
+    /// *later* policy that supersedes this one.
+    Set(TeeAdmissionPolicy),
+    /// Every entry decoded and none of them was a policy. The group genuinely
+    /// has no policy set.
+    NotSet,
+    /// No policy was found among the entries that decode, and at least one
+    /// entry does not decode. Whether a policy is set is unknown, so callers
+    /// must not report this as "no policy set".
+    Unreadable {
+        undecodable: Vec<UndecodableOpLogEntry>,
+    },
+}
+
+/// Decode one op-log entry, reporting a failure instead of dropping it.
+///
+/// Every scan in this module replays the same log with `if let Ok(op)`. An
+/// entry that does not decode is not "an entry that is not the op I want" --
+/// it is an entry that nobody can read, and the difference matters: a
+/// truncated write, a schema change or a `SignedGroupOp` version skew was
+/// indistinguishable from an absent op. `scan` names the caller so the log
+/// says which read was affected.
+fn decode_group_op(
+    group_id: &ContextGroupId,
+    sequence: u64,
+    bytes: &[u8],
+    scan: &'static str,
+) -> Result<SignedGroupOp, String> {
+    borsh::from_slice::<SignedGroupOp>(bytes).map_err(|e| {
+        let error = e.to_string();
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            sequence,
+            scan,
+            error = %error,
+            "op-log entry does not decode as SignedGroupOp; it is skipped, so any op it \
+             carried is invisible to this scan"
+        );
+        error
+    })
+}
+
 /// Read the TEE admission policy that applies to `group_id`.
 ///
 /// Policies are namespace-scoped: the canonical policy lives on the namespace
@@ -31,14 +92,35 @@ pub struct TeeAdmissionPolicy {
 pub fn read_tee_admission_policy(
     store: &Store,
     group_id: &ContextGroupId,
-) -> EyreResult<Option<TeeAdmissionPolicy>> {
+) -> EyreResult<TeeAdmissionPolicyRead> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let entries = read_op_log_after(store, &root, 0, usize::MAX)?;
     let mut latest: Option<TeeAdmissionPolicy> = None;
+    let mut undecodable: Vec<UndecodableOpLogEntry> = Vec::new();
 
-    for (_seq, bytes) in &entries {
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
-            if let GroupOp::TeeAdmissionPolicySet {
+    for (seq, bytes) in &entries {
+        let op = match decode_group_op(&root, *seq, bytes, "read_tee_admission_policy") {
+            Ok(op) => op,
+            Err(error) => {
+                undecodable.push(UndecodableOpLogEntry {
+                    sequence: *seq,
+                    error,
+                });
+                continue;
+            }
+        };
+
+        if let GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd,
+            allowed_rtmr0,
+            allowed_rtmr1,
+            allowed_rtmr2,
+            allowed_rtmr3,
+            allowed_tcb_statuses,
+            accept_mock,
+        } = op.op
+        {
+            latest = Some(TeeAdmissionPolicy {
                 allowed_mrtd,
                 allowed_rtmr0,
                 allowed_rtmr1,
@@ -46,22 +128,41 @@ pub fn read_tee_admission_policy(
                 allowed_rtmr3,
                 allowed_tcb_statuses,
                 accept_mock,
-            } = op.op
-            {
-                latest = Some(TeeAdmissionPolicy {
-                    allowed_mrtd,
-                    allowed_rtmr0,
-                    allowed_rtmr1,
-                    allowed_rtmr2,
-                    allowed_rtmr3,
-                    allowed_tcb_statuses,
-                    accept_mock,
-                });
-            }
+            });
         }
     }
 
-    Ok(latest)
+    match latest {
+        // A readable policy still stands: the entries that failed to decode
+        // carried *something*, and refusing admission over them would take a
+        // working namespace down for an unrelated bad write. But one of them
+        // may have been a LATER policy that supersedes this one, so the
+        // policy being enforced is not provably current -- say so.
+        Some(policy) => {
+            if !undecodable.is_empty() {
+                tracing::warn!(
+                    group_id = %hex::encode(root.to_bytes()),
+                    undecodable = undecodable.len(),
+                    "enforcing the newest TEE admission policy that decodes, but some op-log \
+                     entries do not decode; if one of those was a later policy, this one is \
+                     stale"
+                );
+            }
+            Ok(TeeAdmissionPolicyRead::Set(policy))
+        }
+        // The distinction this whole type exists for. Reporting these the
+        // same way tells an operator who HAS set a policy to go set one.
+        None if !undecodable.is_empty() => {
+            tracing::error!(
+                group_id = %hex::encode(root.to_bytes()),
+                undecodable = undecodable.len(),
+                "no TEE admission policy could be read and some op-log entries do not decode; \
+                 this is NOT the same as no policy being set"
+            );
+            Ok(TeeAdmissionPolicyRead::Unreadable { undecodable })
+        }
+        None => Ok(TeeAdmissionPolicyRead::NotSet),
+    }
 }
 
 /// Check whether a TEE attestation quote hash has already been used in a
@@ -73,16 +174,19 @@ pub fn is_quote_hash_used(
 ) -> EyreResult<bool> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
 
-    for (_seq, bytes) in &entries {
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
-            if let GroupOp::MemberJoinedViaTeeAttestation {
-                quote_hash: ref existing_hash,
-                ..
-            } = op.op
-            {
-                if existing_hash == quote_hash {
-                    return Ok(true);
-                }
+    for (seq, bytes) in &entries {
+        // A swallowed decode failure here weakens REPLAY protection: an
+        // unreadable entry that recorded this very quote reads as "not used".
+        let Ok(op) = decode_group_op(group_id, *seq, bytes, "is_quote_hash_used") else {
+            continue;
+        };
+        if let GroupOp::MemberJoinedViaTeeAttestation {
+            quote_hash: ref existing_hash,
+            ..
+        } = op.op
+        {
+            if existing_hash == quote_hash {
+                return Ok(true);
             }
         }
     }
@@ -101,12 +205,13 @@ pub fn is_tee_admitted_identity(
 ) -> EyreResult<bool> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
 
-    for (_seq, bytes) in &entries {
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
-            if let GroupOp::MemberJoinedViaTeeAttestation { member, .. } = op.op {
-                if member == *identity {
-                    return Ok(true);
-                }
+    for (seq, bytes) in &entries {
+        let Ok(op) = decode_group_op(group_id, *seq, bytes, "is_tee_admitted_identity") else {
+            continue;
+        };
+        if let GroupOp::MemberJoinedViaTeeAttestation { member, .. } = op.op {
+            if member == *identity {
+                return Ok(true);
             }
         }
     }
@@ -149,8 +254,13 @@ pub struct TeeAdmissionRecord {
 /// Needs no group id: the per-group op log this reads is already scoped to one
 /// group. Its cleartext counterpart is [`tee_admission_from_root_op`], which
 /// does need one, because a namespace log carries every group's root ops.
-fn tee_admission_from_bytes(bytes: &[u8]) -> Option<(AccountId, TeeAdmissionRecord)> {
-    if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+fn tee_admission_from_bytes(
+    group_id: &ContextGroupId,
+    sequence: u64,
+    bytes: &[u8],
+    scan: &'static str,
+) -> Option<(AccountId, TeeAdmissionRecord)> {
+    if let Ok(op) = decode_group_op(group_id, sequence, bytes, scan) {
         if let GroupOp::MemberJoinedViaTeeAttestation {
             member,
             quote_hash,
@@ -283,8 +393,10 @@ pub fn tee_admission_record(
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
     let mut latest = None;
 
-    for (_seq, bytes) in &entries {
-        if let Some((member, record)) = tee_admission_from_bytes(bytes) {
+    for (seq, bytes) in &entries {
+        if let Some((member, record)) =
+            tee_admission_from_bytes(group_id, *seq, bytes, "tee_admission_record")
+        {
             if member == *identity {
                 latest = Some(record);
             }
@@ -322,8 +434,10 @@ pub fn tee_admission_records(
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
     let mut out = std::collections::BTreeMap::new();
 
-    for (_seq, bytes) in &entries {
-        if let Some((member, record)) = tee_admission_from_bytes(bytes) {
+    for (seq, bytes) in &entries {
+        if let Some((member, record)) =
+            tee_admission_from_bytes(group_id, *seq, bytes, "tee_admission_records")
+        {
             // Last-write-wins: a later re-admission supersedes the earlier verdict.
             let _ = out.insert(member, record);
         }

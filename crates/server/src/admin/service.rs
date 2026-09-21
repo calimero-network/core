@@ -853,7 +853,13 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         // parent chain that will not terminate. Fall through to the generic 500,
         // which also keeps their messages (they name internal rows) out of the
         // response.
-        Refusal::MissingMemberValue { .. } | Refusal::DepthExceeded(_) => return None,
+        // `TeeAdmissionPolicyUnreadable` joins them: the op log holds bytes
+        // this binary cannot decode, which is not something the requester did
+        // or can undo. The reason is logged at `error!` where it is actionable;
+        // the response stays generic, like its neighbours here.
+        Refusal::MissingMemberValue { .. }
+        | Refusal::DepthExceeded(_)
+        | Refusal::TeeAdmissionPolicyUnreadable(_) => return None,
     })
 }
 

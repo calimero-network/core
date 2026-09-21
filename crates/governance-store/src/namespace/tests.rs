@@ -1721,9 +1721,10 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // Sanity: before any op is applied the replica has no policy and the TEE
     // node is not yet a member.
     assert!(
-        read_tee_admission_policy(&store, &ns_gid)
-            .unwrap()
-            .is_none(),
+        matches!(
+            read_tee_admission_policy(&store, &ns_gid).unwrap(),
+            TeeAdmissionPolicyRead::NotSet
+        ),
         "no policy should exist before any op is applied on the replica"
     );
 
@@ -1762,9 +1763,10 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // After the policy op, a log-scanning reader on the REPLICA must see it —
     // this is the read the membership op depends on. Without the op-log
     // persistence fix the policy op leaves no log entry here.
-    let policy = read_tee_admission_policy(&store, &ns_gid)
-        .unwrap()
-        .expect("policy must be visible on the replica after applying it");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &ns_gid).unwrap()
+    else {
+        panic!("policy must be visible on the replica after applying it")
+    };
     assert_eq!(policy.allowed_mrtd, vec!["m1".to_owned()]);
     assert!(policy.accept_mock);
 
@@ -1808,9 +1810,10 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // op-log records the admission; (c) the member count reflects it (verifier
     // admin + the newly admitted TEE node).
     assert!(
-        read_tee_admission_policy(&store, &ns_gid)
-            .unwrap()
-            .is_some(),
+        matches!(
+            read_tee_admission_policy(&store, &ns_gid).unwrap(),
+            TeeAdmissionPolicyRead::Set(_)
+        ),
         "policy must remain readable after the membership op applies"
     );
     assert_eq!(

@@ -3522,7 +3522,10 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     .unwrap();
     append_op_log_entry(&store, &gid, 3, &borsh::to_vec(&policy_2).unwrap()).unwrap();
 
-    let latest = read_tee_admission_policy(&store, &gid).unwrap().unwrap();
+    let TeeAdmissionPolicyRead::Set(latest) = read_tee_admission_policy(&store, &gid).unwrap()
+    else {
+        panic!("a policy was written, so the read must find one")
+    };
     assert_eq!(latest.allowed_mrtd, vec!["m2".to_owned()]);
     assert!(latest.accept_mock);
     assert!(is_quote_hash_used(&store, &gid, &quote_a).unwrap());
@@ -3719,9 +3722,10 @@ fn tee_policy_lookup_from_subgroup_returns_root() {
     append_tee_policy_op(&store, &root, 1, "mrtd-root");
 
     for gid in [root, child, grandchild] {
-        let p = read_tee_admission_policy(&store, &gid)
-            .unwrap()
-            .expect("policy resolved via root");
+        let TeeAdmissionPolicyRead::Set(p) = read_tee_admission_policy(&store, &gid).unwrap()
+        else {
+            panic!("policy resolved via root")
+        };
         assert_eq!(p.allowed_mrtd, vec!["mrtd-root".to_owned()]);
     }
 }
@@ -3742,17 +3746,128 @@ fn tee_policy_lookup_from_subgroup_ignores_subgroup_own_bytes() {
     append_tee_policy_op(&store, &child, 1, "mrtd-subgroup-ignored");
 
     assert!(
-        read_tee_admission_policy(&store, &child).unwrap().is_none(),
-        "subgroup's own policy bytes must be ignored"
+        matches!(
+            read_tee_admission_policy(&store, &child).unwrap(),
+            TeeAdmissionPolicyRead::NotSet
+        ),
+        "subgroup's own policy bytes must be ignored, and every entry decodes, so this is \
+         NotSet rather than Unreadable"
     );
-    assert!(read_tee_admission_policy(&store, &root).unwrap().is_none());
+    assert!(matches!(
+        read_tee_admission_policy(&store, &root).unwrap(),
+        TeeAdmissionPolicyRead::NotSet
+    ));
 }
 
 #[test]
 fn tee_policy_lookup_on_root_without_policy_is_none() {
     let store = test_store();
     let root = ContextGroupId::from([0xC0; 32]);
-    assert!(read_tee_admission_policy(&store, &root).unwrap().is_none());
+    assert!(matches!(
+        read_tee_admission_policy(&store, &root).unwrap(),
+        TeeAdmissionPolicyRead::NotSet
+    ));
+}
+
+/// An op-log entry that does not decode must not be able to ERASE a policy.
+///
+/// The policy is not a materialized row -- it exists only as the replay of
+/// this log -- so a `if let Ok(op)` with no `else` meant one undecodable entry
+/// could turn a set policy into "no policy was ever set", and every caller
+/// then told the operator to go set the policy they had already set.
+mod an_undecodable_entry_is_not_an_absent_one {
+    use super::*;
+
+    /// Bytes that are certain not to decode as a `SignedGroupOp`. Stands in
+    /// for the realistic path -- a schema change or version skew between the
+    /// writing and reading binary -- without needing two binaries.
+    fn append_undecodable_entry(store: &Store, group: &ContextGroupId, seq: u64) {
+        append_op_log_entry(store, group, seq, &[0xFF; 8]).unwrap();
+        assert!(
+            borsh::from_slice::<SignedGroupOp>(&[0xFF; 8]).is_err(),
+            "precondition: these bytes must not decode, or the test proves nothing"
+        );
+    }
+
+    /// The criterion from the issue: a valid policy alongside an undecodable
+    /// entry is still found, and the failure is still reported.
+    #[test]
+    fn a_valid_policy_survives_an_undecodable_neighbour() {
+        let store = test_store();
+        let root = ContextGroupId::from([0xD0; 32]);
+
+        append_tee_policy_op(&store, &root, 1, "mrtd-good");
+        append_undecodable_entry(&store, &root, 2);
+
+        let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+        else {
+            panic!("a decodable policy must still be found next to an unreadable entry")
+        };
+        assert_eq!(policy.allowed_mrtd, vec!["mrtd-good".to_owned()]);
+    }
+
+    /// The erase case, and the whole reason this is not an `Option`. Before
+    /// the fix this returned `None`, which `admit_tee_node` reported as
+    /// "no TeeAdmissionPolicy set for group" -- sending an operator who HAD
+    /// set one to set it again, while the real fault went unmentioned.
+    #[test]
+    fn an_unreadable_log_is_distinguishable_from_an_unset_policy() {
+        let store = test_store();
+        let unreadable = ContextGroupId::from([0xD1; 32]);
+        let empty = ContextGroupId::from([0xD2; 32]);
+
+        append_undecodable_entry(&store, &unreadable, 1);
+
+        let read = read_tee_admission_policy(&store, &unreadable).unwrap();
+        let TeeAdmissionPolicyRead::Unreadable { undecodable } = read else {
+            panic!(
+                "an undecodable entry and no readable policy must report Unreadable, got {read:?}"
+            )
+        };
+        assert_eq!(undecodable.len(), 1);
+        assert_eq!(
+            undecodable[0].sequence, 1,
+            "the failure must name the sequence number, so an operator can find the entry"
+        );
+        assert!(
+            !undecodable[0].error.is_empty(),
+            "and must carry the decode error, not just the fact of one"
+        );
+
+        // The contrast that matters: a genuinely empty log is a DIFFERENT
+        // answer, not the same `None`.
+        assert!(matches!(
+            read_tee_admission_policy(&store, &empty).unwrap(),
+            TeeAdmissionPolicyRead::NotSet
+        ));
+    }
+
+    /// The op-apply path must refuse with a different error for each, or the
+    /// distinction dies one layer above `read_tee_admission_policy`.
+    #[test]
+    fn the_op_apply_refusal_says_which_fault_it_is() {
+        let store = test_store();
+        let unreadable = ContextGroupId::from([0xD3; 32]);
+        let empty = ContextGroupId::from([0xD4; 32]);
+
+        append_undecodable_entry(&store, &unreadable, 1);
+
+        let err = crate::membership::MembershipPolicy::new(&store, unreadable)
+            .read_required_tee_admission_policy()
+            .expect_err("an unreadable log must not yield a policy");
+        assert!(
+            err.to_string().contains("could not be read"),
+            "unreadable must not be reported as unset, got: {err}"
+        );
+
+        let err = crate::membership::MembershipPolicy::new(&store, empty)
+            .read_required_tee_admission_policy()
+            .expect_err("an empty log has no policy");
+        assert!(
+            err.to_string().contains("no TeeAdmissionPolicySet exists"),
+            "genuinely-unset must keep saying so, got: {err}"
+        );
+    }
 }
 
 #[test]

@@ -125,6 +125,17 @@ pub enum MembershipError {
     #[error("MemberJoinedViaTeeAttestation rejected: no TeeAdmissionPolicySet exists for group")]
     NoTeeAdmissionPolicy,
 
+    /// The group's op log holds entries that do not decode as a
+    /// `SignedGroupOp`, and no policy was found among the ones that do.
+    /// Deliberately NOT `NoTeeAdmissionPolicy`: a policy may well be set and
+    /// merely unreadable, and telling an operator to "set the policy first"
+    /// when they already have sends them to fix the wrong thing.
+    #[error(
+        "MemberJoinedViaTeeAttestation rejected: the TEE admission policy could not be read \
+         ({0} op-log entries do not decode) — this is not the same as no policy being set"
+    )]
+    TeeAdmissionPolicyUnreadable(usize),
+
     /// Inheritance walk hit the namespace depth bound — either the
     /// store has a cycle or the chain genuinely exceeds
     /// `MAX_NAMESPACE_DEPTH`.
