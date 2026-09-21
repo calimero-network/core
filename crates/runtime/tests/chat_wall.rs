@@ -32,14 +32,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-use calimero_account::AccountId;
 use calimero_runtime::logic::{Outcome, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 
 mod wall_harness;
 
-use wall_harness::{Probe, Verdict};
+use wall_harness::{call, Probe, Verdict};
 
 const PROBE: Probe = Probe {
     app: "mero-chat",
@@ -181,26 +180,6 @@ fn ceiling() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_CEILING)
-}
-
-fn call(
-    module: &calimero_runtime::Module,
-    storage: &mut InMemoryStorage,
-    method: &str,
-    args: &serde_json::Value,
-) -> Outcome {
-    module
-        .run(
-            [0_u8; 32].into(),
-            AccountId::from([0_u8; 32]),
-            [0_u8; 32].into(),
-            method,
-            &serde_json::to_vec(args).expect("encode args"),
-            storage,
-            None,
-            None,
-        )
-        .expect("run must return an Outcome")
 }
 
 fn init_args() -> serde_json::Value {

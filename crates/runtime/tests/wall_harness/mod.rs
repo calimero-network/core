@@ -15,22 +15,19 @@ use calimero_runtime::logic::{Outcome, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{Engine, Module};
 
-const PROBE_STRIDE: usize = 100; // characters between two progress lines of a sweep
-
-pub fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates/")
-        .parent()
-        .expect("workspace root")
-        .to_path_buf()
-}
+pub const PROBE_STRIDE: usize = 100; // characters between two progress lines of a sweep
 
 /// Build `apps/<app>` and return the wasm bytes. The build runs every time:
 /// cargo already knows the whole dependency graph these probes measure, and a
 /// local mtime check over the app's own sources does not.
 pub fn guest_wasm(app: &str) -> Vec<u8> {
-    let app_dir = workspace_root().join("apps").join(app);
+    let app_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/")
+        .parent()
+        .expect("workspace root")
+        .join("apps")
+        .join(app);
     let wasm_path = app_dir.join(format!("res/{}.wasm", app.replace('-', "_")));
 
     let output = Command::new(env!("CARGO"))

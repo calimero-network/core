@@ -10,10 +10,6 @@ mod wall_harness;
 
 use wall_harness::{call, guest_wasm};
 
-fn editor_wasm() -> Vec<u8> {
-    guest_wasm("collaborative-editor")
-}
-
 fn expect_ok(outcome: &Outcome, method: &str) {
     assert!(
         outcome.returns.is_ok(),
@@ -24,7 +20,7 @@ fn expect_ok(outcome: &Outcome, method: &str) {
 
 /// One shared seed: rebuilding it per branch would put timestamp noise into the prior state.
 fn seeded_module_and_storage() -> (calimero_runtime::Module, InMemoryStorage) {
-    let wasm = editor_wasm();
+    let wasm = guest_wasm("collaborative-editor");
     let module = Engine::with_limits(VMLimits::default())
         .compile(&wasm)
         .expect("compile metered module");

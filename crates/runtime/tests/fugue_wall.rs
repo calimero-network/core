@@ -10,7 +10,7 @@ use calimero_runtime::Engine;
 
 mod wall_harness;
 
-use wall_harness::{call, guest_wasm, Probe, Verdict};
+use wall_harness::{call, guest_wasm, Probe, Verdict, PROBE_STRIDE};
 
 const PROBE: Probe = Probe {
     app: "fugue-editor",
@@ -83,14 +83,7 @@ fn preflight(module: &calimero_runtime::Module) {
     }
 }
 
-const DEFAULT_CEILING: usize = 20_000;
-
-fn ceiling() -> usize {
-    std::env::var("FUGUE_WALL_CEILING")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_CEILING)
-}
+const CEILING: usize = 20_000;
 
 const RANGE_READ_CHARS: usize = 100;
 
@@ -118,9 +111,6 @@ fn typing_and_reading_walls() {
         "init",
     );
 
-    let ceiling = ceiling();
-    const READ_PROBE_STRIDE: usize = 100;
-
     let mut landed = 0_usize;
     let mut write_wall: Option<usize> = None;
     let mut last_read_ok: Option<usize> = None;
@@ -135,7 +125,7 @@ fn typing_and_reading_walls() {
          char_at_gas   c_reads  | range_gas     x_reads"
     );
 
-    for i in 0..ceiling {
+    for i in 0..CEILING {
         let started = Instant::now();
         let outcome = call(
             &module,
@@ -160,7 +150,7 @@ fn typing_and_reading_walls() {
         }
         landed += 1;
 
-        if !landed.is_multiple_of(READ_PROBE_STRIDE) {
+        if !landed.is_multiple_of(PROBE_STRIDE) {
             continue;
         }
 
@@ -217,7 +207,7 @@ fn typing_and_reading_walls() {
     println!("characters landed:  {landed}");
     match write_wall {
         Some(n) => println!("write wall (insert_text, one more char): {n}"),
-        None => println!("write wall (insert_text, one more char): none below {ceiling}"),
+        None => println!("write wall (insert_text, one more char): none below {CEILING}"),
     }
     for (name, last_ok, wall) in [
         ("get_text  ", last_read_ok, read_wall),
@@ -257,7 +247,7 @@ fn typing_and_reading_walls() {
             gas. The in-repo gate for the same underlying property is \
             `cargo test -p storage-cost` (fugue_text_insert_middle)."]
 fn mid_document_typing_wall() {
-    wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
+    wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), CEILING, preflight);
 }
 
 #[test]

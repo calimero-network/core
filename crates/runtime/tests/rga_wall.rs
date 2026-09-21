@@ -10,7 +10,7 @@ use calimero_runtime::Engine;
 
 mod wall_harness;
 
-use wall_harness::{call, guest_wasm, Probe, Verdict};
+use wall_harness::{call, guest_wasm, Probe, Verdict, PROBE_STRIDE};
 
 const PROBE: Probe = Probe {
     app: "collaborative-editor",
@@ -52,14 +52,7 @@ fn preflight(module: &calimero_runtime::Module) {
     }
 }
 
-const DEFAULT_CEILING: usize = 20_000;
-
-fn ceiling() -> usize {
-    std::env::var("RGA_WALL_CEILING")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_CEILING)
-}
+const CEILING: usize = 20_000;
 
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
@@ -84,9 +77,6 @@ fn typing_and_reading_walls() {
         "init",
     );
 
-    let ceiling = ceiling();
-    const READ_PROBE_STRIDE: usize = 100;
-
     let mut landed = 0_usize;
     let mut write_wall: Option<usize> = None;
     let mut last_read_ok: Option<usize> = None;
@@ -94,7 +84,7 @@ fn typing_and_reading_walls() {
 
     println!("\n  n        insert_gas       i_reads   ms  | get_text_gas    r_reads   ms");
 
-    for i in 0..ceiling {
+    for i in 0..CEILING {
         let started = Instant::now();
         let outcome = call(
             &module,
@@ -119,7 +109,7 @@ fn typing_and_reading_walls() {
         }
         landed += 1;
 
-        if read_wall.is_none() && landed.is_multiple_of(READ_PROBE_STRIDE) {
+        if read_wall.is_none() && landed.is_multiple_of(PROBE_STRIDE) {
             let started = Instant::now();
             let read = call(&module, &mut storage, "get_text", &serde_json::json!({}));
             let read_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -150,7 +140,7 @@ fn typing_and_reading_walls() {
     println!("characters landed:  {landed}");
     match write_wall {
         Some(n) => println!("write wall (insert_text, one more char): {n}"),
-        None => println!("write wall (insert_text, one more char): none below {ceiling}"),
+        None => println!("write wall (insert_text, one more char): none below {CEILING}"),
     }
     match (last_read_ok, read_wall) {
         (Some(ok), Some(bad)) => {
@@ -183,7 +173,7 @@ fn typing_and_reading_walls() {
             exhausts gas. The in-repo gate for the same underlying property is \
             `cargo test -p storage-cost` (rga_insert_per_char)."]
 fn mid_document_typing_wall() {
-    wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
+    wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), CEILING, preflight);
 }
 
 #[test]
