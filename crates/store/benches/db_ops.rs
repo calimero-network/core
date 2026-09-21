@@ -133,28 +133,31 @@ fn run_group<D: for<'a> Database<'a>>(
     });
 }
 
-fn inmem(c: &mut Criterion) {
-    let mut group = c.benchmark_group("inmem");
+/// One backend, swept over the population sizes. `make` returns the database
+/// alongside anything that must outlive it, which for RocksDB is the temp
+/// directory holding it.
+fn sweep<D: for<'a> Database<'a>, T>(c: &mut Criterion, name: &str, make: impl Fn() -> (D, T)) {
+    let mut group = c.benchmark_group(name);
     for n in [100_usize, 1_000, 10_000] {
-        let db = InMemoryDB::owned();
+        let (db, _owned) = make();
         populate(&db, n);
         run_group(&mut group, &db, n);
     }
     group.finish();
 }
 
+fn inmem(c: &mut Criterion) {
+    sweep(c, "inmem", || (InMemoryDB::owned(), ()));
+}
+
 fn rocks(c: &mut Criterion) {
-    let mut group = c.benchmark_group("rocks");
-    for n in [100_usize, 1_000, 10_000] {
+    sweep(c, "rocks", || {
         let dir = TempDir::new().expect("tempdir must create");
         let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf())
             .expect("tempdir path must be utf-8");
         let db = RocksDB::open(&StoreConfig::new(path)).expect("rocksdb must open");
-        populate(&db, n);
-        run_group(&mut group, &db, n);
-        // `dir` drops here, taking the database with it.
-    }
-    group.finish();
+        (db, dir)
+    });
 }
 
 criterion_group!(benches, inmem, rocks);

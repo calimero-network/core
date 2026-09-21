@@ -21,7 +21,6 @@
 //! with the network.
 
 use std::hint::black_box;
-use std::path::Path;
 use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
@@ -36,16 +35,15 @@ use tempfile::TempDir;
 /// `FileSystem` blob store in a fresh temp directory. The `TempDir` is
 /// returned alongside the manager so it outlives the measurement; dropping it
 /// would delete the store out from under `put`.
-async fn new_manager_async(root: &Path) -> BlobManager {
-    let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
-    let config = BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());
-    let blob_store = FileSystem::new(&config).await.unwrap();
-    BlobManager::new(data_store, blob_store)
-}
-
 fn new_manager(runtime: &tokio::runtime::Runtime) -> (BlobManager, TempDir) {
     let dir = tempfile::tempdir().expect("a temp dir must be creatable");
-    let manager = runtime.block_on(new_manager_async(dir.path()));
+    let manager = runtime.block_on(async {
+        let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
+        let config =
+            BlobStoreConfig::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        let blob_store = FileSystem::new(&config).await.unwrap();
+        BlobManager::new(data_store, blob_store)
+    });
     (manager, dir)
 }
 
