@@ -44,6 +44,11 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 ### `FugueText` constraints
 
+- Every position is an index into Unicode SCALAR VALUES (Rust `char`), never bytes and never UTF-16 code units.
+  That is `insert`, `insert_str`, `insert_str_with_replica`, `delete`, `delete_range`, `text_range`, `char_at`, `anchor_at`, `len` and every `TextOp` an `apply_delta` carries.
+  An astral character is one position and a combining mark is its own, so a grapheme cluster spans several; a browser counts UTF-16 code units, where an astral character is two, so a TypeScript binding converts on both edges and core stays as it is.
+  A run is capped in nodes and one node holds one scalar value, so a cap boundary can never land inside a character (`scalar_value_tests`).
+
 - A block holds at most `MAX_RUN_LEN` (256) nodes, and a full run is never rewritten or split.
   The overflowing character opens a new block parented on the full run's last node, side right.
   Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.

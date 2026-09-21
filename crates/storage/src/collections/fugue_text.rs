@@ -3,6 +3,16 @@
 //! One entity is one run of up to `MAX_RUN_LEN` nodes, each after the first the right
 //! child of the one before; a full run is never rewritten. Order is recomputed from the
 //! stored blocks through a [`FugueTree`] on every call, so gas is equal on every replica.
+//!
+//! # The unit of a position
+//!
+//! Every `pos`, `start`, `end` and `TextOp` count here is an index into Unicode
+//! SCALAR VALUES (Rust `char`), never bytes and never UTF-16 code units. That covers
+//! `insert`, `insert_str`, `insert_str_with_replica`, `delete`, `delete_range`,
+//! `text_range`, `char_at`, `anchor_at`, `len` and every `TextOp` an `apply_delta`
+//! carries. An astral character is one position and a combining mark is its own,
+//! so a grapheme cluster spans several. A browser counts UTF-16 code units, where
+//! every astral character is two, so a TypeScript binding converts on both edges.
 
 use std::collections::BTreeSet;
 
@@ -2932,5 +2942,136 @@ mod golden_tests {
         join_block(&mut loser, block("abc", vec![0b0000_0001]));
         assert_eq!(loser.text, "abc");
         assert_eq!(loser.tombstones, vec![0b0000_0101]);
+    }
+}
+
+/// Positions are Unicode scalar values on every path, and a run never splits one.
+#[cfg(test)]
+mod scalar_value_tests {
+    use super::{doc_in, BlockId, FugueText, TextBlock, TextOp, MAX_RUN_LEN};
+    use crate::collections::fugue_text::{Anchor, Bias};
+    use crate::env;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    const GRINNING: &str = "\u{1F600}"; // astral: 1 scalar value, 2 UTF-16 units, 4 bytes
+    const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // 5 scalar values
+    const ACUTE: &str = "e\u{301}"; // a combining mark is its own scalar value
+
+    fn utf16_len(text: &str) -> usize {
+        text.chars().map(char::len_utf16).sum()
+    }
+
+    #[test]
+    fn every_position_counts_scalar_values() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<890>>("scalar-units");
+        let seed = format!("{GRINNING}{FAMILY}{ACUTE}");
+        doc.insert_str_with_replica(0, 7, &seed).unwrap();
+
+        assert_eq!(doc.len().unwrap(), 8);
+        assert_eq!(utf16_len(&seed), 12, "a browser would count 12");
+        assert_eq!(seed.len(), 25, "the bytes are a third unit again");
+
+        assert_eq!(doc.char_at(0).unwrap(), Some('\u{1F600}'));
+        assert_eq!(doc.char_at(2).unwrap(), Some('\u{200D}'));
+        assert_eq!(doc.char_at(7).unwrap(), Some('\u{301}'));
+        assert_eq!(doc.char_at(8).unwrap(), None);
+        assert_eq!(doc.text_range(1, 6).unwrap(), FAMILY);
+
+        // Position 3 is inside the family sequence, between two of its parts.
+        doc.insert_str_with_replica(3, 7, GRINNING).unwrap();
+        assert_eq!(doc.len().unwrap(), 9);
+        assert_eq!(doc.char_at(3).unwrap(), Some('\u{1F600}'));
+
+        // Deleting one position takes one scalar value, not one UTF-16 unit.
+        let removed = doc.delete_range(3, 4).unwrap().unwrap();
+        assert_eq!(removed.text, GRINNING);
+        assert_eq!(doc.get_text().unwrap(), seed);
+    }
+
+    #[test]
+    fn anchors_address_scalar_values() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<891>>("scalar-anchors");
+        doc.insert_str_with_replica(0, 7, &format!("{GRINNING}{GRINNING}{ACUTE}"))
+            .unwrap();
+
+        let after_first = doc.anchor_at(1, Bias::After).unwrap();
+        let before_mark = doc.anchor_at(3, Bias::Before).unwrap();
+        assert!(matches!(after_first, Anchor::Char { .. }));
+
+        doc.insert_str_with_replica(0, 7, FAMILY).unwrap();
+        assert_eq!(doc.resolve(&after_first).unwrap(), 6);
+        assert_eq!(doc.resolve(&before_mark).unwrap(), 8);
+        assert_eq!(
+            doc.resolve_many(&[after_first, before_mark]).unwrap(),
+            [6, 8]
+        );
+    }
+
+    #[test]
+    fn apply_delta_counts_scalar_values() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<892>>("scalar-delta");
+        doc.insert_str_with_replica(0, 7, &format!("{GRINNING}{FAMILY}"))
+            .unwrap();
+
+        // Every count is scalar values, including the cursor walk between the ops.
+        let steps = doc
+            .apply_delta(&[
+                TextOp::Retain(1),
+                TextOp::Insert(ACUTE.to_owned()),
+                TextOp::Retain(2),
+                TextOp::Insert(GRINNING.to_owned()),
+                TextOp::Delete(1),
+            ])
+            .unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            doc.get_text().unwrap(),
+            "\u{1F600}e\u{301}\u{1F468}\u{200D}\u{1F600}\u{200D}\u{1F467}"
+        );
+        assert_eq!(doc.len().unwrap(), 8);
+    }
+
+    /// A run is capped in NODES, and one node holds one scalar value, so the
+    /// boundary can never land inside a character's bytes.
+    #[test]
+    fn the_run_cap_never_splits_an_astral_character() {
+        env::reset_for_testing();
+        type S = MockedStorage<893>;
+        let mut doc = doc_in::<S>("scalar-cap");
+        let paste: String = GRINNING.repeat(MAX_RUN_LEN + 3);
+        doc.insert_str_with_replica(0, 7, &paste).unwrap();
+
+        let blocks = stored(&doc);
+        assert_eq!(blocks.len(), 2, "the paste must cross the cap");
+        assert_eq!(blocks[0].1.text.chars().count(), MAX_RUN_LEN);
+        assert_eq!(blocks[1].1.text.chars().count(), 3);
+        for (id, block) in &blocks {
+            assert!(
+                block.text.chars().all(|c| c == '\u{1F600}'),
+                "block {id:?} holds a split character"
+            );
+        }
+        assert_eq!(doc.get_text().unwrap(), paste);
+
+        // The stored rows survive a borsh round trip unchanged.
+        let bytes = borsh::to_vec(&blocks).unwrap();
+        assert_eq!(
+            borsh::from_slice::<Vec<(BlockId, TextBlock)>>(&bytes).unwrap(),
+            blocks
+        );
+    }
+
+    fn stored<S: StorageAdaptor>(doc: &FugueText<S>) -> Vec<(BlockId, TextBlock)> {
+        let mut out: Vec<(BlockId, TextBlock)> = doc
+            .blocks
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k.id(), v))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
     }
 }
