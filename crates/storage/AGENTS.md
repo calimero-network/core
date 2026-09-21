@@ -60,7 +60,9 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
   It must store byte for byte what the same ops store one call at a time; `apply_delta_stores_what_the_ops_stored_one_at_a_time` is that gate.
 - Undo is local and built by the app: each edit returns what its inverse takes (`insert_str` and `insert_str_at` an `IdRange` for `delete_ids`; `delete_range` and `delete_ids` a `Removed` for `insert_str_at`; `apply_delta` a `Vec<Undo>` for `undo`, which is a thin reverse loop over those two primitives and returns the redo steps).
   Tombstones are monotone, so undoing a delete mints new characters at the anchor and never clears a bit.
-- A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing.
+- A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing; `resolve_many` resolves a whole slice against one.
+- `Anchor`, `Bias`, `IdRange`, `Removed` and `Undo` carry borsh AND serde. Borsh is the persisted format; the JSON is the JSON-RPC shape, with a `RawId` as the two-element array `[replica, counter]`. Both are pinned as formats.
+  They have no `AbiType`, so a guest method still cannot take or return one directly - `cargo mero build` rejects it - and the reference app ships them as bs58-encoded borsh.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
 
 ## AI Agent Mental Model: CRDT Merge Architecture

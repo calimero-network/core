@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 
 use super::fugue::{FugueNode, FugueTree, NodeId, RawId, Side};
 use super::{CrdtType, UnorderedMap};
@@ -158,15 +159,21 @@ fn tomb_trim(bits: &mut Vec<u8>) {
     }
 }
 
-/// Which side of its character an [`Anchor`] sits on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// Which side of its character an [`Anchor`] sits on. JSON: `"Before"` / `"After"`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum Bias {
     Before,
     After,
 }
 
 /// A cursor that survives concurrent edits: the gap beside a character, or a document edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+///
+/// JSON: `"Start"`, `"End"`, or `{"Char":{"id":[replica,counter],"bias":"After"}}`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum Anchor {
     Start,
     End,
@@ -174,14 +181,18 @@ pub enum Anchor {
 }
 
 /// The ids one insert minted: `len` consecutive counters from `start`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// JSON: `{"start":[replica,counter],"len":n}`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct IdRange {
     pub start: RawId,
     pub len: u32,
 }
 
 /// What a delete took out, and where from: the input to [`FugueText::insert_str_at`].
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// JSON: `{"text":"...","anchor":<Anchor>}`.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Removed {
     pub text: String,
     pub anchor: Anchor,
@@ -196,7 +207,8 @@ pub enum TextOp {
 }
 
 /// What one op of an applied change took, so the change can be taken back.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// JSON: `{"Inserted":<IdRange>}` or `{"Removed":<Removed>}`.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum Undo {
     Inserted(IdRange),
     Removed(Removed),
@@ -434,6 +446,16 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// The gap `anchor` names now; a deleted character resolves to the gap it left.
     pub fn resolve(&self, anchor: &Anchor) -> Result<usize, StoreError> {
         resolve_in(&build_tree(&self.load()?)?, anchor)
+    }
+
+    /// [`Self::resolve`] for many anchors against ONE rebuild of the tree, which is
+    /// what makes rendering a document's cursors and marks affordable.
+    pub fn resolve_many(&self, anchors: &[Anchor]) -> Result<Vec<usize>, StoreError> {
+        let tree = build_tree(&self.load()?)?;
+        anchors
+            .iter()
+            .map(|anchor| resolve_in(&tree, anchor))
+            .collect()
     }
 
     /// The number of visible characters.

@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
@@ -32,8 +32,17 @@ pub fn fork(store: &Store) -> Store {
 }
 
 pub fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
+    counting_env_for(store, device, &Rc::new(Cell::new(0)))
+}
+
+/// [`env_for`] with a tally of the host reads it issues.
+pub fn counting_env_for(store: &Store, device: [u8; 32], reads: &Rc<Cell<usize>>) -> RuntimeEnv {
     let r = Rc::clone(store);
-    let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
+    let tally = Rc::clone(reads);
+    let reader = Rc::new(move |key: &Key| {
+        tally.set(tally.get() + 1);
+        r.borrow().get(&key.to_bytes()).cloned()
+    });
     let w = Rc::clone(store);
     let writer = Rc::new(move |key: Key, value: &[u8]| {
         w.borrow_mut()
