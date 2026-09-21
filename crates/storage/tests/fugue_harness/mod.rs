@@ -1,8 +1,6 @@
-//! The storage harness shared by the `FugueText` integration tests: two
-//! replicas, separate stores, reconciled by `Interface::apply_action`.
-//!
-//! A directory module rather than `tests/fugue_harness.rs`, which cargo would
-//! compile as a test target of its own.
+//! The storage harness shared by the `FugueText` integration tests: per-replica
+//! stores reconciled by `Interface::apply_action`. A directory module, since
+//! `tests/fugue_harness.rs` would be compiled as a test target of its own.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,24 +13,20 @@ use calimero_storage::env::{self, RuntimeEnv};
 use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::{Key, MainStorage};
 
-/// An in-memory main-storage backend owned by one replica.
 pub type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
 
-/// The NATIVE DEFAULT context. `collections::ROOT_ID` is a process-global
-/// seeded from the first `context_id()` anything in the binary asks for, so a
-/// test that installs another one poisons `Root::new` for the whole process.
+/// Must stay the native default: `ROOT_ID` is a process-global seeded from the
+/// first `context_id()` read, so another value poisons `Root::new` process-wide.
 const CONTEXT_ID: [u8; 32] = [236_u8; 32];
 
 pub fn new_store() -> Store {
     Rc::new(RefCell::new(HashMap::new()))
 }
 
-/// A byte-for-byte copy of `store`: another replica bootstrapped from it.
 pub fn fork(store: &Store) -> Store {
     Rc::new(RefCell::new(store.borrow().clone()))
 }
 
-/// A [`RuntimeEnv`] routing all `MainStorage` I/O into `store`, under `device`.
 pub fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
     let r = Rc::clone(store);
     let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
@@ -49,16 +43,14 @@ pub fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
     RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, device, account)
 }
 
-/// Device id of replica `n`, distinct in the first 8 bytes (all `local_replica`
-/// reads).
+/// Distinct in the first 8 bytes, which is all `local_replica` reads.
 pub fn device(n: u8) -> [u8; 32] {
     let mut id = [n; 32];
     id[..8].copy_from_slice(&u64::from(n).to_be_bytes());
     id
 }
 
-/// Run `f` against the document in `store`, returning the delta the commit
-/// emits.
+/// Runs `f` against `store`'s document, returning the delta the commit emits.
 pub fn edit<T: BorshSerialize + BorshDeserialize>(
     store: &Store,
     device: [u8; 32],
@@ -73,8 +65,7 @@ pub fn edit<T: BorshSerialize + BorshDeserialize>(
     })
 }
 
-/// Land `delta` the way the sync path does: decode it into actions and push
-/// each through `Interface::apply_action`, skipping the sender's root entry.
+/// Lands `delta` the way the sync path does, through `Interface::apply_action`.
 pub fn land(store: &Store, device: [u8; 32], delta: &[u8]) {
     let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
         StorageDelta::Actions(actions) => actions,
@@ -91,7 +82,6 @@ pub fn land(store: &Store, device: [u8; 32], delta: &[u8]) {
     });
 }
 
-/// Read `store`'s document through `read`.
 pub fn read_with<T: BorshSerialize + BorshDeserialize, R>(
     store: &Store,
     device: [u8; 32],
@@ -102,15 +92,13 @@ pub fn read_with<T: BorshSerialize + BorshDeserialize, R>(
     })
 }
 
-/// The `FugueText` document `store` holds.
 pub fn fugue_text_in(store: &Store, device: [u8; 32]) -> String {
     read_with::<FugueText<MainStorage>, _>(store, device, |doc| {
         doc.get_text().expect("get_text should succeed")
     })
 }
 
-/// A genesis store holding a `FugueText` seeded with `seed`, authored under
-/// replica 0 so neither writer's counter space starts used.
+/// Authored under replica 0, so neither writer's counter space starts used.
 pub fn fugue_genesis(field: &str, seed: &str) -> Store {
     let store = new_store();
     clear_pending_delta();

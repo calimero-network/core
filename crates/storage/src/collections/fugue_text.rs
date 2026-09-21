@@ -1,28 +1,11 @@
 //! `FugueText` - a storage-backed, run-length-blocked Tree-Fugue text CRDT.
 //!
-//! Replaces [`ReplicatedGrowableArray`](super::ReplicatedGrowableArray), keeping
-//! its wiring (an [`UnorderedMap`] of id-keyed entities, so CRDT merge,
-//! tombstoning and re-key machinery are inherited) but ordering by Tree-Fugue,
-//! which is non-interleaving on backward insertion where RGA interleaves. The
-//! synced state is `(parent, side)` edges, modelled by [`fugue`](super::fugue).
-//!
-//! One entity is one RUN, not one character: a `TextBlock` holds consecutive
-//! nodes `(replica, counter), (replica, counter + 1), …`, the first hanging off
-//! the stored `(parent, side)` and every later one the right child of its
-//! predecessor. Runs stop growing at `MAX_RUN_LEN` nodes: uncapped, a whole
-//! document is one block re-read, rewritten and shipped on every keystroke. The
-//! character that overflows a full run opens a block already parented on that
-//! run's last node, side right, so nothing is ever split.
-//!
-//! Ordering is *computed*: every operation, read and write alike, expands the
-//! stored blocks into a [`FugueTree`] and asks it for the order; no cache,
-//! index or validity marker is consulted, and that is a correctness
-//! requirement. A write must not, because `parent` and `side` are
-//! SYNCED and a position resolved from stale state mints a wrong causal edge
-//! that ships in the delta and diverges every replica permanently. A read must
-//! not either, because its gas would then depend on node-local cache warmth, and
-//! one replica trapping on `GasExhausted` where another completes the same call
-//! is divergence, not slowness.
+//! One entity is one RUN, not one character: a `TextBlock` holds consecutive nodes, the
+//! first hanging off the stored `(parent, side)` and every later one the right child of
+//! its predecessor. A run stops growing at `MAX_RUN_LEN` and is then never rewritten or
+//! split; the character that overflows it opens a block parented on its last node.
+//! No node-local derived state: every operation expands the stored blocks into a
+//! [`FugueTree`] and asks it for the order, because gas must be equal on every replica.
 
 use std::collections::BTreeMap;
 
@@ -34,24 +17,19 @@ use crate::collections::error::StoreError;
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
 
-const MAX_RUN_LEN: usize = 256; // nodes per block; caps what one keystroke rewrites and ships
-const COUNTER_EXHAUSTED: &str = "replica counter space exhausted"; // a replica ran out of u32 ids
+const MAX_RUN_LEN: usize = 256; // nodes per block
+const COUNTER_EXHAUSTED: &str = "replica counter space exhausted";
 
-/// Identifier of a single Fugue node: `(replica, counter)`, ordered
-/// lexicographically like [`fugue::RawId`](super::fugue::RawId).
+/// The run's FIRST node: it covers `counter..counter + len` of `replica`'s counter space.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize,
 )]
 pub(crate) struct BlockId {
-    /// The replica that minted this run.
     replica: u64,
-    /// The first counter value of the run.
     counter: u32,
 }
 
 impl BlockId {
-    /// Test-only constructor: production code mints ids through
-    /// [`next_counter`] and never assembles one by hand.
     #[cfg(test)]
     const fn new(replica: u64, counter: u32) -> Self {
         Self { replica, counter }
@@ -89,8 +67,7 @@ impl BorshDeserialize for BlockKey {
 
 impl BlockKey {
     fn new(id: BlockId) -> Self {
-        // `BlockId` is a fixed-size POD struct; serialization cannot fail in
-        // practice. `unwrap_or_default` is a safety fallback only.
+        // `BlockId` is fixed-size POD, so serialization cannot fail.
         let bytes = borsh::to_vec(&id).unwrap_or_default();
         Self { id, bytes }
     }
@@ -106,13 +83,10 @@ impl AsRef<[u8]> for BlockKey {
     }
 }
 
-/// Borsh-serializable mirror of [`Side`]: `fugue.rs` is deliberately
-/// storage-free, so the wire form lives here.
+/// Borsh-serializable mirror of [`Side`], which `fugue.rs` keeps storage-free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
 pub(crate) enum BlockSide {
-    /// Left child, ordered before the parent's own value.
     L,
-    /// Right child, ordered after the parent's own value.
     R,
 }
 
@@ -137,35 +111,29 @@ impl From<BlockSide> for Side {
 /// One run of consecutive Fugue nodes stored as a single entity.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub(crate) struct TextBlock {
-    /// The id of the run's first node. Duplicated from the map key so the value
-    /// is self-describing to a host-side decoder.
+    /// Duplicated from the map key so the stored value is self-describing.
     start_id: BlockId,
-    /// The run's characters. Node `i` of the run holds the `i`-th character.
+    /// Node `i` of the run holds the `i`-th character.
     text: String,
-    /// The parent of the run's *first* node; `None` is the Fugue root.
+    /// The parent of the run's FIRST node; `None` is the Fugue root.
     parent: Option<BlockId>,
-    /// Which side of `parent` the run's first node hangs off.
     side: BlockSide,
-    /// Tombstones, one bit per NODE, LSB-first, trailing zero bytes trimmed so
-    /// one set has exactly one encoding. Per node because coalescing GROWS a
-    /// run, so a whole-run flag could not say which nodes it covered.
+    /// Per NODE: a run GROWS by coalescing, so a per-run flag could not say which nodes it covered.
     tombstones: Vec<u8>,
 }
 
 impl TextBlock {
-    /// The number of nodes in this run.
+    /// Nodes, not bytes.
     fn len(&self) -> usize {
         self.text.chars().count()
     }
 }
 
-/// Whether node `offset` of a run is tombstoned.
 fn tomb_get(bits: &[u8], offset: usize) -> bool {
     bits.get(offset / 8)
         .is_some_and(|byte| byte & (1_u8 << (offset % 8)) != 0)
 }
 
-/// Tombstone node `offset`, growing the bitmap as needed.
 fn tomb_set(bits: &mut Vec<u8>, offset: usize) {
     let byte = offset / 8;
     if bits.len() <= byte {
@@ -176,7 +144,6 @@ fn tomb_set(bits: &mut Vec<u8>, offset: usize) {
     }
 }
 
-/// Elementwise OR: the merge join for two copies of one run.
 fn tomb_or(dst: &mut Vec<u8>, src: &[u8]) {
     if dst.len() < src.len() {
         dst.resize(src.len(), 0);
@@ -197,13 +164,11 @@ fn tomb_trim(bits: &mut Vec<u8>) {
 /// A storage-backed collaborative text collection with Tree-Fugue ordering.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct FugueText<S: StorageAdaptor = MainStorage> {
-    /// Runs, keyed by the id of their first node.
     #[borsh(bound(serialize = "", deserialize = ""))]
     pub(crate) blocks: UnorderedMap<BlockKey, TextBlock, S>,
 }
 
-/// Re-key the block map relative to its storage parent so a `FugueText` stored
-/// as a collection value converges across nodes. See [`super::rekey`].
+/// Re-key the block map under its storage parent so a nested `FugueText` converges.
 impl<S: StorageAdaptor> super::rekey::RekeyTarget for FugueText<S> {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         self.blocks.reassign_deterministic_id_under(
@@ -242,7 +207,6 @@ impl<S: StorageAdaptor> FugueText<S> {
         }
     }
 
-    /// Create a new document with a deterministic ID (internal).
     pub(super) fn new_with_field_name_internal(
         parent_id: Option<crate::address::Id>,
         field_name: &str,
@@ -256,22 +220,18 @@ impl<S: StorageAdaptor> FugueText<S> {
         }
     }
 
-    /// Reassign the collection's ID deterministically from the field name.
     /// Called by the `#[app::state]` macro after `init()`.
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
         self.blocks.reassign_deterministic_id(field_name);
         self.blocks.set_collection_crdt_type(CrdtType::FugueText);
     }
 
-    /// Insert a character at the given visible position. Panics inside a state
-    /// migration, where the node-local device id would mint divergent node ids;
-    /// seed with [`insert_str_with_replica`](Self::insert_str_with_replica).
+    /// Insert a character at `pos`. Panics inside a state migration.
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
         self.insert_str(pos, content.encode_utf8(&mut [0_u8; 4]))
     }
 
-    /// Insert a string at the given visible position. Panics inside a state
-    /// migration; see [`insert`](Self::insert).
+    /// Insert a string at `pos`. Panics inside a state migration.
     #[expect(
         clippy::panic,
         reason = "non-deterministic during migrate (node-local device id); a loud panic is \
@@ -289,21 +249,17 @@ impl<S: StorageAdaptor> FugueText<S> {
         self.insert_str_with_replica(pos, replica, s)
     }
 
-    /// Insert a string at `pos`, minting ids under an explicit `replica`: the
-    /// deterministic counterpart of [`insert_str`](Self::insert_str), for
-    /// migration seeding. A `replica` two writers share mints colliding ids.
+    /// Insert at `pos` under an explicit `replica`; two writers sharing one mint colliding ids.
     pub fn insert_str_with_replica(
         &mut self,
         pos: usize,
         replica: u64,
         s: &str,
     ) -> Result<(), StoreError> {
-        // Register this type's nested-id re-key thunk so a document stored as a
-        // collection value is re-keyed when the outer collection is stored.
+        // Re-key thunk for a document stored as a collection value.
         let _ignored = super::rekey::register_rekey::<Self>();
 
-        // Only the first character needs the insert rule: each later one is the
-        // right child of the one before it, the edge a run already implies.
+        // Only the first character needs the insert rule; the rest chain right.
         let mut rest = s.chars();
         let Some(first) = rest.next() else {
             return Ok(());
@@ -319,14 +275,12 @@ impl<S: StorageAdaptor> FugueText<S> {
         self.materialize(&loaded, node, rest.as_str())
     }
 
-    /// Delete the character at the given visible position.
+    /// Delete the character at `pos`.
     pub fn delete(&mut self, pos: usize) -> Result<(), StoreError> {
         self.delete_range(pos, pos.checked_add(1).ok_or_else(|| out_of_bounds(pos))?)
     }
 
-    /// Delete the half-open range `start..end` of visible positions. Clamped in
-    /// `end` so a delete replayed out of order is safe, and never splits or
-    /// drops an entity: a tombstoned node can still parent live ones.
+    /// Delete the half-open range `start..end` of visible positions, clamped in `end`.
     pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
         if start > end {
             return Err(invalid("start must be <= end"));
@@ -335,8 +289,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         let loaded = self.load()?;
         let mut tree = build_tree(&loaded)?;
 
-        // Deleting at `start` repeatedly walks forward: each tombstone removes
-        // that character from the live sequence.
+        // Each tombstone removes its character from the live sequence, so `start` stays put.
         let count = end.min(tree.len()).saturating_sub(start);
         let mut targets: Vec<(u64, u32)> = Vec::with_capacity(count);
         for _ in 0..count {
@@ -349,8 +302,6 @@ impl<S: StorageAdaptor> FugueText<S> {
             return Ok(());
         }
 
-        // Exactly one stored block defines any node (see `find_block`), so one
-        // bitmap write per node is the whole of the delete.
         let mut touched: BTreeMap<usize, TextBlock> = BTreeMap::new();
         for raw in targets {
             let id = BlockId::from_raw(raw);
@@ -379,9 +330,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(build_tree(&loaded)?.values())
     }
 
-    /// The characters in the half-open range `start..end`, by `char` index and
-    /// not by byte or grapheme cluster. Clamped in `end` like
-    /// [`delete_range`](Self::delete_range); errors when `start > end`.
+    /// The characters in `start..end`, by char index, clamped in `end`.
     pub fn text_range(&self, start: usize, end: usize) -> Result<String, StoreError> {
         if start > end {
             return Err(invalid("start must be <= end"));
@@ -391,8 +340,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(text.chars().skip(start).take(end - start).collect())
     }
 
-    /// The character at `pos`, a `char` index and not a byte or grapheme
-    /// cluster, or `None` if `pos` is past the end.
+    /// The character at `pos`, a char index, or `None` past the end.
     pub fn char_at(&self, pos: usize) -> Result<Option<char>, StoreError> {
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.values().chars().nth(pos))
@@ -409,8 +357,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         self.len().map(|len| len == 0)
     }
 
-    /// The equivalence oracle for the batched path: one single-character
-    /// [`insert_str_with_replica`](Self::insert_str_with_replica) per character.
+    /// The equivalence oracle for the batched path.
     #[cfg(test)]
     fn insert_str_per_char(&mut self, pos: usize, replica: u64, s: &str) -> Result<(), StoreError> {
         for (offset, content) in s.chars().enumerate() {
@@ -423,9 +370,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(())
     }
 
-    /// Write the node the tree just minted, plus the `rest` of the string it
-    /// heads: extend an existing run where the first node continues one, then
-    /// chunk whatever is left into capped blocks, each written exactly once.
+    /// Write the minted node and the `rest` it heads, extending a run then chunking at the cap.
     fn materialize(
         &mut self,
         loaded: &[LoadedBlock],
@@ -434,8 +379,7 @@ impl<S: StorageAdaptor> FugueText<S> {
     ) -> Result<(), StoreError> {
         let id = BlockId::from_raw(node.id);
 
-        // Appended nodes are live and a trailing zero bit is implicit, so
-        // extending a run leaves its bitmap untouched.
+        // Appended nodes are live and a trailing zero bit is implicit, so the bitmap is untouched.
         let (mut key, mut block, filled) = match coalesce_target(loaded, node, id) {
             Some(lb) => (BlockKey::new(lb.id), lb.block.clone(), lb.len),
             None => (
@@ -465,8 +409,7 @@ impl<S: StorageAdaptor> FugueText<S> {
             let Some(content) = chars.next() else {
                 return Ok(());
             };
-            // Past the cap: the new block is parented on the full run's last
-            // node, side right, the edge the intra-run chain would have carried.
+            // Past the cap: parent the new block on the full run's last node, side right.
             let start = BlockId {
                 replica: id.replica,
                 counter: bump(last)?,
@@ -487,9 +430,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         }
     }
 
-    /// Write one block, stamping its ENTRY element `CrdtType::FugueTextBlock`.
-    /// `TextBlock` values are MUTABLE under one key, so an untagged entity
-    /// would reconcile last-writer-wins; the tag routes it to [`join_block`].
+    /// A block is MUTABLE under one key, so an untagged entity would reconcile last-writer-wins.
     fn put_block(&mut self, key: BlockKey, block: TextBlock) -> Result<(), StoreError> {
         use crate::entities::Data as _;
 
@@ -519,16 +460,13 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(loaded)
     }
 
-    /// Copy every block from `other` that `self` neither holds nor tombstoned.
-    /// The per-key join is [`join_block`], a genuine lattice join rather than an
-    /// LWW heuristic; a block `self` removed at the storage layer stays removed.
+    /// Copy in `other`'s blocks, joined per key by [`join_block`]; a removed block stays removed.
     pub(crate) fn merge_blocks_from<S2: StorageAdaptor>(
         &mut self,
         other: &FugueText<S2>,
     ) -> Result<(), StoreError> {
         for (key, incoming) in other.blocks.entries()? {
-            // Propagate a read error rather than treating it as "absent",
-            // which would re-insert over live data.
+            // A read error must propagate: treating it as absent would re-insert over live data.
             if let Some(mine) = self.blocks.get(&key)? {
                 let mine = mine.into_inner();
                 let mut merged = mine.clone();
@@ -539,8 +477,7 @@ impl<S: StorageAdaptor> FugueText<S> {
                 continue;
             }
 
-            // Absent from `self`'s live set: a tombstone means `self` deleted
-            // this entity (delete wins, don't resurrect); otherwise it is new.
+            // A storage tombstone means `self` deleted it: delete wins, do not resurrect.
             if crate::index::Index::<S>::is_deleted(self.blocks.entry_id(&key))? {
                 continue;
             }
@@ -549,18 +486,14 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(())
     }
 
-    /// Join two stored ENTRIES of the block map, as the bytes the storage layer
-    /// holds: the leaf-merge entry point the SYNC path reaches through
-    /// `merge_by_crdt_type`, applying the same [`join_block`] as local writes.
+    /// The leaf-merge entry point the SYNC path reaches through `merge_by_crdt_type`.
     pub(crate) fn merge_block_entry_bytes(
         existing: &[u8],
         incoming: &[u8],
     ) -> Result<Vec<u8>, super::crdt_meta::MergeError> {
         use super::crdt_meta::MergeError;
 
-        // `(value, key)`, the order `UnorderedMap::insert_with_storage_type`
-        // stores an entry in. Reversed it still decodes, since both sides open
-        // with 12 bytes, so getting it wrong is a silent bad join, not an error.
+        // `(value, key)`: the reverse order still decodes, so getting it wrong is a silent bad join.
         type BlockEntry = super::Entry<(TextBlock, BlockKey)>;
 
         let mut existing_entry: BlockEntry = borsh::from_slice(existing)
@@ -575,9 +508,7 @@ impl<S: StorageAdaptor> FugueText<S> {
     }
 }
 
-/// The per-key join for two copies of one run: tombstone OR, plus the maximum
-/// of the rest under `(node count, text, parent, side)` - the longer run for
-/// honest prefix copies, and still convergent for a counter-reusing peer.
+/// Tombstone OR plus the max of `(node count, text, parent, side)`: convergent for hostile peers.
 fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
     tomb_or(&mut mine.tombstones, &incoming.tombstones);
     fn rank(b: &TextBlock) -> (usize, &str, Option<BlockId>, BlockSide) {
@@ -590,28 +521,21 @@ fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
     }
 }
 
-/// A stored block plus the read-time facts derived from its neighbours.
+/// A stored block plus its node count.
 struct LoadedBlock {
-    /// The id of the run's first node.
     id: BlockId,
-    /// The stored entity.
     block: TextBlock,
-    /// The run's node count.
     len: usize,
 }
 
-/// Whether the run `lb` can absorb a new node `id` as one more character.
-/// Requires `id` to continue the run's own sequence on the same replica, and
-/// stops at [`MAX_RUN_LEN`], past which a full block's text is frozen.
+/// Stops at [`MAX_RUN_LEN`], past which a full block's text is frozen.
 fn coalesces_into(lb: &LoadedBlock, id: BlockId) -> bool {
     lb.len < MAX_RUN_LEN
         && lb.id.replica == id.replica
         && u64::from(lb.id.counter) + lb.len as u64 == u64::from(id.counter)
 }
 
-/// The stored run the freshly minted `node` continues, if it continues one.
-/// Only a RIGHT child off the run's LAST node can: appending re-parents the new
-/// node onto that last node, the edge Fugue chooses only in that case.
+/// Only a RIGHT child off the run's LAST node continues it.
 fn coalesce_target(loaded: &[LoadedBlock], node: FugueNode, id: BlockId) -> Option<&LoadedBlock> {
     if node.side != Side::R {
         return None;
@@ -622,16 +546,13 @@ fn coalesce_target(loaded: &[LoadedBlock], node: FugueNode, id: BlockId) -> Opti
     (offset + 1 == lb.len && coalesces_into(lb, id)).then_some(lb)
 }
 
-/// One past `counter`, erroring where [`next_counter`] would have.
 fn bump(counter: u32) -> Result<u32, StoreError> {
     counter
         .checked_add(1)
         .ok_or_else(|| invalid(COUNTER_EXHAUSTED))
 }
 
-/// The block whose run covers `id`, if the stored state defines that node. At
-/// most one can: a replica's runs PARTITION its counter space, since a run only
-/// ever grows at its own high-water mark and its length never shrinks.
+/// At most one block can cover `id`: a replica's runs PARTITION its counter space.
 fn find_block(loaded: &[LoadedBlock], id: BlockId) -> Option<usize> {
     let position = loaded.partition_point(|lb| lb.id <= id).checked_sub(1)?;
     let lb = loaded.get(position)?;
@@ -640,10 +561,7 @@ fn find_block(loaded: &[LoadedBlock], id: BlockId) -> Option<usize> {
         .then_some(position)
 }
 
-/// The next unused counter for `replica`, one past the highest node the stored
-/// state mentions ANYWHERE, `parent` edges included. Tombstoned runs are never
-/// removed, so the mark survives deletion; re-minting a used id diverges for
-/// good, because `FugueTree::integrate` keeps the FIRST definition of a node.
+/// Never reuse a counter: [`FugueTree::integrate`] keeps the FIRST definition of a node.
 fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError> {
     let mut next: u64 = 0;
     for lb in loaded {
@@ -659,8 +577,7 @@ fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError>
     u32::try_from(next).map_err(|_| invalid(COUNTER_EXHAUSTED))
 }
 
-/// Expand the stored blocks into a Fugue tree. Tombstoned nodes are emitted
-/// too: they take part in the traversal and can still parent live nodes.
+/// Tombstoned nodes are emitted too: they still parent live nodes.
 fn build_tree(loaded: &[LoadedBlock]) -> Result<FugueTree, StoreError> {
     let mut tree = FugueTree::new();
     for lb in loaded {
@@ -687,9 +604,7 @@ fn build_tree(loaded: &[LoadedBlock]) -> Result<FugueTree, StoreError> {
     Ok(tree)
 }
 
-/// This node's replica id, the first 8 bytes of its device id: the writer
-/// identity is the device (a stamp, not a gate), so two devices of one account
-/// never share a counter space.
+/// The replica id is the first 8 bytes of the device id: a stamp, not a gate.
 fn local_replica() -> u64 {
     let device = env::device_id();
     let mut head = [0_u8; 8];
@@ -705,8 +620,7 @@ fn out_of_bounds(pos: usize) -> StoreError {
     invalid(&format!("position {pos} out of bounds"))
 }
 
-/// A `FugueText` in an explicit storage scope with a deterministic collection
-/// id, so two scopes standing in for two replicas agree on entity ids.
+/// Two scopes standing in for two replicas must derive the same collection id.
 #[cfg(test)]
 fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
     FugueText {
@@ -737,9 +651,9 @@ mod tests {
     const CAP_POOL: [char; 4] = ['a', 'é', '日', 'z']; // mixed widths: bytes != nodes
     const DIFFERENTIAL_SEED: u64 = 0x_d1_ff_5e_ed;
     const DIFFERENTIAL_ROUNDS: usize = 200;
-    const DIFFERENTIAL_MAX_NODES: usize = 800; // the control is quadratic in this; then deletes only
+    const DIFFERENTIAL_MAX_NODES: usize = 800; // the control is quadratic in this
 
-    /// Stored blocks sorted by id: the canonical form for equality assertions.
+    /// Sorted by id: the canonical form for equality assertions.
     fn stored<S: StorageAdaptor>(doc: &FugueText<S>) -> Vec<(BlockId, TextBlock)> {
         let mut out: Vec<(BlockId, TextBlock)> = doc
             .blocks
@@ -751,7 +665,6 @@ mod tests {
         out
     }
 
-    /// Round trip, and the run is ONE entity, not five.
     #[test]
     fn insert_str__round_trips_as_a_single_block() {
         env::reset_for_testing();
@@ -766,7 +679,6 @@ mod tests {
         );
     }
 
-    /// Append coalescing: the whole point of blocks.
     #[test]
     fn insert__sequential_appends_extend_one_block() {
         env::reset_for_testing();
@@ -782,8 +694,6 @@ mod tests {
         );
     }
 
-    /// A mid-run insert does NOT split the run: it adds exactly one block, the
-    /// inserted run's own, and document order is unchanged by that.
     #[test]
     fn insert__mid_run_does_not_split_the_run() {
         env::reset_for_testing();
@@ -794,9 +704,6 @@ mod tests {
         doc.insert_str_with_replica(2, 7, "X").unwrap();
         assert_eq!(doc.get_text().unwrap(), "heXllo");
 
-        // Exactly ONE new entity: the run "hello" is untouched, and 'X' hangs
-        // off its third node as a left child, which the implicit intra-run
-        // edges already express.
         let blocks = stored(&doc);
         assert_eq!(
             blocks.len(),
@@ -817,8 +724,6 @@ mod tests {
         assert_eq!(inserted.1.side, BlockSide::L);
     }
 
-    /// Repeated mid-document typing keeps the block count at one per distinct
-    /// insertion point, and the text stays right.
     #[test]
     fn insert__repeated_mid_document_typing_adds_one_block_each() {
         env::reset_for_testing();
@@ -826,9 +731,7 @@ mod tests {
         doc.insert_str_with_replica(0, 7, "abcdef").unwrap();
         assert_eq!(stored(&doc).len(), 1);
 
-        // Type five characters mid-document with an ADVANCING caret: the first
-        // lands as a left child inside the run, each later one is a right child
-        // of the previous, so they all COALESCE into a single second run.
+        // An ADVANCING caret chains right, so the inserted characters coalesce into one run.
         for offset in 0..5 {
             doc.insert_str_with_replica(3 + offset, 7, "z").unwrap();
         }
@@ -839,8 +742,7 @@ mod tests {
             "one untouched run plus one coalesced run of inserted text"
         );
 
-        // A caret that does NOT advance re-inserts before the previous
-        // character, so Fugue chains those left: one run each.
+        // A caret that does NOT advance chains left: one run each.
         let mut fixed = Root::new(FugueText::new);
         fixed.insert_str_with_replica(0, 8, "abcdef").unwrap();
         for _ in 0..3 {
@@ -850,8 +752,6 @@ mod tests {
         assert_eq!(stored(&fixed).len(), 4);
     }
 
-    /// A mid-run insert produces byte-identical stored state on two
-    /// independently built documents: no clock, no node-local input.
     #[test]
     fn insert__mid_run_stored_state_is_deterministic() {
         type A = crate::store::MockedStorage<861>;
@@ -874,8 +774,6 @@ mod tests {
         assert_eq!(a.get_text().unwrap(), b.get_text().unwrap());
     }
 
-    /// A delete inside a run tombstones the node in place; text and len agree,
-    /// and the run is NOT shattered.
     #[test]
     fn delete__inside_a_run_tombstones_without_splitting() {
         env::reset_for_testing();
@@ -897,7 +795,6 @@ mod tests {
         assert_eq!(blocks[0].1.tombstones, vec![0b0000_0100]);
     }
 
-    /// Deleting a whole run leaves ONE tombstoned entity, not `n`.
     #[test]
     fn delete_range__whole_run_stays_one_block() {
         env::reset_for_testing();
@@ -912,22 +809,18 @@ mod tests {
         assert_eq!(blocks[0].1.tombstones, vec![0b0001_1111]);
     }
 
-    /// A run that GREW by coalescing, merged with a shorter copy the peer
-    /// tombstoned, must tombstone only the nodes the deleter actually saw; a
-    /// per-run flag would silently eat the appended node.
     #[test]
     fn merge__tombstone_of_a_short_copy_does_not_eat_a_coalesced_node() {
         type A = crate::store::MockedStorage<869>;
         type B = crate::store::MockedStorage<870>;
         env::reset_for_testing();
 
-        // Shared history: replica 2 typed "P".
         let mut a = doc_in::<A>("c1");
         a.insert_str_with_replica(0, 2, "P").unwrap();
         let mut b = doc_in::<B>("c1");
         b.insert_str_with_replica(0, 2, "P").unwrap();
 
-        // B types on, coalescing "M" into the SAME entity; A deletes "P".
+        // B coalesces "M" into the SAME entity that A tombstones.
         b.insert_str_with_replica(1, 2, "M").unwrap();
         a.delete(0).unwrap();
         assert_eq!(b.get_text().unwrap(), "PM");
@@ -944,9 +837,6 @@ mod tests {
         assert_eq!(b_then_a.get_text().unwrap(), "M");
     }
 
-    /// A run that one replica SPLIT and the other COALESCED must lose no node
-    /// when merged: truncating at the next run's start assumes the two copies
-    /// partition exactly, which coalescing breaks.
     #[test]
     fn merge__coalesced_run_meeting_a_split_copy_loses_no_node() {
         type A = crate::store::MockedStorage<871>;
@@ -958,9 +848,7 @@ mod tests {
         let mut b = doc_in::<B>("c2");
         b.insert_str_with_replica(0, 2, "ab").unwrap();
 
-        // B appends, coalescing (2,0) into "abc". A inserts mid-run, splitting
-        // (2,0) into "a" + (2,1)"b". The merged set therefore holds (2,0)"abc"
-        // overlapping (2,1)"b".
+        // The merged set holds (2,0)"abc" overlapping (2,1)"b".
         b.insert_str_with_replica(2, 2, "c").unwrap();
         a.insert_str_with_replica(1, 1, "Q").unwrap();
         assert_eq!(b.get_text().unwrap(), "abc");
@@ -977,8 +865,7 @@ mod tests {
         assert_eq!(b_then_a.get_text().unwrap(), "aQbc");
     }
 
-    /// A replica seeded with the shared `S`, which appends `passage` and then
-    /// goes back to insert `heading` immediately before its own passage.
+    /// Seeded with the shared `S`, appends `passage`, then inserts `heading` before it.
     fn backward_insertion_doc<S: StorageAdaptor>(
         field_name: &str,
         replica: u64,
@@ -992,8 +879,6 @@ mod tests {
         doc
     }
 
-    /// Backward insertion does not interleave, driven through the storage API.
-    /// This is the property RGA lacks.
     #[test]
     fn merge__backward_insertion_does_not_interleave() {
         type A = crate::store::MockedStorage<863>;
@@ -1005,9 +890,7 @@ mod tests {
         assert_eq!(alice.get_text().unwrap(), "SAaaa");
         assert_eq!(bob.get_text().unwrap(), "SBbbb");
 
-        // Commutativity, not idempotence: each order merges the two PRISTINE
-        // replicas into a fresh document. Merging the already-merged copy would
-        // only have asserted idempotence.
+        // Each order merges the two PRISTINE replicas: commutativity, not idempotence.
         let mut alice_then_bob = doc_in::<A>("doc-ab");
         alice_then_bob.merge_blocks_from(&alice).unwrap();
         alice_then_bob.merge_blocks_from(&bob).unwrap();
@@ -1022,9 +905,7 @@ mod tests {
         assert_eq!(merged, "SAaaaBbbb");
     }
 
-    /// Three concurrent replicas merged in all six orders read the same. The
-    /// order permuted is the MERGE order: permuting `blocks.insert` calls would
-    /// prove nothing, since `load` sorts by id and discards it.
+    /// The MERGE order is what is permuted; `load` sorts by id, so insert order proves nothing.
     #[test]
     fn merge__converges_under_every_merge_order() {
         type A = crate::store::MockedStorage<865>;
@@ -1069,7 +950,6 @@ mod tests {
         assert!(converged.contains("Ccc"));
     }
 
-    /// Positions are char indices, not byte offsets.
     #[test]
     fn positions_are_char_indices_not_byte_offsets() {
         env::reset_for_testing();
@@ -1079,7 +959,6 @@ mod tests {
         assert_eq!(doc.get_text().unwrap(), "héllo! wörld");
     }
 
-    /// The merge-mode guard fires for `insert`.
     #[test]
     #[should_panic(expected = "migration")]
     fn insert_panics_during_migration() {
@@ -1090,7 +969,6 @@ mod tests {
         });
     }
 
-    /// The merge-mode guard fires for `insert_str`.
     #[test]
     #[should_panic(expected = "migration")]
     fn insert_str_panics_during_migration() {
@@ -1101,7 +979,6 @@ mod tests {
         });
     }
 
-    /// The deterministic replay API stays usable inside a migration.
     #[test]
     fn insert_str_with_replica_is_allowed_during_migration() {
         env::reset_for_testing();
@@ -1112,12 +989,9 @@ mod tests {
         assert_eq!(doc.len().unwrap(), 1);
     }
 
-    /// Every LOCAL write is a lattice-superset of the block it overwrites, the
-    /// premise `Interface::apply_non_root_entry` rests on when it restricts the
-    /// `CrdtType::FugueTextBlock` join arm to `WriteOrigin::Applied`.
+    /// The premise for gating the `FugueTextBlock` join arm to `WriteOrigin::Applied`.
     #[test]
     fn local_writes__are_lattice_supersets_of_what_they_overwrite() {
-        /// Assert every block that survived the write absorbed its predecessor.
         fn assert_superset(
             before: &[(BlockId, TextBlock)],
             after: &[(BlockId, TextBlock)],
@@ -1141,17 +1015,14 @@ mod tests {
         let mut doc = Root::new(FugueText::new);
         doc.insert_str(0, "hello").unwrap();
 
-        // Coalescing: grows a run's `text` in place.
         let before = stored(&doc);
         doc.insert(5, '!').unwrap();
         assert_superset(&before, &stored(&doc), "append coalescing");
 
-        // Mid-run insert: mints a new block and leaves the covering run alone.
         let before = stored(&doc);
         doc.insert(2, 'X').unwrap();
         assert_superset(&before, &stored(&doc), "mid-run insert");
 
-        // Delete: sets tombstone bits, never shortens `text`.
         let before = stored(&doc);
         doc.delete(1).unwrap();
         assert_superset(&before, &stored(&doc), "delete");
@@ -1161,9 +1032,7 @@ mod tests {
         assert_superset(&before, &stored(&doc), "delete_range");
     }
 
-    /// A pseudo-random copy of the run starting at `start_id`. Every field but
-    /// the key varies, and the bitmap may set bits past this copy's own text, as
-    /// a short copy of a run that grew elsewhere does.
+    /// Bits may be set past this copy's text, as a short copy of a run that grew elsewhere has.
     fn random_block(rng: &mut StdRng, start_id: BlockId) -> TextBlock {
         let text: String = (0..rng.random_range(..JOIN_LAW_MAX_NODES + 1))
             .map(|_| JOIN_LAW_POOL[rng.random_range(..JOIN_LAW_POOL.len())])
@@ -1193,9 +1062,7 @@ mod tests {
         out
     }
 
-    /// The join laws at one point of the block space, asserted on the borsh
-    /// bytes because the Merkle hash is taken over exactly those - two replicas
-    /// that agree on the value but not on its encoding still diverge.
+    /// Asserted on the borsh bytes: the Merkle hash is taken over exactly those.
     fn check_join_laws(what: &str, a: &TextBlock, b: &TextBlock, c: &TextBlock) {
         let bytes = |block: &TextBlock| borsh::to_vec(block).unwrap();
 
@@ -1224,9 +1091,7 @@ mod tests {
         }
     }
 
-    /// The join is a lattice join for ARBITRARY copies of one key, not only the
-    /// prefix pairs ordinary editing produces: equal-length-different-text and
-    /// longer-non-prefix are pinned, since a node-count rule resolves neither.
+    /// Fixtures are ARBITRARY copies of one key, not the prefix pairs ordinary editing produces.
     #[test]
     fn join_block__is_commutative_associative_and_idempotent() {
         let id = BlockId::new(7, 3);
@@ -1257,13 +1122,10 @@ mod tests {
         }
     }
 
-    /// `count` characters drawn cyclically from [`CAP_POOL`].
     fn cap_text(count: usize) -> String {
         (0..count).map(|i| CAP_POOL[i % CAP_POOL.len()]).collect()
     }
 
-    /// Typing past the cap opens a SECOND block instead of growing the first
-    /// for ever, and the new block hangs off the last node of the full one.
     #[test]
     fn insert__stops_coalescing_at_the_run_cap() {
         env::reset_for_testing();
@@ -1287,9 +1149,7 @@ mod tests {
         assert_eq!(blocks[1].1.side, BlockSide::R);
     }
 
-    /// A paste longer than the cap becomes several capped blocks whose ids stay
-    /// contiguous, and one more append still lands in the last of them - which
-    /// is what proves `next_counter` survived the chunking.
+    /// The trailing append proves `next_counter` survived the chunking.
     #[test]
     fn insert_str__chunks_a_long_paste_into_capped_blocks() {
         env::reset_for_testing();
@@ -1318,8 +1178,6 @@ mod tests {
         assert_eq!(after[3].1.text.chars().count(), 5 + 1);
     }
 
-    /// Once a block is full its `text` never changes again: later appends,
-    /// mid-run inserts and deletes may only move tombstone bits.
     #[test]
     fn full_block_text_is_frozen_under_later_edits() {
         env::reset_for_testing();
@@ -1355,9 +1213,7 @@ mod tests {
         );
     }
 
-    /// The same random script driven into `FugueText` and into the blockless
-    /// [`FugueTextSimple`] must read back the same text after every step. The
-    /// control has no runs, so it is an oracle for the whole block layer.
+    /// The blockless control has no runs, so it is an oracle for the whole block layer.
     #[test]
     fn random_scripts_agree_with_the_blockless_control() {
         env::reset_for_testing();
@@ -1412,9 +1268,7 @@ mod tests {
     }
 }
 
-/// Differential and exhaustive verification against `fugue.rs` as the model.
-/// `fugue.rs` is Algorithm 1, unaware of storage, blocks, coalescing or
-/// merging, so one op script through both tests what this module adds.
+/// Convergence alone is not an oracle: a lossy merge converges on the same wrong text.
 #[cfg(test)]
 mod model_tests {
     use std::collections::BTreeMap;
@@ -1427,9 +1281,7 @@ mod model_tests {
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
 
-    /// The oracle: Algorithm 1, with the same id allocation `FugueText` uses.
-    /// A replica's counter is the number of nodes it has minted, which is what
-    /// `next_counter` derives, since a replica's runs cover `0..N` contiguously.
+    /// The oracle: Algorithm 1 with the same id allocation `FugueText` uses.
     #[derive(Clone, Debug, Default)]
     pub(super) struct Model {
         tree: FugueTree,
@@ -1463,9 +1315,7 @@ mod model_tests {
             self.tree.nodes().copied().collect()
         }
 
-        /// The union of several models: every node, delete-wins per node, read
-        /// through a fresh tree. `integrate` is order-independent and keeps a
-        /// tombstone over a live copy, so this is exactly the CRDT join.
+        /// The CRDT join: every node, delete-wins per node, read through a fresh tree.
         pub(super) fn union(models: &[&Self]) -> String {
             let mut tree = FugueTree::new();
             for model in models {
@@ -1484,15 +1334,13 @@ mod model_tests {
         }
     }
 
-    /// One edit. `Ins` appends when `pos` lands at the end, which is what makes
-    /// runs coalesce; a `pos` in the middle mints a separate run.
+    /// `Ins` at the end coalesces; `Ins` in the middle mints a separate run.
     #[derive(Clone, Debug)]
     pub(super) enum Op {
         Ins(usize, &'static str),
         Del(usize, usize),
     }
 
-    /// Apply one op to the document and to the oracle, asserting they agree.
     fn apply<S: StorageAdaptor>(doc: &mut FugueText<S>, model: &mut Model, replica: u64, op: &Op) {
         let len = model.text().chars().count();
         match *op {
@@ -1515,14 +1363,12 @@ mod model_tests {
         );
     }
 
-    /// Seed both replicas with an identical, already-synchronised history.
     fn seed<S: StorageAdaptor>(doc: &mut FugueText<S>, model: &mut Model) {
         doc.insert_str_with_replica(0, 0, "seed").unwrap();
         model.insert_str(0, 0, "seed");
     }
 
-    /// Run one two-replica scenario: edit concurrently, then merge in BOTH
-    /// orders from the pristine states, checking each result against the model.
+    /// Edit concurrently, then merge in BOTH orders from the pristine states.
     fn scenario(tag: &str, left: &[Op], right: &[Op]) {
         type S = MockedStorage<873>;
 
@@ -1560,8 +1406,7 @@ mod model_tests {
         );
     }
 
-    /// The op alphabet of the exhaustive sweep: one appending insert (which
-    /// coalesces), two mid-document inserts (which do not), and two deletes.
+    /// One appending insert (coalesces), two mid-document inserts (do not), and two deletes.
     pub(super) const ALPHABET: [Op; 5] = [
         Op::Ins(usize::MAX, "x"),
         Op::Ins(1, "y"),
@@ -1570,8 +1415,6 @@ mod model_tests {
         Op::Del(0, 3),
     ];
 
-    /// EXHAUSTIVE, not sampled: every pair of ops on each of two replicas, so
-    /// 5^2 x 5^2 = 625 scripts, each merged in both orders against the model.
     #[test]
     fn exhaustive__all_two_op_interleavings_across_two_replicas() {
         env::reset_for_testing();
@@ -1591,8 +1434,6 @@ mod model_tests {
         assert_eq!(checked, 625, "the sweep must be exhaustive, not sampled");
     }
 
-    /// 200-seed differential fuzz against the model, with random multi-op
-    /// scripts on two replicas and both merge orders per seed.
     #[test]
     fn fuzz__two_hundred_seeds_match_the_model() {
         env::reset_for_testing();
@@ -1621,8 +1462,7 @@ mod model_tests {
         }
     }
 
-    /// The bitmap encoding is canonical: one tombstone set, one byte string.
-    /// Merge relies on it, since `merged != mine` decides whether to write.
+    /// Merge relies on it: `merged != mine` decides whether to write.
     #[test]
     fn tombstone_encoding_is_canonical() {
         env::reset_for_testing();
@@ -1644,8 +1484,6 @@ mod model_tests {
     }
 }
 
-/// The positional read API, asserted against the observable contract rather
-/// than against any internal layout.
 #[cfg(test)]
 mod positional_read_tests {
     use rand::rngs::StdRng;
@@ -1656,8 +1494,7 @@ mod positional_read_tests {
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
 
-    /// Build a pseudo-random document: appends (which coalesce), mid-document
-    /// inserts (which do not) and deletes, covering every storage shape.
+    /// Appends (which coalesce), mid-document inserts (which do not) and deletes.
     fn random_doc<S: StorageAdaptor>(doc: &mut FugueText<S>, rng: &mut StdRng, ops: usize) {
         const WORDS: [&str; 5] = ["a", "bc", "déf", "ghij", "日本"];
         for _ in 0..ops {
@@ -1675,8 +1512,6 @@ mod positional_read_tests {
         }
     }
 
-    /// `text_range` is exactly the corresponding slice of `get_text`, over
-    /// random documents and random ranges.
     #[test]
     fn text_range__equals_the_get_text_slice_over_random_documents() {
         env::reset_for_testing();
@@ -1706,8 +1541,6 @@ mod positional_read_tests {
         }
     }
 
-    /// `char_at(i)` is `get_text().chars().nth(i)` for every `i`, including
-    /// past the end.
     #[test]
     fn char_at__equals_chars_nth_including_out_of_bounds() {
         env::reset_for_testing();
@@ -1729,8 +1562,6 @@ mod positional_read_tests {
         }
     }
 
-    /// The full range is the whole document, and a range past the end clamps
-    /// instead of erroring, which is what a concurrent remote delete needs.
     #[test]
     fn text_range__full_range_equals_get_text_and_clamps_past_the_end() {
         env::reset_for_testing();
@@ -1749,7 +1580,6 @@ mod positional_read_tests {
         assert!(doc.text_range(3, 2).is_err(), "start > end must error");
     }
 
-    /// Positions are `char` indices, not bytes.
     #[test]
     fn text_range__counts_chars_not_bytes() {
         env::reset_for_testing();
@@ -1767,9 +1597,7 @@ mod positional_read_tests {
         assert_eq!(cjk.len().unwrap(), 10);
     }
 
-    /// Every stored node is covered by exactly one owning block, which is what
-    /// lets [`find_block`] be a binary search: a replica's runs PARTITION its
-    /// counter space. Reintroduce overlapping runs and this goes red.
+    /// What lets [`find_block`] be a binary search.
     #[test]
     fn stored_blocks__cover_every_authoritative_node_exactly_once() {
         env::reset_for_testing();
@@ -1783,7 +1611,6 @@ mod positional_read_tests {
             let loaded = doc.load().unwrap();
             let tree = build_tree(&loaded).unwrap();
 
-            // The partition: same-replica runs never overlap.
             for (position, earlier) in loaded.iter().enumerate() {
                 for later in loaded.iter().skip(position + 1) {
                     if earlier.id.replica == later.id.replica {
@@ -1823,7 +1650,6 @@ mod positional_read_tests {
         }
     }
 
-    /// `len` and `is_empty` agree with `get_text`.
     #[test]
     fn len__agrees_with_get_text() {
         env::reset_for_testing();
@@ -1840,9 +1666,7 @@ mod positional_read_tests {
     }
 }
 
-/// Convergence through the REAL receive path, [`Interface::apply_action`], not
-/// [`FugueText::merge_blocks_from`]: without the per-entry
-/// `CrdtType::FugueTextBlock` stamp a `BlockKey` collision resolves LWW.
+/// Convergence through the REAL receive path, [`Interface::apply_action`].
 #[cfg(test)]
 mod apply_path_tests {
     use std::cell::RefCell;
@@ -1861,28 +1685,22 @@ mod apply_path_tests {
     use crate::interface::{ApplyContext, Interface};
     use crate::store::{Key, MainStorage};
 
-    /// An in-memory main-storage backend owned by one replica. Same shape as
-    /// `crate::testing`'s, kept local so these tests need no feature flag.
+    /// Kept local so these tests need no feature flag.
     type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
 
-    /// Must be the native default context: `collections::ROOT_ID` is a
-    /// process-global `LazyLock` seeded from the first `context_id()` asked for,
-    /// so a different id here breaks `Root::new` for every test in the process.
+    /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded from the first.
     const CONTEXT_ID: [u8; 32] = [236_u8; 32];
 
-    /// Both replicas must derive the SAME collection id, or their actions build
-    /// two parallel documents that never meet.
+    /// Both replicas must derive the SAME collection id.
     const FIELD: &str = "apply_path_doc";
 
     const CAP_SPAN: usize = MAX_RUN_LEN + 3; // both replicas cross the cap before syncing
-    const PASTE_LEN: usize = 600; // past two run caps, so a paste spans several blocks
+    const PASTE_LEN: usize = 600; // past two run caps
     const PASTE_BYTES_PER_CHAR: usize = 8; // a per-character path blows straight past this
     const EQUIV_SEED: u64 = 0x_ba_7c_1e_d0;
     const EQUIV_ROUNDS: usize = 40;
     const EQUIV_MAX_NODES: usize = 1_400; // the per-character oracle is quadratic in this
     const EQUIV_POOL: [char; 4] = ['a', 'é', '日', 'Z']; // mixed widths: bytes != nodes
-    /// Paste lengths the sweep draws from: under, at and several times over the
-    /// run cap, plus the empty string and a single character.
     const EQUIV_LENGTHS: [usize; 7] = [
         0,
         1,
@@ -1897,9 +1715,7 @@ mod apply_path_tests {
         Rc::new(RefCell::new(HashMap::new()))
     }
 
-    /// A [`RuntimeEnv`] routing all `MainStorage` I/O into `store`. The device
-    /// id is what `local_replica` derives a replica id from, so it is what makes
-    /// two replicas mint distinct nodes.
+    /// The device id is what makes two replicas mint distinct nodes.
     fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
         let r = Rc::clone(store);
         let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());

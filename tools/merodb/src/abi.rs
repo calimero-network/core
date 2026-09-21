@@ -163,9 +163,6 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::Counter),
                                     inner_type: None,
                                 },
-                                // Same opaque shape, different layout: RGA is one
-                                // entity per character, FugueText one per run, so
-                                // they carry distinct tags.
                                 CrdtType::Rga => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
@@ -245,11 +242,7 @@ pub fn infer_schema_from_database(
                                 },
                                 CrdtType::RotationLog | CrdtType::FugueTextBlock => {
                                     // Internal book-keeping children, never
-                                    // user-facing ROOT fields: the SharedStorage
-                                    // writer-set history, and one run-length
-                                    // block INSIDE a `FugueText` (the document
-                                    // itself surfaces above). Surface either as
-                                    // an opaque record if it ever appears here.
+                                    // user-facing root fields.
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },
                                         crdt_type: None,

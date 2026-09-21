@@ -51,9 +51,6 @@ wat.workspace = true
 [features]
 profiling = []
 
-# The lib target is the only non-criterion one `cargo bench` would select (test
-# targets already default to `bench = false`), and libtest rejects criterion's
-# own CLI flags.
 [lib]
 bench = false
 

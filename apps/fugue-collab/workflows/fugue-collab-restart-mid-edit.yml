@@ -1,21 +1,6 @@
 description: >
-  A writer's block rows have to survive its container being replaced, and the
-  document it comes back to has to be the one its peers went on building.
-
-  Node 3 types, everyone converges, and then node 3 is replaced by
-  `restart_container` - a new container over the same volume, not a pause. Its
-  first read after the restart is taken before either peer has written anything
-  new, so the only place that text can come from is its own persisted block
-  rows: nothing in the network holds a copy it has not already got.
-
-  `wait_healthy` returns as soon as the admin endpoint answers, which is well
-  before libp2p has redialled and rejoined the gossipsub mesh, so the two writes
-  that follow genuinely land while node 3 is off the mesh.
-
-  Every write here is at an origin its author can already see - node 1 in front
-  of the seed, node 2 behind node 3's passage - so no two inserts are siblings
-  and the merged text does not depend on replica ids. The expected document is
-  therefore asserted exactly.
+  A writer's blocks must survive its container being replaced, and it must rejoin the
+  document its peers went on building.
 name: Fugue Collab Restart Mid Edit
 
 nodes:
@@ -34,8 +19,7 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
-  # node owns it before the restart leaves node 3 off the mesh.
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
   - name: Install fugue-collab on Node 2
     type: install_application
     node: fugue-node-2
@@ -90,7 +74,6 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  # ---- Replace Node 3's container mid-session ----
 
   - name: Restart Node 3's container
     type: restart_container
@@ -120,7 +103,6 @@ steps:
       - 'json_equal({{restored_node3}}, {"output": "SEED.-THREE"})'
       - 'json_equal({{restored_len}}, {"output": 11})'
 
-  # ---- The peers keep editing while Node 3 is rejoining the mesh ----
 
   - name: Node 1 types in front of the seed
     type: call
@@ -147,15 +129,11 @@ steps:
       position: 15
       text: "-TWO"
 
-  # wait_healthy only proved the admin endpoint was back. Redialling the boot
-  # node and rejoining this context's gossipsub mesh takes longer than that.
+  # wait_healthy only proves the admin endpoint is back, not that libp2p rejoined.
   - name: Wait for Node 3 to rejoin the mesh
     type: wait
     seconds: 15
 
-  # `expect` is the barrier: it reads every node and retries until all three
-  # return the merged document, where a bare converged hash can be published
-  # ahead of the state behind it.
   - name: Wait for the three histories to converge on the merged document
     type: wait_for_sync
     context_id: "{{context_id}}"

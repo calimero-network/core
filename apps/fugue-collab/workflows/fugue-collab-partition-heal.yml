@@ -1,25 +1,6 @@
 description: >
-  Two sides of a real network partition type a contiguous passage into the SAME
-  position, and one side deletes the characters the other side is typing right
-  next to.
-
-  `partition_peers` rather than `stop_node`: a stopped node cannot write, so the
-  figure-2 shape has to serialise its writers and prove isolation by reading
-  before each one. Here every node stays up and RPC-reachable while libp2p
-  between node-1 and the {node-2, node-3} side is dropped, so both passages are
-  genuinely concurrent - each builds on the same head - and the delete races an
-  insert whose origin it can never have seen.
-
-  The delete is the part that has broken before: node-1 inserts immediately to
-  the LEFT of `MIDDLE` while node-2 tombstones `MIDDLE` itself, so the surviving
-  document has to keep an insert whose origin is dead.
-
-  Which passage sorts first is decided by the writers' replica ids, which are
-  derived from node identity and differ every run, so that order is NOT
-  asserted. What is asserted is everything that must hold whichever way it
-  falls: the three replicas agree exactly, each passage survives contiguously,
-  `MIDDLE` is gone, the length accounts for every live character, and the
-  untouched text still brackets the merge.
+  Two sides of a real network partition type into the same position while one side
+  deletes the characters the other is typing beside.
 name: Fugue Collab Partition Heal
 
 nodes:
@@ -38,8 +19,7 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
-  # node owns it before the partition leaves some of them nobody to fetch from.
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
   - name: Install fugue-collab on Node 2
     type: install_application
     node: fugue-node-2
@@ -78,7 +58,6 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  # ---- Partition: node-1 alone, node-2 and node-3 together ----
 
   - name: Partition Node 1 from Node 2 and Node 3 (libp2p only; RPC stays up)
     type: partition_peers
@@ -87,8 +66,6 @@ steps:
       - fugue-node-2
       - fugue-node-3
 
-  # The DOCKER-USER DROP rule bites the instant the step returns; this only lets
-  # the already-converged seed's in-flight gossip quiesce.
   - name: Settle after the partition takes effect
     type: wait
     seconds: 12
@@ -172,7 +149,6 @@ steps:
     statements:
       - 'json_equal({{late_view_1}}, {"output": "abcLEFTPASSAGEMIDDLExyz"})'
 
-  # ---- Heal ----
 
   - name: Heal the partition
     type: heal_peers
@@ -185,9 +161,6 @@ steps:
     type: wait
     seconds: 12
 
-  # abc + LEFTPASSAGE + RIGHTPASSAGE + xyz, with MIDDLE's six characters gone.
-  # The merged TEXT depends on node ids, so the length is what every node can
-  # be held to; `expect` reads all three and retries until they agree on it.
   - name: Wait for the three histories to converge on the merged length
     type: wait_for_sync
     context_id: "{{context_id}}"
@@ -257,8 +230,6 @@ steps:
       - 'json_equal({{head_node1}}, {"output": "abc"})'
       - 'json_equal({{tail_node1}}, {"output": "xyz"})'
 
-  # The three replicas were asserted equal above, so contiguity on one settles
-  # all three.
   - name: Assert both passages survived contiguously
     type: assert
     statements:

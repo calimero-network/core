@@ -406,12 +406,8 @@ panic = "unwind"
 
 # `cargo bench --workspace` unifies dev-dependency features across every
 # workspace member for the single resolve, regardless of which targets are
-# actually selected, so calimero-node's and calimero-dag's dev-only
-# `calimero-storage/testing` feature leaks into every bench build. The `bench`
-# profile defaults to release's `debug-assertions = false`, which trips
-# calimero-storage's release-build guard against that feature (see
-# crates/storage/src/interface.rs). Scoped to the one package whose guard is
-# tripped, so other crates' criterion numbers keep real release semantics.
+# actually selected, so `calimero-storage/testing` leaks into every bench build
+# and trips that crate's release-build guard (crates/storage/src/interface.rs).
 [profile.bench.package.calimero-storage]
 debug-assertions = true
 

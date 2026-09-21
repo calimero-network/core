@@ -221,29 +221,10 @@ pub enum CrdtType {
     /// surfacing as `EntityIndex` borsh decode failures.
     RotationLog,
 
-    /// Tree-Fugue text.
-    ///
-    /// Collaborative text with Fugue ordering, stored as run-length blocks in an
-    /// `UnorderedMap` keyed by the id of each run's first node. Order is a pure
-    /// function of the synced `(parent, side)` edges, so no ordering state
-    /// crosses the wire beyond them.
-    /// Merge: union of blocks; delete-wins per block.
+    /// Collaborative text with Fugue ordering, stored as run-length blocks.
     FugueText,
 
     /// One run-length block of a [`FugueText`](Self::FugueText) document.
-    ///
-    /// The LEAF counterpart: `FugueText` tags the collection element, this tags
-    /// each `UnorderedMap` **entry** holding one `TextBlock`. Load-bearing,
-    /// because an entry entity is created untagged and an untagged value
-    /// collision resolves last-writer-wins, which drops data here: a block is
-    /// MUTABLE under one key, since a run grows in place when an append
-    /// coalesces into it and any replica rewrites its tombstone bitmap. (`Rga`
-    /// needs no leaf tag because an `RgaChar` is immutable once written.)
-    /// Merge: elementwise tombstone OR, longer `text` wins; a lattice join, so
-    /// order-independent, idempotent and commutative.
-    ///
-    /// Appended after [`RotationLog`](Self::RotationLog); the explicit tags in
-    /// the encoding below may only ever grow.
     FugueTextBlock,
 }
 
@@ -298,8 +279,6 @@ impl BorshSerialize for CrdtType {
                 writer.write_all(&[tag(14)])?;
                 BorshSerialize::serialize(id, writer)
             }
-            // 15 and 16, not 14 and 15: `Custom` took 14 when it traded its
-            // name for a digest, and these tags are hashed into `delta_id`.
             Self::FugueText => writer.write_all(&[tag(15)]),
             Self::FugueTextBlock => writer.write_all(&[tag(16)]),
         }
@@ -354,8 +333,6 @@ impl BorshDeserialize for CrdtType {
             )?))),
             13 => Ok(Self::RotationLog),
             14 if !legacy => Ok(Self::Custom(CustomTypeId::deserialize_reader(reader)?)),
-            // Current-format only: these variants postdate the 0x80 move, so a
-            // legacy tag of 15 or 16 is not one of ours and must not decode.
             15 if !legacy => Ok(Self::FugueText),
             16 if !legacy => Ok(Self::FugueTextBlock),
             _ => Err(borsh::io::Error::new(
@@ -546,7 +523,6 @@ mod tests {
         assert!(CrdtType::Vector.is_collection());
         assert!(CrdtType::Rga.is_collection());
         assert!(CrdtType::FugueText.is_collection());
-        // A single block is a LEAF value, not a collection.
         assert!(!CrdtType::FugueTextBlock.is_collection());
         assert!(!CrdtType::lww_register().is_collection());
         assert!(!CrdtType::GCounter.is_collection());

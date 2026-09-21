@@ -455,8 +455,6 @@ mod tests {
         assert_eq!(findings[0].class, FindingClass::Breaking);
     }
 
-    /// The two text CRDTs share an opaque ABI shape but nothing of their
-    /// storage layout, so a field swapped between them needs a migration.
     #[test]
     fn rga_to_fugue_text_is_breaking() {
         let findings = diff_checked(

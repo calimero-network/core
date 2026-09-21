@@ -1553,11 +1553,7 @@ mod tests {
         generate_mergeable_impl(&ident, &generics, &orig).to_string()
     }
 
-    /// Every text-CRDT collection must reach `__assign_deterministic_ids`.
-    ///
-    /// A top-level field the list misses falls back to `Id::random()`, so every
-    /// node mints a different collection id and the field NEVER merges: silent,
-    /// permanent divergence, reachable by any app.
+    /// A field the list misses falls back to `Id::random()` and never merges.
     #[test]
     fn assign_deterministic_ids_covers_every_text_crdt() {
         let item: syn::ItemStruct = parse_quote! {

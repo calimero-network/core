@@ -1,23 +1,4 @@
-//! Is the single-call paste ceiling `rga_wall.rs` found for
-//! `ReplicatedGrowableArray::insert_str` an RGA defect, or a property of the
-//! whole storage layer?
-//!
-//! `storage-costs.json` reports similar rows-touched-per-entry across
-//! collections, so if gas tracks rows touched then a per-call gas ceiling in
-//! the same range should show up for EVERY collection, not just RGA. This
-//! answers that the way `rga_wall.rs::single_call_paste_wall` did: binary
-//! search against a real compiled guest, to an EXECUTED `GasExhausted` rather
-//! than a projected one.
-//!
-//! The guest is `apps/bulk-write-bench`, purpose-built because no in-tree app
-//! bulk-inserts into an empty `UnorderedMap`/`Vector`/`UnorderedSet` in one
-//! call. Inserting into an EMPTY collection is what isolates the flat
-//! per-entry cost, matching how RGA's paste wall was measured.
-//!
-//! Measured against this tree (2026-09-19): `UnorderedMap` 681, `Vector` 696,
-//! `UnorderedSet` 693, against RGA's 742 - all within 9% of each other, so the
-//! ceiling is a property of the storage layer and not of any one collection.
-//! Re-run rather than trusting these numbers:
+//! Whether the single-call write wall is an RGA defect or a storage-layer property.
 //!
 //!   cargo test -p calimero-runtime --test bulk_write_wall -- --ignored --nocapture
 
@@ -29,8 +10,6 @@ mod wall_harness;
 
 use wall_harness::{call, guest_wasm, Probe, Verdict};
 
-/// The guest this probe drives. No in-repo gate covers the same property, so
-/// a drift message has nothing extra to point at.
 const PROBE: Probe = Probe {
     app: "bulk-write-bench",
     gate: "",
@@ -57,15 +36,11 @@ fn preflight(module: &calimero_runtime::Module, method: &str) {
     );
 }
 
-/// The single-call ceiling of one bulk-insert method: the largest `n` that
-/// lands into an EMPTY collection in ONE call. Returns
-/// `(largest_landed, gas, storage_reads, storage_writes, first_exhausted)`.
+/// Returns `(largest_landed, gas, storage_reads, storage_writes, first_exhausted)`.
 fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u64, u64, usize) {
     preflight(module, method);
 
-    // `lo` known to land, `hi` known to wall. The bracket is checked once, not
-    // widened: a model shift far enough that 8,192 no longer walls is worth
-    // failing loudly on rather than searching past.
+    // Binary search: `lo` lands, `hi` walls; the bracket is checked once, never widened.
     let mut lo = 1_usize;
     let mut hi = 8_192_usize;
     {
@@ -126,8 +101,6 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
     (lo, lo_gas, lo_reads, lo_writes, hi)
 }
 
-/// Executed (not extrapolated) single-call write walls for all three
-/// collections, answering whether RGA's is RGA-specific or platform-wide.
 #[test]
 #[ignore = "slow: builds the compiled bulk-write-bench app and binary-searches three \
             single-call gas walls. Fast to execute once built (well under a second \

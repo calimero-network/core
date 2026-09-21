@@ -33,8 +33,8 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | `access-control`         | Permission management  | Authorization patterns |
 | `blobs`                  | Blob storage demo      | Blob operations        |
 | `collaborative-editor`   | Collaborative text     | Complex CRDTs          |
-| `fugue-editor`           | Collaborative text on `FugueText` | `FugueText` twin of `collaborative-editor`; guest for `crates/runtime/tests/fugue_wall.rs` |
-| `fugue-collab`           | Collaborative text on `FugueText`, with deletes | E2E guest; keeps e2e-only surface off `fugue-editor` |
+| `fugue-editor`           | Collaborative text (Fugue) | `FugueText` CRDT       |
+| `fugue-collab`           | Collaborative text (Fugue), with deletes | E2E guest |
 | `team-metrics-macro`     | Metrics with macros    | Macro usage            |
 | `team-metrics-custom`    | Metrics custom impl    | Custom CRDT usage      |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |

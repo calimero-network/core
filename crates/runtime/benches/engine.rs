@@ -1,17 +1,4 @@
-//! What does the VM cost, separated into compile and call?
-//!
-//! `Engine::compile` runs wasmer's full pipeline including gas metering
-//! instrumentation, and is paid on every cold path. `Module::run` is the
-//! per-call cost. Splitting them answers the only question that changes a
-//! decision here: whether caching compiled modules is worth building.
-//!
-//! The guest is the fixed-work WAT fixture from
-//! `crates/runtime/tests/cost_is_flat.rs`, deliberately not a real contract,
-//! so a change in the number means a change in the VM rather than in whatever
-//! app happened to be compiled that week.
-//!
-//! Companion, not substitute: `cost_is_flat.rs` asserts that gas and read
-//! counts do not grow with store size. That is the gate. This is the clock.
+//! What does the VM cost, split into `Engine::compile` and `Module::run`?
 
 use std::hint::black_box;
 
@@ -21,8 +8,6 @@ use calimero_runtime::store::{InMemoryStorage, Storage};
 use calimero_runtime::Engine;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-/// Reads one key `n` times per call; `n` is fixed in the module, so the only
-/// variable across the sweep is how many host calls one execution makes.
 fn guest_wat(reads: u32) -> String {
     format!(
         r#"

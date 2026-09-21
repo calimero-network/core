@@ -1,29 +1,8 @@
-//! Machine-checked algebraic laws for Tree-Fugue.
-//!
-//! Convergence rests on a handful of algebraic facts, not on how many random
-//! scripts happen to be green. This file states each fact as a law and checks
-//! it over a *closed* domain, so a shrunken search cannot pass silently: every
-//! enumeration asserts its own cardinality.
-//!
-//! Each law's body doubles as a Kani proof harness under `cfg(kani)`. Kani is
-//! not installed in this checkout and the crate gains no dependency on it, so
-//! the `kani::` calls are not even type-checked; what runs in CI is the
-//! `not(kani)` branch, which enumerates a bounded domain exhaustively rather
-//! than sampling it.
-//!
-//! Laws 1 and 2 are properties of the *ordering function* and exist only on
-//! the pure layer ([`calimero_storage::collections::fugue`]): the storage
-//! collection has no comparator of its own, it builds a tree and asks it.
-//! Laws 3 to 6 are properties of the state-based **join**, which is what
-//! production runs, so they are checked twice: on the pure node-set join, and
-//! end to end through the real `Interface::apply_action` path. That path is
-//! the subject rather than `merge_blocks_from`, which production never calls
-//! for a leaf entity.
+//! Machine-checked algebraic laws for Tree-Fugue, on the pure layer and through
+//! the real `Interface::apply_action` path. Each law's body doubles as a Kani
+//! proof harness; CI runs the `not(kani)` branch, which enumerates exhaustively.
 
-// The `subject__scenario` naming convention this crate uses in its tests.
 #![allow(non_snake_case)]
-// `cfg(kani)` is set by the Kani verifier, which is an external tool and not a
-// dependency of this crate; rustc has no way to know the name is expected.
 #![allow(unexpected_cfgs)]
 #![allow(clippy::unwrap_used)]
 
@@ -35,13 +14,6 @@ mod fugue_harness;
 
 use fugue_harness::{device, edit, fork, fugue_genesis, fugue_text_in, land, Store};
 
-// ---------------------------------------------------------------------------
-// The pure model: replicas, states, and the join.
-// ---------------------------------------------------------------------------
-
-/// One edit. `Ins` appends when `pos` lands past the end (runs coalesce);
-/// a `pos` in the middle splits a run. Mirrors the alphabet the in-crate
-/// sweeps use, so a failure here is directly comparable with one there.
 #[derive(Clone, Copy, Debug)]
 enum Op {
     /// Insert `.1` at `.0 % (len + 1)`.
@@ -50,8 +22,6 @@ enum Op {
     Del(usize, usize),
 }
 
-/// The five-op alphabet: one appending insert, two mid-document inserts, two
-/// deletes (single and spanning).
 const ALPHABET: [Op; 5] = [
     Op::Ins(usize::MAX, "x"),
     Op::Ins(1, "y"),
@@ -60,13 +30,10 @@ const ALPHABET: [Op; 5] = [
     Op::Del(0, 3),
 ];
 
-/// A replica's synced state: its node set, exactly what a state-based join
-/// sees. Causally closed by construction, since [`FugueTree::integrate`]
-/// attaches a node only once its parent is attached.
+/// A replica's node set; causally closed, since a node integrates only after its parent.
 type State = Vec<FugueNode>;
 
-/// A pure replica: Algorithm 1 plus the same id allocation `FugueText` uses
-/// (a replica's counter is the number of nodes it has minted).
+/// A pure replica minting ids exactly as `FugueText` does: counter = nodes minted.
 #[derive(Clone, Debug)]
 struct Replica {
     tree: FugueTree,
@@ -75,7 +42,6 @@ struct Replica {
 }
 
 impl Replica {
-    /// A replica seeded with an identical, already-synchronised history.
     fn seeded(id: u64) -> Self {
         let mut replica = Self {
             tree: FugueTree::new(),
@@ -105,8 +71,7 @@ impl Replica {
         }
     }
 
-    /// Apply one op, clamping the position the way the storage-layer harness
-    /// does so the two run identical scripts.
+    /// Clamps positions exactly as `edit_op` does, so both layers run identical scripts.
     fn apply(&mut self, op: &Op) {
         let len = self.tree.values().chars().count();
         match *op {
@@ -123,8 +88,7 @@ impl Replica {
     }
 }
 
-/// The shared seed document, authored by replica 0 so neither writer's counter
-/// space starts used.
+/// Authored by replica 0, so neither writer's counter space starts used.
 fn seed_nodes() -> State {
     let mut seed = Replica {
         tree: FugueTree::new(),
@@ -135,15 +99,13 @@ fn seed_nodes() -> State {
     seed.state()
 }
 
-/// A tree's node set in a canonical order, so two states are equal exactly
-/// when they describe the same nodes.
+/// Sorted, so two states compare equal exactly when they hold the same nodes.
 fn canonical(tree: &FugueTree) -> State {
     let mut nodes: State = tree.nodes().copied().collect();
     nodes.sort_by_key(|node| node.id);
     nodes
 }
 
-/// Replay a state into a fresh tree.
 fn tree_of(state: &State) -> FugueTree {
     let mut tree = FugueTree::new();
     for node in state {
@@ -152,9 +114,7 @@ fn tree_of(state: &State) -> FugueTree {
     tree
 }
 
-/// The state-based join: deliver both node sets into one tree and read back the
-/// result. This *is* the production join: [`FugueTree::integrate`] keeps the
-/// first definition of an id and lets a tombstone win, in either order.
+/// The production join: an id's first definition is kept, and a tombstone wins.
 fn merge(a: &State, b: &State) -> State {
     let mut tree = tree_of(a);
     for node in b {
@@ -163,20 +123,18 @@ fn merge(a: &State, b: &State) -> State {
     canonical(&tree)
 }
 
-/// The document a state reads back as.
 fn values_of(state: &State) -> String {
     tree_of(state).values()
 }
 
-/// Whether `id` is tombstoned in `state` (absent counts as "not tombstoned").
+/// Absent counts as not tombstoned.
 fn is_tombstoned(state: &State, id: RawId) -> bool {
     state
         .iter()
         .any(|node| node.id == id && node.value.is_none())
 }
 
-/// The `index`-th permutation of `items` in the factorial number system: a
-/// bijection from `0..items.len()!`, so the index range enumerates each once.
+/// Factorial number system: a bijection from `0..items.len()!`.
 fn permutation<T: Clone>(items: &[T], mut index: usize) -> Vec<T> {
     let mut pool: Vec<T> = items.to_vec();
     let mut out = Vec::with_capacity(pool.len());
@@ -188,12 +146,10 @@ fn permutation<T: Clone>(items: &[T], mut index: usize) -> Vec<T> {
     out
 }
 
-/// `n!`
 fn factorial(n: usize) -> usize {
     (1..=n).product()
 }
 
-/// The three states produced by giving replica `r + 1` the op `script[r]`.
 fn states_from(script: [Op; 3]) -> [State; 3] {
     let mut out = Vec::with_capacity(3);
     for (index, op) in script.iter().enumerate() {
@@ -213,19 +169,11 @@ fn script_of(index: usize) -> [Op; 3] {
     ]
 }
 
-// ---------------------------------------------------------------------------
-// LAW 1: the sibling comparator is a strict total order.
-// ---------------------------------------------------------------------------
-
-/// Fugue orders the children of one `(parent, side)` bucket by node id
-/// ascending; the traversal is well defined only if that is a strict total
-/// order. PURE LAYER ONLY: the collection has no comparator of its own.
+/// Mirrors the order `FugueTree` gives same-bucket siblings: node id ascending.
 const fn sibling_lt(a: RawId, b: RawId) -> bool {
     a.0 < b.0 || (a.0 == b.0 && a.1 < b.1)
 }
 
-/// Irreflexivity, antisymmetry, transitivity and totality at one point of the
-/// domain.
 fn check_strict_total_order(a: RawId, b: RawId, c: RawId) {
     assert!(!sibling_lt(a, a), "comparator is not irreflexive at {a:?}");
     assert!(
@@ -246,8 +194,7 @@ fn check_strict_total_order(a: RawId, b: RawId, c: RawId) {
     }
 }
 
-/// The ids the exhaustive branch ranges over: three replica ids x three
-/// counters, covering every case the lexicographic comparator distinguishes.
+/// Three replica ids x three counters: every case the comparator distinguishes.
 const LAW1_IDS: [RawId; 9] = [
     (0, 0),
     (0, 1),
@@ -260,14 +207,12 @@ const LAW1_IDS: [RawId; 9] = [
     (2, 2),
 ];
 
-/// LAW 1: the sibling comparator is a strict total order.
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(kani, kani::unwind(4))]
 #[cfg_attr(not(kani), test)]
 fn law1__sibling_comparator_is_a_strict_total_order() {
     #[cfg(kani)]
     {
-        // Unbounded: symbolic replica ids and counters, no domain restriction.
         let a: RawId = (kani::any(), kani::any());
         let b: RawId = (kani::any(), kani::any());
         let c: RawId = (kani::any(), kani::any());
@@ -287,9 +232,6 @@ fn law1__sibling_comparator_is_a_strict_total_order() {
         }
         assert_eq!(checked, 729, "the comparator sweep must be exhaustive");
 
-        // The observable half: the comparator is what decides sibling order in
-        // the document, so a set of same-bucket siblings must read back in
-        // ascending id order whatever order it is delivered in.
         let siblings: State = vec![('d', (2, 0)), ('b', (1, 1)), ('a', (1, 0)), ('c', (1, 7))]
             .into_iter()
             .map(|(value, id)| FugueNode {
@@ -317,13 +259,7 @@ fn law1__sibling_comparator_is_a_strict_total_order() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LAW 2: `values()` is a pure function of the node set.
-// ---------------------------------------------------------------------------
-
-/// The tree of Figure 3 of the paper: `abcdef`, with `a` and `b` both left
-/// children of `c`, so the set is not a plain spine and its order genuinely
-/// depends on the comparator.
+/// Figure 3: not a plain spine, so read-back order really depends on the comparator.
 fn figure_3_nodes() -> State {
     vec![
         FugueNode {
@@ -365,8 +301,6 @@ fn figure_3_nodes() -> State {
     ]
 }
 
-/// Deliver `nodes` in the `index`-th order and assert the read-back is
-/// `expected`.
 fn check_order_independence(nodes: &State, index: usize, expected: &str) {
     let mut tree = FugueTree::new();
     for node in permutation(nodes, index) {
@@ -379,9 +313,7 @@ fn check_order_independence(nodes: &State, index: usize, expected: &str) {
     );
 }
 
-/// LAW 2: `values()` depends on the node SET, not on the integration order.
-/// PURE LAYER ONLY: the collection has no integration order to permute; its
-/// counterpart is the apply path's delivery-order independence, law 3.
+/// Pure layer only: the collection has no integration order to permute.
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(kani, kani::unwind(8))]
 #[cfg_attr(not(kani), test)]
@@ -404,8 +336,6 @@ fn law2__values_is_a_pure_function_of_the_node_set() {
         }
         assert_eq!(checked, 720, "the permutation sweep must be exhaustive");
 
-        // The same, on a set produced by three concurrently editing replicas
-        // rather than by hand: 5 nodes, every delivery order.
         let mut union: State = Vec::new();
         for (index, op) in ALPHABET.iter().take(3).enumerate() {
             let mut replica = Replica::seeded(u64::try_from(index).unwrap() + 1);
@@ -430,13 +360,8 @@ fn law2__values_is_a_pure_function_of_the_node_set() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LAWS 3-6: the state-based join, on the pure layer.
-// ---------------------------------------------------------------------------
-
 /// Laws 3, 4, 5 and 6 at one point of the state space.
 fn check_join_laws(a: &State, b: &State, c: &State) {
-    // LAW 3: commutative.
     assert_eq!(merge(a, b), merge(b, a), "merge is not commutative");
     assert_eq!(
         values_of(&merge(a, b)),
@@ -444,7 +369,6 @@ fn check_join_laws(a: &State, b: &State, c: &State) {
         "merge is not commutative as read back"
     );
 
-    // LAW 4: associative.
     let left = merge(&merge(a, b), c);
     let right = merge(a, &merge(b, c));
     assert_eq!(left, right, "merge is not associative");
@@ -454,12 +378,10 @@ fn check_join_laws(a: &State, b: &State, c: &State) {
         "merge is not associative as read back"
     );
 
-    // LAW 5: idempotent.
     assert_eq!(&merge(a, a), a, "merge is not idempotent");
     assert_eq!(&merge(b, b), b, "merge is not idempotent");
     assert_eq!(&merge(c, c), c, "merge is not idempotent");
 
-    // LAW 6: tombstones are monotone, delete-wins never regresses.
     let joined = merge(a, b);
     for state in [a, b] {
         for node in state {
@@ -483,9 +405,6 @@ fn check_join_laws(a: &State, b: &State, c: &State) {
     }
 }
 
-/// LAWS 3-6 on the pure node-set join: commutative, associative, idempotent and
-/// tombstone-monotone. EXHAUSTIVE over 3 replicas x 1 op each from the 5-op
-/// alphabet = 125 state triples, wider than the in-crate two-replica sweeps.
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(kani, kani::unwind(16))]
 #[cfg_attr(not(kani), test)]
@@ -510,13 +429,7 @@ fn law3456__join_is_commutative_associative_idempotent_and_delete_wins() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Exhaustive bounded convergence, wider than the in-crate sweeps.
-// ---------------------------------------------------------------------------
-
-/// EXHAUSTIVE: 3 replicas, 1 op each, every delivery order (`5^3 = 125` scripts
-/// x `3! = 6` orders = 750 checks). Three replicas is the first bound at which
-/// associativity stops being implied by commutativity.
+/// Three replicas: the first bound where associativity is not implied by commutativity.
 #[test]
 fn exhaustive__three_replicas_one_op_each_converge_in_every_delivery_order() {
     let mut checked = 0_usize;
@@ -546,9 +459,6 @@ fn exhaustive__three_replicas_one_op_each_converge_in_every_delivery_order() {
     assert_eq!(orders, 750, "every delivery order must be covered");
 }
 
-/// EXHAUSTIVE: 2 replicas, 3 ops each, `5^6 = 15_625` scripts, each merged in
-/// both orders. The in-crate sweep runs `k = 2` ops; this is `k = 3`, 25x its
-/// script space, on the pure layer where enumerating it is affordable.
 #[test]
 fn exhaustive__two_replicas_three_ops_each_converge_in_both_orders() {
     let mut checked = 0_usize;
@@ -576,20 +486,14 @@ fn exhaustive__two_replicas_three_ops_each_converge_in_both_orders() {
     assert_eq!(checked, 15_625, "the sweep must be exhaustive, not sampled");
 }
 
-// ---------------------------------------------------------------------------
-// The same join laws, through the REAL apply path.
-// ---------------------------------------------------------------------------
-
-/// Both replicas must derive the SAME collection id, or their actions build
-/// two parallel documents that never meet.
+/// Every replica must use this field name, or they build documents that never meet.
 const FIELD: &str = "fugue_laws_doc";
 
-/// A store holding the shared, already-synchronised seed document.
 fn genesis() -> Store {
     fugue_genesis(FIELD, "seed")
 }
 
-/// Apply one op to a replica's document, returning the delta it emitted.
+/// Applies `op` to the document and to its model, returning the emitted delta.
 fn edit_op(store: &Store, dev: [u8; 32], replica: u64, op: &Op, model: &mut Replica) -> Vec<u8> {
     let len = model.tree.values().chars().count();
     let delta = edit(
@@ -611,9 +515,7 @@ fn edit_op(store: &Store, dev: [u8; 32], replica: u64, op: &Op, model: &mut Repl
     delta
 }
 
-/// LAWS 3-5 through the REAL apply path, with 3 replicas: the state a replica
-/// reaches must depend only on the SET of deltas it landed, not on their order
-/// or multiplicity. EXHAUSTIVE: 125 scripts x `3! = 6` delivery orders.
+/// The pure join is the oracle: convergence alone passes for a lossy merge too.
 #[test]
 fn law345__apply_path_state_depends_only_on_the_delta_set() {
     let mut checked = 0_usize;
@@ -622,7 +524,6 @@ fn law345__apply_path_state_depends_only_on_the_delta_set() {
     for index in 0..125_usize {
         let script = script_of(index);
 
-        // Three replicas fork from one genesis and edit concurrently.
         let base = genesis();
         let stores = [fork(&base), fork(&base), fork(&base)];
         let mut models = [Replica::seeded(1), Replica::seeded(2), Replica::seeded(3)];
@@ -638,14 +539,12 @@ fn law345__apply_path_state_depends_only_on_the_delta_set() {
             ));
         }
 
-        // The oracle: the pure join of the three node sets.
         let expected = values_of(&merge(
             &merge(&models[0].state(), &models[1].state()),
             &models[2].state(),
         ));
 
-        // Every delivery order of the three deltas, into a fresh fork of the
-        // genesis, with each delta landed TWICE (idempotence).
+        // Each delta lands twice: idempotence.
         for order in 0..factorial(3) {
             let target = fork(&base);
             for replica in permutation(&[0_usize, 1, 2], order) {
@@ -667,9 +566,7 @@ fn law345__apply_path_state_depends_only_on_the_delta_set() {
     assert_eq!(orders, 750, "every delivery order must be covered");
 }
 
-/// LAW 6 through the REAL apply path: once a replica has landed a delete, no
-/// later delta may bring the character back, including one authored before it
-/// by a replica that still believed it live. Every op, both landing orders.
+/// A concurrent delta, authored while the character was live, must not resurrect it.
 #[test]
 fn law6__apply_path_tombstones_are_monotone() {
     let mut checked = 0_usize;
@@ -681,9 +578,7 @@ fn law6__apply_path_tombstones_are_monotone() {
         let mut model_a = Replica::seeded(1);
         let mut model_b = Replica::seeded(2);
 
-        // A deletes the first two characters of the seed.
         let delete = edit_op(&store_a, device(1), 1, &Op::Del(0, 2), &mut model_a);
-        // B, concurrently and still seeing them live, does something else.
         let concurrent = edit_op(&store_b, device(2), 2, op, &mut model_b);
 
         let live_after_delete: Vec<RawId> = model_a

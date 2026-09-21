@@ -8,9 +8,6 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
-# The lib and bin targets are the non-criterion ones `cargo bench` would select
-# (test targets already default to `bench = false`), and libtest rejects
-# criterion's own CLI flags.
 [lib]
 bench = false
 
@@ -27,7 +24,6 @@ serde_json = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 
-# `harness = false` hands the target's `main` to criterion instead of libtest.
 [[bench]]
 name = "collections"
 harness = false

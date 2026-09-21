@@ -53,9 +53,6 @@ const LINEAR_FLOOR_DIVISOR: f64 = 200.0;
 /// …and at most `n * LINEAR_CEILING_FACTOR`. Past that it is superlinear.
 const LINEAR_CEILING_FACTOR: f64 = 4.0;
 
-/// The smallest and largest `n` a workload was measured at, derived from its
-/// own points: not every workload runs at the same sizes, so indexing a fixed
-/// `SIZES[..]` would panic rather than check them.
 fn span(points: &BTreeMap<usize, f64>) -> (usize, usize) {
     let (&smallest, _) = points
         .first_key_value()

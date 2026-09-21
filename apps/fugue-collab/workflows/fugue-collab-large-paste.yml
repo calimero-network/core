@@ -1,22 +1,6 @@
 description: >
-  One `insert_str` of 2,560 characters, ten full runs at the 256-character cap,
-  landing while another node types single characters at the very start of the
-  same document.
-
-  A paste this size is the case the batched `insert_str` exists for: it mints
-  ten capped blocks in one call and writes each once, instead of rewriting a
-  growing run per character. The concurrent typing is there so the paste is not
-  merged into a quiescent document - the other side is producing its own blocks
-  at the far end of the same tree while the big one is in flight.
-
-  2,560 is chosen against the measured single-call ceiling: `fugue_wall.rs`'s
-  `single_call_paste_wall` shows one call carrying well over 8,000 characters
-  into an empty document, so this sits at roughly a third of what fits and is
-  not a gas-budget test in disguise.
-
-  The paste's origin is the last seeded character and the typing's is the
-  document start, so the two never contend for the same position and the merged
-  text does not depend on replica ids. It is asserted in full.
+  One 2,560-character `insert_str` merging while another node types single characters at
+  the start of the same document.
 name: Fugue Collab Large Paste
 
 nodes:
@@ -35,8 +19,7 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
-  # node owns it before the partition leaves some of them nobody to fetch from.
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
   - name: Install fugue-collab on Node 2
     type: install_application
     node: fugue-node-2
@@ -75,7 +58,6 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  # ---- Partition, so the paste and the typing cannot see each other ----
 
   - name: Partition Node 1 from Node 2 and Node 3 (libp2p only; RPC stays up)
     type: partition_peers
@@ -163,7 +145,6 @@ steps:
     statements:
       - 'json_equal({{typed_view_2}}, {"output": "ABCSEED"})'
 
-  # ---- Heal ----
 
   - name: Heal the partition
     type: heal_peers
@@ -176,9 +157,6 @@ steps:
     type: wait
     seconds: 12
 
-  # `expect` reads every node and retries until all three hold the merged
-  # document, which is what makes the paste's survival a barrier rather than a
-  # one-shot read after a fixed wait.
   - name: Wait for the three histories to converge on the merged document
     type: wait_for_sync
     context_id: "{{context_id}}"

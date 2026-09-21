@@ -1,23 +1,6 @@
 description: >
-  The paper's Figure 2, multi-replica, end to end - and the first version of
-  this scenario that RGA can actually fail.
-
-  Interleaving needs the writers' operations interleaved IN TIME, not merely
-  concurrent. RGA orders same-origin siblings by id, so if each writer types
-  its passage and its heading back-to-back the ids run P1<H1<P2<H2 and each
-  heading still lands beside its own passage - which is why the earlier
-  round-per-writer version passed on RGA and proved nothing. The in-process
-  conformance test forces the real shape with pinned clocks
-  (`pinned(10+tick)` for every passage, `pinned(20+tick)` for every heading),
-  putting ALL passages before ALL headings.
-
-  This reproduces that ordering with real HLCs by going round-robin: every
-  writer appends its passage, and only then does every writer go back and type
-  its heading. Isolation is enforced by stopping the other nodes and is
-  ASSERTED at each step - a writer that can see a peer's text is not isolated
-  and the scenario has stopped posing the question.
-
-  Expected: FugueText keeps every heading against its own passage.
+  The paper's Figure 2 over three replicas: every writer appends its passage before any
+  writer adds its heading, with isolation asserted at each step.
 name: Fugue Collab Figure 2 Multi-Replica
 
 nodes:
@@ -36,18 +19,13 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
-  # node owns it before isolation leaves the writer's peers with nobody to
-  # fetch from.
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
   - name: Install fugue-collab on Node 2
     type: install_application
     node: fugue-node-2
     path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
-  # node owns it before isolation leaves the writer's peers with nobody to
-  # fetch from.
   - name: Install fugue-collab on Node 3
     type: install_application
     node: fugue-node-3
@@ -81,7 +59,6 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  # ---- Round 1: every writer appends its passage, alone ----
 
   - name: Stop Node 2
     type: stop_node
@@ -197,7 +174,6 @@ steps:
       position: 15
       text: "PASSAGE3"
 
-  # ---- Round 2: only now does each writer go back for its heading ----
 
   - name: Stop Node 3
     type: stop_node
@@ -313,7 +289,6 @@ steps:
       position: 15
       text: "HEAD3"
 
-  # ---- Heal ----
 
   - name: Start Node 1
     type: start_node

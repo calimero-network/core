@@ -1,23 +1,6 @@
 description: >
-  A node joins a context whose document already runs past the 256-character run
-  cap and has had a range tombstoned out of the middle of it, and has to arrive
-  at the exact same 395 characters as the two nodes that built it.
-
-  The 400-character paste alone is two blocks, one of them full, and the second
-  writer's marker adds a third rooted inside the first, so the joiner cannot be
-  served by one whole-block copy: it has to pick up every block, with its
-  tombstones, and linearise them into the same order. The node picks its own
-  catch-up path - auto-follow backfill, then whichever of HashComparison or
-  level-wise sync its heads select - and this scenario does not constrain that
-  choice; it constrains the answer.
-
-  The seed is `ABCDEFGHIJ` repeated, not a run of one character, so a block
-  joined in the wrong order or a tombstone applied at the wrong offset shows up
-  as a broken pattern rather than as a document that still looks right.
-
-  Every write is separated by a barrier and lands at an origin its author can
-  already see, so nothing here depends on replica ids and the expected document
-  is asserted exactly.
+  A node joins a context whose document already runs past the run cap and has a range
+  tombstoned out of the middle, and must arrive at the same text.
 name: Fugue Collab Late Joiner
 
 nodes:
@@ -100,10 +83,8 @@ steps:
     timeout: 90
     trigger_sync: true
 
-  # ---- Node 3 joins a context that already holds the document ----
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`); Node 3 owns
-  # it before joining so what is under test is state catch-up, not acquisition.
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
   - name: Install fugue-collab on Node 3
     type: install_application
     node: fugue-node-3
@@ -123,10 +104,6 @@ steps:
     namespace_id: "{{namespace_id}}"
     invitation: "{{invitation_3}}"
 
-  # 20 repeats, the marker, then 19: the delete took the tail of one repeat and
-  # the head of the next from either side of the cap, so the survivors close up.
-  # `expect` reads every node and retries, so the joiner's catch-up is asserted
-  # rather than raced.
   - name: Wait for Node 3 to catch up to the existing document
     type: wait_for_sync
     context_id: "{{context_id}}"

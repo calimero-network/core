@@ -295,10 +295,7 @@ jobs:
         run: ./scripts/check-wasm-size.sh
 
   # Storage costs are deterministic — same inputs, same read/write/remove counts
-  # on any machine, so this gates. Wall-clock benchmarks do not and run
-  # post-merge in benchmarks.yml: timing noise on shared runners makes a
-  # time-based gate a false-alarm generator, and an in-memory store cannot
-  # reproduce an O(n)-read regression at all.
+  # on any machine, so this gates. Wall-clock benchmarks do not; see benchmarks.yml.
   storage-cost:
     name: Storage cost gate
     runs-on: ubuntu-24.04-8cpu
@@ -318,9 +315,7 @@ jobs:
       # Shape first, constants second. The shape tests catch a complexity
       # regression even when the snapshot was regenerated to absorb it, which is
       # precisely how a reviewer gets fooled otherwise.
-      # `--include-ignored` is load-bearing: this release job is the only place
-      # `tests/reproducible.rs` and `tests/keystroke_bytes.rs` run, so dropping
-      # the flag drops the tolerance check and the keystroke-bytes bound.
+      # --include-ignored: this job is the only place the slow cost tests run.
       - name: Assert cost curves keep their declared shape
         run: cargo test -p storage-cost --release -- --include-ignored
 

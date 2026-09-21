@@ -242,8 +242,6 @@ fn fugue_text_is_opaque_and_is_not_rga() {
         panic!("expected record")
     };
     assert!(fields.is_empty());
-    // The two text CRDTs share an opaque shape but not a layout: RGA stores one
-    // entity per character, `FugueText` one per run, so a swap must not diff clean.
     assert_ne!(
         ref_of::<FugueText>(),
         ref_of::<ReplicatedGrowableArray>(),

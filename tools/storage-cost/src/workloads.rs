@@ -271,8 +271,6 @@ fn rga_insert_per_char(n: usize) {
     }
 }
 
-/// Insert `n` characters one at a time at the MIDDLE: the position no
-/// end-anchored fast path can serve, where `rga_insert_per_char` only appends.
 fn rga_insert_middle(n: usize) {
     let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
     for i in 0..n {
@@ -280,10 +278,7 @@ fn rga_insert_middle(n: usize) {
     }
 }
 
-/// Build `n` characters, alternating local writes with remote arrivals: the
-/// only RGA workload here that receives. `n / 2` iterations produce `n`
-/// characters, the remote half arrives through the real receive path, and the
-/// root is re-fetched per iteration because a `Root` caches its children.
+/// The root is re-fetched per iteration because a `Root` caches its children.
 fn rga_insert_interleaved_sync(n: usize) {
     let rga = Root::new(|| {
         ReplicatedGrowableArray::<MainStorage>::new_with_field_name(INTERLEAVED_DOC_FIELD)
@@ -304,18 +299,12 @@ fn rga_insert_interleaved_sync(n: usize) {
     }
 }
 
-/// Shared by the local document and the remote replica: a random id would give
-/// the two replicas different collection ids and two documents that never meet.
+/// Shared with the remote replica: differing ids give two documents that never meet.
 const INTERLEAVED_DOC_FIELD: &str = "interleaved_doc";
 
-/// The RGA remote replica's device id. Any id but the measurement env's will
-/// do: RGA ids carry an HLC timestamp, not the device, so they cannot collide.
 const REMOTE_RGA_DEVICE: [u8; 32] = [2; 32];
 
-/// Apply one character the way the SYNC path does: author it on a separate
-/// replica over its own map, so none of the authoring cost is counted, then
-/// replay its delta, skipping the root action because the receiver's root is
-/// not the sender's to overwrite.
+/// The root action is skipped: the receiver's root is not the sender's to overwrite.
 fn land_remote_char(device_id: [u8; 32], collection: &str, author: impl FnOnce()) {
     for action in remote_char_actions(device_id, collection, author) {
         if action.id().is_root() {
@@ -326,9 +315,7 @@ fn land_remote_char(device_id: [u8; 32], collection: &str, author: impl FnOnce()
     }
 }
 
-/// The actions a remote replica emits when one character is typed into it.
-/// `clear_pending_delta()` runs first: the pending buffer is THREAD-local, so
-/// another workload's uncommitted writes would be counted here as sync cost.
+/// Clears the thread-local pending delta first, or another workload's writes count as sync cost.
 fn remote_char_actions(
     device_id: [u8; 32],
     collection: &str,
@@ -358,14 +345,9 @@ fn remote_char_actions(
     actions
 }
 
-/// Actions a remote replica's delta carries for exactly one character, the same
-/// count for every collection here. A fixed count rather than an id filter: the
-/// likeliest pollution shares this document's collection id and would pass one.
 const REMOTE_CHAR_ACTIONS: usize = 6;
 
-/// A throwaway `RuntimeEnv` over its own map, deliberately NOT wired to
-/// [`crate::measure`]'s counters: what is measured is what the RECEIVER pays,
-/// so the sender's own writes must not be counted.
+/// Not wired to the measurement counters: the sender's own writes must not be counted.
 fn uncounted_env(device_id: [u8; 32]) -> RuntimeEnv {
     let map: Rc<RefCell<BTreeMap<[u8; 32], Vec<u8>>>> = Rc::new(RefCell::new(BTreeMap::new()));
     let read = {
@@ -393,33 +375,22 @@ fn build_rga(n: usize) -> Root<ReplicatedGrowableArray<MainStorage>> {
     rga
 }
 
-/// ONE `insert_str` of `n` characters into an empty `FugueText`: the cost of a
-/// PASTE, where [`fugue_text_insert_per_char`] is the keystroke row. Per-entry
-/// cost FALLS with `n`, since a paste touches `ceil(n / MAX_RUN_LEN)` blocks.
 fn fugue_text_insert(n: usize) {
     let _ignored = build_fugue_text(n);
 }
 
-/// Cost of ONE `char_at` against a FRAGMENTED document, the counterpart of
-/// [`fugue_text_char_at`]: it loads every block and rebuilds the tree.
 fn fugue_text_char_at_fragmented(n: usize) {
     let text = build_fugue_text_fragmented(n);
     reset_counters();
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
 }
 
-/// Cost of ONE `char_at` against a document of `n` characters. The MIDDLE
-/// position is read, so a fast path for position 0 could not make the
-/// measurement lie; answering it still drags every block through borsh.
 fn fugue_text_char_at(n: usize) {
     let text = build_fugue_text(n);
     reset_counters();
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
 }
 
-/// `n` SEPARATE `insert` calls appending one character each. Flat where
-/// [`rga_insert_per_char`] is quadratic: an append extends the tail run in
-/// place. Rows miss the per-keystroke bytes, which `keystroke_bytes.rs` gates.
 fn fugue_text_insert_per_char(n: usize) {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {
@@ -427,17 +398,10 @@ fn fugue_text_insert_per_char(n: usize) {
     }
 }
 
-/// Insert `n` characters one at a time at the MIDDLE, the counterpart of
-/// [`rga_insert_middle`]: at parity with RGA, not better, because only APPENDS
-/// coalesce, so each insertion point is its own block and `load()` reads all.
 fn fugue_text_insert_middle(n: usize) {
     let _ignored = build_fugue_text_fragmented(n);
 }
 
-/// Build `n` characters half local and half remote, the counterpart of
-/// [`rga_insert_interleaved_sync`], whose doc covers the structural choices.
-/// NOT the win the other Fugue workloads are: a remote character splits the run
-/// it lands in, so block count grows. Tolerance `0`: every id here is derived.
 fn fugue_text_insert_interleaved_sync(n: usize) {
     let text = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FUGUE_INTERLEAVED_FIELD));
     text.commit();
@@ -449,22 +413,15 @@ fn fugue_text_insert_interleaved_sync(n: usize) {
     }
 }
 
-/// Shared by the local document and the remote replica; see
-/// [`INTERLEAVED_DOC_FIELD`] for why a field name and not a random id.
 const FUGUE_INTERLEAVED_FIELD: &str = "interleaved_fugue_doc";
 
-/// The device id the `index`-th remote `FugueText` character is authored under.
-/// A node id is `(replica, counter)` with the counter coming from a fresh
-/// per-character store, so one fixed device id would mint duplicate node ids.
+/// Per-index: the node counter restarts per character, so one fixed id would mint duplicates.
 fn remote_fugue_device(index: usize) -> [u8; 32] {
     let mut device = [9_u8; 32];
-    // `local_replica` reads the first 8 bytes big-endian, so the replica id is
-    // `index + 1`: distinct per character and clear of the measurement env's.
     device[..8].copy_from_slice(&(index as u64 + 1).to_be_bytes());
     device
 }
 
-/// Apply one character to the `FugueText` document the way the SYNC path does.
 fn land_remote_fugue_char(index: usize) {
     land_remote_char(remote_fugue_device(index), "a FugueText", || {
         let mut text =
@@ -474,26 +431,12 @@ fn land_remote_fugue_char(index: usize) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// `FugueTextSimple`: the one-entity-per-node control, each workload mirroring
-// its `fugue_text_*` twin so `RGA -> simple` isolates Fugue's ORDERING and
-// `simple -> fugue_text` isolates run-length BLOCKS. Measured at
-// QUADRATIC_SIZES, point READS included: even the build is `O(n^2)` here.
-// ---------------------------------------------------------------------------
-
-/// Cost of ONE `char_at` read from the MIDDLE, the control for
-/// [`fugue_text_char_at`]: linear at `2n` rows, the cost of linearising the
-/// whole document, because without blocks there is no real positional read.
 fn fugue_simple_char_at(n: usize) {
     let text = build_fugue_simple(n);
     reset_counters();
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
 }
 
-/// Build `n` characters half local and half remote, the control for
-/// [`fugue_text_insert_interleaved_sync`]. ~2x CHEAPER than the blocked
-/// collection at every size, so blocks are a net LOSS on the receive path: a
-/// shattered document makes every mutating call re-run `normalise_blocks`.
 fn fugue_simple_insert_interleaved_sync(n: usize) {
     let text = Root::new(|| {
         FugueTextSimple::<MainStorage>::new_with_field_name(FUGUE_SIMPLE_INTERLEAVED_FIELD)
@@ -508,12 +451,8 @@ fn fugue_simple_insert_interleaved_sync(n: usize) {
     }
 }
 
-/// Field name shared by the local document and the remote replica in
-/// [`fugue_simple_insert_interleaved_sync`].
 const FUGUE_SIMPLE_INTERLEAVED_FIELD: &str = "interleaved_fugue_simple_doc";
 
-/// Apply one character the way the SYNC path does;
-/// [`land_remote_fugue_char`]'s counterpart over the control collection.
 fn land_remote_fugue_simple_char(index: usize) {
     land_remote_char(remote_fugue_device(index), "a FugueTextSimple", || {
         let mut text = Root::new(|| {
@@ -531,9 +470,6 @@ fn build_fugue_simple(n: usize) -> Root<FugueTextSimple<MainStorage>> {
     text
 }
 
-/// Build a FRAGMENTED `FugueText`, one block per character, by typing into the
-/// middle: the worst case for a read, since a mid-document insert cannot
-/// coalesce and reads are `O(blocks)`. [`build_fugue_text`] is the packed case.
 fn build_fugue_text_fragmented(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {
@@ -792,12 +728,8 @@ pub fn all() -> Vec<Workload> {
             0,
             rga_insert_per_char,
         ),
-        // Same code path and the same numbers as `rga_insert_per_char` today;
-        // see `rga_insert_middle`'s doc comment for why that is the point.
         ("rga_insert_middle", QuadraticBuild, 0, rga_insert_middle),
-        // Each remote character is authored on a fresh replica with a random
-        // entity id, so `rows_read` does not reproduce exactly. Measured spread
-        // is under 1%; 5 is hand-chosen headroom, not a derived bound.
+        // Remote characters use random entity ids, so rows_read does not reproduce exactly.
         (
             "rga_insert_interleaved_sync",
             QuadraticBuild,
@@ -822,8 +754,6 @@ pub fn all() -> Vec<Workload> {
             0,
             fugue_text_insert_interleaved_sync,
         ),
-        // The `FugueTextSimple` control pays an `O(n^2)` build before anything
-        // else is measured, so its point read belongs at these sizes too.
         (
             "fugue_simple_insert_interleaved_sync",
             QuadraticBuild,
@@ -871,17 +801,12 @@ mod tests {
     use super::*;
     use crate::measure;
 
-    /// A screenful, not the document: the window a positional read must return.
     const RANGE_READ_CHARS: usize = 100;
 
-    /// One `*_interleaved_sync` workload and the document it leaves behind.
     type LandingCase = (&'static str, fn(usize), fn() -> String);
 
-    /// One positional-read case: label, document size, and the reads it makes.
     type ReadCase = (&'static str, usize, fn(usize) -> (Option<char>, String));
 
-    /// `#[ignore]`d because measuring every workload costs minutes in the debug
-    /// profile; the `storage-cost` CI job re-runs it via `--include-ignored`.
     #[ignore = "minutes of work; run by the release storage-cost CI job via --include-ignored"]
     #[test]
     fn every_workload_is_measurable_and_touches_storage() {
@@ -915,16 +840,12 @@ mod tests {
         );
     }
 
-    /// What `rga_insert_interleaved_sync` measures must not depend on what ran
-    /// before it: a remote commit draining another workload's queued actions
-    /// turns it into a re-application benchmark every content check passes.
     #[test]
     fn cost_does_not_depend_on_what_ran_before() {
         let n = 100;
         let (_, clean) = measure(|| rga_insert_interleaved_sync(n));
 
-        // `build_map` never commits, so its actions stay queued: exactly what
-        // `unordered_map_insert` leaves behind for every workload after it.
+        // `build_map` never commits, so its actions stay queued: that is the pollution.
         let (_, _) = measure(|| {
             let _ignored = build_map(1_000);
         });
@@ -942,10 +863,6 @@ mod tests {
         );
     }
 
-    /// The sync half of each `*_interleaved_sync` workload must really arrive:
-    /// otherwise it silently becomes a single-replica build, at a cost nothing
-    /// else here tells apart from the real thing. A remote character that never
-    /// lands and two replicas minting colliding node ids both leave it short.
     #[test]
     fn every_remote_character_actually_lands() {
         let n = 10;
@@ -1005,8 +922,6 @@ mod tests {
         }
     }
 
-    /// A positional read would publish the same cheap curve if it returned
-    /// NOTHING, so assert it returns the characters it claims at the real size.
     #[test]
     fn positional_reads_return_real_characters() {
         let cases: [ReadCase; 2] = [

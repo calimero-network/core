@@ -1,17 +1,5 @@
-//! Purpose-built guest for one question: does a single-call write ceiling
-//! near ~490 entries (measured for `ReplicatedGrowableArray::insert_str` in
-//! `crates/runtime/tests/rga_wall.rs`) belong to RGA specifically, or to
-//! every collection alike?
-//!
-//! Each method below inserts `n` synthetic entries into an EMPTY collection
-//! of the named kind, in a single call, exactly mirroring the shape of
-//! `rga_wall.rs`'s `single_call_paste_wall`: state is reset every call (a
-//! fresh `#[app::init]`), so what is measured is the flat per-entry insert
-//! cost, not a cost that grows with pre-existing collection size.
-//!
-//! No other app exposes a bulk-insert-in-one-call entry point for
-//! `UnorderedMap`, `Vector` or `UnorderedSet`, which is the only reason this
-//! crate exists. It is not meant as a usage example.
+//! Bulk single-call inserts into an empty `UnorderedMap`/`Vector`/`UnorderedSet`.
+//! Guest for `crates/runtime/tests/bulk_write_wall.rs`; not a usage example.
 
 use calimero_sdk::app;
 use calimero_storage::collections::{LwwRegister, UnorderedMap, UnorderedSet, Vector};
@@ -34,9 +22,7 @@ impl BulkWriteBench {
         }
     }
 
-    /// Insert `n` distinct `(key, value)` pairs into `map` in one call.
-    /// Keys follow `tools/storage-cost`'s `key{i}` convention, for
-    /// comparability with the committed cost snapshot.
+    /// Keys follow `tools/storage-cost`'s `key{i}` convention, for comparability.
     pub fn insert_n_map(&mut self, n: u32) -> app::Result<()> {
         for i in 0..n {
             self.map
@@ -45,7 +31,6 @@ impl BulkWriteBench {
         Ok(())
     }
 
-    /// Push `n` values onto `vec` in one call.
     pub fn insert_n_vec(&mut self, n: u32) -> app::Result<()> {
         for i in 0..n {
             self.vec.push(LwwRegister::new(format!("value{i}")))?;
@@ -53,7 +38,6 @@ impl BulkWriteBench {
         Ok(())
     }
 
-    /// Insert `n` distinct values into `set` in one call.
     pub fn insert_n_set(&mut self, n: u32) -> app::Result<()> {
         for i in 0..n {
             self.set.insert(format!("value{i}"))?;

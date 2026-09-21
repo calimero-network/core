@@ -128,8 +128,7 @@ pub struct AbiState {
     // declares is exercised by at least one emitted ABI.
     authored_counters: AuthoredMap<String, LwwRegister<u32>>,
     authored_log: AuthoredVector<LwwRegister<UserId32>>,
-    // Collaborative text - locks the `FugueText` marker, which shares an opaque
-    // shape with `ReplicatedGrowableArray` and must stay distinguishable from it.
+    // Collaborative text - locks the `FugueText` ABI collection marker.
     document: FugueText,
 }
 

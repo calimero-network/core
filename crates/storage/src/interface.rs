@@ -286,18 +286,10 @@ type SharedStampAuthorization = (BTreeMap<AccountId, OpMask>, PublicKey);
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
-/// Where the bytes reaching [`Interface::save_internal`] came from.
-///
-/// A CRDT whose per-key join is a LATTICE join, never a pick, must run that
-/// join on applied bytes and must NOT run it on local bytes: a local write
-/// already descends from the stored value, so joining the two would make the
-/// stored value un-shrinkable. See `CrdtType::FugueTextBlock`, whose blocks are
-/// rewritten in place under one key by any replica that deletes inside them.
+/// Lattice joins run on applied bytes only; a local write already descends from the stored value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WriteOrigin {
-    /// This node's own write, from guest execution.
     Local,
-    /// A remote action landing through [`Interface::apply_action`].
     Applied,
 }
 
@@ -3291,17 +3283,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 // both directions or it is not commutative, and the entities
                 // never converge.
                 //
-                // `FugueTextBlock` (one run-length block of a `FugueText`) joins
-                // this timestamp-blind arm for the same reason: its join is a
-                // lattice join, not a pick, so the LWW-by-HLC branches below
-                // would DROP one side, and both directions of the race
-                // stale-skip there rather than just one.
-                //
-                // APPLIED ONLY, because a local write is not a merge: its bytes
-                // descend from the stored bytes, and a local mutation only grows
-                // a run's `text` or accumulates tombstone bits, so the join
-                // would return the incoming copy unchanged. Pinned by
-                // `fugue_text::tests::local_writes__are_lattice_supersets_of_what_they_overwrite`.
+                // A `FugueTextBlock` is mutable under one key, so it must join
+                // here rather than reach the LWW-by-HLC branches below.
                 //
                 // P3 (core#2716) per-`delta_id` rotation-log child. Merge
                 // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
@@ -3896,8 +3879,6 @@ impl<S: StorageAdaptor> Interface<S> {
             // (the value-union merge did not, leaving a sticky HC loop). The
             // old `merge_rotation_log` union was only needed by the abandoned
             // single-blob representation.
-            // A LOCAL `FugueTextBlock` write is not a merge either; the block
-            // join only ever runs on applied bytes (see `save_internal`).
             let is_lww = matches!(
                 crdt_type,
                 CrdtType::LwwRegister { .. } | CrdtType::RotationLog

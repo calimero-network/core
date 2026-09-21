@@ -1,21 +1,4 @@
-//! What does encryption cost at the sizes this system actually moves?
-//!
-//! Every replicated byte goes through AES-256-GCM: sync deltas, gossip
-//! envelopes (capped at 1 MiB by `GOSSIPSUB_MAX_TRANSMIT_SIZE`) and blob
-//! chunks (exactly 1 MiB, `CHUNK_SIZE`). The sizes below are those, not round
-//! numbers.
-//!
-//! `derive_shared_key` is measured separately because it is per-peer-pair, not
-//! per-message: if it turned out to cost as much as encrypting a chunk, caching
-//! it would matter. Today it should not.
-//!
-//! Both `encrypt_with_nonce` and `decrypt` take their payload by value and
-//! work in place, so the `.clone()` inside each timed closure is unavoidable
-//! (it hands the API a fresh buffer every iteration) and is deliberately part
-//! of what is measured, not setup noise.
-//!
-//! What would change a decision: an encrypt throughput materially below the
-//! network's, which would make crypto rather than bandwidth the ceiling.
+//! What does AES-256-GCM cost at the sizes this system actually moves?
 
 use std::hint::black_box;
 
@@ -32,8 +15,7 @@ fn aead(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("aead");
 
-    // 256 B: a governance op. 4 KiB: a typical delta. 64 KiB: libp2p's old
-    // gossip ceiling. 1 MiB: a blob chunk and the current gossip ceiling.
+    // A governance op, a typical delta, the old gossip cap, a blob chunk.
     for bytes in [256_usize, 4_096, 65_536, 1_048_576] {
         let plaintext = vec![0xAB_u8; bytes];
         let ciphertext = key

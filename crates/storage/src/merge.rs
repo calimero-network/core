@@ -462,14 +462,7 @@ pub fn merge_by_crdt_type(
         // a correct-but-unreached arm to satisfy the exhaustive match.
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
-        // Tree-Fugue text container. Reachable, but a no-op by construction -
-        // see `merge_fugue_text`. The real join is the `FugueTextBlock` arm.
         CrdtType::FugueText => merge_fugue_text(existing, incoming),
-
-        // One run-length block of a Tree-Fugue document, and the arm the sync
-        // path actually reaches: a `TextBlock` lives as an `UnorderedMap` entry
-        // and it is the ENTRY that carries this tag, the collection element
-        // carrying `FugueText`. See `merge_fugue_text_block`.
         CrdtType::FugueTextBlock => merge_fugue_text_block(existing, incoming),
 
         // App-defined types
@@ -584,13 +577,6 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     borsh::to_vec(&existing_rga).map_err(|e| MergeError::SerializationError(e.to_string()))
 }
 
-/// Merge two `FugueText` document containers.
-///
-/// A no-op by construction, kept for the same reason [`merge_rga`] is. A
-/// `Collection`'s only serialized field is its element id, derived from the
-/// field name and therefore equal on every replica, so both sides resolve to
-/// the SAME stored collection and the block join runs against itself. The join
-/// that does the work is [`merge_fugue_text_block`].
 fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     let mut existing_doc: FugueText =
         borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
@@ -602,16 +588,6 @@ fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeEr
     borsh::to_vec(&existing_doc).map_err(|e| MergeError::SerializationError(e.to_string()))
 }
 
-/// Merge two stored ENTRIES of a `FugueText` block map.
-///
-/// The arm the sync path actually reaches for text: the collection element
-/// carries [`CrdtType::FugueText`], but the bytes that collide on the wire are
-/// one `UnorderedMap` entry, stamped [`CrdtType::FugueTextBlock`].
-///
-/// Delegates the whole join to
-/// [`FugueText::merge_block_entry_bytes`](crate::collections::FugueText), which
-/// owns the entry layout and is the same join `merge_blocks_from` applies, so
-/// there is exactly one block-join implementation.
 fn merge_fugue_text_block(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     FugueText::<MainStorage>::merge_block_entry_bytes(existing, incoming)
 }
@@ -913,9 +889,6 @@ mod typed_dispatch_tests {
         clear_merge_registry();
     }
 
-    /// The `FugueText` container arm is reachable but changes nothing: its two
-    /// sides are byte-identical handles on one stored collection, so the block
-    /// join runs against itself.
     #[test]
     #[serial]
     fn merge_fugue_text_container_leaves_the_stored_document_unchanged() {

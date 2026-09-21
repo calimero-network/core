@@ -1,69 +1,41 @@
-//! # Fugue Editor
-//!
-//! The `FugueText` counterpart of `apps/collaborative-editor`, and it exists
-//! for exactly one reason: `crates/runtime/tests/fugue_wall.rs` needs a REAL
-//! compiled app to find where a `FugueText` document stops being writable and
-//! readable, the way `rga_wall.rs` uses `collaborative-editor` for
-//! `ReplicatedGrowableArray`. A wall measured against a synthetic guest would
-//! not be the number a user hits.
-//!
-//! The state shape and the per-call work of `insert_text` mirror
-//! `collaborative-editor` deliberately (same `Counter`, same metadata map,
-//! same log/insert/increment/emit sequence), so the two walls differ by the
-//! collection and not by the harness around it. What this app adds are the
-//! reads `ReplicatedGrowableArray` has no analogue for: [`FugueEditorState::
-//! char_at`] and [`FugueEditorState::text_range`].
+//! The `FugueText` twin of `apps/collaborative-editor` and the guest for
+//! `crates/runtime/tests/fugue_wall.rs`; its state and per-call work mirror
+//! that app so the two walls differ by the collection alone.
 
 #![allow(clippy::len_without_is_empty)]
 
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{Counter, FugueText, LwwRegister, UnorderedMap};
 
-/// Application state for the Fugue editor: field-for-field
-/// `collaborative-editor`'s `EditorState` with `FugueText` in place of RGA.
 #[app::state(emits = FugueEditorEvent)]
 pub struct FugueEditorState {
-    /// The collaborative text document using the Tree-Fugue CRDT
     pub document: FugueText,
 
-    /// Total number of edits made to the document (CRDT Counter)
     pub edit_count: Counter,
 
-    /// Metadata (title, owner) stored as CRDT UnorderedMap to prevent divergence
-    /// Keys: "title", "owner"
     pub metadata: UnorderedMap<String, LwwRegister<String>>,
 }
 
-/// Events emitted by the Fugue editor.
 #[app::event]
 pub enum FugueEditorEvent {
-    /// Emitted when the document is initialized
     DocumentCreated {
-        /// Document title
         title: String,
-        /// Owner's identity
         owner: String,
     },
 
-    /// Emitted when text is inserted
     TextInserted {
-        /// Position where text was inserted
         position: usize,
-        /// The text that was inserted
         text: String,
-        /// Editor who made the change
         editor: String,
     },
 }
 
-/// Convert identity bytes to base58 string
 fn encode_identity(identity: &[u8; 32]) -> String {
     bs58::encode(identity).into_string()
 }
 
 #[app::logic]
 impl FugueEditorState {
-    /// Initialize a new Fugue document with a default title.
     #[app::init]
     pub fn init() -> FugueEditorState {
         let owner_id = env::device_id();
@@ -73,8 +45,7 @@ impl FugueEditorState {
         app::log!("Initializing fugue editor: {} by {}", title, owner);
 
         let mut metadata = UnorderedMap::new();
-        // `#[app::init]` must return `Self`, so a storage failure cannot
-        // propagate with `?`; surface it rather than dropping the write.
+        // `#[app::init]` returns `Self`, so a failed write can only surface as a panic.
         metadata
             .insert("title".to_string(), title.clone().into())
             .expect("failed to write initial title metadata");
@@ -93,10 +64,6 @@ impl FugueEditorState {
         state
     }
 
-    /// Insert text at a specific position.
-    ///
-    /// # Errors
-    /// Errors if `position` is past the end of the document.
     pub fn insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
         let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
@@ -121,27 +88,20 @@ impl FugueEditorState {
         Ok(())
     }
 
-    /// The whole document.
     pub fn get_text(&self) -> app::Result<String> {
         self.document.get_text().map_err(Into::into)
     }
 
-    /// The character at `position`, or `None` past the end. A one-character
-    /// `String` because `char` has no `AbiType`, so an `Option<char>` return
-    /// does not compile under `#[app::logic]`.
+    /// A one-character `String` because `char` has no `AbiType`.
     pub fn char_at(&self, position: usize) -> app::Result<Option<String>> {
         Ok(self.document.char_at(position)?.map(String::from))
     }
 
     /// The characters in `start..end`, clamped at the end of the document.
-    ///
-    /// # Errors
-    /// Errors if `start > end`.
     pub fn text_range(&self, start: usize, end: usize) -> app::Result<String> {
         self.document.text_range(start, end).map_err(Into::into)
     }
 
-    /// The number of characters in the document.
     pub fn get_length(&self) -> app::Result<usize> {
         self.document.len().map_err(Into::into)
     }

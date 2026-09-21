@@ -28,10 +28,6 @@ tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 [features]
 testing = []
 
-# `pending` deliberately has no `required-features = ["testing"]`: its fixture
-# builds `CausalDelta` via the ungated `CausalDelta::new`, and the key would
-# make a bare `cargo bench -p calimero-dag --bench pending` silently skip the
-# target instead of building it.
 [[bench]]
 name = "pending"
 harness = false

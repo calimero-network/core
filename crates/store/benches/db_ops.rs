@@ -1,31 +1,5 @@
 //! What does one key-value operation cost, and does it get worse as the
-//! database grows?
-//!
-//! Two backends, deliberately: the in-memory DB is the abstraction floor (no
-//! I/O, so what remains is codec and dispatch), and RocksDB on a tmpdir is the
-//! dispatch-plus-warm-cache cost a node pays on top of that floor. It is NOT a
-//! cold-disk-seek number: the largest working set benchmarked here
-//! (`n = 10_000`, on the order of 2 MB) is three orders of magnitude under the
-//! default 128 MiB block cache, so every `get_hit` after the first touch is a
-//! cache hit, and the measured gap (RocksDB ~3.4x the in-memory floor at
-//! `n = 10_000`) is FFI and column-family dispatch rather than disk I/O.
-//! Measuring disk-backed reads needs `n` grown past the cache, a smaller
-//! `set_block_cache`, or RocksDB's own block-cache hit/miss statistics; this
-//! bench does none of those.
-//!
-//! `read_then_put` is the merge-path pattern, read the existing value and
-//! write a new one under the same key, which is what a delta apply does per
-//! entity.
-//!
-//! Each group is populated with exactly `n` distinct keys before any
-//! measurement starts, and both mutators cycle a fixed key set rather than
-//! minting new keys, so the database does not grow with iteration count and
-//! `{n}` keeps meaning what it says.
-//!
-//! What would change a decision: at these sizes a `get_hit` that climbs with
-//! `n` cannot be compaction or SST-growth pressure, so it would point at
-//! per-entry dispatch cost scaling with database size, worth chasing in
-//! `crates/store`'s own code before looking a layer down.
+//! database grows? RocksDB numbers here are warm-cache, not disk-seek.
 
 use std::hint::black_box;
 
@@ -40,8 +14,6 @@ const KEY_LEN: usize = 48;
 const VALUE_LEN: usize = 128;
 const COLUMN: Column = Column::Generic;
 
-/// Distinct keys spread across the keyspace, so RocksDB's seeks are not all
-/// answered from one hot SST block.
 fn key_bytes(i: u64) -> [u8; KEY_LEN] {
     let mut k = [0_u8; KEY_LEN];
     k[..8].copy_from_slice(&i.to_le_bytes());
@@ -50,8 +22,6 @@ fn key_bytes(i: u64) -> [u8; KEY_LEN] {
     k
 }
 
-/// 128 bytes: a small delta record after borsh encoding, not a multi-KB root
-/// state.
 fn value_bytes(i: u64) -> [u8; VALUE_LEN] {
     let mut v = [0_u8; VALUE_LEN];
     v[..8].copy_from_slice(&i.to_le_bytes());
@@ -133,9 +103,7 @@ fn run_group<D: for<'a> Database<'a>>(
     });
 }
 
-/// One backend, swept over the population sizes. `make` returns the database
-/// alongside anything that must outlive it, which for RocksDB is the temp
-/// directory holding it.
+// `make`'s second return must outlive the database: RocksDB's temp directory.
 fn sweep<D: for<'a> Database<'a>, T>(c: &mut Criterion, name: &str, make: impl Fn() -> (D, T)) {
     let mut group = c.benchmark_group(name);
     for n in [100_usize, 1_000, 10_000] {

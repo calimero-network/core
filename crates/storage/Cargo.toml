@@ -41,9 +41,6 @@ velcro.workspace = true
 
 calimero-sdk.workspace = true
 
-# The lib target is the only non-criterion one `cargo bench` would select (test
-# targets already default to `bench = false`), and libtest rejects criterion's
-# own CLI flags.
 [lib]
 bench = false
 
@@ -57,10 +54,7 @@ default = []
 # crate boundaries so dependent crates' DAG-causal tests can share one
 # canonical copy instead of mirroring it.
 testing = []
-# Exposes `collections::FugueTextSimple`, the one-entity-per-node measurement
-# control for `FugueText`, enabled only by `tools/storage-cost`. Deliberately
-# not folded into `testing`, which swaps the merge registry implementation and
-# would move numbers unrelated to this type.
+# Measurement control for `FugueText`; enabled only by `tools/storage-cost`.
 fugue-simple = []
 
 # Registry tests live in `tests/` as separate integration binaries
@@ -87,6 +81,7 @@ harness = false
 [[bench]]
 name = "merge_root_state"
 harness = false
+
 [[test]]
 name = "map_entry_layout"
 required-features = ["testing"]

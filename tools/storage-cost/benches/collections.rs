@@ -1,17 +1,4 @@
-//! Tier 2: wall-clock throughput. REPORTING ONLY, never a merge gate.
-//!
-//! Two reasons it does not gate:
-//!
-//! 1. It would not have caught an O(n)-read regression. Against an in-memory
-//!    store, such a read pattern costs almost nothing in wall-clock, so the
-//!    curve reads flat while real gas explodes. The gate for that is the cost
-//!    snapshot.
-//! 2. Criterion's default significance threshold is ~5%; shared CI runners
-//!    routinely exceed that from cache state and neighbouring jobs alone. A
-//!    gate that cries wolf gets muted, which is worse than no gate.
-//!
-//! What it IS good for: throughput curves over `n`, compared against a stored
-//! baseline on master, so a real algorithmic win or loss is visible as a trend.
+//! Wall-clock throughput per workload. Reporting only, never a merge gate.
 
 use std::hint::black_box;
 
@@ -23,8 +10,6 @@ fn collections(c: &mut Criterion) {
     let mut group = c.benchmark_group("collections");
 
     for workload in all() {
-        // Elements-per-second rather than time-per-iteration: every workload
-        // builds `n` entries, so the per-entry rate is comparable across sizes.
         let _ignored = group.throughput(Throughput::Elements(workload.n as u64));
         let _ignored = group.bench_function(format!("{}/{}", workload.name, workload.n), |b| {
             b.iter_batched(

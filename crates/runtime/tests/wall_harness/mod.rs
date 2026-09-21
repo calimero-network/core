@@ -1,11 +1,8 @@
 //! The harness the gas-wall probes share: build a guest, call it, and tell a
-//! measured wall apart from a broken call site.
-//!
-//! A directory module rather than `tests/wall_harness.rs`, which cargo would
-//! compile as a test target of its own.
+//! measured wall apart from a broken call site. A directory module so cargo
+//! does not compile it as a test target of its own.
 
-// Each probe uses a different subset of this module, and the compiler sees one
-// probe at a time.
+// Each probe uses a different subset of this module.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -18,11 +15,9 @@ use calimero_runtime::logic::{Outcome, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{Engine, Module};
 
-/// Characters typed between two progress lines of a sweep.
-const PROBE_STRIDE: usize = 100;
+const PROBE_STRIDE: usize = 100; // characters between two progress lines of a sweep
 
 pub fn workspace_root() -> PathBuf {
-    // crates/runtime/ -> ../../
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates/")
@@ -31,8 +26,6 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Newest mtime across the app's build inputs, so a probe never silently
-/// measures a stale binary.
 pub fn newest_mtime(app_dir: &Path) -> Option<std::time::SystemTime> {
     fn visit(dir: &Path, newest: &mut Option<std::time::SystemTime>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -59,8 +52,7 @@ pub fn newest_mtime(app_dir: &Path) -> Option<std::time::SystemTime> {
     newest
 }
 
-/// Build `apps/<app>` once per test-binary run (cached on disk, rebuilt only
-/// when stale) and return its wasm bytes.
+/// Build `apps/<app>` if its wasm is stale, and return the wasm bytes.
 pub fn guest_wasm(app: &str) -> Vec<u8> {
     let app_dir = workspace_root().join("apps").join(app);
     let wasm_path = app_dir.join(format!("res/{}.wasm", app.replace('-', "_")));
@@ -117,28 +109,19 @@ pub fn call(
         .expect("run must return an Outcome")
 }
 
-/// What a failed call means. The distinction is the whole point of these
-/// probes: a measured wall and a broken harness must never be reported the
-/// same way.
 pub enum Verdict {
-    /// The guest ran and exhausted its budget. This is a result.
     Wall { limit: u64 },
-    /// The guest did not get far enough to cost anything meaningful. This is
-    /// not a result, and must never be presented as one.
     Drift(String),
 }
 
-/// The guest one probe drives, and the in-repo gate that covers the same
-/// property without it.
+/// The guest a probe drives, and the gate text its drift message points at.
 pub struct Probe {
     pub app: &'static str,
     pub gate: &'static str,
 }
 
 impl Probe {
-    /// Classify a failed outcome. `GasExhausted` is the ONLY failure that
-    /// counts as a wall; `ExecutionError` in particular does not, since that is
-    /// how a `#[app::logic]` method reports arguments it cannot deserialize.
+    /// In these probes `GasExhausted` is the only failure that counts as a wall.
     pub fn classify(&self, method: &str, error: &FunctionCallError) -> Verdict {
         match error {
             FunctionCallError::GasExhausted { limit } => Verdict::Wall { limit: *limit },
@@ -154,7 +137,6 @@ impl Probe {
         }
     }
 
-    /// Panic with a message that cannot be mistaken for a measurement.
     pub fn drift(&self, detail: &str) -> ! {
         panic!(
             "\n\
@@ -183,7 +165,6 @@ impl Probe {
         }
     }
 
-    /// Decode a successful call's return value as a JSON `T`.
     pub fn decode<T: serde::de::DeserializeOwned>(&self, outcome: &Outcome, method: &str) -> T {
         let body = outcome
             .returns
@@ -196,9 +177,7 @@ impl Probe {
     }
 }
 
-/// Type one character at a time into the MIDDLE of the document until a call
-/// exhausts gas. Shared by the probes whose guests offer the same
-/// `init`/`insert_text` surface, so their ceilings are comparable.
+/// Requires a guest exposing `init` and `insert_text`.
 pub fn mid_document_typing_wall(
     probe: &Probe,
     wasm: &[u8],
@@ -282,8 +261,6 @@ pub fn mid_document_typing_wall(
     }
 }
 
-/// The classification every probe's result rests on: only an exhausted gas
-/// budget is a wall, and everything else must report as drift.
 #[test]
 fn only_gas_exhaustion_counts_as_a_wall() {
     let probe = Probe {

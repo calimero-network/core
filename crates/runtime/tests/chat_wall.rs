@@ -19,19 +19,6 @@
 //! that point (core#3602). The wall is the count of the last message that
 //! landed.
 //!
-//! # This is a probe, not the gate
-//!
-//! It drives a contract in another repo and is `#[ignore]`d, so core CI never
-//! runs it and it has rotted silently before. The property it is about, one
-//! positional read costing O(n), is gated in-repo by the `vector_get_nth`
-//! workload in `tools/storage-cost`, which runs on every PR; this probe adds
-//! the end-to-end number in gas, against the real app, on demand.
-//!
-//! `GasExhausted` is the only outcome that produces a number; anything else
-//! panics as contract drift, naming the method, because a wall it did not
-//! measure is worse than no wall. A preflight makes drift show up in seconds
-//! rather than after a five-minute run that "found" a wall at 0.
-//!
 //! # Running it
 //!
 //! Ignored by default: it needs a `curb.wasm` built from mero-chat-pwa, which
@@ -54,8 +41,6 @@ mod wall_harness;
 
 use wall_harness::{Probe, Verdict};
 
-/// The contract this probe drives, and the gate that covers the same property
-/// without it.
 const PROBE: Probe = Probe {
     app: "mero-chat",
     gate: "\n\
@@ -115,9 +100,7 @@ fn build_curb_wasm() -> Vec<u8> {
         logic_dir.display(),
     );
 
-    // A `[patch]` in mero-chat's own manifest wins over the one injected with
-    // `--config`, so the probe would measure whatever tree that patch names and
-    // report the number as if it came from here.
+    // A `[patch]` in mero-chat's own manifest would win over the one injected below.
     let manifest = std::fs::read_to_string(logic_dir.join("Cargo.toml"))
         .expect("mero-chat logic manifest is readable");
     if manifest.contains(&format!("[patch.\"{CORE_GIT_SOURCE}\"]")) {
@@ -220,8 +203,6 @@ fn call(
         .expect("run must return an Outcome")
 }
 
-/// The `init` arguments. Kept next to the other two so the whole cross-repo
-/// contract this probe depends on is visible in one screenful.
 fn init_args() -> serde_json::Value {
     serde_json::json!({
         "name": "wall",
@@ -232,8 +213,6 @@ fn init_args() -> serde_json::Value {
     })
 }
 
-/// The `send_message` arguments. This is the part of the cross-repo contract
-/// that goes stale; defined once so fixing it is one edit.
 fn send_message_args(i: usize) -> serde_json::Value {
     serde_json::json!({
         "message": format!("message {i}"),
@@ -246,7 +225,6 @@ fn send_message_args(i: usize) -> serde_json::Value {
     })
 }
 
-/// The `get_messages` arguments: one page, from the top.
 fn get_messages_args() -> serde_json::Value {
     serde_json::json!({
         "parent_message": null,
@@ -256,8 +234,6 @@ fn get_messages_args() -> serde_json::Value {
     })
 }
 
-/// How many messages `get_messages` says the store holds. Drifts if the
-/// response shape changes, which is a contract change like any other.
 fn total_count(outcome: &Outcome) -> usize {
     let body = outcome
         .returns
@@ -278,9 +254,7 @@ fn total_count(outcome: &Outcome) -> usize {
         }) as usize
 }
 
-/// Prove the contract still answers the calls this probe makes, on a THROWAWAY
-/// store (so the measured run still starts empty), before spending minutes on
-/// a sweep.
+/// Runs against a THROWAWAY store, so the measured run still starts empty.
 fn preflight(module: &calimero_runtime::Module) {
     let mut storage = InMemoryStorage::default();
 
@@ -316,7 +290,6 @@ fn how_many_messages_before_send_message_walls() {
         .compile(&wasm)
         .expect("compile metered module");
 
-    // Before anything is measured: does the contract still answer these calls?
     preflight(&module);
 
     // One store for the whole run: the point is that cost depends on what the
@@ -357,10 +330,6 @@ fn how_many_messages_before_send_message_walls() {
                     write_wall = Some(landed);
                     break;
                 }
-                // Preflight passed, so the contract answered this call a moment
-                // ago with an empty store. Failing now for a non-gas reason is
-                // a state-dependent bug, not a cost measurement, and reporting
-                // it as a wall would put a fictional number in a document.
                 Verdict::Drift(detail) => PROBE.drift(&format!(
                     "{detail}\n\
                      This appeared only after {landed} messages, so it is state-dependent \
@@ -428,16 +397,12 @@ fn how_many_messages_before_send_message_walls() {
         (_, None) => println!("read wall  (get_messages):  none below {landed}"),
     }
 
-    // Preflight proved one message lands and every non-gas failure above panics
-    // as drift, so nothing appended means the classification is wrong.
     assert!(
         landed > 0,
         "no message was appended even though preflight succeeded - the failure \
          classification in this file is broken"
     );
 
-    // A wall in the first handful of messages is not a wall; it is a symptom
-    // that the contract now does something unbounded per call.
     if let Some(n) = write_wall.or(read_wall) {
         assert!(
             n >= 50,

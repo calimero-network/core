@@ -30,9 +30,7 @@ pub mod fugue;
 pub use fugue::{FugueError, FugueNode, FugueTree, Side};
 pub mod fugue_text;
 pub use fugue_text::FugueText;
-// A measurement control for `FugueText`, not a product collection: one storage
-// entity per Fugue node, so the cost of run-length blocks can be isolated from
-// the cost of Fugue's ordering. Off by default to keep it out of any node build.
+// Benchmark control for `FugueText`: one storage entity per Fugue node.
 #[cfg(any(test, feature = "fugue-simple"))]
 pub mod fugue_text_simple;
 #[cfg(any(test, feature = "fugue-simple"))]
@@ -712,11 +710,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     ///
     /// It is what makes app-defined merge reachable: `try_merge_non_root`
     /// dispatches on the entry's own `crdt_type`, and an entry that declares
-    /// nothing takes the legacy branch and resolves last-write-wins: correct
-    /// for a container whose values never collide, wrong for one whose values
-    /// do (see `CrdtType::FugueTextBlock`). Only the collections that know
-    /// their value type pass `Some` — the generic `insert` cannot, since `T`
-    /// there is already the erased item.
+    /// nothing takes the legacy branch and resolves last-write-wins. Only the
+    /// collections that know their value type pass `Some` — the generic
+    /// `insert` cannot, since `T` there is already the erased item.
     pub(crate) fn insert_with_storage_type(
         &mut self,
         id: Option<Id>,

@@ -290,8 +290,6 @@ impl CrdtMeta for FugueText {
     }
 
     fn storage_strategy() -> StorageStrategy {
-        // Blob, matching RGA: the container is a thin wrapper whose blocks
-        // sync as separate entities of the inner map.
         StorageStrategy::Blob
     }
 
@@ -303,8 +301,6 @@ impl CrdtMeta for FugueText {
 #[diagnostic::do_not_recommend]
 impl Mergeable for FugueText {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        // Same shape as the RGA impl: `TextBlock` is plain data, not a CRDT, so
-        // the union is explicit rather than through `blocks.merge()`.
         self.merge_blocks_from(other)?;
         Ok(())
     }

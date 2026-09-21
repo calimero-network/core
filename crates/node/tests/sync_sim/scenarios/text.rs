@@ -1,17 +1,6 @@
-//! Multi-replica `FugueText` scenarios over the real sync paths.
-//!
-//! Every node hosts a genuine `Root<FugueText>` on its `SimStorage`, so edits
-//! travel as real `StorageDelta` bytes, real HashComparison sessions or real
-//! level-wise sessions.
-//!
-//! Convergence alone is not an oracle here: every text-CRDT data-loss bug found
-//! so far converged, on the wrong text. Each scenario therefore checks the text
-//! against a pure `FugueTree` replay, passage contiguity, character uniqueness,
-//! Merkle-root equality and the `FugueTextBlock` tag on every stored row.
-//!
-//! All nodes share `SimNode::DEFAULT_CONTEXT_ID`: `collections::ROOT_ID` is a
-//! process-global frozen on first use, and [`seed_doc`] asserts the parentage
-//! that follows from it.
+//! Multi-replica `FugueText` scenarios over the real sync paths: edits travel
+//! as real `StorageDelta` bytes through HashComparison or level-wise sessions.
+//! Convergence is not the oracle - each scenario replays a pure `FugueTree`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::slice;
@@ -30,23 +19,18 @@ use crate::sync_sim::node::SimNode;
 use crate::sync_sim::protocol::{execute_hash_comparison_sync, execute_level_wise_sync};
 use crate::sync_sim::runtime::SimRng;
 
-const FIELD: &str = "sim_text_doc"; // every replica must derive the same collection id
-const CHAR_BASE: u32 = 0xE000; // private-use area: every inserted character is globally unique
+const FIELD: &str = "sim_text_doc";
+const CHAR_BASE: u32 = 0xE000; // private-use area, so every inserted character is unique
 const CHAR_STRIDE: u32 = 0x400; // per-replica slice, so a stray character names its author
 const PASSAGE_LEN: usize = 260; // longer than FugueText's 256-node run cap
-const LOSS_RATE: f64 = 0.3; // per-pass delta drop; a dropped delta is retried, never lost
-const DUPLICATE_RATE: f64 = 0.25; // per-delivery duplicate, which the apply path must absorb
-const EDIT_ROUNDS: usize = 4; // random-edit rounds before the concurrent passage round
-const SYNC_ROUNDS: usize = 8; // mesh passes before non-convergence is a failure
-const DELIVERY_PASSES: usize = 64; // drain passes before a stuck delivery queue is a failure
-const HOSTILE_REPLICA: u64 = 7; // one replica id shared by two writers, to forge a key collision
+const LOSS_RATE: f64 = 0.3;
+const DUPLICATE_RATE: f64 = 0.25;
+const EDIT_ROUNDS: usize = 4;
+const SYNC_ROUNDS: usize = 8;
+const DELIVERY_PASSES: usize = 64;
+const HOSTILE_REPLICA: u64 = 7;
 
-// =============================================================================
-// Oracle: the pure tree, fed the same edits and the same deliveries
-// =============================================================================
-
-/// A pure-`FugueTree` mirror of one storage replica. `next` counts the nodes
-/// it has minted, which is what `FugueText::next_counter` derives from blocks.
+/// A pure-`FugueTree` mirror of one replica, minting ids as `FugueText` does.
 struct Oracle {
     tree: FugueTree,
     replica: u64,
@@ -105,8 +89,7 @@ impl Oracle {
     }
 }
 
-/// Nodes `after` defines that `before` did not, plus nodes `after` tombstoned:
-/// under causal delivery, exactly what one real delta adds at the receiver.
+/// The oracle's model of one delta: nodes `after` added, plus ones it tombstoned.
 fn changed(
     before: &BTreeMap<RawId, FugueNode>,
     after: &BTreeMap<RawId, FugueNode>,
@@ -118,13 +101,7 @@ fn changed(
         .collect()
 }
 
-// =============================================================================
-// Storage helpers
-// =============================================================================
-
-/// Materialise the empty document, the way production `init` does. The child
-/// assertion catches a `collections::ROOT_ID` frozen under a foreign context,
-/// which parents the collection elsewhere and makes the scenario vacuous.
+/// Materialise the empty document, the way production `init` does.
 fn seed_doc(node: &SimNode) {
     clear_pending_delta();
     node.storage().with_index(|| {
@@ -145,7 +122,6 @@ fn seed_doc(node: &SimNode) {
     );
 }
 
-/// Run `f` against `node`'s document and return the delta the commit emits.
 fn edit(node: &SimNode, f: impl FnOnce(&mut Root<FugueText<MainStorage>>)) -> Vec<u8> {
     clear_pending_delta();
     node.storage().with_index(|| {
@@ -156,8 +132,7 @@ fn edit(node: &SimNode, f: impl FnOnce(&mut Root<FugueText<MainStorage>>)) -> Ve
     })
 }
 
-/// Land `delta` the way the receive path does: decode to actions and push each
-/// through `Interface::apply_action`, skipping the sender's root entry.
+/// Land `delta` the way the receive path does, action by action.
 fn land(node: &SimNode, delta: &[u8]) {
     let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
         StorageDelta::Actions(actions) => actions,
@@ -192,7 +167,6 @@ fn len_of(node: &SimNode) -> usize {
     })
 }
 
-/// The document's blocks collection: the one root child stamped `CrdtType::FugueText`.
 fn blocks_collection_id(node: &SimNode) -> Id {
     let root = node.storage().root_id();
     node.storage()
@@ -214,7 +188,6 @@ fn block_count(node: &SimNode) -> usize {
         .len()
 }
 
-/// This node's `FugueText` replica id: the first 8 bytes of its device id.
 fn replica_of(node: &SimNode) -> u64 {
     let executor: [u8; 32] = *node.storage().executor_id().as_ref();
     let mut head = [0_u8; 8];
@@ -222,8 +195,6 @@ fn replica_of(node: &SimNode) -> u64 {
     u64::from_be_bytes(head)
 }
 
-/// `count` characters from replica `index`'s private slice, starting at `from`.
-/// Disjoint slices make a duplicated character detectable and attributable.
 fn unique_chars(index: usize, from: usize, count: usize) -> String {
     let base = CHAR_BASE + CHAR_STRIDE * u32::try_from(index).expect("replica index fits u32");
     (0..count)
@@ -238,12 +209,7 @@ fn unique_chars(index: usize, from: usize, count: usize) -> String {
         .collect()
 }
 
-// =============================================================================
-// Assertions
-// =============================================================================
-
-/// Every stored block row still carries `CrdtType::FugueTextBlock`: a row that
-/// lost the tag is reconciled by last-writer-wins instead of the block join,
+/// A row that lost its `FugueTextBlock` tag is reconciled last-writer-wins,
 /// which drops one side's edit silently rather than erroring.
 fn assert_blocks_tagged(label: &str, node: &SimNode) {
     let blocks = node.storage().get_children(blocks_collection_id(node));
@@ -267,8 +233,6 @@ fn assert_blocks_tagged(label: &str, node: &SimNode) {
     }
 }
 
-/// Text, passage contiguity, character uniqueness, length and Merkle-root
-/// agreement over replicas that should have quiesced.
 fn assert_text_properties(label: &str, nodes: &[&SimNode], expected: &str, passages: &[String]) {
     let first = nodes.first().expect("at least one replica");
     for node in nodes {
@@ -326,16 +290,11 @@ fn assert_text_properties(label: &str, nodes: &[&SimNode], expected: &str, passa
     }
 }
 
-// =============================================================================
-// Sync and delivery helpers
-// =============================================================================
-
 fn context() -> ContextId {
     ContextId::from(SimNode::DEFAULT_CONTEXT_ID)
 }
 
-/// `i` runs a real HashComparison session against `j`. The protocol is
-/// bidirectional, so both ends hold the union afterwards.
+/// HashComparison is bidirectional, so both ends hold the union afterwards.
 async fn pull(nodes: &mut [SimNode], i: usize, j: usize) {
     if i == j {
         return;
@@ -353,7 +312,6 @@ async fn pull(nodes: &mut [SimNode], i: usize, j: usize) {
     }
 }
 
-/// Mesh HashComparison passes over `group` until every member's root matches.
 async fn converge_group(nodes: &mut [SimNode], group: &[usize]) -> bool {
     let equal = |nodes: &[SimNode]| {
         group
@@ -373,7 +331,6 @@ async fn converge_group(nodes: &mut [SimNode], group: &[usize]) -> bool {
     equal(nodes)
 }
 
-/// The oracle counterpart of a converged group: everyone holds the union.
 fn union_oracles(oracles: &mut [Oracle], group: &[usize]) {
     let all: Vec<FugueNode> = group.iter().flat_map(|&i| oracles[i].nodes()).collect();
     for &i in group {
@@ -381,8 +338,6 @@ fn union_oracles(oracles: &mut [Oracle], group: &[usize]) {
     }
 }
 
-/// One committed edit in flight, with the oracle nodes it carries and its
-/// author's already-applied deltas, which delivery honours as causal deps.
 struct Pending {
     key: (usize, usize),
     bytes: Vec<u8>,
@@ -390,8 +345,7 @@ struct Pending {
     deps: HashSet<(usize, usize)>,
 }
 
-/// Deliver what is deliverable, dropping some (they stay queued for retry) and
-/// duplicating some. Reordering is the shuffle; causality is the `deps` gate.
+/// Drops stay queued for retry, so loss reorders delivery but never loses it.
 fn delivery_pass(
     nodes: &[SimNode],
     oracles: &mut [Oracle],
@@ -418,7 +372,6 @@ fn delivery_pass(
     *queue = retry;
 }
 
-/// One random edit, applied to the storage document and mirrored on the oracle.
 fn random_edit(
     node: &SimNode,
     oracle: &mut Oracle,
@@ -464,13 +417,6 @@ fn random_edit(
     }
 }
 
-// =============================================================================
-// Scenario 1 - concurrent editing under faults
-// =============================================================================
-
-/// Three to five replicas edit concurrently under loss-then-retry, reordering
-/// and duplicate delivery. Nothing deletes after the final passage round, so
-/// passage contiguity is a real property rather than a race with a delete.
 #[tokio::test]
 async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
     for seed in 0..3_u64 {
@@ -491,8 +437,8 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
         let mut queue: Vec<(usize, usize)> = Vec::new();
 
         for round in 0..=EDIT_ROUNDS {
-            // The final round is the concurrent passage round: every replica
-            // types one long run before any of them sees the others' deltas.
+            // Final round: every replica types one passage and nothing deletes
+            // after it, so passage contiguity is not a race with a delete.
             let last = round == EDIT_ROUNDS;
             for author in 0..count {
                 assert_eq!(
@@ -567,13 +513,6 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
     }
 }
 
-// =============================================================================
-// Scenario 2 - partition and heal
-// =============================================================================
-
-/// Two groups edit independently, each then types a long passage at position
-/// zero, and the partition heals. One anchor contested by both passages is the
-/// sharpest concurrent-insert shape, the one that interleaves under RGA.
 #[tokio::test]
 async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
     const GROUPS: [[usize; 2]; 2] = [[0, 1], [2, 3]];
@@ -591,7 +530,6 @@ async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
         let mut oracles: Vec<Oracle> = nodes.iter().map(|n| Oracle::new(replica_of(n))).collect();
         let mut minted = [0_usize; 4];
 
-        // A shared base, so both sides enter the partition from one state.
         let base = unique_chars(0, 0, 24);
         minted[0] += 24;
         let _ignored = edit(&nodes[0], |doc| {
@@ -657,13 +595,6 @@ async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
     }
 }
 
-// =============================================================================
-// Scenario 3 - late joiner over HashComparison
-// =============================================================================
-
-/// A node with no text state catches up from a peer over a real HashComparison
-/// session. The cold-joiner block pins what leaf transfer alone cannot give:
-/// the context-root bytes `Root::fetch` reads, written in production by `init`.
 #[tokio::test]
 async fn text_late_joiner_catches_up_via_hash_comparison() {
     const SEED: u64 = 0x7E_4700;
@@ -735,13 +666,6 @@ async fn text_late_joiner_catches_up_via_hash_comparison() {
     );
 }
 
-// =============================================================================
-// Scenario 4 - late joiner over level-wise sync
-// =============================================================================
-
-/// The same catch-up over `LevelWiseProtocol`, which SKIPS untagged leaves
-/// where HashComparison synthesises opaque ones, so the transferred-row count
-/// is asserted: a silent skip must not pass for sync.
 #[tokio::test]
 async fn text_late_joiner_catches_up_via_level_wise() {
     const SEED: u64 = 0x1E_4E00;
@@ -797,13 +721,6 @@ async fn text_late_joiner_catches_up_via_level_wise() {
     );
 }
 
-// =============================================================================
-// Scenario 5 - stale and hostile input
-// =============================================================================
-
-/// An old copy of a block landing after a newer one, and two writers forging
-/// one block key with equal-length different text. The join rule is the oracle:
-/// tombstones OR, the record maximal under `(node count, text, parent, side)`.
 #[tokio::test]
 async fn text_stale_and_forged_blocks_resolve_identically() {
     let label = "stale and forged blocks";
@@ -827,8 +744,7 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
     let run = format!("{head}{tail}");
     assert_text_properties(label, &[&author, &receiver], &run, slice::from_ref(&run));
 
-    // Two writers share one replica id, so they mint the same block key for
-    // different text of the same length.
+    // Both writers mint the same block key, for different text of equal length.
     let p = SimNode::new_in_context("forge-p", context());
     let q = SimNode::new_in_context("forge-q", context());
     seed_doc(&p);

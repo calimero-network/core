@@ -1,30 +1,7 @@
-//! Conformance to the EXTERNAL specification Tree-Fugue is proven against.
-//!
-//! The crate's own sweeps check Fugue against a model oracle that is the same
-//! algorithm, so the two agree by construction. This file checks it against
-//! Weidner, Gentle and Kleppmann, *The Art of the Fugue* (arXiv 2305.00583),
-//! and the specification its Theorem 1 proves Tree-Fugue satisfies.
-//!
-//! Attiya et al.'s strong list specification: there is one total order `<` on
-//! all elements such that **(a)** a replica's `values()` returns, in `<`,
-//! exactly the elements it has received an `insert` and not a `delete` for,
-//! and **(b)** if `values()` yields `[a_0, …, a_{n-1}]` just before
-//! `insert(i, x)`, the new element `e` satisfies
-//! `a_0, …, a_{i-1} < e < a_i, …, a_{n-1}`.
-//!
-//! Non-interleaving (paper Table I, Figure 2): concurrent runs typed at the
-//! same position stay contiguous. The three anomaly columns are not
-//! equivalent, so forward, backward single-replica and backward multi-replica
-//! are separate cases. This is NOT *maximal* non-interleaving (Definition 4),
-//! which only FugueMax satisfies; plain Fugue's one lost adjacency is pinned
-//! by [`figure_7__right_siblings_order_by_id_not_by_right_origin`], and no
-//! passage is split either way. [`ReplicatedGrowableArray`] runs the backward
-//! scenario too, asserting it DOES interleave, so Fugue cannot pass vacuously.
-//!
-//! Every property is checked on the pure algorithm AND through the real apply
-//! path, borrowing element identity from a twin asserted equal at every step.
+//! Conformance to the external specification: Attiya et al.'s strong list
+//! specification and the non-interleaving of Weidner, Gentle and Kleppmann,
+//! *The Art of the Fugue* (arXiv 2305.00583), on the pure and the apply path.
 
-// The `subject__scenario` naming convention this crate uses in its tests.
 #![allow(non_snake_case)]
 #![allow(clippy::unwrap_used)]
 
@@ -41,12 +18,7 @@ use fugue_harness::{
     device, edit, env_for, fork, fugue_genesis, fugue_text_in, land, new_store, read_with, Store,
 };
 
-// ---------------------------------------------------------------------------
-// The pure twin: one replica of the raw algorithm, with element identity.
-// ---------------------------------------------------------------------------
-
-/// A pure replica, using the same id allocation `FugueText` does (a replica's
-/// counter is the number of nodes it has minted).
+/// A pure replica minting ids exactly as `FugueText` does: counter = nodes minted.
 #[derive(Clone, Debug)]
 struct Twin {
     tree: FugueTree,
@@ -63,14 +35,12 @@ impl Twin {
         }
     }
 
-    /// Insert one character, returning the node that must be broadcast.
     fn insert(&mut self, pos: usize, value: char) -> FugueNode {
         let node = self.tree.insert(pos, value, (self.id, self.next)).unwrap();
         self.next += 1;
         node
     }
 
-    /// Tombstone the character at `pos`, returning its id.
     fn delete(&mut self, pos: usize) -> RawId {
         self.tree.delete(pos).unwrap()
     }
@@ -83,19 +53,16 @@ impl Twin {
         self.tree.len()
     }
 
-    /// Deliver every node `other` holds: the state-based join.
     fn receive_from(&mut self, other: &Self) {
         for node in other.tree.nodes().copied().collect::<Vec<_>>() {
             self.tree.integrate(node);
         }
     }
 
-    /// The elements this replica has received, live or tombstoned.
     fn received(&self) -> Vec<RawId> {
         self.tree.nodes().map(|node| node.id).collect()
     }
 
-    /// The elements this replica has received a delete for.
     fn deleted(&self) -> Vec<RawId> {
         self.tree
             .nodes()
@@ -105,12 +72,9 @@ impl Twin {
     }
 }
 
-/// The witness for the strong list specification's total order `<`: every
-/// element gets a globally unique character, so `<` reads off a shadow tree of
-/// every node the execution created, by the [`FugueTree`] traversal replicas use.
+/// Witness for the strong list spec's total order `<`: a shadow tree of every node created.
 #[derive(Debug, Default)]
 struct Elements {
-    /// Every node ever created, in its live form.
     all: Vec<FugueNode>,
 }
 
@@ -141,7 +105,6 @@ impl Elements {
             .expect("every recorded element has a character")
     }
 
-    /// Position of `value` in `<`.
     fn position(order: &[char], value: char) -> usize {
         order
             .iter()
@@ -150,19 +113,15 @@ impl Elements {
     }
 }
 
-/// One `insert(i, x)` call, kept for the property (b) check.
+/// One `insert(i, x)` call: `values()` before it, the index, the new character.
 #[derive(Debug)]
 struct InsertCall {
-    /// The replica's `values()` immediately before the call.
     before: Vec<char>,
-    /// The index the caller asked for.
     index: usize,
-    /// The character of the element the call created.
     element: char,
 }
 
-/// PROPERTY (b): `a_0, …, a_{i-1} < e < a_i, …, a_{n-1}` in the one total
-/// order `<`, for every insert the execution performed.
+/// Property (b): `a_0, …, a_{i-1} < e < a_i, …, a_{n-1}` in the total order `<`.
 fn assert_property_b(order: &[char], calls: &[InsertCall]) {
     for call in calls {
         let inserted = Elements::position(order, call.element);
@@ -189,8 +148,7 @@ fn assert_property_b(order: &[char], calls: &[InsertCall]) {
     }
 }
 
-/// PROPERTY (a): a replica's `values()` is the `<`-ordered restriction of the
-/// global element set to what it has received and not deleted.
+/// Property (a): the `<`-ordered restriction of the element set to what a replica has live.
 fn expected_values(order: &[char], elements: &Elements, twin: &Twin) -> String {
     let received: Vec<char> = twin
         .received()
@@ -208,33 +166,21 @@ fn expected_values(order: &[char], elements: &Elements, twin: &Twin) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// The enumerated executions.
-// ---------------------------------------------------------------------------
-
-/// One step of an execution: which replica acts, and what it does.
 #[derive(Clone, Copy, Debug)]
 enum Act {
-    /// Insert a fresh element at the front.
     InsFront,
-    /// Insert a fresh element in the middle.
     InsMid,
-    /// Insert a fresh element at the end.
     InsEnd,
-    /// Delete the first element (no-op on an empty document).
     DelFirst,
 }
 
-/// The four-act alphabet: three insertion positions (front, middle, end: the
-/// three cases of Fugue's `leftOrigin`/`rightOrigin` rule) and a delete.
+/// Front, middle and end are the three cases of Fugue's origin rule.
 const ACTS: [Act; 4] = [Act::InsFront, Act::InsMid, Act::InsEnd, Act::DelFirst];
 
-/// Characters handed out as element identities. Unique per element, which is
-/// what makes the total order readable as a string.
+/// Element identities; unique per element, which is what makes `<` a string.
 const POOL: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-/// The index-th point of an execution space of `steps` steps over `replicas`
-/// replicas, as `(replica, act)` pairs.
+/// The `index`-th point of the `steps`-step, `replicas`-replica script space.
 fn script_of(index: usize, steps: usize, replicas: usize) -> Vec<(usize, Act)> {
     let radix = replicas * ACTS.len();
     (0..steps)
@@ -245,7 +191,6 @@ fn script_of(index: usize, steps: usize, replicas: usize) -> Vec<(usize, Act)> {
         .collect()
 }
 
-/// The position an act targets in a document of length `len`.
 const fn position_for(act: Act, len: usize) -> usize {
     match act {
         Act::InsFront => 0,
@@ -255,9 +200,6 @@ const fn position_for(act: Act, len: usize) -> usize {
     }
 }
 
-/// STRONG LIST SPECIFICATION on the pure algorithm. EXHAUSTIVE: 2 replicas x 4
-/// acts = 8 choices per step, 4 steps = `8^4 = 4096` executions, each checking
-/// property (a) after every step and every sync, and (b) for every insert.
 #[test]
 fn strong_list_spec__holds_on_the_pure_algorithm() {
     const STEPS: usize = 4;
@@ -275,8 +217,6 @@ fn strong_list_spec__holds_on_the_pure_algorithm() {
             .collect();
         let mut next_char = 0_usize;
 
-        // A shared, already-synchronised seed: replica 0 types one element and
-        // everybody receives it.
         {
             let node = twins[0].insert(0, char::from(POOL[next_char]));
             next_char += 1;
@@ -325,7 +265,6 @@ fn strong_list_spec__holds_on_the_pure_algorithm() {
             check_a(&elements, &twins, &mut property_a_checks);
         }
 
-        // Sync one way, then the other, checking (a) at each partial state.
         let snapshot = twins[1].clone();
         twins[0].receive_from(&snapshot);
         check_a(&elements, &twins, &mut property_a_checks);
@@ -345,9 +284,7 @@ fn strong_list_spec__holds_on_the_pure_algorithm() {
     );
 }
 
-/// STRONG LIST SPECIFICATION through the storage collection's REAL apply path.
-/// EXHAUSTIVE: `8^3 = 512` executions. Element identity, which `FugueText` does
-/// not expose, is borrowed from a pure twin asserted equal at every step.
+/// Element identity, which `FugueText` does not expose, is borrowed from a pure twin.
 #[test]
 fn strong_list_spec__holds_through_the_apply_path() {
     const STEPS: usize = 3;
@@ -363,7 +300,6 @@ fn strong_list_spec__holds_through_the_apply_path() {
         let mut calls: Vec<InsertCall> = Vec::new();
         let mut next_char = 0_usize;
 
-        // The shared seed: one element, authored by replica 0, present on both.
         let seed_char = char::from(POOL[next_char]);
         next_char += 1;
         let base = fugue_genesis(FIELD, &seed_char.to_string());
@@ -436,7 +372,6 @@ fn strong_list_spec__holds_through_the_apply_path() {
             }
         }
 
-        // Sync both ways through the apply path, re-checking (a) each time.
         for (from, to) in [(1_usize, 0_usize), (0, 1)] {
             let dev = device(u8::try_from(to).unwrap() + 1);
             for delta in &deltas[from] {
@@ -475,22 +410,13 @@ fn strong_list_spec__holds_through_the_apply_path() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Forward and backward non-interleaving.
-// ---------------------------------------------------------------------------
-
-/// One replica's contribution to a non-interleaving scenario: a heading
-/// character and the passage that must stay glued to it.
+/// A writer's heading plus the passage that must stay glued to it.
 struct Passage {
-    /// The replica id / device number.
     replica: u8,
-    /// The heading character, typed AFTER the passage in the backward case.
     heading: char,
-    /// The passage.
     text: &'static str,
 }
 
-/// The scenarios of the paper's Table 1, as this file exercises them.
 const TWO_WRITERS: [Passage; 2] = [
     Passage {
         replica: 1,
@@ -522,8 +448,6 @@ const THREE_WRITERS: [Passage; 3] = [
     },
 ];
 
-/// Assert every writer's block survived the merge contiguously, and that
-/// nothing was lost or duplicated.
 fn assert_blocks_are_contiguous(merged: &str, writers: &[Passage], expected_len: usize) {
     for writer in writers {
         let block = format!("{}{}", writer.heading, writer.text);
@@ -540,9 +464,7 @@ fn assert_blocks_are_contiguous(merged: &str, writers: &[Passage], expected_len:
     );
 }
 
-/// A pure replica that has seen the seed, appended its passage at the END, and
-/// gone BACK to type its heading before it: the paper's Figure 2, the case RGA
-/// is proven to interleave.
+/// Appends the passage at the end, then goes back to type the heading before it.
 fn backward_twin(seed: &Twin, writer: &Passage) -> Twin {
     let mut twin = Twin::new(u64::from(writer.replica));
     twin.receive_from(seed);
@@ -554,9 +476,7 @@ fn backward_twin(seed: &Twin, writer: &Passage) -> Twin {
     twin
 }
 
-/// A pure replica that typed heading and passage LEFT TO RIGHT at the position
-/// everybody else types at: the forward case, which RGA also satisfies, so a
-/// regression breaking only one direction cannot hide.
+/// Types heading and passage left to right at the position everybody types at.
 fn forward_twin(seed: &Twin, writer: &Passage) -> Twin {
     let mut twin = Twin::new(u64::from(writer.replica));
     twin.receive_from(seed);
@@ -566,14 +486,12 @@ fn forward_twin(seed: &Twin, writer: &Passage) -> Twin {
     twin
 }
 
-/// The shared seed `"S"`, authored by replica 0.
 fn seed_twin() -> Twin {
     let mut seed = Twin::new(0);
     let _ignored = seed.insert(0, 'S');
     seed
 }
 
-/// Merge every twin into one and read the document back.
 fn merged_text(twins: &[Twin]) -> String {
     let mut all = Twin::new(u64::MAX);
     for twin in twins {
@@ -582,8 +500,6 @@ fn merged_text(twins: &[Twin]) -> String {
     all.text()
 }
 
-/// FORWARD non-interleaving on the pure algorithm: two replicas typing a run
-/// left to right at the same position keep their runs contiguous.
 #[test]
 fn non_interleaving__forward_two_replicas_on_the_pure_algorithm() {
     let seed = seed_twin();
@@ -603,8 +519,6 @@ fn non_interleaving__forward_two_replicas_on_the_pure_algorithm() {
     assert_blocks_are_contiguous(&merged, &TWO_WRITERS, 9);
 }
 
-/// BACKWARD non-interleaving on the pure algorithm, two replicas: the paper's
-/// Figure 2, and the case Table 1 records RGA as failing.
 #[test]
 fn non_interleaving__backward_two_replicas_on_the_pure_algorithm() {
     let seed = seed_twin();
@@ -624,9 +538,6 @@ fn non_interleaving__backward_two_replicas_on_the_pure_algorithm() {
     assert_blocks_are_contiguous(&merged, &TWO_WRITERS, 9);
 }
 
-/// BACKWARD non-interleaving on the pure algorithm, THREE concurrent
-/// single-replica sessions. Table I's multi-replica column is a different
-/// shape - see [`non_interleaving__backward_one_session_spanning_two_replicas`].
 #[test]
 fn non_interleaving__backward_three_replicas_on_the_pure_algorithm() {
     let seed = seed_twin();
@@ -635,7 +546,6 @@ fn non_interleaving__backward_three_replicas_on_the_pure_algorithm() {
         .map(|writer| backward_twin(&seed, writer))
         .collect();
 
-    // Every delivery order of the three, to rule out an order-sensitive pass.
     let orders = [
         [0, 1, 2],
         [0, 2, 1],
@@ -656,8 +566,6 @@ fn non_interleaving__backward_three_replicas_on_the_pure_algorithm() {
     }
 }
 
-/// Drive the backward scenario on a `FugueText` document and return the
-/// merged text every replica converged on.
 fn fugue_backward_merge(field: &str, writers: &[Passage]) -> String {
     let base = fugue_genesis(field, "S");
     let stores: Vec<Store> = writers.iter().map(|_| fork(&base)).collect();
@@ -666,13 +574,11 @@ fn fugue_backward_merge(field: &str, writers: &[Passage]) -> String {
     for (index, writer) in writers.iter().enumerate() {
         let dev = device(writer.replica);
         let replica = u64::from(writer.replica);
-        // Append the passage at the end of the document...
         deltas.push(edit::<FugueText<MainStorage>>(&stores[index], dev, |doc| {
             let end = doc.len().expect("len should succeed");
             doc.insert_str_with_replica(end, replica, writer.text)
                 .expect("append should succeed");
         }));
-        // ... then go back and type the heading immediately before it.
         deltas.push(edit::<FugueText<MainStorage>>(&stores[index], dev, |doc| {
             doc.insert_str_with_replica(1, replica, &writer.heading.to_string())
                 .expect("heading insert should succeed");
@@ -694,25 +600,19 @@ fn fugue_backward_merge(field: &str, writers: &[Passage]) -> String {
     converged.expect("at least one writer")
 }
 
-/// BACKWARD non-interleaving through the storage collection's REAL apply path,
-/// two replicas.
 #[test]
 fn non_interleaving__backward_two_replicas_through_the_apply_path() {
     let merged = fugue_backward_merge("conformance_backward_two", &TWO_WRITERS);
     assert_blocks_are_contiguous(&merged, &TWO_WRITERS, 9);
 }
 
-/// BACKWARD non-interleaving through the storage collection's REAL apply path,
-/// three replicas.
 #[test]
 fn non_interleaving__backward_three_replicas_through_the_apply_path() {
     let merged = fugue_backward_merge("conformance_backward_three", &THREE_WRITERS);
     assert_blocks_are_contiguous(&merged, &THREE_WRITERS, 12);
 }
 
-/// Drive ONE backward-typed session whose passage and heading carry ids from
-/// two different replicas, concurrent with an ordinary single-replica writer,
-/// and return the text both converge on.
+/// One backward session whose passage and heading carry different replica ids.
 fn multi_replica_backward_merge(field: &str, passage: u64, heading: u64) -> String {
     let base = fugue_genesis(field, "S");
     let (split, single) = (fork(&base), fork(&base));
@@ -753,9 +653,6 @@ fn multi_replica_backward_merge(field: &str, passage: u64, heading: u64) -> Stri
     converged.expect("both writers wrote")
 }
 
-/// BACKWARD non-interleaving, MULTI-REPLICA: Table I's third anomaly column,
-/// which needs ONE session spanning two replica ids, as a user moving between
-/// devices produces. Both id orders run, since ids need not follow the session.
 #[test]
 fn non_interleaving__backward_one_session_spanning_two_replicas() {
     for (field, passage, heading, expected) in [
@@ -768,7 +665,6 @@ fn non_interleaving__backward_one_session_spanning_two_replicas() {
     }
 }
 
-/// FORWARD non-interleaving through the storage collection's REAL apply path.
 #[test]
 fn non_interleaving__forward_two_replicas_through_the_apply_path() {
     const FIELD: &str = "conformance_forward_two";
@@ -782,8 +678,6 @@ fn non_interleaving__forward_two_replicas_through_the_apply_path() {
         let run: String = core::iter::once(writer.heading)
             .chain(writer.text.chars())
             .collect();
-        // Typed left to right at position 1: one call per character, each at
-        // the position after the last.
         for (offset, value) in run.chars().enumerate() {
             deltas.push(edit::<FugueText<MainStorage>>(&stores[index], dev, |doc| {
                 doc.insert_str_with_replica(1 + offset, replica, &value.to_string())
@@ -801,9 +695,7 @@ fn non_interleaving__forward_two_replicas_through_the_apply_path() {
     }
 }
 
-/// The paper's Figure 7: three replicas concurrently insert `A`, `B` and `C`,
-/// then r2 sees `{A, B}` and types `Y`s between them while r3 sees `{A, C}` and
-/// types `X`s: right descendants of `A` with DIFFERENT right origins.
+/// Figure 7: two passages, both right descendants of `A`, with different right origins.
 fn figure_7_merged(passage: u32) -> String {
     let mut r1 = FugueTree::new();
     let a = r1.insert(0, 'A', (1, 0)).unwrap();
@@ -827,8 +719,6 @@ fn figure_7_merged(passage: u32) -> String {
         .map(|k| r3.insert(1 + k as usize, 'X', (3, 1 + k)).unwrap())
         .collect();
 
-    // Both passages hang off A's right side, so the sibling comparator alone
-    // decides their relative order and neither records a right origin.
     for head in [ys[0], xs[0]] {
         assert_eq!((head.parent, head.side), (Some((1, 0)), Side::R));
     }
@@ -851,9 +741,7 @@ fn figure_7_merged(passage: u32) -> String {
     merged.values()
 }
 
-/// FIGURE 7: right siblings are ordered by id, so this is plain Fugue and not
-/// FugueMax, which would keep `Y` adjacent to the `B` it was typed before and
-/// yield `AXYBC`. If this assertion changes, so does every stored text.
+/// Plain Fugue, not FugueMax: FugueMax would keep `Y` beside `B` and give `AXYBC`.
 #[test]
 fn figure_7__right_siblings_order_by_id_not_by_right_origin() {
     assert_eq!(figure_7_merged(1), "AYXBC");
@@ -866,25 +754,17 @@ fn figure_7__right_siblings_order_by_id_not_by_right_origin() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The same backward scenario against RGA: the defect Fugue fixes.
-// ---------------------------------------------------------------------------
-
-/// A pinned HLC, so the RGA scenario is deterministic: `CharId` is
-/// `(timestamp, seq)` and the whole of RGA's tie-break is the timestamp.
+/// A pinned HLC: RGA's tie-break is the timestamp, so the scenario is deterministic.
 fn pinned(time: u64) -> HybridTimestamp {
     let id = *HybridTimestamp::zero().get_id();
     HybridTimestamp::new(Timestamp::new(NTP64(time << 32), id))
 }
 
-/// The paper's Figure 2 against `ReplicatedGrowableArray`: RGA DOES interleave,
-/// pinned to the exact text. This asserts the defect, not its absence, and is
-/// the control that keeps the Fugue cases above meaningful.
+/// Asserts the defect: were RGA to stop interleaving, the Fugue cases would pass vacuously.
 #[test]
 fn rga_control__backward_two_replicas_interleave() {
     const FIELD: &str = "conformance_rga_backward";
 
-    // Genesis: the shared seed "S", authored before either replica forks.
     let base = new_store();
     clear_pending_delta();
     env::with_runtime_env(env_for(&base, device(1)), || {
@@ -902,7 +782,6 @@ fn rga_control__backward_two_replicas_interleave() {
     for (index, writer) in TWO_WRITERS.iter().enumerate() {
         let dev = device(writer.replica);
         let tick = u64::from(writer.replica);
-        // Append the passage at the end...
         deltas.push(edit::<ReplicatedGrowableArray<MainStorage>>(
             &stores[index],
             dev,
@@ -912,7 +791,6 @@ fn rga_control__backward_two_replicas_interleave() {
                     .expect("append should succeed");
             },
         ));
-        // ... then go back and type the heading immediately before it.
         deltas.push(edit::<ReplicatedGrowableArray<MainStorage>>(
             &stores[index],
             dev,
@@ -939,8 +817,6 @@ fn rga_control__backward_two_replicas_interleave() {
         }
     }
 
-    // Every character survives, but both blocks are shredded: the assertion the
-    // Fugue cases make (`assert_blocks_are_contiguous`) does not hold here.
     let merged = converged.expect("at least one writer");
     assert_eq!(merged, "SBAbbbaaa");
     assert_eq!(

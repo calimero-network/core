@@ -1,24 +1,6 @@
-//! Where a real `FugueText` document stops being writable, and separately
-//! where it stops being readable at all.
-//!
-//! Deliberately the mirror of `rga_wall.rs` - same harness, same failure
-//! classification, same sweep - so the two sets of numbers are comparable, and
-//! it drives `apps/fugue-editor`, that file's guest twin, for the same reason.
-//!
-//! The write sweeps are split because they hit different layouts: appending
-//! (runs coalesce), pasting into an empty document, and inserting mid-run, the
-//! case the block layout affects most. The three reads all rebuild the tree
-//! from every stored block, so their walls land on top of each other: a
-//! positional read is not a way to keep reading a document `get_text` can no
-//! longer open.
-//!
-//! `GasExhausted` is the only outcome that produces a number; anything else
-//! panics as contract drift, naming the method.
+//! Where a real `FugueText` document walls: writes, then reads.
 //!
 //!   cargo test -p calimero-runtime --test fugue_wall -- --ignored --nocapture
-//!
-//! Raise the ceiling if nothing walls in the default range:
-//!   FUGUE_WALL_CEILING=40000 cargo test ... -- --ignored --nocapture
 
 use std::time::Instant;
 
@@ -30,8 +12,6 @@ mod wall_harness;
 
 use wall_harness::{call, guest_wasm, Probe, Verdict};
 
-/// The guest this probe drives, and the gate that covers the same property
-/// without it.
 const PROBE: Probe = Probe {
     app: "fugue-editor",
     gate: "\n\
@@ -45,8 +25,6 @@ fn editor_wasm() -> Vec<u8> {
     guest_wasm(PROBE.app)
 }
 
-/// Prove the app still answers the calls this probe makes, on a THROWAWAY
-/// store, before spending minutes on a sweep.
 fn preflight(module: &calimero_runtime::Module) {
     let mut storage = InMemoryStorage::default();
     PROBE.expect_ok(
@@ -74,8 +52,6 @@ fn preflight(module: &calimero_runtime::Module) {
         ));
     }
 
-    // The positional reads are why this probe differs from rga_wall: a
-    // `char_at` returning None would make its "no wall" result meaningless.
     let one = call(
         module,
         &mut storage,
@@ -107,7 +83,6 @@ fn preflight(module: &calimero_runtime::Module) {
     }
 }
 
-/// Stop even if nothing walls, so a flat build cannot run forever.
 const DEFAULT_CEILING: usize = 20_000;
 
 fn ceiling() -> usize {
@@ -117,11 +92,8 @@ fn ceiling() -> usize {
         .unwrap_or(DEFAULT_CEILING)
 }
 
-/// Characters read by the `text_range` probe: a screenful, not the document.
 const RANGE_READ_CHARS: usize = 100;
 
-/// The document ceiling: type one character at a time until a call exhausts
-/// gas, probing the reads as the document grows. Mirrors `rga_wall.rs`.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             fugue-editor app to find where insert_text/get_text/char_at actually \
@@ -147,8 +119,6 @@ fn typing_and_reading_walls() {
     );
 
     let ceiling = ceiling();
-    // Reads are measured every 100 characters, the same stride rga_wall uses,
-    // so the two read curves are sampled identically.
     const READ_PROBE_STRIDE: usize = 100;
 
     let mut landed = 0_usize;
@@ -281,9 +251,6 @@ fn typing_and_reading_walls() {
     }
 }
 
-/// The mid-document write ceiling, swept by the shared harness so this probe
-/// and `rga_wall.rs` measure it the same way. Separate because neither other
-/// sweep reaches a mid-run insert, the case a change to run splitting moves.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             fugue-editor app to find where a MID-DOCUMENT insert_text exhausts \
@@ -293,9 +260,6 @@ fn mid_document_typing_wall() {
     wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
 }
 
-/// The single-call ceiling of `insert_str`'s bulk path: the largest string one
-/// `insert_text` call can paste into an empty document before it exhausts gas.
-/// Not reachable through this guest today, since 16,000 characters still land.
 #[test]
 #[ignore = "slow: builds the compiled fugue-editor app. Fast to execute once \
             built, unlike the sweep above."]
@@ -330,8 +294,7 @@ fn single_call_paste_wall() {
         }
     };
 
-    // `lo` lands, `hi` walls. `hi` cannot be raised: fugue-editor logs what it
-    // inserts, so a paste past the 16 KiB `app::log!` limit trips that first.
+    // Binary search: `lo` lands, `hi` walls; `hi` cannot pass the 16 KiB `app::log!` limit.
     let mut lo = 1_usize;
     let mut hi = 16_000;
     if paste(hi).is_ok() {

@@ -1,11 +1,8 @@
 name: Benchmarks
 
-# Only `compare` posts, and it declares the wider set it needs itself.
 permissions:
   contents: read
 
-# Post-merge on master, plus opt-in per PR via the `run-benchmarks` label: a
-# full sweep is tens of minutes and produces a trend line, not a verdict.
 on:
   push:
     branches:
@@ -16,11 +13,10 @@ on:
 jobs:
   criterion:
     name: Criterion trend (${{ matrix.crate }})
-    # Never blocks a merge. Timing on shared runners is too noisy to gate on;
-    # the blocking gates live in ci-checks.yml.
     if: >-
       github.event_name == 'push' ||
       github.event.label.name == 'run-benchmarks'
+    # timing on shared runners is too noisy to gate on
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 60
@@ -59,15 +55,10 @@ jobs:
   compare:
     name: Compare against master
     needs: criterion
-    # Only runs on the labelled-PR path, where a master baseline to compare
-    # against might exist. On a push to master there is nothing to compare.
     if: github.event_name == 'pull_request'
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
-    # `actions: read` on top of the workflow-level permissions: master's
-    # baseline was uploaded by a different, earlier run of this workflow, and
-    # download-artifact reaches it only with that run's id and a token scoped
-    # to read Actions metadata.
+    # actions: read is needed to download another run's artifacts
     permissions:
       contents: read
       pull-requests: write
@@ -80,9 +71,7 @@ jobs:
           path: target/criterion
           merge-multiple: true
 
-      # A base commit with no benchmarks.yml run, or one whose artifacts have
-      # expired, is expected and must not fail the job. This is a lookup only:
-      # it produces a run id, or nothing, for the next step to act on.
+      # A base commit with no run, or with expired artifacts, must not fail the job.
       - name: Find master's benchmark run
         id: master-run
         env:
@@ -102,8 +91,7 @@ jobs:
             echo "no successful benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} -- it predates this workflow, or its run failed, or (past 30 days) its artifacts have expired"
           fi
 
-      # `run-id` plus `github-token` is what makes download-artifact reach into
-      # a DIFFERENT workflow run instead of matching nothing in the current one.
+      # run-id plus github-token are what reach into a different workflow run
       - name: Download master's baselines
         if: steps.master-run.outputs.run_id != ''
         uses: actions/download-artifact@v4
@@ -118,10 +106,6 @@ jobs:
       - name: Install critcmp
         run: cargo install critcmp --locked
 
-      # A table, not a verdict: criterion's ~5% significance threshold is inside
-      # shared-runner noise. The three "nothing to compare" branches each get
-      # their own message, so the posted comment never reads as a comparison
-      # that ran and found no difference.
       - name: Compare
         run: |
           if [ -z "${{ steps.master-run.outputs.run_id }}" ]; then

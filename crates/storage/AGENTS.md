@@ -42,24 +42,25 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
 
-A `FugueText` block holds at most `MAX_RUN_LEN` (256) nodes; the character that overflows a
-full run opens a new block parented on the full one's last node, side right, and nothing is
-ever split. One keystroke therefore rewrites and ships at most one capped block rather than
-the whole typed run. Only `tools/storage-cost/tests/keystroke_bytes.rs` gates that: an
-append touches exactly one row however long the run has grown, so row counts cannot see it.
+### `FugueText` constraints
 
-`insert_str` resolves the Fugue insert rule once, for the first character only, and writes
-each block it touches exactly once, because every later character of the string is by
-definition the right child of the one before it, the edge a run already carries implicitly.
+- A block holds at most `MAX_RUN_LEN` (256) nodes, and a full run is never rewritten or split.
+  The overflowing character opens a new block parented on the full run's last node, side right.
+  Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
+- No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
+- Tombstones are one bit per NODE, because coalescing grows a run after the fact.
+- Blocks are mutable under one key, so entries carry their own `crdt_type`: the `FugueTextBlock` tag routes to a join instead of the untagged last-writer-wins, which drops every node only the loser defines.
+  It dispatches on the APPLIED path only, since a local write is not a merge.
+- The join is a tombstone OR plus the maximum of `(node count, text, parent, side)`, which stays convergent against untrusted peer bytes.
+- The stored entry tuple is `(value, key)`; the reverse order still decodes, so getting it wrong is a silent bad join rather than an error.
+- A replica id derives from the device id, and a counter is never reused, because `FugueTree::integrate` keeps the first definition of a node.
+- Plain Fugue, not FugueMax; the residual ordering case is pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin`.
+- `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
 
-`FugueTextSimple` is deliberately absent from that table: it has **no `CrdtType`** of its
-own. It is a **measurement control, not a product collection**, behind the off-by-default
-`fugue-simple` cargo feature and enabled only by `tools/storage-cost`. One storage entity
-per node (the paper's "Tree-Fugue Simple"), so the `FugueText` versus
-`ReplicatedGrowableArray` win can be split into "Fugue's ordering" and "run-length blocks";
-the measured split is the `fugue_simple_*` versus `fugue_text_*` versus `rga_*` rows of
-`tools/storage-cost/storage-costs.json`. Do not build on it, do not give it a `CrdtType`,
-do not grow it.
+`FugueTextSimple` is absent from that table on purpose: it has **no `CrdtType`** and is a
+**measurement control, not a product collection**, behind the off-by-default `fugue-simple`
+feature and used only by `tools/storage-cost` to split the `FugueText` win into Fugue's
+ordering and run-length blocks. Do not build on it, do not give it a `CrdtType`, do not grow it.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
@@ -165,13 +166,8 @@ function is registered, it returns an error rather than silently falling back to
 
 *These types use "Structured" storage - container metadata only; entries sync separately.
 
-*`FugueTextBlock` is why `FugueText` entries carry their OWN `crdt_type`. An entry element
-is created untagged, and an untagged entity merges by LWW: safe for `Rga`, whose `RgaChar`
-is immutable once written, and UNSAFE for `FugueText`, whose blocks are rewritten in place
-(the owner appends to a run's text, any replica sets tombstone bits on it), where LWW drops
-every node only the loser defines. The tag is stamped by `FugueText::put_block` and
-dispatched on the APPLIED path only: a local write is not a merge, and joining it against
-the stored bytes would make a run un-shrinkable.
+*`FugueTextBlock` is the per-block join the sync path reaches; see the `FugueText`
+constraints above for why those entries carry their own tag.
 
 ### is_builtin_crdt() Definition
 

@@ -329,8 +329,7 @@ pub enum CrdtCollectionType {
     SortedSet,
     /// ReplicatedGrowableArray: String with character-level CRDT
     ReplicatedGrowableArray,
-    /// FugueText: String with a Tree-Fugue CRDT stored as run-length blocks.
-    /// Tagged apart from `ReplicatedGrowableArray`: unrelated storage layouts.
+    /// FugueText: String with a Tree-Fugue CRDT stored as run-length blocks
     FugueText,
     /// AuthoredVector: List with per-element author identity
     AuthoredVector,
@@ -351,9 +350,8 @@ pub enum CollectionCategory {
     /// `UnorderedSet`). A migrate may rebuild them freely; they carry no
     /// per-entry provenance.
     Convergent,
-    /// Per-executor / per-position (`Counter`, `ReplicatedGrowableArray`,
-    /// `FugueText`). Converges only if the migrate body replays it
-    /// deterministically.
+    /// Per-executor / per-position (`Counter`, `ReplicatedGrowableArray`, `FugueText`).
+    /// Converges only if the migrate body replays it deterministically.
     Replayable,
     /// Ownership / writer-set derived from `env::account_id()` (`AuthoredMap`,
     /// `AuthoredVector`, `SharedStorage`). A naive rebuild diverges, and a

@@ -356,25 +356,10 @@ where
     }
 
     /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally
-    /// stamping each ENTRY element with its own `crdt_type` so the sync path
-    /// dispatches a value collision to that type's join instead of to LWW.
+    /// stamping each entry element with its own `crdt_type`.
     ///
-    /// See `Collection::insert_with_storage_type` for why an
-    /// untagged entry is a hazard for a container whose VALUES are mutable, and
-    /// `CrdtType::FugueTextBlock`, the only tag passed here today, for the
-    /// concrete data loss it prevents.
-    ///
-    /// Stamped at CREATION only, which suffices: `Index::write_child_index`
-    /// preserves an existing row's metadata and `Interface::find_by_id` restores
-    /// it onto the element, so every later update carries the tag forward. A
-    /// replica first learning of the entry over the wire builds its index row
-    /// from the action's metadata, which carries the tag too.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
+    /// Stamped at creation only; the index row and the wire metadata carry the
+    /// tag forward on every later update.
     pub(crate) fn insert_with_storage_type_and_crdt_type(
         &mut self,
         key: K,
@@ -407,9 +392,6 @@ where
 
         // Insert into the inner collection.
         // Pass the `StorageType` directly to the `Collection`.
-        // An explicitly requested tag wins; otherwise fall back to the
-        // `#[app::mergeable]` derivation. Without the tag the entry would merge
-        // last-writer-wins.
         let _ignored = self.inner.insert_with_storage_type(
             Some(id),
             (value, key),
