@@ -86,6 +86,7 @@ fn preflight(module: &calimero_runtime::Module) {
 const CEILING: usize = 20_000;
 
 const RANGE_READ_CHARS: usize = 100;
+const TRANSACTION_GROWTH: usize = 1_000; // characters pasted between two transaction probes
 
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
@@ -312,5 +313,85 @@ fn single_call_paste_wall() {
         lo >= 10,
         "the single-call paste wall landed at only {lo} characters - investigate \
          before quoting the number, this is far below anything seen so far"
+    );
+}
+
+#[test]
+#[ignore = "slow: builds the compiled fugue-editor app and grows a document until a \
+            five-op apply_delta exhausts gas. The in-repo gate for the same underlying \
+            property is `cargo test -p storage-cost` (fugue_text_apply_delta)."]
+fn editor_transaction_wall() {
+    let wasm = editor_wasm();
+    let module = Engine::with_limits(VMLimits::default())
+        .compile(&wasm)
+        .expect("compile metered module");
+    preflight(&module);
+
+    let mut storage = InMemoryStorage::default();
+    PROBE.expect_ok(
+        &call(&module, &mut storage, "init", &serde_json::json!({})),
+        "init",
+    );
+
+    let gas_of = |method: &str, outcome: &calimero_runtime::logic::Outcome| match &outcome.returns {
+        Ok(_) => outcome.gas_used,
+        Err(error) => match PROBE.classify(method, error) {
+            Verdict::Wall { .. } => None,
+            Verdict::Drift(detail) => PROBE.drift(&detail),
+        },
+    };
+
+    let mut len = 0_usize;
+    let mut landed: Option<(usize, u64, u64)> = None;
+    while len < ceiling() {
+        let paste: String = std::iter::repeat_n('a', TRANSACTION_GROWTH).collect();
+        let grown = call(
+            &module,
+            &mut storage,
+            "insert_text",
+            &serde_json::json!({"position": len, "text": paste}),
+        );
+        if gas_of("insert_text", &grown).is_none() {
+            break;
+        }
+        len += TRANSACTION_GROWTH;
+
+        let single = call(
+            &module,
+            &mut storage,
+            "insert_text",
+            &serde_json::json!({"position": len / 2, "text": "xy"}),
+        );
+        let Some(single_gas) = gas_of("insert_text", &single) else {
+            break;
+        };
+        len += 2;
+
+        // A replace in the middle and one at the end: net length unchanged.
+        let changes = serde_json::json!([
+            {"retain": len / 2}, {"delete": 2}, {"insert": "pq"},
+            {"retain": len / 2 - 3}, {"delete": 1}, {"insert": "!"}
+        ]);
+        let delta = call(
+            &module,
+            &mut storage,
+            "apply_delta",
+            &serde_json::json!({"changes": changes}),
+        );
+        let Some(delta_gas) = gas_of("apply_delta", &delta) else {
+            break;
+        };
+        println!(
+            "{len:>7} chars: insert_text {single_gas:>12} gas, apply_delta {delta_gas:>12} gas"
+        );
+        landed = Some((len, single_gas, delta_gas));
+    }
+
+    let (len, single_gas, delta_gas) = landed.expect("not even one transaction landed");
+    println!("editor transaction wall: a five-op apply_delta last landed at {len} characters");
+    assert!(
+        2 * delta_gas < 3 * single_gas,
+        "a five-op apply_delta cost {delta_gas} gas against {single_gas} for one insert_text \
+         at {len} characters: it is no longer one load, one tree build and one traversal"
     );
 }
