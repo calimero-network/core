@@ -164,7 +164,38 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         if !policy.allowed_rtmr2.is_empty() && !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR2 not in policy allowlist")));
         }
-        if !policy.allowed_rtmr3.is_empty() && !policy.allowed_rtmr3.iter().any(|a| a == &rtmr3) {
+        // RTMR3 IS MANDATORY, and it is the only field that pins the image.
+        //
+        // `allowed_mrtd` above cannot do it. MRTD measures the virtual firmware,
+        // so it is identical across every PROFILE of a release and stays
+        // constant across RELEASES -- `locked-read-only` reported the same
+        // c1ee9c16… for 2.3.62, 2.3.63 and 2.3.65, and every profile of each.
+        // A policy naming only an MRTD admits a `debug` image, which carries no
+        // lockdown role: openssh-server, the serial console and the rescue shell
+        // are present and root is not locked.
+        //
+        // `calimero-init` extends RTMR3 with
+        // `calimero-rtmr3-v2:<role>:<profile>:<root_hash>`, so it names exactly
+        // one (profile, release) pair. The cost is that it CHANGES EVERY
+        // RELEASE, which is why this was optional: pinning it means the policy
+        // must gain the new value before nodes on a new image can join. That is
+        // the intended trade -- an allowlist that silently stops narrowing is
+        // worse than one that has to be maintained.
+        //
+        // Empty is a refusal, not a skip. Under the old `is_empty()` guard an
+        // empty list meant "do not check", so the weakest policy was the one
+        // that looked like it had simply not been filled in.
+        if policy.allowed_rtmr3.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "TEE admission policy has empty allowed_rtmr3 — at least one RTMR3 must be \
+                 specified. MRTD does not identify the image: it is the same for every profile \
+                 of a release and does not change between most releases, so a policy without \
+                 RTMR3 admits any profile, including debug images that are not locked down. \
+                 RTMR3 is published per profile in the release's published-mrtds.json and \
+                 changes each release, so add the new value when upgrading."
+            )));
+        }
+        if !policy.allowed_rtmr3.iter().any(|a| a == &rtmr3) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR3 not in policy allowlist")));
         }
 
