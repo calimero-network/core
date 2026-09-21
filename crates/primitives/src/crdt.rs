@@ -662,6 +662,8 @@ mod tests {
                 CrdtType::Custom(CustomTypeId::of("my_type")),
                 &[0x8E, 172, 230, 240, 133, 239, 162, 33, 227],
             ),
+            (CrdtType::FugueText, &[0x8F]),
+            (CrdtType::FugueTextBlock, &[0x90]),
         ];
 
         for (crdt_type, expected) in frozen {

@@ -2704,3 +2704,153 @@ mod apply_path_tests {
         );
     }
 }
+
+/// Documents outlive code, so the stored layout is frozen here, not merely described.
+#[cfg(test)]
+mod golden_tests {
+    use super::{join_block, BlockId, BlockKey, BlockSide, TextBlock, MAX_RUN_LEN};
+
+    /// Multi-byte text, a parent, side L, and a trimmed bitmap with a gap byte.
+    fn golden_block() -> TextBlock {
+        TextBlock {
+            start_id: BlockId::new(0x0102_0304_0506_0708, 0x090A_0B0C),
+            text: "a\u{e9}\u{65e5}\u{1F600}".to_owned(),
+            parent: Some(BlockId::new(9, 7)),
+            side: BlockSide::L,
+            tombstones: vec![0b0000_1001, 0b0100_0000],
+        }
+    }
+
+    #[test]
+    fn text_block__borsh_layout_is_frozen() {
+        let block = golden_block();
+        let bytes = borsh::to_vec(&block).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                8, 7, 6, 5, 4, 3, 2, 1, // start_id.replica, u64 little-endian
+                12, 11, 10, 9, // start_id.counter, u32 little-endian
+                10, 0, 0, 0, // text, byte length then UTF-8
+                97, 195, 169, 230, 151, 165, 240, 159, 152, 128, //
+                1, 9, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, // parent: Some(BlockId)
+                0, // side: L
+                2, 0, 0, 0, 9, 64, // tombstones, byte length then bits
+            ]
+        );
+        assert_eq!(borsh::from_slice::<TextBlock>(&bytes).unwrap(), block);
+    }
+
+    #[test]
+    fn text_block__side_r_and_a_rootless_parent_are_frozen() {
+        let block = TextBlock {
+            parent: None,
+            side: BlockSide::R,
+            ..golden_block()
+        };
+        assert_eq!(
+            borsh::to_vec(&block).unwrap(),
+            [
+                8, 7, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9, 10, 0, 0, 0, 97, 195, 169, 230, 151, 165,
+                240, 159, 152, 128, //
+                0,   // parent: None
+                1,   // side: R
+                2, 0, 0, 0, 9, 64,
+            ]
+        );
+    }
+
+    /// The map key is the `BlockId` alone: the value duplicates it, the key does not.
+    #[test]
+    fn block_key__borsh_layout_is_frozen() {
+        let key = BlockKey::new(golden_block().start_id);
+        assert_eq!(
+            borsh::to_vec(&key).unwrap(),
+            [8, 7, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9]
+        );
+        assert_eq!(key.as_ref(), borsh::to_vec(&key).unwrap());
+    }
+
+    /// Every stored document partitions its counter space at this cap, and a full
+    /// run is never rewritten, so changing it re-chunks every document ever written.
+    #[test]
+    fn max_run_len__is_frozen() {
+        assert_eq!(
+            MAX_RUN_LEN, 256,
+            "stored documents are chunked at this cap and full runs are never rewritten, \
+             so an existing document cannot be read back under another value"
+        );
+    }
+
+    /// One pair per tie-break level of `(node count, text, parent, side)`.
+    #[test]
+    fn join_block__ranks_by_each_tie_break_level_in_turn() {
+        let base = |text: &str, parent: Option<BlockId>, side: BlockSide| TextBlock {
+            start_id: BlockId::new(1, 0),
+            text: text.to_owned(),
+            parent,
+            side,
+            tombstones: Vec::new(),
+        };
+        let (l, r) = (BlockSide::L, BlockSide::R);
+        let (low, high) = (Some(BlockId::new(1, 1)), Some(BlockId::new(1, 2)));
+
+        let table = [
+            (
+                "node count beats text",
+                base("zz", None, r),
+                base("aaa", None, r),
+            ),
+            (
+                "equal count: greater text wins",
+                base("ab", None, r),
+                base("ba", None, r),
+            ),
+            (
+                "equal count and text: greater parent wins",
+                base("ab", low, r),
+                base("ab", high, r),
+            ),
+            (
+                "a rootless block loses to a parented one",
+                base("ab", None, r),
+                base("ab", low, r),
+            ),
+            (
+                "equal count, text and parent: R beats L",
+                base("ab", low, l),
+                base("ab", low, r),
+            ),
+        ];
+
+        for (what, loser, winner) in table {
+            let mut keeps = winner.clone();
+            join_block(&mut keeps, loser.clone());
+            assert_eq!(keeps, winner, "{what}: the winner did not keep its record");
+
+            let mut takes = loser;
+            join_block(&mut takes, winner.clone());
+            assert_eq!(takes, winner, "{what}: the loser did not take the winner");
+        }
+    }
+
+    /// The bitmap is a union whichever side of the rank wins.
+    #[test]
+    fn join_block__unions_tombstones_across_the_rank() {
+        let block = |text: &str, tombstones: Vec<u8>| TextBlock {
+            start_id: BlockId::new(1, 0),
+            text: text.to_owned(),
+            parent: None,
+            side: BlockSide::R,
+            tombstones,
+        };
+        let mut winner = block("abc", vec![0b0000_0001]);
+        join_block(&mut winner, block("a", vec![0b0000_0100]));
+        assert_eq!(winner.text, "abc");
+        assert_eq!(winner.tombstones, vec![0b0000_0101]);
+
+        let mut loser = block("a", vec![0b0000_0100]);
+        join_block(&mut loser, block("abc", vec![0b0000_0001]));
+        assert_eq!(loser.text, "abc");
+        assert_eq!(loser.tombstones, vec![0b0000_0101]);
+    }
+}
