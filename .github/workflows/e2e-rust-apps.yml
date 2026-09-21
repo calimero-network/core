@@ -1060,6 +1060,10 @@ jobs:
             file: workflows/fugue-collab-large-paste.yml
             app: fugue-collab
             registry_fetch: "false"
+          - workflow: fugue-collab-anchors
+            file: workflows/fugue-collab-anchors.yml
+            app: fugue-collab
+            registry_fetch: "false"
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init
