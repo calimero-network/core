@@ -783,7 +783,7 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
         seed_doc(node);
     }
     let _typed = edit(&nodes[0], |doc| {
-        doc.insert_str(0, "hello world").expect("seed text")
+        let _minted = doc.insert_str(0, "hello world").expect("seed text");
     });
     assert!(converge_group(&mut nodes, &[0, 1]).await);
 
@@ -795,9 +795,15 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
         })
         .collect();
 
-    let _a = edit(&nodes[0], |doc| doc.insert_str(0, "AA").expect("insert"));
-    let _b = edit(&nodes[1], |doc| doc.insert_str(11, "BB").expect("insert"));
-    let _d = edit(&nodes[1], |doc| doc.delete_range(1, 2).expect("delete"));
+    let _a = edit(&nodes[0], |doc| {
+        let _undo = doc.insert_str(0, "AA").expect("insert");
+    });
+    let _b = edit(&nodes[1], |doc| {
+        let _undo = doc.insert_str(11, "BB").expect("insert");
+    });
+    let _d = edit(&nodes[1], |doc| {
+        let _undo = doc.delete_range(1, 2).expect("delete");
+    });
     assert!(converge_group(&mut nodes, &[0, 1]).await);
 
     for node in &nodes {

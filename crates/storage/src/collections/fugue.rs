@@ -267,29 +267,48 @@ impl FugueTree {
         let order = self.traverse_all();
         self.delete_in(&order, index, 1)
             .first()
-            .copied()
+            .map(|(id, _)| *id)
             .ok_or(FugueError::IndexOutOfBounds {
                 index,
                 len: self.len(),
             })
     }
 
-    /// Tombstone up to `count` live characters from `index`; tombstones keep their place in `order`.
-    pub fn delete_in(&mut self, order: &[NodeId], index: usize, count: usize) -> Vec<RawId> {
-        let ids: Vec<RawId> = order
+    fn live<'a>(&'a self, order: &'a [NodeId]) -> impl Iterator<Item = (RawId, char)> + 'a {
+        order
             .iter()
             .flatten()
-            .copied()
-            .filter(|raw| self.nodes.get(raw).is_some_and(|n| n.value.is_some()))
-            .skip(index)
-            .take(count)
-            .collect();
-        for id in &ids {
+            .filter_map(|raw| Some((*raw, self.nodes.get(raw)?.value?)))
+    }
+
+    /// Tombstone up to `count` live characters from `index`; tombstones keep their place in `order`.
+    pub fn delete_in(
+        &mut self,
+        order: &[NodeId],
+        index: usize,
+        count: usize,
+    ) -> Vec<(RawId, char)> {
+        let picked = self.live(order).skip(index).take(count).collect();
+        self.bury(picked)
+    }
+
+    /// Tombstone the live characters whose id `wanted` accepts, returned in document order.
+    pub fn delete_ids_in(
+        &mut self,
+        order: &[NodeId],
+        wanted: impl Fn(RawId) -> bool,
+    ) -> Vec<(RawId, char)> {
+        let picked = self.live(order).filter(|(id, _)| wanted(*id)).collect();
+        self.bury(picked)
+    }
+
+    fn bury(&mut self, picked: Vec<(RawId, char)>) -> Vec<(RawId, char)> {
+        for (id, _) in &picked {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.value = None;
             }
         }
-        ids
+        picked
     }
 
     /// The delete effector: tombstone a node by id.
