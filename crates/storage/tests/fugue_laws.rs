@@ -27,16 +27,13 @@
 #![allow(unexpected_cfgs)]
 #![allow(clippy::unwrap_used)]
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-
 use calimero_storage::collections::fugue::{FugueNode, FugueTree, RawId, Side};
 use calimero_storage::collections::{FugueText, Root};
-use calimero_storage::delta::{clear_pending_delta, StorageDelta};
-use calimero_storage::env::{self, RuntimeEnv};
-use calimero_storage::interface::{ApplyContext, Interface};
-use calimero_storage::store::{Key, MainStorage};
+use calimero_storage::store::MainStorage;
+
+mod fugue_harness;
+
+use fugue_harness::{device, edit, fork, fugue_genesis, fugue_text_in, land, Store};
 
 // ---------------------------------------------------------------------------
 // The pure model: replicas, states, and the join.
@@ -605,123 +602,33 @@ fn exhaustive__two_replicas_three_ops_each_converge_in_both_orders() {
 // The same join laws, through the REAL apply path.
 // ---------------------------------------------------------------------------
 
-/// An in-memory main-storage backend owned by one replica.
-type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
-
-/// Every replica here is the NATIVE DEFAULT context: `collections::ROOT_ID` is
-/// a process-global seeded from the first `context_id()` any code in the
-/// binary asks for, so installing a different one poisons `Root::new` for the
-/// rest of the process.
-const CONTEXT_ID: [u8; 32] = [236_u8; 32];
-
 /// Both replicas must derive the SAME collection id, or their actions build
 /// two parallel documents that never meet.
 const FIELD: &str = "fugue_laws_doc";
 
-fn new_store() -> Store {
-    Rc::new(RefCell::new(HashMap::new()))
-}
-
-/// A [`RuntimeEnv`] routing all `MainStorage` I/O into `store`, under `device`.
-fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
-    let r = Rc::clone(store);
-    let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
-    let w = Rc::clone(store);
-    let writer = Rc::new(move |key: Key, value: &[u8]| {
-        w.borrow_mut()
-            .insert(key.to_bytes(), value.to_vec())
-            .is_some()
-    });
-    let rm = Rc::clone(store);
-    let remover = Rc::new(move |key: &Key| rm.borrow_mut().remove(&key.to_bytes()).is_some());
-    let mut account = device;
-    account[1] = 0xAC;
-    RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, device, account)
-}
-
-/// Device id of replica `n`, distinct in the first 8 bytes.
-fn device(n: u8) -> [u8; 32] {
-    let mut id = [n; 32];
-    id[..8].copy_from_slice(&u64::from(n).to_be_bytes());
-    id
-}
-
-/// Run `f` in `store` under `device`, returning the delta the commit emits.
-fn edit(
-    store: &Store,
-    device: [u8; 32],
-    f: impl FnOnce(&mut Root<FugueText<MainStorage>>),
-) -> Vec<u8> {
-    clear_pending_delta();
-    env::with_runtime_env(env_for(store, device), || {
-        let mut doc = Root::<FugueText<MainStorage>>::fetch().expect("document root should exist");
-        f(&mut doc);
-        doc.commit();
-        env::take_last_artifact().expect("commit should emit a delta")
-    })
-}
-
-/// Land `delta` the way the sync path does: decode it into actions and push
-/// each through `Interface::apply_action`, skipping the sender's root entry.
-fn land(store: &Store, device: [u8; 32], delta: &[u8]) {
-    let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
-        StorageDelta::Actions(actions) => actions,
-        StorageDelta::CausalActions { actions, .. } => actions,
-    };
-    env::with_runtime_env(env_for(store, device), || {
-        for action in actions {
-            if action.id().is_root() {
-                continue;
-            }
-            Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
-                .expect("remote apply_action should succeed");
-        }
-    });
-}
-
-/// The document text as `store` sees it.
-fn text_in(store: &Store, device: [u8; 32]) -> String {
-    env::with_runtime_env(env_for(store, device), || {
-        Root::<FugueText<MainStorage>>::fetch()
-            .expect("document root should exist")
-            .get_text()
-            .expect("get_text should succeed")
-    })
-}
-
 /// A store holding the shared, already-synchronised seed document.
 fn genesis() -> Store {
-    let store = new_store();
-    clear_pending_delta();
-    env::with_runtime_env(env_for(&store, device(1)), || {
-        let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FIELD));
-        doc.insert_str_with_replica(0, 0, "seed")
-            .expect("seed insert should succeed");
-        doc.commit();
-        let _ignored = env::take_last_artifact();
-    });
-    store
-}
-
-/// A byte-for-byte copy of `store`, i.e. another replica bootstrapped from it.
-fn fork(store: &Store) -> Store {
-    Rc::new(RefCell::new(store.borrow().clone()))
+    fugue_genesis(FIELD, "seed")
 }
 
 /// Apply one op to a replica's document, returning the delta it emitted.
 fn edit_op(store: &Store, dev: [u8; 32], replica: u64, op: &Op, model: &mut Replica) -> Vec<u8> {
     let len = model.tree.values().chars().count();
-    let delta = edit(store, dev, |doc| match *op {
-        Op::Ins(pos, text) => {
-            doc.insert_str_with_replica(pos % (len + 1), replica, text)
-                .expect("insert should succeed");
-        }
-        Op::Del(start, span) => {
-            let start = start % (len + 1);
-            doc.delete_range(start, start + span)
-                .expect("delete should succeed");
-        }
-    });
+    let delta = edit(
+        store,
+        dev,
+        |doc: &mut Root<FugueText<MainStorage>>| match *op {
+            Op::Ins(pos, text) => {
+                doc.insert_str_with_replica(pos % (len + 1), replica, text)
+                    .expect("insert should succeed");
+            }
+            Op::Del(start, span) => {
+                let start = start % (len + 1);
+                doc.delete_range(start, start + span)
+                    .expect("delete should succeed");
+            }
+        },
+    );
     model.apply(op);
     delta
 }
@@ -778,7 +685,7 @@ fn law345__apply_path_state_depends_only_on_the_delta_set() {
                 land(&target, device(9), &deltas[replica]);
             }
             assert_eq!(
-                text_in(&target, device(9)),
+                fugue_text_in(&target, device(9)),
                 expected,
                 "script {index} diverged from the join in delivery order {order} \
                  (ops {script:?})"
@@ -841,7 +748,7 @@ fn law6__apply_path_tombstones_are_monotone() {
                 );
             }
             assert_eq!(
-                text_in(&target, device(9)),
+                fugue_text_in(&target, device(9)),
                 values_of(&joined),
                 "{tag}: op {index} ({op:?}) disagreed with the delete-wins join"
             );

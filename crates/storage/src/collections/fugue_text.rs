@@ -840,13 +840,29 @@ fn out_of_bounds(pos: usize) -> StoreError {
     invalid(&format!("position {pos} out of bounds"))
 }
 
+/// A `FugueText` in an explicit storage scope with a deterministic collection
+/// id, so two scopes standing in for two replicas agree on entity ids for the
+/// same `field_name`.
+#[cfg(test)]
+fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
+    FugueText {
+        blocks: UnorderedMap::new_with_field_name_and_crdt_type(
+            None,
+            field_name,
+            CrdtType::FugueText,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
-    use super::{join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, MAX_RUN_LEN};
-    use crate::collections::{FugueTextSimple, Root, UnorderedMap};
+    use super::{
+        doc_in, join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, MAX_RUN_LEN,
+    };
+    use crate::collections::{FugueTextSimple, Root};
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
 
@@ -858,19 +874,6 @@ mod tests {
     const DIFFERENTIAL_SEED: u64 = 0x_d1_ff_5e_ed;
     const DIFFERENTIAL_ROUNDS: usize = 200;
     const DIFFERENTIAL_MAX_NODES: usize = 800; // the control is quadratic in this; then deletes only
-
-    /// A `FugueText` in an explicit storage scope with a deterministic
-    /// collection id, so two scopes standing in for two replicas agree on
-    /// entity ids for the same `field_name`.
-    fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
-        FugueText {
-            blocks: UnorderedMap::new_with_field_name_and_crdt_type(
-                None,
-                field_name,
-                crate::collections::CrdtType::FugueText,
-            ),
-        }
-    }
 
     /// Stored blocks sorted by id: the canonical form for equality assertions.
     fn stored<S: StorageAdaptor>(doc: &FugueText<S>) -> Vec<(BlockId, TextBlock)> {
@@ -1568,7 +1571,7 @@ mod model_tests {
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
-    use super::{FugueText, TextBlock, UnorderedMap};
+    use super::{doc_in, FugueText, TextBlock};
     use crate::collections::fugue::{FugueNode, FugueTree};
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
@@ -1637,16 +1640,6 @@ mod model_tests {
     pub(super) enum Op {
         Ins(usize, &'static str),
         Del(usize, usize),
-    }
-
-    fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
-        FugueText {
-            blocks: UnorderedMap::new_with_field_name_and_crdt_type(
-                None,
-                field_name,
-                crate::collections::CrdtType::FugueText,
-            ),
-        }
     }
 
     /// Apply one op to the document and to the oracle, asserting they agree.
@@ -1810,20 +1803,10 @@ mod positional_read_tests {
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
-    use super::{build_tree, find_block, BlockId, FugueText, UnorderedMap};
+    use super::{build_tree, doc_in, find_block, BlockId, FugueText};
     use crate::collections::Root;
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
-
-    fn doc_in<S: StorageAdaptor>(field_name: &str) -> FugueText<S> {
-        FugueText {
-            blocks: UnorderedMap::new_with_field_name_and_crdt_type(
-                None,
-                field_name,
-                crate::collections::CrdtType::FugueText,
-            ),
-        }
-    }
 
     /// Build a pseudo-random document: appends (which coalesce), mid-document
     /// inserts (which do not) and deletes, covering every storage shape.
