@@ -31,6 +31,12 @@ pub enum FugueEditorEvent {
         text: String,
         editor: String,
     },
+
+    TextDeleted {
+        start: usize,
+        end: usize,
+        editor: String,
+    },
 }
 
 /// One step of an editor change, walking the document as it was before the change.
@@ -114,6 +120,30 @@ impl FugueEditorState {
         let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
         self.document.apply_delta(&ops)?;
         self.edit_count.increment()?;
+
+        // The cursor walk `FugueText::apply_delta` just made: each event carries
+        // the position the document held once the events before it were applied.
+        let editor = encode_identity(&env::device_id());
+        let mut position = 0;
+        for op in &ops {
+            match *op {
+                TextOp::Retain(count) => position += count,
+                TextOp::Insert(ref text) => {
+                    app::emit!(FugueEditorEvent::TextInserted {
+                        position,
+                        text: text.clone(),
+                        editor: editor.clone(),
+                    });
+                    position += text.chars().count();
+                }
+                TextOp::Delete(count) => app::emit!(FugueEditorEvent::TextDeleted {
+                    start: position,
+                    end: position + count,
+                    editor: editor.clone(),
+                }),
+            }
+        }
+
         Ok(())
     }
 

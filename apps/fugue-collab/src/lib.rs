@@ -91,7 +91,32 @@ impl FugueCollabState {
     /// A whole editor transaction in one call.
     pub fn apply_delta(&mut self, changes: Vec<Change>) -> app::Result<()> {
         let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
-        Ok(self.document.apply_delta(&ops)?)
+        self.document.apply_delta(&ops)?;
+
+        // The cursor walk `FugueText::apply_delta` just made: each event carries
+        // the position the document held once the events before it were applied.
+        let editor = encode_identity(&env::device_id());
+        let mut position = 0;
+        for op in &ops {
+            match *op {
+                TextOp::Retain(count) => position += count,
+                TextOp::Insert(ref text) => {
+                    app::emit!(FugueCollabEvent::TextInserted {
+                        position,
+                        text: text.clone(),
+                        editor: editor.clone(),
+                    });
+                    position += text.chars().count();
+                }
+                TextOp::Delete(count) => app::emit!(FugueCollabEvent::TextDeleted {
+                    start: position,
+                    end: position + count,
+                    editor: editor.clone(),
+                }),
+            }
+        }
+
+        Ok(())
     }
 
     pub fn get_text(&self) -> app::Result<String> {
@@ -119,5 +144,44 @@ impl FugueCollabState {
         let bytes = bs58::decode(anchor).into_vec()?;
         let anchor: Anchor = calimero_sdk::borsh::from_slice(&bytes)?;
         Ok(self.document.resolve(&anchor)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::serde_json::{from_slice, json, Value};
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    /// A subscriber replaying these in order must land on the text we wrote.
+    #[test]
+    fn apply_delta_emits_one_event_per_change() {
+        let mut app = TestHost::new(FugueCollabState::init);
+
+        app.call(|s| s.insert_text(0, "hello world".to_owned()))
+            .unwrap();
+        let _ignored = app.take_events();
+
+        app.call(|s| {
+            s.apply_delta(vec![
+                Change::Retain(6),
+                Change::Delete(5),
+                Change::Insert("there".to_owned()),
+            ])
+        })
+        .unwrap();
+
+        let events = app.events();
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(kinds, ["TextDeleted", "TextInserted"]);
+
+        let payload = |at: usize| -> Value { from_slice(&events[at].data).expect("JSON payload") };
+        assert_eq!(payload(0)["start"], json!(6));
+        assert_eq!(payload(0)["end"], json!(11));
+        assert_eq!(payload(1)["position"], json!(6));
+        assert_eq!(payload(1)["text"], json!("there"));
+
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello there");
     }
 }
