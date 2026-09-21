@@ -1651,6 +1651,7 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.0.0"
 dependencies = [
+ "calimero-account",
  "calimero-context-client",
  "calimero-context-config",
  "calimero-primitives",

@@ -78,10 +78,13 @@ impl AccountRoot {
         self.secret.public_key()
     }
 
-    /// The signing key, for minting device certificates and root-key handoffs.
+    /// The signing key, for minting device certificates, root-key handoffs, and
+    /// the account-link proofs that assert this account to an outside verifier.
     ///
-    /// The only two things this key may ever do. It does not sign ops and does not
-    /// receive data, which is what allows it to live offline.
+    /// The only three things this key may ever do. It does not sign ops and does
+    /// not receive data, which is what allows it to live offline — and a link
+    /// proof is bounded and addressed precisely so it stays a once-per-verifier
+    /// act rather than a routine one.
     #[must_use]
     pub const fn signing_key(&self) -> &PrivateKey {
         &self.secret

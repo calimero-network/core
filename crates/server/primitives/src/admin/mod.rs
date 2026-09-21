@@ -2066,6 +2066,103 @@ pub struct AccountPairInitApiRequest {
     pub account_namespace: Option<String>,
 }
 
+// ---- Sign with the account root, for an outside verifier ----
+//
+// A verifier that is not a Calimero node — mdma, for one — defines its own wire
+// format and shipped before core did. Core's job here is to produce the exact
+// bytes that verifier already checks, so this takes the payload from the caller
+// and supplies only the domain.
+//
+// The domain is a NAME from a closed set rather than bytes, which is the whole
+// security property: see `calimero_account::ExternalSigningDomain`.
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountSignWithRootApiRequest {
+    /// Which verifier's domain to sign under, e.g. `mdma.account-link`.
+    ///
+    /// A name, never the domain bytes. A caller that could send bytes could send
+    /// any bytes, and the account root is the one key that can certify a device
+    /// — so an unconstrained signing oracle over it is account takeover.
+    pub domain: String,
+    /// The bytes to sign after the domain, hex-encoded.
+    ///
+    /// Opaque to the node, which is the point: the caller knows the verifier's
+    /// format and core does not need to. For mdma this is the UTF-8 of the
+    /// challenge it issued.
+    pub payload: String,
+}
+
+/// Longest payload this will sign, in bytes.
+///
+/// A bound rather than none, because the payload is attacker-influenced and
+/// every byte is hashed into a signature. mdma's nonces are ~120 bytes; 4 KiB
+/// leaves room for a verifier with a larger statement without making this a
+/// general-purpose bulk signer.
+pub const MAX_EXTERNAL_SIGN_PAYLOAD_BYTES: usize = 4096;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSignWithRootApiResponse {
+    pub data: AccountSignWithRootApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSignWithRootApiResponseData {
+    /// The account root's public key, 64 hex chars.
+    ///
+    /// Returned because every consumer needs it beside the signature and cannot
+    /// derive it themselves — the secret never leaves the node.
+    pub root_public_key: String,
+    /// The signature over `domain ‖ payload`, base64.
+    ///
+    /// Base64 rather than hex, matching what the verifiers consuming it expect;
+    /// mdma's `verify_login_proof` calls `base64.b64decode` on this field.
+    pub signature: String,
+    /// The account the signing key belongs to, 64 hex chars. Convenience: a
+    /// verifier derives the same value from `rootPublicKey`.
+    pub account_id: String,
+}
+
+impl Validate for AccountSignWithRootApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // Resolved here as well as in the handler so an unknown domain is a 400
+        // listing what is accepted, rather than a bare failure deeper in.
+        if calimero_account::ExternalSigningDomain::from_name(&self.domain).is_none() {
+            errors.push(ValidationError::InvalidFormat {
+                field: "domain",
+                reason: format!(
+                    "unknown signing domain; expected one of: {}",
+                    calimero_account::ExternalSigningDomain::names().join(", ")
+                ),
+            });
+        }
+
+        // Hex of any length, so no `validate_hex_string` (which pins a byte
+        // count). An odd-length or non-hex string is a caller bug worth naming.
+        if !self.payload.len().is_multiple_of(2)
+            || !self.payload.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            errors.push(ValidationError::InvalidFormat {
+                field: "payload",
+                reason: "payload must be an even-length hex string".into(),
+            });
+        } else if self.payload.len() / 2 > MAX_EXTERNAL_SIGN_PAYLOAD_BYTES {
+            errors.push(ValidationError::InvalidFormat {
+                field: "payload",
+                reason: format!(
+                    "payload must decode to at most {MAX_EXTERNAL_SIGN_PAYLOAD_BYTES} bytes"
+                ),
+            });
+        }
+
+        errors
+    }
+}
+
 impl Validate for AccountPairInitApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
