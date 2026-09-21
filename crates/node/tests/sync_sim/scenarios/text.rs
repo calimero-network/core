@@ -5,20 +5,29 @@
 use std::collections::{BTreeMap, HashSet};
 use std::slice;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_storage::address::Id;
+use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::fugue::{FugueNode, FugueTree, RawId};
 use calimero_storage::collections::fugue_text::{Anchor, Bias};
-use calimero_storage::collections::{FugueText, Root};
+use calimero_storage::collections::rekey::{field_child_id, RekeyTarget};
+use calimero_storage::collections::{
+    Counter, FugueText, LwwRegister, MergeStrategy, Mergeable, Root, UnorderedMap,
+};
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::take_last_artifact;
 use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
+use calimero_storage::{register_rekey_if_supported, rekey_field_if_supported};
 
 use crate::sync_sim::node::SimNode;
 use crate::sync_sim::protocol::{execute_hash_comparison_sync, execute_level_wise_sync};
 use crate::sync_sim::runtime::SimRng;
+
+/// The single-document state these scenarios drive.
+type Text = FugueText<MainStorage>;
 
 const FIELD: &str = "sim_text_doc";
 const CHAR_BASE: u32 = 0xE000; // private-use area, so every inserted character is unique
@@ -111,24 +120,27 @@ fn seed_doc(node: &SimNode) {
         let _ignored = take_last_artifact();
     });
     let root = node.storage().root_id();
-    let blocks = blocks_collection_id(node);
+    let blocks = blocks_collection_ids(node);
     assert!(
         node.storage()
             .get_children(root)
             .iter()
-            .any(|child| child.id() == blocks),
+            .any(|child| blocks.contains(&child.id())),
         "{}: blocks collection is not a child of the context root - collections::ROOT_ID was \
          frozen under a different context",
         node.id()
     );
 }
 
-fn edit(node: &SimNode, f: impl FnOnce(&mut Root<FugueText<MainStorage>>)) -> Vec<u8> {
+fn edit<T: BorshSerialize + BorshDeserialize>(
+    node: &SimNode,
+    f: impl FnOnce(&mut Root<T>),
+) -> Vec<u8> {
     clear_pending_delta();
     node.storage().with_index(|| {
-        let mut doc = Root::<FugueText<MainStorage>>::fetch().expect("document root should exist");
-        f(&mut doc);
-        doc.commit();
+        let mut state = Root::<T>::fetch().expect("state root should exist");
+        f(&mut state);
+        state.commit();
         take_last_artifact().expect("commit should emit a delta")
     })
 }
@@ -168,31 +180,42 @@ fn len_of(node: &SimNode) -> usize {
     })
 }
 
-fn read<R>(node: &SimNode, f: impl FnOnce(&Root<FugueText<MainStorage>>) -> R) -> R {
-    node.storage().with_index(|| {
-        f(&Root::<FugueText<MainStorage>>::fetch().expect("document root should exist"))
-    })
+fn read<T: BorshSerialize + BorshDeserialize, R>(
+    node: &SimNode,
+    f: impl FnOnce(&Root<T>) -> R,
+) -> R {
+    node.storage()
+        .with_index(|| f(&Root::<T>::fetch().expect("state root should exist")))
 }
 
-fn blocks_collection_id(node: &SimNode) -> Id {
+/// Every document's block collection: nested `FugueText`s hang off the context root too.
+fn blocks_collection_ids(node: &SimNode) -> Vec<Id> {
     let root = node.storage().root_id();
-    node.storage()
+    let ids: Vec<Id> = node
+        .storage()
         .get_children(root)
         .into_iter()
-        .find(|child| {
+        .filter(|child| {
             node.storage()
                 .get_index(child.id())
                 .and_then(|index| index.metadata.crdt_type.clone())
                 == Some(CrdtType::FugueText)
         })
         .map(|child| child.id())
-        .unwrap_or_else(|| panic!("{}: no FugueText collection under the root", node.id()))
+        .collect();
+    assert!(
+        !ids.is_empty(),
+        "{}: no FugueText collection under the root",
+        node.id()
+    );
+    ids
 }
 
 fn block_count(node: &SimNode) -> usize {
-    node.storage()
-        .get_children(blocks_collection_id(node))
-        .len()
+    blocks_collection_ids(node)
+        .into_iter()
+        .map(|id| node.storage().get_children(id).len())
+        .sum()
 }
 
 fn replica_of(node: &SimNode) -> u64 {
@@ -219,7 +242,10 @@ fn unique_chars(index: usize, from: usize, count: usize) -> String {
 /// A row that lost its `FugueTextBlock` tag is reconciled last-writer-wins,
 /// which drops one side's edit silently rather than erroring.
 fn assert_blocks_tagged(label: &str, node: &SimNode) {
-    let blocks = node.storage().get_children(blocks_collection_id(node));
+    let blocks: Vec<_> = blocks_collection_ids(node)
+        .into_iter()
+        .flat_map(|id| node.storage().get_children(id))
+        .collect();
     assert!(
         !blocks.is_empty(),
         "{label}: {} holds no block rows, so the tag check would pass vacuously",
@@ -347,6 +373,8 @@ fn union_oracles(oracles: &mut [Oracle], group: &[usize]) {
 
 struct Pending {
     key: (usize, usize),
+    /// Which document the delta edited; always 0 where the state holds one.
+    doc: usize,
     bytes: Vec<u8>,
     nodes: Vec<FugueNode>,
     deps: HashSet<(usize, usize)>,
@@ -355,7 +383,7 @@ struct Pending {
 /// Drops stay queued for retry, so loss reorders delivery but never loses it.
 fn delivery_pass(
     nodes: &[SimNode],
-    oracles: &mut [Oracle],
+    integrate: &mut impl FnMut(usize, &Pending),
     deltas: &[Pending],
     queue: &mut Vec<(usize, usize)>,
     applied: &mut [HashSet<(usize, usize)>],
@@ -370,7 +398,7 @@ fn delivery_pass(
             continue;
         }
         land(&nodes[to], &delta.bytes);
-        oracles[to].integrate_all(&delta.nodes);
+        integrate(to, delta);
         let _ignored = applied[to].insert(delta.key);
         if rng.bool_with_probability(DUPLICATE_RATE) {
             land(&nodes[to], &delta.bytes);
@@ -398,7 +426,7 @@ fn random_edit(
             let text = unique_chars(index, *minted, count);
             *minted += count;
             let pos = rng.gen_range_usize(len + 1);
-            let bytes = edit(node, |doc| {
+            let bytes = edit::<Text>(node, |doc| {
                 doc.insert_str(pos, &text).expect("insert");
             });
             oracle.insert_str(pos, &text);
@@ -406,7 +434,7 @@ fn random_edit(
         }
         2 => {
             let pos = rng.gen_range_usize(len);
-            let bytes = edit(node, |doc| {
+            let bytes = edit::<Text>(node, |doc| {
                 doc.delete(pos).expect("delete");
             });
             oracle.delete_range(pos, pos + 1);
@@ -415,7 +443,7 @@ fn random_edit(
         _ => {
             let start = rng.gen_range_usize(len);
             let end = start + 1 + rng.gen_range_usize(4);
-            let bytes = edit(node, |doc| {
+            let bytes = edit::<Text>(node, |doc| {
                 doc.delete_range(start, end).expect("delete range");
             });
             oracle.delete_range(start, end);
@@ -458,7 +486,7 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
                     let passage = unique_chars(author, minted[author], PASSAGE_LEN);
                     minted[author] += PASSAGE_LEN;
                     let pos = rng.gen_range_usize(oracles[author].len() + 1);
-                    let bytes = edit(&nodes[author], |doc| {
+                    let bytes = edit::<Text>(&nodes[author], |doc| {
                         doc.insert_str(pos, &passage).expect("passage insert");
                     });
                     oracles[author].insert_str(pos, &passage);
@@ -476,6 +504,7 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
                 let key = (author, deltas.len());
                 deltas.push(Pending {
                     key,
+                    doc: 0,
                     bytes,
                     nodes: changed(&before, &oracles[author].snapshot()),
                     deps: applied[author].clone(),
@@ -488,7 +517,7 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
             if !last {
                 delivery_pass(
                     &nodes,
-                    &mut oracles,
+                    &mut |to, delta| oracles[to].integrate_all(&delta.nodes),
                     &deltas,
                     &mut queue,
                     &mut applied,
@@ -503,7 +532,7 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
             }
             delivery_pass(
                 &nodes,
-                &mut oracles,
+                &mut |to, delta| oracles[to].integrate_all(&delta.nodes),
                 &deltas,
                 &mut queue,
                 &mut applied,
@@ -539,7 +568,7 @@ async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
 
         let base = unique_chars(0, 0, 24);
         minted[0] += 24;
-        let _ignored = edit(&nodes[0], |doc| {
+        let _ignored = edit::<Text>(&nodes[0], |doc| {
             doc.insert_str(0, &base).expect("base insert");
         });
         oracles[0].insert_str(0, &base);
@@ -584,7 +613,7 @@ async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
             let author = group[0];
             let passage = unique_chars(author, minted[author], PASSAGE_LEN);
             minted[author] += PASSAGE_LEN;
-            let _ignored = edit(&nodes[author], |doc| {
+            let _ignored = edit::<Text>(&nodes[author], |doc| {
                 doc.insert_str(0, &passage).expect("passage insert");
             });
             oracles[author].insert_str(0, &passage);
@@ -630,7 +659,7 @@ async fn text_late_joiner_catches_up_via_hash_comparison() {
         );
         let passage = unique_chars(author, minted[author], PASSAGE_LEN);
         minted[author] += PASSAGE_LEN;
-        let _ignored = edit(&nodes[author], |doc| {
+        let _ignored = edit::<Text>(&nodes[author], |doc| {
             doc.insert_str(0, &passage).expect("passage insert");
         });
         oracles[author].insert_str(0, &passage);
@@ -693,7 +722,7 @@ async fn text_late_joiner_catches_up_via_level_wise() {
         let _ignored = random_edit(&nodes[0], &mut oracles[0], 0, &mut minted, &mut rng);
     }
     let passage = unique_chars(0, minted, PASSAGE_LEN);
-    let _ignored = edit(&nodes[0], |doc| {
+    let _ignored = edit::<Text>(&nodes[0], |doc| {
         doc.insert_str(0, &passage).expect("passage insert");
     });
     oracles[0].insert_str(0, &passage);
@@ -739,10 +768,10 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
 
     let head = unique_chars(0, 0, 3);
     let tail = unique_chars(0, 3, 3);
-    let old = edit(&author, |doc| {
+    let old = edit::<Text>(&author, |doc| {
         doc.insert_str(0, &head).expect("insert head");
     });
-    let new = edit(&author, |doc| {
+    let new = edit::<Text>(&author, |doc| {
         doc.insert_str(3, &tail).expect("insert tail");
     });
     land(&receiver, &new);
@@ -759,11 +788,11 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
 
     let p_text = unique_chars(0, 0, 4);
     let q_text = unique_chars(1, 0, 4);
-    let from_p = edit(&p, |doc| {
+    let from_p = edit::<Text>(&p, |doc| {
         doc.insert_str_with_replica(0, HOSTILE_REPLICA, &p_text)
             .expect("forged insert");
     });
-    let from_q = edit(&q, |doc| {
+    let from_q = edit::<Text>(&q, |doc| {
         doc.insert_str_with_replica(0, HOSTILE_REPLICA, &q_text)
             .expect("forged insert");
     });
@@ -782,7 +811,7 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
     for node in &nodes {
         seed_doc(node);
     }
-    let _typed = edit(&nodes[0], |doc| {
+    let _typed = edit::<Text>(&nodes[0], |doc| {
         let _minted = doc.insert_str(0, "hello world").expect("seed text");
     });
     assert!(converge_group(&mut nodes, &[0, 1]).await);
@@ -790,18 +819,19 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
     let anchors: Vec<Vec<u8>> = [(6, Bias::Before), (5, Bias::After), (1, Bias::Before)]
         .into_iter()
         .map(|(pos, bias)| {
-            let anchor = read(&nodes[0], |doc| doc.anchor_at(pos, bias).expect("anchor"));
+            let anchor =
+                read::<Text, _>(&nodes[0], |doc| doc.anchor_at(pos, bias).expect("anchor"));
             borsh::to_vec(&anchor).expect("anchor should encode")
         })
         .collect();
 
-    let _a = edit(&nodes[0], |doc| {
+    let _a = edit::<Text>(&nodes[0], |doc| {
         let _undo = doc.insert_str(0, "AA").expect("insert");
     });
-    let _b = edit(&nodes[1], |doc| {
+    let _b = edit::<Text>(&nodes[1], |doc| {
         let _undo = doc.insert_str(11, "BB").expect("insert");
     });
-    let _d = edit(&nodes[1], |doc| {
+    let _d = edit::<Text>(&nodes[1], |doc| {
         let _undo = doc.delete_range(1, 2).expect("delete");
     });
     assert!(converge_group(&mut nodes, &[0, 1]).await);
@@ -813,9 +843,382 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
             .iter()
             .map(|bytes| {
                 let anchor: Anchor = borsh::from_slice(bytes).expect("anchor should decode");
-                read(node, |doc| doc.resolve(&anchor).expect("resolve"))
+                read::<Text, _>(node, |doc| doc.resolve(&anchor).expect("resolve"))
             })
             .collect();
         assert_eq!(resolved, [7, 6, 3], "{}", node.id());
     }
+}
+
+// ---------------------------------------------------------------------------
+// A `FugueText` stored as a collection value: the shape the document layer uses.
+
+/// One document, hand-wired the way `#[derive(Mergeable)]` generates it - the
+/// derive lives in `calimero-sdk-macros`, which this crate does not depend on.
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+struct SimDoc {
+    title: LwwRegister<String>,
+    body: FugueText,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for SimDoc {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for SimDoc {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.title.merge(&other.title);
+        self.body.merge(&other.body)
+    }
+}
+
+impl RekeyTarget for SimDoc {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.title, field_child_id(parent_id, "title"));
+        rekey_field_if_supported!(&mut self.body, field_child_id(parent_id, "body"));
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+struct SimDocs {
+    docs: UnorderedMap<String, SimDoc>,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for SimDocs {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for SimDocs {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.docs.merge(&other.docs)
+    }
+}
+
+impl RekeyTarget for SimDocs {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.docs, field_child_id(parent_id, "docs"));
+    }
+}
+
+const DOC_KEYS: [&str; 3] = ["notes", "draft", "todo"];
+const AUTHORS: usize = 3;
+
+/// The `docs` map is re-keyed the way `#[app::state]` re-keys a top-level field,
+/// so every replica addresses the same entry for the same document name.
+fn seed_docs(node: &SimNode) {
+    register_rekey_if_supported!(SimDoc);
+    clear_pending_delta();
+    node.storage().with_index(|| {
+        Root::new(|| {
+            let mut state = SimDocs::default();
+            state.docs.reassign_deterministic_id("docs");
+            state
+        })
+        .commit();
+        let _ignored = take_last_artifact();
+    });
+}
+
+fn doc_text(node: &SimNode, key: &str) -> String {
+    read::<SimDocs, _>(node, |app| {
+        app.docs
+            .get(key)
+            .expect("map read should succeed")
+            .map_or_else(String::new, |doc| {
+                doc.body.get_text().expect("get_text should succeed")
+            })
+    })
+}
+
+/// One random edit in one document, mirrored into that document's oracle.
+fn random_doc_edit(
+    node: &SimNode,
+    oracle: &mut Oracle,
+    index: usize,
+    minted: &mut usize,
+    key: &str,
+    rng: &mut SimRng,
+) -> Vec<u8> {
+    let len = oracle.len();
+    let key = key.to_owned();
+    if len == 0 || rng.gen_range_usize(4) != 0 {
+        let count = 1 + rng.gen_range_usize(8);
+        let text = unique_chars(index, *minted, count);
+        *minted += count;
+        let pos = rng.gen_range_usize(len + 1);
+        let bytes = edit::<SimDocs>(node, |app| {
+            let mut doc = app
+                .docs
+                .entry(key)
+                .expect("entry")
+                .or_default()
+                .expect("or_default");
+            let _minted = doc.body.insert_str(pos, &text).expect("insert");
+        });
+        oracle.insert_str(pos, &text);
+        bytes
+    } else {
+        let start = rng.gen_range_usize(len);
+        let end = start + 1 + rng.gen_range_usize(4);
+        let bytes = edit::<SimDocs>(node, |app| {
+            let mut doc = app
+                .docs
+                .entry(key)
+                .expect("entry")
+                .or_default()
+                .expect("or_default");
+            let _removed = doc.body.delete_range(start, end).expect("delete range");
+        });
+        oracle.delete_range(start, end);
+        bytes
+    }
+}
+
+/// `names[..AUTHORS]` edit three nested documents under lossy, reordered
+/// delivery; any further name is a replica that has heard nothing yet.
+fn edited_document_mesh(
+    label: &str,
+    names: &[&str],
+    seed: u64,
+) -> (Vec<SimNode>, Vec<Vec<Oracle>>) {
+    let mut rng = SimRng::new(seed);
+    let nodes: Vec<SimNode> = names
+        .iter()
+        .map(|name| SimNode::new_in_context((*name).to_owned(), context()))
+        .collect();
+    for node in &nodes {
+        seed_docs(node);
+    }
+
+    // One oracle per (replica, document): each document mints its own counters.
+    let mut oracles: Vec<Vec<Oracle>> = nodes
+        .iter()
+        .map(|n| {
+            (0..DOC_KEYS.len())
+                .map(|_| Oracle::new(replica_of(n)))
+                .collect()
+        })
+        .collect();
+    let mut minted = vec![vec![0_usize; DOC_KEYS.len()]; nodes.len()];
+    let mut applied: Vec<HashSet<(usize, usize)>> = vec![HashSet::new(); nodes.len()];
+    let mut deltas: Vec<Pending> = Vec::new();
+    let mut queue: Vec<(usize, usize)> = Vec::new();
+
+    for round in 0..=EDIT_ROUNDS {
+        // Final round: every replica types one passage and nothing deletes after
+        // it, so passage contiguity is not a race with a delete.
+        let last = round == EDIT_ROUNDS;
+        for author in 0..AUTHORS {
+            let doc = rng.gen_range_usize(DOC_KEYS.len());
+            let before = oracles[author][doc].snapshot();
+            let bytes = if last {
+                let passage = unique_chars(author, minted[author][doc], PASSAGE_LEN);
+                minted[author][doc] += PASSAGE_LEN;
+                let pos = rng.gen_range_usize(oracles[author][doc].len() + 1);
+                let key = DOC_KEYS[doc].to_owned();
+                let bytes = edit::<SimDocs>(&nodes[author], |app| {
+                    let mut entry = app
+                        .docs
+                        .entry(key)
+                        .expect("entry")
+                        .or_default()
+                        .expect("or_default");
+                    let _minted = entry
+                        .body
+                        .insert_str(pos, &passage)
+                        .expect("passage insert");
+                });
+                oracles[author][doc].insert_str(pos, &passage);
+                bytes
+            } else {
+                random_doc_edit(
+                    &nodes[author],
+                    &mut oracles[author][doc],
+                    author,
+                    &mut minted[author][doc],
+                    DOC_KEYS[doc],
+                    &mut rng,
+                )
+            };
+
+            let key = (author, deltas.len());
+            deltas.push(Pending {
+                key,
+                doc,
+                bytes,
+                nodes: changed(&before, &oracles[author][doc].snapshot()),
+                deps: applied[author].clone(),
+            });
+            let _ignored = applied[author].insert(key);
+            let index = deltas.len() - 1;
+            queue.extend(
+                (0..AUTHORS)
+                    .filter(|&to| to != author)
+                    .map(|to| (index, to)),
+            );
+        }
+
+        if !last {
+            delivery_pass(
+                &nodes,
+                &mut |to, delta| oracles[to][delta.doc].integrate_all(&delta.nodes),
+                &deltas,
+                &mut queue,
+                &mut applied,
+                &mut rng,
+            );
+        }
+    }
+
+    for _ in 0..DELIVERY_PASSES {
+        if queue.is_empty() {
+            break;
+        }
+        delivery_pass(
+            &nodes,
+            &mut |to, delta| oracles[to][delta.doc].integrate_all(&delta.nodes),
+            &deltas,
+            &mut queue,
+            &mut applied,
+            &mut rng,
+        );
+    }
+    assert!(queue.is_empty(), "{label}: delivery queue never drained");
+    (nodes, oracles)
+}
+
+/// Equal Merkle roots, one tagged block collection per document, and each
+/// document's text equal to the union of every replica's oracle for it.
+fn assert_documents_converged(label: &str, nodes: &[SimNode], oracles: &mut [Vec<Oracle>]) {
+    let root = nodes[0].root_hash();
+    for node in nodes {
+        assert_eq!(
+            node.root_hash(),
+            root,
+            "{label}: {} merkle root differs",
+            node.id()
+        );
+        assert_eq!(
+            blocks_collection_ids(node).len(),
+            DOC_KEYS.len(),
+            "{label}: {} does not hold one block collection per document",
+            node.id()
+        );
+        assert_blocks_tagged(label, node);
+    }
+
+    for (doc, key) in DOC_KEYS.iter().enumerate() {
+        let all: Vec<FugueNode> = (0..AUTHORS).flat_map(|i| oracles[i][doc].nodes()).collect();
+        oracles[0][doc].integrate_all(&all);
+        let expected = oracles[0][doc].text();
+        assert!(
+            !expected.is_empty(),
+            "{label}: document {key} stayed empty, so the check is vacuous"
+        );
+        for node in nodes {
+            assert_eq!(
+                doc_text(node, key),
+                expected,
+                "{label}: {} disagrees with the oracle for document {key}",
+                node.id()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn nested_text_documents_converge_under_lossy_delta_delivery() {
+    const SEED: u64 = 0x_4E_57_ED;
+    let label = format!("nested documents (seed {SEED})");
+    let (nodes, mut oracles) = edited_document_mesh(&label, &["n0", "n1", "n2"], SEED);
+    assert_documents_converged(&label, &nodes, &mut oracles);
+}
+
+/// FAILING: a replica that has to learn the documents from a peer instead of
+/// authoring them never reaches the same Merkle root. See
+/// `nested_collection_entity_data_never_reaches_a_joiner` for the minimal case.
+#[tokio::test]
+async fn nested_text_documents_reach_a_late_joiner() {
+    const SEED: u64 = 0x_4E_57_ED;
+    let label = format!("nested joiner (seed {SEED})");
+    let (mut nodes, mut oracles) =
+        edited_document_mesh(&label, &["n0", "n1", "n2", "n-hc", "n-lw"], SEED);
+
+    assert!(
+        converge_group(&mut nodes, &[0, 1, 2, 3]).await,
+        "{label}: the hash-comparison joiner did not catch up"
+    );
+    for _ in 0..SYNC_ROUNDS {
+        if nodes[4].root_hash() == nodes[0].root_hash() {
+            break;
+        }
+        let (left, right) = nodes.split_at_mut(4);
+        execute_level_wise_sync(&mut right[0], &left[0])
+            .await
+            .expect("level-wise sync should succeed");
+    }
+    assert_documents_converged(&label, &nodes, &mut oracles);
+}
+
+/// FAILING, and not about text: HashComparison emits only true leaves
+/// (`hash_comparison_protocol.rs`, `collect_leaves_recursive`), so a nested
+/// collection a peer never created locally is rebuilt from its children's
+/// `parent_id` links with NO entity data row. Its own hash, and therefore the
+/// context root hash, can then never match the author's, so sync never settles.
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+struct NestedCounters {
+    tallies: UnorderedMap<String, Counter>,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for NestedCounters {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for NestedCounters {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.tallies.merge(&other.tallies)
+    }
+}
+
+impl RekeyTarget for NestedCounters {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.tallies, field_child_id(parent_id, "tallies"));
+    }
+}
+
+#[tokio::test]
+async fn nested_collection_entity_data_never_reaches_a_joiner() {
+    let mut nodes: Vec<SimNode> = ["nc-author", "nc-joiner"]
+        .into_iter()
+        .map(|name| SimNode::new_in_context(name, context()))
+        .collect();
+    for node in &nodes {
+        clear_pending_delta();
+        node.storage().with_index(|| {
+            Root::new(|| {
+                let mut state = NestedCounters::default();
+                state.tallies.reassign_deterministic_id("tallies");
+                state
+            })
+            .commit();
+            let _ignored = take_last_artifact();
+        });
+    }
+    let _typed = edit::<NestedCounters>(&nodes[0], |app| {
+        let mut tally = app
+            .tallies
+            .entry("t".to_owned())
+            .expect("entry")
+            .or_default()
+            .expect("or_default");
+        tally.increment().expect("increment");
+    });
+
+    assert!(
+        converge_group(&mut nodes, &[0, 1]).await,
+        "the joiner never reached the author's Merkle root"
+    );
 }

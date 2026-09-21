@@ -1,6 +1,9 @@
 //! The storage harness shared by the `FugueText` integration tests: per-replica
 //! stores reconciled by `Interface::apply_action`. A directory module, since
 //! `tests/fugue_harness.rs` would be compiled as a test target of its own.
+//! Each test binary uses a subset, so unused helpers here are not dead code.
+
+#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -98,16 +101,29 @@ pub fn fugue_text_in(store: &Store, device: [u8; 32]) -> String {
     })
 }
 
-/// Authored under replica 0, so neither writer's counter space starts used.
-pub fn fugue_genesis(field: &str, seed: &str) -> Store {
+/// A store holding one committed root state, built by `init` and seeded by `seed`.
+pub fn genesis<T: BorshSerialize + BorshDeserialize>(
+    init: impl FnOnce() -> T,
+    seed: impl FnOnce(&mut Root<T>),
+) -> Store {
     let store = new_store();
     clear_pending_delta();
     env::with_runtime_env(env_for(&store, device(1)), || {
-        let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(field));
-        doc.insert_str_with_replica(0, 0, seed)
-            .expect("seed insert should succeed");
-        doc.commit();
+        let mut root = Root::new(init);
+        seed(&mut root);
+        root.commit();
         let _ignored = env::take_last_artifact();
     });
     store
+}
+
+/// Authored under replica 0, so neither writer's counter space starts used.
+pub fn fugue_genesis(field: &str, seed: &str) -> Store {
+    genesis(
+        || FugueText::<MainStorage>::new_with_field_name(field),
+        |doc| {
+            doc.insert_str_with_replica(0, 0, seed)
+                .expect("seed insert should succeed");
+        },
+    )
 }
