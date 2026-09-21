@@ -4,8 +4,10 @@
 
 #![allow(clippy::len_without_is_empty)]
 
+use calimero_sdk::abi::AbiType;
+use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::fugue_text::{Anchor, Bias};
+use calimero_storage::collections::fugue_text::{Anchor, Bias, TextOp};
 use calimero_storage::collections::FugueText;
 
 #[app::state(emits = FugueCollabEvent)]
@@ -27,6 +29,25 @@ pub enum FugueCollabEvent {
         end: usize,
         editor: String,
     },
+}
+
+/// One step of an editor change, walking the document as it was before the change.
+#[derive(Clone, Debug, Serialize, Deserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde", rename_all = "snake_case")]
+pub enum Change {
+    Retain(usize),
+    Insert(String),
+    Delete(usize),
+}
+
+impl From<Change> for TextOp {
+    fn from(change: Change) -> Self {
+        match change {
+            Change::Retain(count) => Self::Retain(count),
+            Change::Insert(text) => Self::Insert(text),
+            Change::Delete(count) => Self::Delete(count),
+        }
+    }
 }
 
 fn encode_identity(identity: &[u8; 32]) -> String {
@@ -65,6 +86,12 @@ impl FugueCollabState {
         });
 
         Ok(())
+    }
+
+    /// A whole editor transaction in one call.
+    pub fn apply_delta(&mut self, changes: Vec<Change>) -> app::Result<()> {
+        let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
+        Ok(self.document.apply_delta(&ops)?)
     }
 
     pub fn get_text(&self) -> app::Result<String> {

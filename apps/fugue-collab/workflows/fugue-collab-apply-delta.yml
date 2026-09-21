@@ -1,0 +1,87 @@
+description: >
+  One editor transaction (retain, delete, insert) applied in a single call must reach
+  every node and merge with a concurrent edit from another node.
+name: Fugue Collab Apply Delta
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fugue-node
+  base_port: 2800
+  base_rpc_port: 2900
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: fugue-node-1
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 2-node mesh
+    type: create_mesh
+    context_node: fugue-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - fugue-node-2
+    outputs:
+      context_id: contextId
+
+  - name: Node 1 types the document
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "hello world"
+
+  - name: Wait for the document to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 appends at the end
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 11
+      text: "!"
+
+  # The change only touches positions 6..11, which Node 2's append does not move.
+  - name: Node 1 replaces a word in one transaction
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      changes:
+        - retain: 6
+        - delete: 5
+        - insert: "there"
+
+  - name: Wait for both nodes to hold both edits
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "hello there!"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
