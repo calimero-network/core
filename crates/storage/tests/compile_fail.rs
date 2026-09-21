@@ -25,10 +25,10 @@ fn compile_fail() {
     t.compile_fail("tests/compile_fail/state_hashmap_in_lww.rs");
 
     // Feature-SENSITIVE: rustc's "other types implement `RekeyTarget`" help block
-    // lists implementors alphabetically and TRUNCATES AT 8, so the `.stderr` depends
-    // on which implementors are compiled in. Both `testing` and `fugue-simple` move
-    // that set, and CI builds the workspace with both on (`fugue-simple` by feature
-    // unification via `tools/storage-cost`), so the snapshot is gated to that pair.
-    #[cfg(all(feature = "testing", feature = "fugue-simple"))]
+    // lists implementors alphabetically (truncated at 8), and the `testing` feature
+    // changes that set, so the `.stderr` differs between feature sets. CI builds the
+    // workspace with `testing` on (feature unification), so the snapshot is blessed
+    // for that and gated to it — keeping the default `-p calimero-storage` run clean.
+    #[cfg(feature = "testing")]
     t.compile_fail("tests/compile_fail/mergeable_without_rekeytarget.rs");
 }

@@ -148,19 +148,6 @@ pub struct FugueTextSimple<S: StorageAdaptor = MainStorage> {
     pub(crate) nodes: UnorderedMap<NodeKey, TextNode, S>,
 }
 
-/// Re-key the node map relative to its storage parent, as every collection
-/// stored as a value must. See [`super::rekey`].
-impl<S: StorageAdaptor> super::rekey::RekeyTarget for FugueTextSimple<S> {
-    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
-        self.nodes.reassign_deterministic_id_under(
-            parent_id,
-            "__fugue_simple_nodes",
-            node_map_crdt_type(),
-        );
-        self.nodes.set_collection_crdt_type(node_map_crdt_type());
-    }
-}
-
 impl FugueTextSimple<MainStorage> {
     /// Create a new empty document with a random ID.
     #[must_use]
@@ -255,8 +242,6 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
         replica: u64,
         s: &str,
     ) -> Result<(), StoreError> {
-        let _ignored = super::rekey::register_rekey::<Self>();
-
         for (offset, content) in s.chars().enumerate() {
             self.insert_one(pos + offset, replica, content)?;
         }
