@@ -45,6 +45,34 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         }
 
+        // Refuse an unusable policy here rather than at the first admission.
+        //
+        // The gate in `admit_tee_node` requires both lists, so a policy missing
+        // either is one that refuses every node -- and it would do so with an
+        // error the operator reads days later, on a replica that will not join,
+        // rather than now, on the request that created the problem.
+        //
+        // RTMR3 is required for the reason it exists: MRTD measures the virtual
+        // firmware, so it is identical across every profile of a release and
+        // constant across most releases. Only RTMR3 names a (profile, release)
+        // pair, which also means it changes every release and the policy must
+        // gain the new value on upgrade.
+        if allowed_mrtd.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "allowed_mrtd must name at least one measurement"
+            )));
+        }
+        if allowed_rtmr3.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "allowed_rtmr3 must name at least one measurement. MRTD alone does not identify \
+                 the image -- it is the same for every profile of a release and does not change \
+                 between most releases -- so a policy without RTMR3 would admit any profile, \
+                 including debug images that are not locked down. Take the value for each \
+                 profile you accept from that release's published-mrtds.json; it changes every \
+                 release, so add the new one when upgrading."
+            )));
+        }
+
         let preflight = match self.governance_preflight(&group_id, true) {
             Ok(preflight) => preflight,
             Err(err) => return ActorResponse::reply(Err(err)),
