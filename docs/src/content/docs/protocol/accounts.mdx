@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
 
 ## Two words this page leans on
 
@@ -457,6 +458,69 @@ One more namespace per account - a topic, beacons and a DAG - created lazily at 
 The id is not computable from the public account id, but the namespace's genesis is cleartext and names the founder account, so anyone who *learns* the id can link it to the account and watch beacon timing for device liveness.
 Project topics leak the same class of metadata today, and the same mitigation applies to both: the id is only as private as the invite that carried it.
 Per-namespace revocation latency is unchanged - a namespace that has not folded the unlink still honours the old binding - and the `application` a gain records is only what the gainer had folded at that moment, which decides who follows, never what the namespace actually runs.
+
+## Signing for a verifier that is not a node
+
+A service outside Calimero — the cloud's account linking, for one — needs the
+account root to sign something before it will file an account under a login. It
+already specifies what: a domain-separated signature over a challenge it issued
+and sealed itself.
+
+The node does not design that format. It produces it.
+
+```
+signature = ed25519( root_secret, DOMAIN ‖ payload )
+```
+
+where `DOMAIN` is one of a **closed set** the node knows and `payload` is
+whatever the verifier asked for — for the cloud, the UTF-8 of its challenge.
+
+### Why the domain is a name and not bytes
+
+"Sign these bytes with the account root" is a signing oracle, and the root is the
+one key that can certify a device — which is to say, take over the account. So
+the caller names a domain and the node supplies its bytes:
+
+```jsonc
+POST /admin-api/account/sign-with-root
+{ "domain": "mdma.account-login",      // a name from the allowlist
+  "payload": "65794a6c…" }             // hex; opaque to the node
+→ { "data": { "rootPublicKey": "<64 hex>",
+              "signature": "<base64>",
+              "accountId": "<64 hex>" } }
+```
+
+A length check would be the tempting shortcut — every credential Calimero itself
+designs signs a 32-byte `domain_hash` digest, so refusing 32-byte payloads looks
+like it separates the two worlds. It does not: `admitter_endorsement_payload`
+signs a raw concatenation of variable length, and nothing stops the next signing
+site from doing the same. A guard that depends on auditing every signing site
+forever is the wrong shape. Naming the reachable domains inverts it — a new
+signing site cannot become a target, because its domain is not on the list.
+
+`no_external_domain_shares_a_prefix_with_a_core_domain` keeps the two sets
+prefix-disjoint in both directions, because a caller-chosen payload can extend a
+message rightward into whatever follows.
+
+Offline, when the root is in cold storage and no node exists:
+
+```bash
+merod account sign-with-root --domain mdma.account-login \
+  --payload <HEX> --from ./phrase.txt
+```
+
+### What the signature establishes
+
+Possession of the root, and nothing else. Whether the payload is a challenge
+anyone issued, whether it is fresh, and whether the holder may link this account
+anywhere are all the verifier's — it issued the challenge and knows who to.
+
+<Aside type="caution">
+Different domains for different purposes is the security property, not tidiness.
+The cloud separates linking, login and recovery precisely so a signature gathered
+while linking cannot be replayed as a login. The node mirrors those constants
+rather than inventing its own: a `.v2` appears here only after it appears there.
+</Aside>
 
 ## Reading your account
 

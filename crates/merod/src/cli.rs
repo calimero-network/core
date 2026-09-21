@@ -94,9 +94,34 @@ pub struct RootArgs {
     #[arg(env = "CALIMERO_HOME", hide_env_values = true)]
     pub home: Utf8PathBuf,
 
-    /// Name of node
+    /// Name of node. Required by everything that reads a node's config or
+    /// store; omit it for the `account` subcommands that sign offline.
+    ///
+    /// Optional because several commands here touch no node at all. `account
+    /// warrant` and `account login-statement` are pure functions of their
+    /// flags, and `account sign-cert`/`revoke-proof`/`sign-with-root` reach the
+    /// account root from `--from <PHRASE>` without opening anything. Demanding
+    /// a name they never read meant naming a node that need not exist — and a
+    /// caller who obliged with a real one could reasonably think the command
+    /// had consulted it.
     #[arg(short = 'n', long = "node", value_name = "NAME")]
-    pub node_name: Utf8PathBuf,
+    pub node_name: Option<Utf8PathBuf>,
+}
+
+impl RootArgs {
+    /// The home directory of the node this command operates on.
+    ///
+    /// The single place `--node` becomes a path, so a command that needs a node
+    /// fails on the missing name rather than on whatever it found at
+    /// `$CALIMERO_HOME/` — `home` has a default, so joining an absent name
+    /// would silently address the parent of every node home.
+    pub fn node_home(&self) -> EyreResult<Utf8PathBuf> {
+        let name = self.node_name.as_ref().ok_or_else(|| {
+            eyre::eyre!("--node <NAME> is required: this command operates on one node's home")
+        })?;
+
+        Ok(self.home.join(name))
+    }
 }
 
 /// Resolve a path from config against the node home: relative paths (the
@@ -123,5 +148,96 @@ impl RootCommand {
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Tee(tee) => tee.run(&self.args).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{RootArgs, RootCommand};
+
+    /// The offline signers must parse with no `--node`.
+    ///
+    /// They were unreachable without one: `--node` was required, so the
+    /// cold-storage path — a root on paper and no node anywhere — had to name a
+    /// node that need not exist, and a bogus name was accepted precisely
+    /// because nothing read it. The e2e harness carried a `find … -name
+    /// config.toml` helper for exactly this, hunting a home for commands that
+    /// open none.
+    #[test]
+    fn offline_account_commands_parse_without_a_node() {
+        for args in [
+            vec![
+                "merod",
+                "account",
+                "sign-with-root",
+                "--domain",
+                "mdma.account-login",
+                "--payload",
+                "6e6f6e6365",
+                "--from",
+                "phrase.txt",
+            ],
+            vec![
+                "merod",
+                "account",
+                "warrant",
+                "--context",
+                "11111111111111111111111111111111",
+                "--executor",
+                &"b".repeat(64),
+                "--method",
+                "set",
+                "--args",
+                "{}",
+                "--nonce",
+                "1",
+                "--valid-for",
+                "300",
+                "--device-secret",
+                &"c".repeat(64),
+                "--credential",
+                &"d".repeat(64),
+            ],
+        ] {
+            let parsed = RootCommand::try_parse_from(&args);
+            assert!(
+                parsed.is_ok(),
+                "`{}` must parse with no --node: it opens no store\n{}",
+                args[2],
+                parsed.err().map(|e| e.to_string()).unwrap_or_default(),
+            );
+        }
+    }
+
+    /// And `--node` must still be demanded by anything that reads a node.
+    ///
+    /// Optional at parse time is not optional in effect: `home` carries a
+    /// default, so a missing name that reached `join` would address the parent
+    /// of every node home rather than one node.
+    #[test]
+    fn node_home_refuses_a_missing_node_name() {
+        let args = RootArgs {
+            home: camino::Utf8PathBuf::from("/tmp/calimero"),
+            node_name: None,
+        };
+
+        let err = args
+            .node_home()
+            .expect_err("no node name can yield no node home");
+        assert!(
+            err.to_string().contains("--node"),
+            "the error must name the missing flag, got: {err}",
+        );
+
+        let named = RootArgs {
+            home: camino::Utf8PathBuf::from("/tmp/calimero"),
+            node_name: Some(camino::Utf8PathBuf::from("node1")),
+        };
+        assert_eq!(
+            named.node_home().expect("a named node resolves"),
+            camino::Utf8PathBuf::from("/tmp/calimero/node1"),
+        );
     }
 }

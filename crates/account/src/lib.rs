@@ -69,6 +69,7 @@ mod account;
 mod device;
 mod domain;
 mod error;
+mod external;
 mod label;
 mod login;
 mod pairing;
@@ -96,6 +97,7 @@ pub use crate::account::{
 };
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
+pub use crate::external::{sign_external, ExternalSigningDomain};
 pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
 pub use crate::login::{Audience, LoginStatement};
 pub use crate::pairing::PairingOffer;
