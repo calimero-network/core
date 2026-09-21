@@ -1,19 +1,12 @@
-//! Emit the storage-cost table as JSON on stdout.
+//! Emit the row-cost table as JSON on stdout, which
+//! `scripts/check-storage-cost.sh` diffs against the committed snapshot.
 //!
-//! `scripts/check-storage-cost.sh` diffs this against the committed snapshot.
-//! Output is deterministically ordered (`BTreeMap`, zero-padded numeric keys)
-//! so a diff shows real cost changes and never key reordering.
+//! ```text
+//! cargo run -p storage-cost --bin storage-cost --release [--workload <name>]
+//! ```
 //!
-//! Only ROW counters are emitted. Byte counters are not reproducible — entity
-//! ids are random, so index rows serialize to slightly different lengths run to
-//! run. See the module docs of `storage_cost` for the full reasoning; gating on
-//! bytes would be a flake generator.
-//!
-//! `--workload <name>` restricts the run to one workload.
-//!
-//! Each workload also carries the tolerance the gate applies to it (see
-//! `workloads::Workload::tolerance_pct`); it is emitted here so regenerating
-//! the snapshot cannot drop it.
+//! Ordering is deterministic (`BTreeMap`, zero-padded numeric keys), so a diff
+//! shows cost changes and never key reordering.
 
 use std::collections::BTreeMap;
 
@@ -21,12 +14,8 @@ use serde::Serialize;
 use storage_cost::workloads::all;
 use storage_cost::{measure, RowCosts};
 
-/// One workload's snapshot entry: the tolerance the gate applies, then the
-/// measured costs per collection size.
-///
-/// The tolerance is emitted rather than hand-maintained in the JSON so that
-/// regenerating the snapshot cannot silently drop it, and so that changing it
-/// is a code change a reviewer sees in `workloads.rs`.
+/// The tolerance is emitted rather than hand-maintained in the JSON, so
+/// regenerating the snapshot cannot silently drop it.
 #[derive(Serialize)]
 struct Entry {
     tolerance_pct: u32,
@@ -62,8 +51,8 @@ fn main() {
             tolerance_pct: workload.tolerance_pct,
             sizes: BTreeMap::new(),
         });
-        // Zero-padded so string ordering matches numeric ordering in the
-        // committed snapshot — "10" must not sort before "1000".
+        // Zero-padded so string ordering matches numeric ordering: "10" must
+        // not sort before "1000".
         let _ignored = entry
             .sizes
             .insert(format!("{:08}", workload.n), costs.rows());

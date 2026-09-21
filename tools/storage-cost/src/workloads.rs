@@ -1,22 +1,11 @@
-//! The single registry of measured workloads.
+//! The single registry of measured workloads; the snapshot binary, the shape
+//! tests and the benches all iterate `all()`, so they cannot measure different
+//! things.
 //!
-//! The binary, the flat-curve tests and the criterion benches all iterate
-//! `all()`. Defining a workload anywhere else would let the gate and the
-//! benchmarks measure different things while claiming to measure one.
-//!
-//! # Two kinds of workload
-//!
-//! A *build* workload does `n` operations and is measured whole: its total cost
-//! is expected to grow with `n`, and what must stay flat is cost **per entry**.
-//!
-//! A *point* workload builds `n` entries, calls [`crate::reset_counters`], and
-//! then performs exactly one operation. What it reports is the cost of that one
-//! operation with `n` entries already in the collection — which is the number
-//! that decides whether a collection stays readable as it grows.
-//!
-//! [`CostShape`] says which is which, and, for point workloads, whether the
-//! curve is required to be flat or is a known-linear cost being held under
-//! observation.
+//! A *build* workload runs `n` operations and reports their total; what is
+//! asserted is cost per entry. A *point* workload builds `n` entries, calls
+//! [`crate::reset_counters`], then performs one operation and reports only
+//! that. [`CostShape`] declares which, and what curve the result must follow.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -34,34 +23,15 @@ use calimero_storage::store::{Key, MainStorage};
 
 use crate::reset_counters;
 
-/// Collection sizes every workload is measured at. The gate compares costs at
-/// each size; the shape tests compare the first against the last.
-pub const SIZES: [usize; 4] = [10, 100, 1_000, 10_000];
+pub const SIZES: [usize; 4] = [10, 100, 1_000, 10_000]; // shape tests span first to last
 
-/// Collection sizes for [`CostShape::QuadraticBuild`] workloads only.
-///
-/// Deliberately smaller than [`SIZES`]. `rga_insert_per_char`'s TOTAL cost is
-/// `O(n^2)`, not `O(n)`, so `SIZES`'s top row would not merely be slower — it
-/// would be the wrong shape of slower: `n=10_000` measured (see the module's
-/// dev notes) at roughly `19s` for `n=5_000` alone, so `n=10_000` is close to
-/// a minute for ONE measurement, and every consumer of `all()` measures each
-/// workload multiple times (`tests/reproducible.rs` runs it 7x per size,
-/// `tests/flat_curve.rs` and the snapshot binary run it once per size, and
-/// `benches/collections.rs` iterates it under criterion). `2_000` keeps the
-/// slowest single measurement under ~3s — the asymptotic slope is already
-/// unambiguous well before `10_000`, since `reads/entry` climbs from `63.5`
-/// at `n=10` to `2047.0` at `n=2_000`, tracking `n` almost 1:1 by the top of
-/// this range (see `rga_insert_per_char`'s doc comment for the measured
-/// curve in full).
+/// Sizes for [`CostShape::QuadraticBuild`] only: their total cost is `O(n^2)`,
+/// so `SIZES`'s top row would take about a minute per measurement.
 pub const QUADRATIC_SIZES: [usize; 4] = [10, 100, 500, 2_000];
 
-/// What the cost curve of a workload is required to look like.
-///
-/// This is an assertion, not a description. Every variant is checked by
-/// `tests/flat_curve.rs`, including [`Self::KnownLinearInN`] — a workload that
-/// stops being linear fails just as loudly as one that starts being linear,
-/// because "we fixed it and nobody updated the marker" and "we broke something
-/// else" must not be told apart by guesswork.
+/// What the cost curve of a workload is required to look like. An assertion,
+/// not a description: `tests/flat_curve.rs` checks every variant, in both
+/// directions, so a fix cannot land while the marker still describes the wall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CostShape {
     /// A build of `n` entries. Cost **per entry** must not grow with `n`.
@@ -69,58 +39,22 @@ pub enum CostShape {
     /// One operation against a collection of `n` entries. Its **total** cost
     /// must not grow with `n`.
     ConstantPerCall,
-    /// One operation whose total cost is KNOWN to grow linearly with `n`.
-    ///
-    /// This is not a licence — it is a ratchet. See `ordered_read` below.
+    /// One operation whose total cost is known to grow linearly with `n`.
     KnownLinearInN,
-    /// A build of `n` operations whose TOTAL cost is KNOWN to grow
-    /// quadratically with `n` — the operation itself is `O(n)` per call, so a
-    /// loop of `n` calls is `O(n^2)` overall.
-    ///
-    /// This does not fit either of the other two shapes, and declaring it as
-    /// one would assert the wrong thing:
-    ///
-    /// - [`Self::FlatPerEntry`] asserts per-entry cost does NOT grow with
-    ///   `n`. Here it does, by construction — that growth is the finding.
-    /// - [`Self::KnownLinearInN`] is for a POINT operation (build `n`, reset
-    ///   counters, do ONE more call) whose single call costs `O(n)`. A
-    ///   `QuadraticBuild` workload has no such point call to isolate — the
-    ///   `O(n)` cost is paid on every one of the `n` calls that make up the
-    ///   build, not on an `n+1`th call after it.
-    ///
-    /// Like [`Self::KnownLinearInN`], this is a ratchet, not a licence: see
-    /// `tests/flat_curve.rs`'s `quadratic_build_costs_are_still_exactly_
-    /// quadratic`, which fails if the curve gets worse (superquadratic) AND
-    /// if it silently gets better (the fix nobody recorded).
-    ///
-    /// Measured at [`QUADRATIC_SIZES`], not [`SIZES`] — see that constant's
-    /// doc comment for why.
+    /// A build of `n` operations each costing `O(n)`, so `O(n^2)` overall.
+    /// Measured at [`QUADRATIC_SIZES`].
     QuadraticBuild,
 }
 
 /// One measurable unit of work at one collection size.
 pub struct Workload {
-    /// Stable identifier. Appears in the snapshot, so renaming one is a
-    /// snapshot change a reviewer will see.
-    pub name: &'static str,
-    /// Collection size this instance exercises.
+    pub name: &'static str, // appears in the snapshot, so a rename shows up in the diff
     pub n: usize,
-    /// The curve this workload's cost is asserted to follow.
     pub shape: CostShape,
-    /// How far a measured row count may sit from the committed snapshot before
-    /// the gate fails, as a percentage.
-    ///
-    /// Zero for almost everything: row counts reproduce exactly. It is nonzero
-    /// only where the operation walks the WHOLE child trie, because the trie's
-    /// node count depends on how random entity ids happened to distribute, so
-    /// the number of node reads varies run to run.
-    ///
-    /// This is a measured property, not a guess — `tests/reproducible.rs`
-    /// re-derives the spread of every workload and fails if a declared
-    /// tolerance is either too tight (flaky gate) or gratuitously loose
-    /// (blind gate).
+    /// Slack the snapshot gate allows, in percent. Zero unless the operation
+    /// draws random entity ids, which move how the child trie is walked;
+    /// `tests/reproducible.rs` re-derives every declared value from live runs.
     pub tolerance_pct: u32,
-    /// Builds a collection of `n` entries and performs the measured operation.
     pub run: fn(usize),
 }
 
@@ -149,111 +83,34 @@ fn unordered_map_get(n: usize) {
     let _ignored = map.get("key0").expect("get should succeed");
 }
 
-/// Cost of ONE positional read — `Vector::get(i)` — against `n` entries.
-///
-/// # Why this is `KnownLinearInN`, and what it is standing in for
-///
-/// The in-repo fixture for a read wall that exhausts a real gas budget at tens
-/// of thousands of entries. The cause is not the app, it is this call:
-///
-/// ```text
-/// Vector::get(i) -> Collection::nth(i) -> children_cache()
-///                -> Index::get_children_of(parent)
-///                -> ChildTrie::children()   // collect ALL, then sort
-/// ```
-///
-/// One O(n) id walk per positional read, because order lives in a comparator
-/// applied after a full enumeration rather than in the structure. The child
-/// trie bounded *write* cost; it never touched ordered *read* cost.
-///
-/// Fixing that is a real project (see the ordering design doc) and is
-/// deliberately not attempted here. What this workload does is make the cost
-/// **gated** instead of merely known: the snapshot pins the constant, and
-/// `tests/flat_curve.rs` pins the slope. Nobody can make it quietly worse, and
-/// nobody can fix it without the marker below going red and forcing this
-/// comment to be rewritten.
-///
-/// The middle index is read, not the first, so a hypothetical fast path for
-/// index 0 could not make the measurement lie.
+/// Cost of ONE `Vector::get(i)` against `n` entries: linear, because ordering
+/// is a comparator applied after a full child-trie enumeration. The middle
+/// index is read so a fast path for index 0 could not make this lie.
 fn vector_get_nth(n: usize) {
     let vector = build_vector(n);
     reset_counters();
     let _ignored = vector.get(n / 2).expect("get should succeed");
 }
 
-/// Bulk-insert `n` characters into an empty RGA as a single `insert_str` call,
-/// measuring the whole build.
-///
-/// This is deliberately NOT `n` calls to [`ReplicatedGrowableArray::insert`]
-/// (one char, one position, at a time). That per-char loop is a real usage
-/// pattern (typing), but it is also genuinely `O(n)` *per insert* — every call
-/// re-derives the left-neighbour by linearising the whole document
-/// (`get_ordered_chars`, see `rga.rs`), so a loop of `n` such inserts is
-/// `O(n^2)` overall. That is a real cost, not a measurement artefact, but it
-/// is a different question from "is a build flat per entry", and conflating
-/// them here would make this workload fail for the wrong reason. `insert_str`
-/// linearises the document exactly ONCE (to find the single left-neighbour
-/// for the whole batch) and then does `n` flat `UnorderedMap` inserts — the
-/// realistic shape for "paste one string", which is genuinely flat per entry.
+/// Paste `n` characters into an empty RGA as one `insert_str`, which
+/// linearises the document once and then does `n` flat inserts. The per-char
+/// route is `rga_insert_per_char`, and it is a different shape.
 fn rga_insert(n: usize) {
     build_rga(n);
 }
 
-/// Read the whole RGA document after building `n` characters.
-///
-/// # Why this measures `get_text()`, not a positional `get(i)`
-///
-/// `ReplicatedGrowableArray` has no positional read at all — no `get(i)`
-/// analogous to `Vector::get`. The only public read is [`get_text`], which
-/// materialises the entire document. That is not a bug to work around here:
-/// it is the RGA read wall in its purest form, one step past `vector_get_nth`
-/// below. `Vector::get(i)` at least *tries* to return one element and pays an
-/// accidental `O(n)` cost doing it; `ReplicatedGrowableArray` was never given
-/// a positional read to begin with, so EVERY read of it is `O(n)` by
-/// construction. Declared `KnownLinearInN`, same as `vector_get_nth`, and for
-/// the same underlying reason: no ordered index, only a full linearisation on
-/// every read.
-///
-/// [`get_text`]: calimero_storage::collections::ReplicatedGrowableArray::get_text
+/// Read the whole RGA document after building `n` characters. It measures
+/// `get_text` because `ReplicatedGrowableArray` has no positional read at
+/// all, so every read of it linearises the document.
 fn rga_get_nth(n: usize) {
     let rga = build_rga(n);
     reset_counters();
     let _ignored = rga.get_text().expect("get_text should succeed");
 }
 
-/// Insert `n` characters into an RGA ONE AT A TIME via
-/// [`ReplicatedGrowableArray::insert`], each appended at the current end —
-/// the "someone is typing" access pattern, as opposed to `rga_insert`'s
-/// single bulk `insert_str` (the "paste one string" pattern).
-///
-/// # Why this is `QuadraticBuild`, and what it re-derives
-///
-/// `insert(pos, char)` re-derives its left-neighbour by linearising the
-/// WHOLE document on every call (`get_ordered_chars`, see `rga.rs`) — an
-/// `O(current length)` cost paid once per call. A loop of `n` such calls is
-/// therefore `O(n^2)` in total, not `O(n)`: this is exactly the gap
-/// `rga_insert`'s own doc comment names and deliberately does not measure,
-/// because `insert_str` linearises only ONCE for the whole batch. This
-/// workload is the per-call route `rga_insert` is not, and per-call is what
-/// a real editor actually does.
-///
-/// Measured `reads/entry` (`rows_read / n`, i.e. the AVERAGE cost of one
-/// `insert` call over the build) at [`QUADRATIC_SIZES`]:
-///
-/// | `n`   | reads/entry |
-/// |-------|-------------|
-/// | 10    | 63.5        |
-/// | 100   | 147.7       |
-/// | 500   | 547.1       |
-/// | 2,000 | 2,047.0     |
-///
-/// The average tracks `n` almost 1:1 above a small constant offset (~47,
-/// from the fixed per-call bookkeeping outside the linearisation) — the
-/// signature of a per-call cost that is itself linear in the CURRENT size,
-/// summed over a build that grows to `n`. That is what
-/// `CostShape::QuadraticBuild` asserts stays true: not a flat per-entry cost
-/// (that would be `FlatPerEntry`, and it is not what happens here), but a
-/// per-entry AVERAGE that itself climbs with `n`.
+/// Type `n` characters into an RGA one call at a time. Quadratic because
+/// every `insert` re-derives its left neighbour by linearising the whole
+/// document: reads/entry climbs from 63.5 at `n=10` to 2047.0 at `n=2_000`.
 fn rga_insert_per_char(n: usize) {
     let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
     for i in 0..n {
@@ -330,7 +187,8 @@ fn remote_char_actions(
 
 const REMOTE_CHAR_ACTIONS: usize = 6;
 
-/// Not wired to the measurement counters: the sender's own writes must not be counted.
+/// Not wired to the measurement counters: what is being measured is what the
+/// receiver pays, so the sender's own writes must stay uncounted.
 fn uncounted_env(device_id: [u8; 32]) -> RuntimeEnv {
     let map: Rc<RefCell<BTreeMap<[u8; 32], Vec<u8>>>> = Rc::new(RefCell::new(BTreeMap::new()));
     let read = {
@@ -468,15 +326,9 @@ fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     text
 }
 
-/// `n` separate set-then-commit transactions against the SAME `LwwRegister`.
-///
-/// Unlike the other builds, `n` here is not a collection size — a register
-/// always holds exactly one value, so there is nothing to grow. It is the
-/// number of times the register is overwritten in a fresh top-level
-/// transaction (`Root::fetch` + `set` + `commit`, the same shape a real host
-/// call does once per invocation). What must stay flat is the cost of one
-/// overwrite regardless of how many times it has already happened — a
-/// register's write cost must not grow with its own history.
+/// `n` set-then-commit transactions against the SAME `LwwRegister`, so `n` is
+/// a history length, not a collection size: a register's write cost must not
+/// grow with how often it has already been overwritten.
 fn lww_register_set(n: usize) {
     let register = Root::new(|| LwwRegister::<String>::new(String::new()));
     register.commit();
@@ -488,33 +340,9 @@ fn lww_register_set(n: usize) {
     }
 }
 
-/// Insert `n` inner entries under ONE outer key of a nested map, measuring
-/// the whole build.
-///
-/// # Why one outer key, not `n`
-///
-/// The first version of this workload used a fresh outer key per entry, so
-/// every call to `insert_nested` hit the "outer key absent" branch and
-/// minted a brand-new inner `UnorderedMap` with `UnorderedMap::new_internal`
-/// — a **random** id (`new_internal`'s own doc: "Use this for nested
-/// collections stored as values in other maps"). That random id lands the
-/// inner map's own root entry in a different bucket of the outer map's child
-/// trie on every run, and `tests/reproducible.rs` caught it directly:
-/// `nested_map_insert`'s `rows_removed`/`rows_written` varied by up to 2.4%
-/// across 7 runs even though every other build workload in this registry is
-/// exact. That is the same random-`Id` trie-shape source the module docs on
-/// `lib.rs` already name for BYTE counts — surfacing here on ROW counts too,
-/// because inserting a nested COLLECTION (not a plain value) touches the
-/// trie structurally, not just its serialized length.
-///
-/// Keeping the outer key fixed reuses the SAME inner map (SAME id) for all
-/// `n` inserts — the inner map is minted once, not `n` times — which removes
-/// the recurring random-id source. That alone was not quite enough for exact
-/// reproducibility (see `build_nested_map`'s comment for the second fix,
-/// making the OUTER map's own id deterministic too); with both fixes this
-/// reproduces exactly. It is also the more representative shape: "one
-/// document, many fields" is the normal nested-map access pattern, not "one
-/// document per field".
+/// Insert `n` inner entries under ONE outer key, so the inner map is minted
+/// once rather than `n` times: a fresh outer key per entry would mint a random
+/// id per call and put the counts back on the trie's random bucket spread.
 fn nested_map_insert(n: usize) {
     build_nested_map(n);
 }
@@ -531,49 +359,14 @@ fn nested_map_get(n: usize) {
 fn build_nested_map(
     n: usize,
 ) -> Root<UnorderedMap<String, UnorderedMap<String, String, MainStorage>, MainStorage>> {
-    // Both the outer map AND the seed step below use `new_with_field_name`
-    // (a DETERMINISTIC id) rather than `new()`/`new_internal()` (a random
-    // one). Both were needed — see the seed comment for why.
+    // The outer map and the seed below both take a deterministic id: the
+    // one-time re-key's target id derives from the outer map's own id, so a
+    // random id anywhere in that chain makes the counts vary run to run.
     let mut map = Root::new(|| {
         UnorderedMap::<String, UnorderedMap<String, String, MainStorage>, MainStorage>::new_with_field_name("outer")
     });
-    // Seed the outer entry with an EMPTY inner map before any `insert_nested`
-    // call, so the one-time nested-collection re-key (below) happens with
-    // nothing to relocate, rather than folding it into the cost of the
-    // FIRST `inner0` insert.
-    //
-    // `insert_nested`'s own "outer key absent" branch mints the inner map
-    // via `UnorderedMap::new_internal()` (a random id) and then, on
-    // write-back, `rekey_nested_value` reassigns it the deterministic id the
-    // outer entry expects — relocating every entry the inner map holds AT
-    // THAT MOMENT through the child trie under the TARGET id
-    // (`reassign_deterministic_id_keyed`'s clear-then-reinsert, see
-    // `unordered_map.rs`). That target id is
-    // `compute_collection_id(Some(outer_entry_id), "__nested_map", ..)` — it
-    // depends on `outer_entry_id`, which depends on the OUTER map's own id.
-    //
-    // Getting this fully deterministic took two fixes, found in this order:
-    //
-    // 1. Seed with an EMPTY inner map (this function, first version) so the
-    //    one-time relocation moves zero entries instead of the `inner0`
-    //    entry. This alone reduced but did NOT eliminate the wobble
-    //    (measured: `rows_removed` 11..13 -> 5..6, `rows_written` still
-    //    wobbling 287..288) — expected, since (2) below was still random.
-    // 2. Seed the inner map itself with `new_with_field_name` (a
-    //    deterministic id) instead of plain `new()`. This alone, with the
-    //    OUTER map still random, did NOT fully fix it either — the wobble
-    //    persisted, because the relocation's TARGET id still depended on
-    //    the outer map's random id, not the inner map's pre-rekey id.
-    //
-    // Only fixing BOTH — outer map AND seed inner map deterministic —
-    // removed every random input from the whole chain: 20 separate
-    // fresh-process runs of the real `storage-cost` binary (not just an
-    // in-process loop) now report byte-identical rows_read/written/removed
-    // at every size. Every subsequent `insert_nested` call finds the outer
-    // key already present with the inner map's id already correct, so
-    // `rekey_nested_value`'s `old_id == new_id` fast path skips the
-    // relocation entirely from then on — the one-time seed cost does not
-    // scale with `n`.
+    // Seeding an EMPTY inner map first leaves the one-time re-key nothing to
+    // relocate, so its cost is not folded into the first `inner0` insert.
     map.insert(
         "outer".to_owned(),
         UnorderedMap::<String, String, MainStorage>::new_with_field_name("seed"),
@@ -605,30 +398,14 @@ fn build_vector(n: usize) -> Root<Vector<String, MainStorage>> {
     vector
 }
 
-/// Every workload at every size.
-///
-/// `SortedMap` and `SortedSet` are deliberately absent — reconsidered for this
-/// registry expansion and still excluded.
-///
-/// Their cost depends on `StorageAdaptor::index_supported()`
-/// (`crates/storage/src/store.rs`). Without `RuntimeEnv::with_index` installed,
-/// native ordered-index ops fall through to the process thread-local mock
-/// (`crates/storage/src/env.rs`) — and every `storage_index_*` call in that
-/// path (`env.rs`, `index_bridge`) reads/writes/removes a plain `BTreeMap`,
-/// never going through this crate's counting `RuntimeEnv` callbacks at all.
-/// So a `SortedMap` workload measured here would not merely describe the
-/// wrong path, it would silently attribute ZERO cost to the index maintenance
-/// entirely (the "extra index write + a marker read/write" the module docs on
-/// `SortedMap` promise) while still doing the plain-map point op — publishing
-/// a number that looks identical to `UnorderedMap` and claiming to be
-/// `SortedMap`'s indexed path. Adding them means wiring all eight
-/// `IndexCallbacks` through the counting store first — a separate piece of
-/// work, not a workload entry.
+/// Every workload at every size. `SortedMap` and `SortedSet` are absent
+/// because their index ops bypass this crate's counting callbacks entirely,
+/// so a workload here would report zero for the index maintenance it exists
+/// to measure; adding them means wiring `IndexCallbacks` through first.
 pub fn all() -> Vec<Workload> {
     use CostShape::{ConstantPerCall, FlatPerEntry, KnownLinearInN, QuadraticBuild};
 
-    /// A registry row: name, shape, tolerance, body. Sized-independent, so
-    /// `all()` crosses it with [`SIZES`].
+    /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
     const REGISTRY: [Entry; 13] = [
@@ -642,44 +419,14 @@ pub fn all() -> Vec<Workload> {
         ("unordered_map_len", ConstantPerCall, 0, unordered_map_len),
         ("unordered_map_get", ConstantPerCall, 0, unordered_map_get),
         // Walks the whole trie, so its node count follows the random id
-        // distribution. Measured worst-case spread over seven runs, across
-        // six separate measurement rounds: 5.0%-10.5% at n=10 (the current
-        // committed snapshot's n=10 rows_read is 42 - see
-        // `storage-costs.json` — a fresh draw from that same distribution,
-        // not a change to the workload), under 3% at every larger size. 18%
-        // is `tests/reproducible.rs`'s `declared_tolerances_bound_the_
-        // observed_spread` re-derived bound for that range (3x the worst
-        // observed spread plus 5 points of sampling headroom), not the
-        // 25% cap this used to sit at — see that test for the rule.
+        // distribution: 18% bounds the spread seen at n=10, the smallest and
+        // therefore noisiest size.
         ("vector_get_nth", KnownLinearInN, 18, vector_get_nth),
-        // `insert_str` linearises the document once per call, then does `n`
-        // flat `UnorderedMap` inserts — see `rga_insert`'s doc comment for why
-        // this is genuinely flat and not the same question as the per-char
-        // `insert(pos, c)` loop, which is real but unrelated `O(n^2)`.
         ("rga_insert", FlatPerEntry, 0, rga_insert),
-        // No positional read exists on `ReplicatedGrowableArray`; every read
-        // linearises the whole document — same SHAPE as `vector_get_nth`
-        // (KnownLinearInN), one step further along the same wall (see
-        // `rga_get_nth`'s doc comment), but NOT the same tolerance.
-        // `vector_get_nth`'s 18% comes from real child-trie bucket
-        // randomness (measured 5.0%-10.5% worst-case spread at n=10 across
-        // six rounds). `get_text()`'s
-        // linearisation walks `self.chars.entries()` and sorts in memory —
-        // no trie-bucket lookup is involved, so it is not subject to that
-        // randomness at all. Measured: exactly `2n` rows_read at every size,
-        // zero spread across seven runs. Tolerance is 0.
+        // Tolerance 0 unlike `vector_get_nth`: `get_text` sorts in memory
+        // rather than descending the trie, so no bucket randomness applies.
         ("rga_get_nth", KnownLinearInN, 0, rga_get_nth),
         ("lww_register_set", FlatPerEntry, 0, lww_register_set),
-        // Reusing one outer key, and building BOTH the outer map and the
-        // seed inner map with deterministic ids (see `nested_map_insert`'s
-        // doc comment), eliminates the randomness entirely — every metric
-        // reproduces exactly at every size. An earlier version of this
-        // workload only fixed the outer-key reuse, leaving the outer map's
-        // OWN id random; that alone still let `rows_removed`/`rows_written`
-        // wobble by ~1 row (see the doc comment for why: a random parent id
-        // moves WHERE the one-time nested-collection re-key lands in the
-        // child trie, even when nothing else about the workload is random).
-        // Fixing the parent id removed the last variable.
         ("nested_map_insert", FlatPerEntry, 0, nested_map_insert),
         ("nested_map_get", ConstantPerCall, 0, nested_map_get),
         (
@@ -692,12 +439,8 @@ pub fn all() -> Vec<Workload> {
         ("fugue_text_char_at", KnownLinearInN, 0, fugue_text_char_at),
     ];
 
-    /// [`CostShape::QuadraticBuild`] workloads, measured at
-    /// [`QUADRATIC_SIZES`] instead of [`SIZES`] — see that constant's doc
-    /// comment for why they need their own, smaller sizes. A separate array
-    /// rather than a row in `REGISTRY` because `REGISTRY` is crossed with
-    /// `SIZES` unconditionally below; a `QuadraticBuild` entry there would
-    /// silently get measured at `n=10_000` too.
+    /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because
+    /// `REGISTRY` is crossed with `SIZES` unconditionally.
     const QUADRATIC_REGISTRY: [Entry; 7] = [
         (
             "rga_insert_per_char",

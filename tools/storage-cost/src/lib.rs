@@ -1,34 +1,17 @@
-//! Deterministic storage-cost measurement for `calimero-storage`.
+//! Counts the storage operations a `calimero-storage` workload performs, by
+//! installing a `RuntimeEnv` whose callbacks close over an owned map plus
+//! counters. Each [`measure`] call gets a fresh map, so runs cannot leak into
+//! each other.
 //!
-//! Installs a `RuntimeEnv` whose read/write/remove callbacks close over an
-//! owned map plus counters, so every storage operation a workload performs is
-//! counted exactly. Nothing in `crates/` changes: `RuntimeEnv::new` already
-//! takes the callbacks as `Rc<dyn Fn>`.
+//! ```text
+//! cargo run -p storage-cost --bin storage-cost --release
+//! ```
 //!
-//! Each `measure` call gets a FRESH backing map, so measurements are isolated
-//! from each other without needing `env::reset_for_testing` (which is
-//! `#[cfg(test)]` and therefore unreachable from this crate).
-//!
-//! # Determinism, measured 2026-08-26
-//!
-//! ROW counts are exactly reproducible in-process: three consecutive runs of
-//! every registered workload at every size produced identical
-//! `rows_read`/`rows_written`/`rows_removed`. No process isolation is needed.
-//!
-//! BYTE counts are NOT reproducible, and no amount of process isolation would
-//! make them so. Every entity gets an `Id::random()`
-//! (`crates/storage/src/address.rs:49`), which on the native path is
-//! `rand::thread_rng()` (`crates/storage/src/env.rs:1099`) with no seeding hook
-//! reachable from outside the crate. Random ids land in different child-trie
-//! buckets run to run, so index rows serialize to slightly different lengths —
-//! observed drift is ~1.5% at every size.
-//!
-//! Consequence for the gate: [`RowCosts`] — the row counters only — is what
-//! `storage-costs.json` records and what `scripts/check-storage-cost.sh` diffs.
-//! Byte counts stay on [`Costs`] for local inspection and for the benches, but
-//! gating on them would be a flake generator. Making them gateable needs a
-//! seedable RNG hook in `calimero-storage`, which is a production change and
-//! deliberately out of scope here.
+//! Row counts reproduce exactly and are what [`RowCosts`],
+//! `storage-costs.json` and `scripts/check-storage-cost.sh` gate on. Byte
+//! counts do not: every entity id is drawn from an unseedable RNG, so index
+//! rows serialize to slightly different lengths (~1.5%) run to run. Seeding it
+//! would be a production change to `calimero-storage`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -41,9 +24,6 @@ use serde::{Deserialize, Serialize};
 pub mod workloads;
 
 /// The deterministic projection of [`Costs`]: what the snapshot gate diffs.
-///
-/// Row counts reproduce exactly; byte counts do not (see the module docs), so
-/// only these three cross into `storage-costs.json`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowCosts {
     /// Host reads issued, whether or not the key existed.
@@ -68,7 +48,7 @@ pub struct Costs {
 }
 
 impl Costs {
-    /// The gateable subset. See the module docs for why bytes are excluded.
+    /// The gateable subset; the module docs say why bytes are not in it.
     #[must_use]
     pub const fn rows(&self) -> RowCosts {
         RowCosts {
@@ -131,20 +111,14 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
 }
 
 thread_local! {
-    /// The backing store of the innermost in-flight [`measure`], so a workload
-    /// can zero the counters partway through. Restored on the way out, so
+    /// The innermost in-flight [`measure`]'s store, restored on the way out so
     /// nesting behaves.
     static CURRENT: RefCell<Option<Rc<RefCell<Backing>>>> = const { RefCell::new(None) };
 }
 
-/// Discard everything counted so far in the enclosing [`measure`] call.
-///
-/// This is what lets a workload isolate ONE operation from the build that had
-/// to precede it. A collection lives in the storage layer's thread-local state,
-/// so the build cannot happen outside the measured region; zeroing between the
-/// two is the only way to attribute cost to the operation alone.
-///
-/// A no-op outside `measure`, so a workload run directly in a test still works.
+/// Discard everything counted so far in the enclosing [`measure`] call, which
+/// is how a point workload isolates one operation from the build in front of
+/// it. A no-op outside `measure`.
 pub fn reset_counters() {
     CURRENT.with(|c| {
         if let Some(backing) = c.borrow().as_ref() {
@@ -160,8 +134,7 @@ mod tests {
 
     use super::*;
 
-    /// The harness must observe writes at all — if the `RuntimeEnv` is not
-    /// actually routing `MainStorage` through our callbacks, every count is
+    /// If `MainStorage` is not routed through our callbacks, every count is
     /// silently zero and every downstream gate is vacuous.
     #[test]
     fn measure_observes_writes() {
@@ -181,21 +154,9 @@ mod tests {
         );
     }
 
-    /// Two identical measurements must produce identical ROW counts. This is
-    /// the property the entire snapshot gate rests on: if per-process
-    /// thread-local state leaks between measurements, the snapshot is unstable
-    /// and the gate flakes.
-    ///
-    /// The collection is built with `new_with_field_name`, NOT `new`. `new`
-    /// mints a RANDOM entity id, and a parent's children live in a hash trie
-    /// whose descent depth follows the hash of that id - so two
-    /// runs of an identical workload read a different number of trie nodes
-    /// while writing exactly the same set. That is why `rows_written` was
-    /// stable at 313 and only `rows_read` moved, and why this failed under
-    /// `calimero-storage/testing` (which CI enables) roughly always rather than
-    /// occasionally. The sibling `byte_counts_are_not_reproducible` already
-    /// records that ids are not deterministic; this test simply must not
-    /// depend on them being so.
+    /// The property the whole snapshot gate rests on. Built with
+    /// `new_with_field_name`, not `new`: a random entity id changes how deep
+    /// the child trie is descended, so `rows_read` would move on its own.
     #[test]
     fn row_counts_are_deterministic_across_calls() {
         let workload = || {

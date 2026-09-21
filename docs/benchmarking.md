@@ -20,7 +20,6 @@ To accept a change, regenerate the snapshot and commit it so the delta shows up 
     cargo bench -p calimero-storage --bench child_trie -- --test    # run once, assert nothing
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
-The one exception is `[profile.bench.package.calimero-storage]`, which turns `debug-assertions` back on for that package alone to clear a release-build guard (see `crates/storage/src/interface.rs`).
 
 `master` saves a baseline per commit, and a PR labelled `run-benchmarks` compares against it with `critcmp` (`.github/workflows/benchmarks.yml`).
 
@@ -28,8 +27,6 @@ The one exception is `[profile.bench.package.calimero-storage]`, which turns `de
 
 `.github/workflows/fuzzy-load-test.yml` runs CPU and memory flamegraphs as a nightly soak.
 The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` are `#[ignore]`d by design; they answer "how big can one document get", which Tier 1's row counts cannot.
-
-`crates/node/tests/sync_sim/benchmarks.rs` prints counters that read as measurements, but the sim harness never drives the sync protocol, so they are 0 for 12 of its 13 scenarios.
 
 ## Adding a bench
 
@@ -42,8 +39,8 @@ The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` a
 
 ## Reading the comparison
 
-The `run-benchmarks` label posts a `critcmp` table against the PR's base commit, but only when benchmarks.yml already ran successfully there and that run's artifacts are still inside the 30-day retention window.
-Otherwise the `compare` job posts a plain-English "no comparison" message naming which case it hit; read its log before assuming the benchmarks are unchanged.
+The `run-benchmarks` label posts a `critcmp` table against the PR's base commit, but only when benchmarks.yml ran successfully there and its artifacts are still inside the 30-day retention window.
+Otherwise the `compare` job posts a "no comparison" message naming which case it hit; read its log before assuming the benchmarks are unchanged.
 
 - Under ~5%: noise. Shared runners vary by more than that between identical runs.
 - 5-20% on one benchmark, nothing else: usually noise too. Re-run before believing it.

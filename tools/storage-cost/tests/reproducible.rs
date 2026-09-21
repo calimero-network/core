@@ -1,42 +1,26 @@
-//! Every workload's declared `tolerance_pct` must match what it actually does.
+//! Re-derives every workload's declared `tolerance_pct` from live runs rather
+//! than trusting it. Both halves rot silently: too tight makes the gate flaky,
+//! too wide makes it blind.
 //!
-//! The snapshot gate compares measured row counts against a committed file. It
-//! is only meaningful if the measurement reproduces, and only useful if the
-//! band it allows is no wider than it has to be. Both halves rot silently:
-//! a tolerance that is too tight makes CI flaky (and someone widens it), a
-//! tolerance that is too wide makes the gate blind (and nobody notices).
-//!
-//! So the tolerance is re-derived here from live measurements rather than
-//! trusted. `RUNS` is small enough to stay quick and large enough that a
-//! genuinely varying count shows up.
+//! ```text
+//! cargo test -p storage-cost --release --test reproducible -- --include-ignored
+//! ```
 
 use std::collections::BTreeMap;
 
 use storage_cost::measure;
 use storage_cost::workloads::all;
 
-/// Repeats per workload. Seven was enough to separate the one varying workload
-/// from the twenty-three exact ones when the tolerances were first derived.
-const RUNS: usize = 7;
-
-/// No workload may claim more slack than this. A cost allowed to move by more
-/// than a quarter is not being gated on its constant any more, only on its
-/// order of magnitude — and that job belongs to `flat_curve.rs`.
-const MAX_DECLARED_TOLERANCE_PCT: u32 = 25;
+const RUNS: usize = 7; // enough to separate the varying workloads from the exact ones
+const MAX_DECLARED_TOLERANCE_PCT: u32 = 25; // past a quarter, only the order of magnitude is gated
 
 #[ignore = "minutes of work; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn declared_tolerances_bound_the_observed_spread() {
     let mut failures = Vec::new();
-    // One declared `tolerance_pct` covers every `n` a workload is run at
-    // (see `Workload::tolerance_pct`'s doc comment), and observed spread
-    // shrinks sharply as `n` grows (`vector_get_nth` measures ~10x more
-    // spread at n=10 than at n=10000 — a bigger trie averages the same
-    // per-bucket randomness over more buckets). So the too-wide check below
-    // is evaluated once per workload NAME, against the worst (largest)
-    // spread seen at any of its sizes — the smallest `n` is what the
-    // declared tolerance actually has to cover, and it is what any of these
-    // three comments should be read as promising.
+    // One declared tolerance covers every `n`, and spread shrinks sharply as
+    // `n` grows, so the too-wide check below runs once per workload NAME
+    // against the worst spread seen at any of its sizes.
     let mut worst_spread_pct = BTreeMap::<&str, f64>::new();
     let mut tolerance_pct = BTreeMap::<&str, u32>::new();
 
@@ -89,24 +73,9 @@ fn declared_tolerances_bound_the_observed_spread() {
         }
     }
 
-    // The other direction: a declared tolerance far wider than the worst
-    // spread `RUNS` samples actually showed, at any size, is a blind gate —
-    // it will pass a real regression that lands inside the unused slack.
-    //
-    // The worst-spread statistic is itself noisy: it is a max-of-order-
-    // statistics over only `RUNS` samples on an integer row count already
-    // sitting around ~40 at n=10, so a difference of a couple of rows swings
-    // it by several points. Repeated live measurements of `vector_get_nth`
-    // while this rule was chosen ranged as low as ~4% and as high as ~10.5%,
-    // all for the exact same code — so the rule has to tolerate that much
-    // run-to-run swing in the denominator without flapping on CI. The rule
-    // below is `3x` the worst observed spread plus a flat 8 percentage
-    // points: generous enough that a run landing as low as ~3.3% still
-    // clears an 18% declaration, while still refusing to let a declaration
-    // coast on the `MAX_DECLARED_TOLERANCE_PCT` cap for a workload that
-    // would only justify a fraction of it (to justify the 25% cap under this
-    // rule, a workload now needs at least ~5.7% real observed spread, not
-    // "some spread, so round up to the cap").
+    // The other direction: a band far wider than the observed spread is a
+    // blind gate. The bound is 3x the worst spread plus 8 points, because the
+    // spread statistic is itself noisy over only `RUNS` integer samples.
     for (name, worst_spread_pct) in worst_spread_pct {
         let declared = tolerance_pct[name];
         let max_reasonable_tolerance_pct = worst_spread_pct * 3.0 + 8.0;

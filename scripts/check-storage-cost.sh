@@ -1,21 +1,12 @@
 #!/usr/bin/env bash
-# Fail if measured storage costs differ from the committed snapshot.
-#
-# Row counts are deterministic — same inputs, same read/write/remove counts on
-# any machine — so ANY delta is a real change and blocks. An improvement blocks
-# too, on purpose: the snapshot is the reviewed record of what operations cost,
-# and a cost that moves should move visibly.
-#
-# Byte counts are deliberately NOT in the snapshot. Entity ids are random
-# (`Id::random` -> `rand::thread_rng`), so index rows serialize to slightly
-# different lengths run to run; gating on them would flake. See the module docs
-# of tools/storage-cost/src/lib.rs.
-#
-# To accept a change: cargo run -p storage-cost --bin storage-cost --release \
-#     > tools/storage-cost/storage-costs.json
-# and commit it, so the delta appears in the PR diff.
-#
 # Usage: check-storage-cost.sh
+#
+# Fails if measured storage costs differ from the committed snapshot. Row
+# counts are deterministic, so any delta blocks - an improvement too, since the
+# snapshot is the reviewed record of what an operation costs. To accept one:
+#
+#     cargo run -p storage-cost --bin storage-cost --release \
+#         > tools/storage-cost/storage-costs.json
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,15 +31,9 @@ trap 'rm -f "$measured"' EXIT
 echo "Measuring storage costs..."
 cargo run --quiet -p storage-cost --bin storage-cost --release >"$measured"
 
-# Per-workload tolerance: 0 for almost everything, so almost everything is an
-# exact-equality gate. It is nonzero only where walking the whole child trie
-# makes the node count follow the random id distribution; tools/storage-cost/
-# tests/reproducible.rs re-derives every declared tolerance from live runs, so
-# a too-wide band fails there rather than passing here.
-#
-# A workload present in only one of the two files reports `null` on the missing
-# side, which is how an added or deleted workload announces itself instead of
-# silently passing.
+# Tolerance is 0 for almost every workload, so almost every row is an exact
+# equality. A workload present in only one file reports `null` on the other
+# side, which is how an added or deleted workload announces itself.
 deltas="$(jq -r -s '
   .[0] as $old | .[1] as $new
   | [ (($old + $new) | keys[]) as $w
@@ -61,8 +46,7 @@ deltas="$(jq -r -s '
     ]
   | map(select(
       (.old == null) or (.new == null) or
-      # tolerance 0 means exact equality. Anything else would let a one-row
-      # drift through on every workload, which is most of them.
+      # tolerance 0 means exact equality
       (if .tol == 0
        then .new != .old
        else ((.new - .old) | fabs) > ([1, (.old * .tol / 100)] | max)

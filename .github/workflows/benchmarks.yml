@@ -71,7 +71,7 @@ jobs:
           path: target/criterion
           merge-multiple: true
 
-      # A base commit with no run, or with expired artifacts, must not fail the job.
+      # A base commit with no run, or with expired artifacts, must not fail.
       - name: Find master's benchmark run
         id: master-run
         env:
@@ -91,7 +91,7 @@ jobs:
             echo "no successful benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} -- it predates this workflow, or its run failed, or (past 30 days) its artifacts have expired"
           fi
 
-      # run-id plus github-token are what reach into a different workflow run
+      # run-id plus github-token reach into a different workflow run
       - name: Download master's baselines
         if: steps.master-run.outputs.run_id != ''
         uses: actions/download-artifact@v4

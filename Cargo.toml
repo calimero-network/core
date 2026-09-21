@@ -404,10 +404,8 @@ opt-level = "z"
 strip = "symbols"
 panic = "unwind"
 
-# `cargo bench --workspace` unifies dev-dependency features across every
-# workspace member for the single resolve, regardless of which targets are
-# actually selected, so `calimero-storage/testing` leaks into every bench build
-# and trips that crate's release-build guard (crates/storage/src/interface.rs).
+# `cargo bench --workspace` unifies dev-dependency features across every member,
+# so `calimero-storage/testing` leaks in and trips that crate's release guard.
 [profile.bench.package.calimero-storage]
 debug-assertions = true
 
