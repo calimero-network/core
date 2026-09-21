@@ -209,11 +209,12 @@ impl<S: StorageAdaptor> AbiType for ReplicatedGrowableArray<S> {
     }
 }
 
-/// `FugueText` is collaborative text with the same opaque ABI shape as RGA — it
-/// differs only in its ordering rule, which is not part of the ABI.
+/// `FugueText` shares RGA's opaque ABI shape and none of its layout: RGA stores
+/// one entity per character, `FugueText` one per run. Its own tag is what makes
+/// a field swapped between the two a reported, migration-requiring change.
 impl<S: StorageAdaptor> AbiType for FugueText<S> {
     fn type_ref(_reg: &mut TypeRegistry) -> TypeRef {
-        opaque_ref(CrdtCollectionType::ReplicatedGrowableArray)
+        opaque_ref(CrdtCollectionType::FugueText)
     }
 }
 

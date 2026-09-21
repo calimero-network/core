@@ -329,6 +329,10 @@ pub enum CrdtCollectionType {
     SortedSet,
     /// ReplicatedGrowableArray: String with character-level CRDT
     ReplicatedGrowableArray,
+    /// FugueText: String with a Tree-Fugue CRDT stored as run-length blocks.
+    /// Same opaque shape as `ReplicatedGrowableArray`, an unrelated layout
+    /// (one entity per run, not per character), so the two never interchange.
+    FugueText,
     /// AuthoredVector: List with per-element author identity
     AuthoredVector,
     /// SharedStorage: single-slot value guarded by a writer-set ACL (writers +
@@ -348,8 +352,9 @@ pub enum CollectionCategory {
     /// `UnorderedSet`). A migrate may rebuild them freely; they carry no
     /// per-entry provenance.
     Convergent,
-    /// Per-executor / per-position (`Counter`, `ReplicatedGrowableArray`).
-    /// Converges only if the migrate body replays it deterministically.
+    /// Per-executor / per-position (`Counter`, `ReplicatedGrowableArray`,
+    /// `FugueText`). Converges only if the migrate body replays it
+    /// deterministically.
     Replayable,
     /// Ownership / writer-set derived from `env::account_id()` (`AuthoredMap`,
     /// `AuthoredVector`, `SharedStorage`). A naive rebuild diverges, and a
@@ -372,7 +377,9 @@ pub fn collection_category(ty: &CrdtCollectionType) -> CollectionCategory {
         | CrdtCollectionType::UnorderedSet
         | CrdtCollectionType::SortedMap
         | CrdtCollectionType::SortedSet => Convergent,
-        CrdtCollectionType::Counter | CrdtCollectionType::ReplicatedGrowableArray => Replayable,
+        CrdtCollectionType::Counter
+        | CrdtCollectionType::ReplicatedGrowableArray
+        | CrdtCollectionType::FugueText => Replayable,
         CrdtCollectionType::AuthoredMap
         | CrdtCollectionType::AuthoredVector
         | CrdtCollectionType::SharedStorage => IdentityGated,
@@ -1065,6 +1072,7 @@ mod tests {
         CrdtCollectionType::UnorderedSet,
         CrdtCollectionType::SortedSet,
         CrdtCollectionType::ReplicatedGrowableArray,
+        CrdtCollectionType::FugueText,
         CrdtCollectionType::AuthoredVector,
         CrdtCollectionType::SharedStorage,
     ];
@@ -1081,7 +1089,7 @@ mod tests {
     #[allow(dead_code)]
     fn crdt_type_is_exhaustive(crdt: &CrdtCollectionType) {
         use CrdtCollectionType::{
-            AuthoredMap, AuthoredVector, Counter, LwwRegister, ReplicatedGrowableArray,
+            AuthoredMap, AuthoredVector, Counter, FugueText, LwwRegister, ReplicatedGrowableArray,
             SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
         };
         match crdt {
@@ -1094,6 +1102,7 @@ mod tests {
             | UnorderedSet
             | SortedSet
             | ReplicatedGrowableArray
+            | FugueText
             | AuthoredVector
             | SharedStorage => {}
         }

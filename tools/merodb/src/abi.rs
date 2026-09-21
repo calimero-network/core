@@ -163,13 +163,17 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::Counter),
                                     inner_type: None,
                                 },
-                                // FugueText is collaborative text like RGA, so it
-                                // surfaces under the same ABI collection kind —
-                                // only the ordering rule differs, and ordering is
-                                // not part of the ABI shape.
-                                CrdtType::Rga | CrdtType::FugueText => TypeRef::Collection {
+                                // Same opaque shape, different layout: RGA is one
+                                // entity per character, FugueText one per run, so
+                                // they carry distinct tags.
+                                CrdtType::Rga => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
+                                    inner_type: None,
+                                },
+                                CrdtType::FugueText => TypeRef::Collection {
+                                    collection: CollectionType::Record { fields: Vec::new() },
+                                    crdt_type: Some(CrdtCollectionType::FugueText),
                                     inner_type: None,
                                 },
                                 CrdtType::UnorderedMap => {
@@ -242,8 +246,8 @@ pub fn infer_schema_from_database(
                                 CrdtType::RotationLog | CrdtType::FugueTextBlock => {
                                     // Internal book-keeping children, never
                                     // user-facing ROOT fields: `RotationLog` is
-                                    // the SharedStorage writer-set history
-                                    // (core#2716 P3), `FugueTextBlock` is one
+                                    // the SharedStorage writer-set history,
+                                    // `FugueTextBlock` is one
                                     // run-length block INSIDE a `FugueText`
                                     // (the document itself surfaces under
                                     // `CrdtType::FugueText` above). Surface

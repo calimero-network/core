@@ -6,9 +6,9 @@
 //! file is what catches it.
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, GCounter,
-    LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, FugueText,
+    GCounter, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap,
+    SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeRef};
@@ -231,6 +231,25 @@ fn rga_is_opaque_with_no_payload() {
         panic!("expected record")
     };
     assert!(fields.is_empty());
+}
+
+#[test]
+fn fugue_text_is_opaque_and_is_not_rga() {
+    let (c, crdt, inner) = parts(ref_of::<FugueText>());
+    assert_eq!(crdt, Some(CrdtCollectionType::FugueText));
+    assert_eq!(inner, None);
+    let CollectionType::Record { fields } = c else {
+        panic!("expected record")
+    };
+    assert!(fields.is_empty());
+    // The two text CRDTs share a shape but not a layout: RGA stores one entity
+    // per character, `FugueText` one per run. A field swapped between them must
+    // not be able to diff clean.
+    assert_ne!(
+        ref_of::<FugueText>(),
+        ref_of::<ReplicatedGrowableArray>(),
+        "FugueText and RGA emit the same ABI, so a swap between them is invisible"
+    );
 }
 
 // ── nesting falls out of recursion ──────────────────────────────────────

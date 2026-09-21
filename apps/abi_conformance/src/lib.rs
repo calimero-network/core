@@ -5,7 +5,7 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_storage::collections::{
-    AuthoredMap, AuthoredVector, LwwRegister, SortedMap, UnorderedMap, Vector,
+    AuthoredMap, AuthoredVector, FugueText, LwwRegister, SortedMap, UnorderedMap, Vector,
 };
 use thiserror::Error;
 
@@ -128,6 +128,9 @@ pub struct AbiState {
     // declares is exercised by at least one emitted ABI.
     authored_counters: AuthoredMap<String, LwwRegister<u32>>,
     authored_log: AuthoredVector<LwwRegister<UserId32>>,
+    // Collaborative text - locks the `FugueText` marker, which shares an opaque
+    // shape with `ReplicatedGrowableArray` and must stay distinguishable from it.
+    document: FugueText,
 }
 
 // Implementation
@@ -142,6 +145,7 @@ impl AbiState {
             users: Vector::new(),
             authored_counters: AuthoredMap::new(),
             authored_log: AuthoredVector::new(),
+            document: FugueText::new(),
         }
     }
 
