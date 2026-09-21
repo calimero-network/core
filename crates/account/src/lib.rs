@@ -51,6 +51,8 @@
 //! | `root_key` | Root-key rotation: [`RootKeyHandoff`] and the chain walk, [`root_key_at_epoch`] |
 //! | `device` | Device credentials: [`KemPublicKey`], [`DeviceCert`], and its verification |
 //! | `revocation` | Withdrawing a device: [`DeviceRevocation`] and its self-contained proof |
+//! | `scope` | What a device may speak for: [`DeviceScope`] and its self-contained proof |
+//! | `label` | What a device is called: [`DeviceLabel`] and its self-contained proof |
 //! | `warrant` | Delegated authorship: [`Warrant`] and its self-contained [`Delegation`] |
 //! | `pairing` | Linking a new device: [`PairingOffer`], its statement, and the human-compared code |
 //! | `domain` | Every signing domain in one place, so they stay pairwise distinct |
@@ -67,9 +69,13 @@ mod account;
 mod device;
 mod domain;
 mod error;
+mod external;
+mod label;
+mod login;
 mod pairing;
 mod revocation;
 mod root_key;
+mod scope;
 mod signed;
 mod warrant;
 
@@ -91,11 +97,17 @@ pub use crate::account::{
 };
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
+pub use crate::external::{sign_external, ExternalSigningDomain};
+pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
+pub use crate::login::{Audience, LoginStatement};
 pub use crate::pairing::PairingOffer;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
-pub use crate::signed::{AccountProof, RootSigned, Verified};
-pub use crate::warrant::{Delegation, VerifiedWarrant, Warrant};
+pub use crate::scope::{scope_covers, DeviceScope, SignedDeviceScope, VerifiedDeviceScope};
+pub use crate::signed::{AccountProof, DeviceBound, RootSigned, Verified};
+pub use crate::warrant::{
+    Delegation, VerifiedWarrant, Warrant, WarrantTerms, MAX_WARRANT_CITED_HEADS,
+};
 
 // The two end-to-end verifiers keep free-function form: each takes an anchor and a
 // BORROWED chain, which is what the apply paths hold, and a method would force them

@@ -90,7 +90,7 @@ impl<'a> ContextTreeService<'a> {
             let identity_key = ContextIdentity::new(*context_id, *member);
             if handle.has(&identity_key)? {
                 handle.delete(&identity_key)?;
-                tracing::info!(
+                tracing::debug!(
                     group_id = %hex::encode(self.group_id.to_bytes()),
                     context_id = %hex::encode(context_id.as_ref()),
                     member = %member,

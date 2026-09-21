@@ -682,7 +682,7 @@ fn shadow_fold_and_compare(
             // exact failure it exists to catch. Two of 86 scenarios already
             // override the level, and a governance membership op is rare enough
             // (67 lines across a whole e2e suite) that INFO costs nothing.
-            tracing::info!(
+            tracing::debug!(
                 marker = "unified_projection_compare",
                 plane = "membership",
                 result,

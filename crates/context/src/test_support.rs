@@ -88,14 +88,44 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
         .record_endorser(namespace, account, &account)
         .expect("record the endorser");
     let _ = bindings
-        .apply_link(namespace, &genesis, &[], &cert)
+        .apply_link(namespace, &genesis, &[], &cert, 0)
+        .expect("record the binding");
+    account
+}
+
+/// Bind this node's OWN device to its own account in `namespace`, as founding or
+/// joining it does, and return that account.
+///
+/// Not [`enrol`]: that derives a stand-in account from the key, so every gate
+/// asking "does this signer speak for this account" then refuses.
+///
+/// # Panics
+///
+/// Panics if the credential cannot be built or the rows cannot be written, which
+/// in a test means the fixture is wrong rather than the code under test.
+pub fn enrol_holder(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> AccountId {
+    let credential =
+        crate::join_credential::build(store, namespace, sign_pk).expect("this node's credential");
+    let account = credential.statement.account;
+    let bindings = calimero_governance_store::AccountBindingRepository::new(store);
+    bindings
+        .record_endorser(namespace, account, &account)
+        .expect("record the endorser");
+    let _ = bindings
+        .apply_link(
+            namespace,
+            &credential.genesis,
+            &credential.chain,
+            &credential.statement,
+            calimero_governance_store::JOIN_SCOPE_EPOCH,
+        )
         .expect("record the binding");
     account
 }
 
 /// A second device of this node's account, certified by its root exactly as
-/// `pair_device_complete` would, and scoped to `applications` (empty is every
-/// application).
+/// `pair_device_complete` would, recorded in the account namespace's registry
+/// and scoped to `applications` (empty is every application).
 ///
 /// The id is `seed` repeated rather than minted, so the store's key-ordered scan
 /// visits these devices in a known order.
@@ -128,10 +158,178 @@ pub fn certify_device(
         )
         .expect("the account root signs its own device cert"),
     };
-    devices
-        .remember_device_cert(&proof, applications)
-        .expect("remember the device");
+    // The registry lives in the account namespace, which a node holding a root
+    // names from that root before anything has created it.
+    let namespace = devices
+        .account_namespace()
+        .expect("read the account namespace")
+        .expect("a store with an account root names one");
+    let scope = crate::account_namespace::next_device_scope(
+        store,
+        Some(namespace),
+        &root,
+        &proof,
+        applications,
+    )
+    .expect("the account root signs its own device scope");
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, namespace)
+        .record(&proof, &scope)
+        .expect("record the device in the account namespace");
     device
+}
+
+/// The root-signed scope a registry row - and every link made under it - carries.
+/// `root_sk` is the root that signed `cert`, so it names the same genesis.
+///
+/// # Panics
+///
+/// Panics if the root refuses to sign, which in a test means the fixture is wrong.
+#[must_use]
+pub fn device_scope(
+    root_sk: &PrivateKey,
+    cert: &calimero_account::DeviceCert,
+    applications: &[calimero_primitives::application::ApplicationId],
+    scope_epoch: u32,
+) -> calimero_account::AccountProof<calimero_account::DeviceScope> {
+    calimero_account::AccountProof {
+        genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceScope::sign(
+            root_sk,
+            cert.account,
+            cert.device,
+            applications.to_vec(),
+            scope_epoch,
+            0,
+        )
+        .expect("the account root signs the device's scope"),
+    }
+}
+
+/// This node as a DEVICE of an account whose root lives elsewhere: the state
+/// pairing leaves behind, scoped to `applications`.
+///
+/// A device and not a holder on purpose - `account_namespace` answers a holder
+/// from its root derivation, which is the wrong read. The root comes back beside
+/// the device because it lives nowhere in this store.
+///
+/// # Panics
+///
+/// Panics if any of the rows cannot be written, which in a test means the fixture
+/// is wrong rather than the code under test.
+pub fn paired_device_scoped_to(
+    store: &Store,
+    account_namespace: &ContextGroupId,
+    applications: &[calimero_primitives::application::ApplicationId],
+) -> (calimero_account::DeviceId, PrivateKey) {
+    let root_sk = PrivateKey::from([0x70; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+
+    let devices = calimero_governance_store::NodeDeviceRepository::new(store);
+    devices
+        .store_account_namespace(account_namespace)
+        .expect("record what the pairing named");
+    let held = devices
+        .ensure_enrolled_into(&[*account_namespace], genesis)
+        .expect("mint this node's device");
+
+    let proof = calimero_account::AccountProof {
+        genesis,
+        chain: vec![],
+        statement: calimero_account::DeviceCert::sign(
+            &root_sk,
+            account,
+            held.device(),
+            &PrivateKey::from([0x71; 32]).public_key(),
+            &calimero_account::KemPublicKey::from([0x72; 32]),
+            0,
+            0,
+        )
+        .expect("the account root signs this device's certificate"),
+    };
+    let _recorded =
+        calimero_governance_store::AccountDeviceRegistry::new(store, *account_namespace)
+            .record(
+                &proof,
+                &device_scope(&root_sk, &proof.statement, applications, 0),
+            )
+            .expect("record this device in its account's registry");
+    let _identity = calimero_governance_store::NamespaceRepository::new(store)
+        .participate_in(account_namespace)
+        .expect("this node takes part in its own account namespace");
+    (held.device(), root_sk)
+}
+
+/// This node as the HOLDER of its account: its own root, its own device row and
+/// its own registry row, scoped to `applications` (empty is every application).
+///
+/// The counterpart of [`paired_device_scoped_to`], for the reads that answer
+/// differently on a node holding the root its statements are signed by.
+///
+/// # Panics
+///
+/// Panics if any of the rows cannot be written, which in a test means the fixture
+/// is wrong rather than the code under test.
+pub fn holder_device_scoped_to(
+    store: &Store,
+    applications: &[calimero_primitives::application::ApplicationId],
+) -> (ContextGroupId, calimero_account::DeviceId) {
+    let devices = calimero_governance_store::NodeDeviceRepository::new(store);
+    let root = devices
+        .provision_account_root()
+        .expect("this node's account root");
+    let account_namespace = root.account_namespace();
+    devices
+        .store_account_namespace(&account_namespace)
+        .expect("name the account namespace");
+    let (_namespace, signer_pk, _signer_sk) =
+        calimero_governance_store::NamespaceRepository::new(store)
+            .participate_in(&account_namespace)
+            .expect("this node takes part in its own account namespace");
+    let credential = crate::join_credential::build(store, &account_namespace, &signer_pk)
+        .expect("mint and certify this node's own device");
+    let proof = calimero_account::AccountProof {
+        genesis: credential.genesis,
+        chain: credential.chain.clone(),
+        statement: credential.statement,
+    };
+    let device = proof.statement.device;
+    let _recorded = calimero_governance_store::AccountDeviceRegistry::new(store, account_namespace)
+        .record(
+            &proof,
+            &device_scope(root.signing_key(), &proof.statement, applications, 0),
+        )
+        .expect("record the holder's own device in its registry");
+    (account_namespace, device)
+}
+
+/// Replace this node's own scope with `applications` at `scope_epoch`, as folding
+/// the account holder's `AccountDeviceCertified` does.
+///
+/// # Panics
+///
+/// Panics if the registry row cannot be read or written.
+pub fn rescope_paired_device(
+    store: &Store,
+    account_namespace: &ContextGroupId,
+    device: calimero_account::DeviceId,
+    root_sk: &PrivateKey,
+    applications: &[calimero_primitives::application::ApplicationId],
+    scope_epoch: u32,
+) {
+    let registry = calimero_governance_store::AccountDeviceRegistry::new(store, *account_namespace);
+    let proof = registry
+        .device(device)
+        .expect("read the registry row")
+        .expect("the device was certified first")
+        .proof;
+    let _recorded = registry
+        .record(
+            &proof,
+            &device_scope(root_sk, &proof.statement, applications, scope_epoch),
+        )
+        .expect("record the replacement scope");
 }
 
 /// Wrap a root op the way its publisher does: sealed under the namespace key
@@ -284,6 +482,19 @@ pub fn opened_root(
     )
 }
 
+/// Poll `read` until it answers true, bounded: a gain with no target yet is
+/// announced off the caller, so reading straight after is a race.
+#[cfg(test)]
+pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if read() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
 /// A live [`ContextManager`](crate::ContextManager) over a caller-supplied
 /// store, for handler logic that only an actor can reach.
 ///
@@ -298,6 +509,7 @@ pub(crate) mod actor {
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_node_primitives::client::NodeClient;
     use calimero_node_primitives::test_fixtures::node_client_over;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -306,12 +518,12 @@ pub(crate) mod actor {
 
     use crate::ContextManager;
 
-    /// Answers the three commands the pairing and governance paths issue, and
-    /// records the topics. Any other command is dropped, which fails the
-    /// caller's `rx.await` rather than hanging it: add the variant when a path
-    /// under test starts issuing one.
+    /// Answers the four commands the pairing and governance paths issue, and
+    /// records the topics. Any other is dropped, which panics its caller.
     struct StubNetwork {
         subscribed: UnboundedSender<String>,
+        unsubscribed: UnboundedSender<String>,
+        broadcast: UnboundedSender<String>,
     }
 
     impl Actor for StubNetwork {
@@ -327,10 +539,16 @@ pub(crate) mod actor {
                     let _ignored = self.subscribed.send(request.0.to_string());
                     let _ignored = outcome.send(Ok(request.0));
                 }
-                NetworkMessage::MeshPeerCount { outcome, .. } => {
+                NetworkMessage::Unsubscribe { request, outcome } => {
+                    let _ignored = self.unsubscribed.send(request.0.to_string());
+                    let _ignored = outcome.send(Ok(request.0));
+                }
+                NetworkMessage::MeshPeerCount { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.0.to_string());
                     let _ignored = outcome.send(0);
                 }
-                NetworkMessage::Publish { outcome, .. } => {
+                NetworkMessage::Publish { request, outcome } => {
+                    let _ignored = self.broadcast.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
                 _ => {}
@@ -338,11 +556,16 @@ pub(crate) mod actor {
         }
     }
 
-    /// A started `ContextManager` and the store it reads. Seed the store, send
-    /// the request, then assert on the rows the handler wrote.
+    /// A started `ContextManager`, and a client routed to it for the paths that
+    /// are plain functions. Seed the store, drive the path, then assert on the
+    /// rows it wrote.
     pub(crate) struct Harness {
         pub manager: Addr<ContextManager>,
+        pub node_client: NodeClient,
+        pub context_client: ContextClient,
         subscribed: UnboundedReceiver<String>,
+        unsubscribed: UnboundedReceiver<String>,
+        broadcast: UnboundedReceiver<String>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
@@ -352,12 +575,29 @@ pub(crate) mod actor {
         /// Every topic subscribed so far, in the order the handler asked for
         /// them.
         pub(crate) fn subscribed(&mut self) -> Vec<String> {
-            let mut topics = Vec::new();
-            while let Ok(topic) = self.subscribed.try_recv() {
-                topics.push(topic);
-            }
-            topics
+            drain(&mut self.subscribed)
         }
+
+        /// Every topic unsubscribed from so far. Drains, so a caller polling
+        /// for one has to accumulate what it takes.
+        pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
+            drain(&mut self.unsubscribed)
+        }
+
+        /// Every topic a governance broadcast reached. The mesh-count probe counts,
+        /// so an op that only got as far as trying still shows up.
+        pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
+            drain(&mut self.broadcast)
+        }
+    }
+
+    /// Everything a recorder holds, in the order it arrived.
+    fn drain(rx: &mut UnboundedReceiver<String>) -> Vec<String> {
+        let mut topics = Vec::new();
+        while let Ok(topic) = rx.try_recv() {
+            topics.push(topic);
+        }
+        topics
     }
 
     /// Start a manager over `store`, with no peer answering join requests.
@@ -376,12 +616,16 @@ pub(crate) mod actor {
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
+        let (unsubscribed_tx, unsubscribed) = unbounded_channel();
+        let (broadcast_tx, broadcast) = unbounded_channel();
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
         let stub = StubNetwork::create(move |ctx| {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
+                unsubscribed: unsubscribed_tx,
+                broadcast: broadcast_tx,
             }
         });
 
@@ -403,7 +647,7 @@ pub(crate) mod actor {
         let context = LazyRecipient::new();
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
-        let manager = ContextManager::new(store, node_client, context_client, None);
+        let manager = ContextManager::new(store, node_client.clone(), context_client.clone(), None);
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager
@@ -411,7 +655,11 @@ pub(crate) mod actor {
 
         Harness {
             manager,
+            node_client,
+            context_client,
             subscribed,
+            unsubscribed,
+            broadcast,
             _dirs: (data_dir, blob_dir),
             _network: stub,
         }

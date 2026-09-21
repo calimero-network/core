@@ -42,7 +42,7 @@ impl FromStr for KeyValuePair {
 
 impl ConfigCommand {
     pub async fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
-        let home = root_args.home.join(&root_args.node_name);
+        let home = root_args.node_home()?;
 
         if !ConfigFile::exists(&home) {
             bail!("Node is not initialized in {:?}", home);

@@ -28,7 +28,7 @@ use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use super::admin_creds::AdminCredArgs;
@@ -205,6 +205,41 @@ pub struct InitCommand {
     #[clap(long, value_name = "PATH")]
     pub auth_storage_path: Option<PathBuf>,
 
+    /// Accept logins from a keyholder: a client that holds an account root and a
+    /// device key, runs no node, and has no password here.
+    ///
+    /// It signs a statement naming this node, this session's ephemeral key and
+    /// the surface it is for, and presents it with the certificate proving the
+    /// device belongs to its account. The node checks both and mints a session
+    /// scoped to `context:intent`, `context:query` and `context:subscribe` --
+    /// the delegated surface, and deliberately nothing above it.
+    ///
+    /// Off unless asked for, and that is the posture rather than an oversight: a
+    /// node answers device-key logins only because its operator decided it
+    /// should. Until this flag there was no way to make that decision at all
+    /// short of hand-editing `config.toml`, which is not a supported surface.
+    ///
+    /// Only meaningful with `--auth-mode embedded`; warns and does nothing
+    /// otherwise, rather than writing a provider entry no service will read.
+    ///
+    /// The node names itself at startup from its own signing key, so there is no
+    /// key to supply here.
+    ///
+    /// (`account_proof` is the provider that implements this; the flag is named
+    /// for what it lets an operator do, as `--public-intents` is.)
+    #[clap(long)]
+    pub device_key_login: bool,
+
+    /// Client surfaces a keyholder login may mint a session for: a bare origin
+    /// (`https://app.example`), `codesign:<id>`, or `cli`.
+    ///
+    /// **An empty list accepts ANY audience**, which is the right default for a
+    /// single-tenant node and the wrong one for a relay serving several. Pass it
+    /// on anything multi-tenant: without it a session minted for one client
+    /// surface can be presented from another.
+    #[clap(long = "device-key-login-audience", value_name = "AUDIENCE")]
+    pub device_key_login_audiences: Vec<String>,
+
     /// Admin-account credentials, required for `--auth-mode embedded` with
     /// persistent storage: the admin root key is minted at init, before the
     /// node ever listens. The password is consumed on the spot (only the
@@ -322,7 +357,7 @@ impl InitCommand {
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
-        let path = root_args.home.join(root_args.node_name);
+        let path = root_args.node_home()?;
 
         // Idempotent short-circuit FIRST: a plain re-run against an already
         // initialized node stays a credential-free no-op (provisioning
@@ -538,8 +573,33 @@ impl InitCommand {
                 }
             }
 
+            // Opt-in, per node. `default_config` enables `user_password` only,
+            // deliberately: turning device-key login on everywhere would also
+            // ship `allowed_audiences: []` -- accept any audience -- as the
+            // default posture for every node anyone runs.
+            if self.device_key_login {
+                let _ = auth_cfg.providers.insert("account_proof".to_owned(), true);
+                auth_cfg
+                    .account_proof
+                    .allowed_audiences
+                    .clone_from(&self.device_key_login_audiences);
+                if self.device_key_login_audiences.is_empty() {
+                    warn!(
+                        "keyholder logins are enabled with no --device-key-login-audience, so \
+                         this node accepts a session minted for ANY client surface; pass one per \
+                         surface on a node that serves more than one",
+                    );
+                }
+            }
+
             Some(auth_cfg)
         } else {
+            if self.device_key_login {
+                warn!(
+                    "--device-key-login does nothing without --auth-mode embedded: the provider \
+                     lives in the auth service this node is not running",
+                );
+            }
             None
         };
 
@@ -643,7 +703,7 @@ impl InitCommand {
                 let device = NodeDeviceRepository::new(&store)
                     .adopt_account(genesis)
                     .wrap_err("could not mint this node's device for that account")?;
-                info!(
+                debug!(
                     account = %device.account,
                     device = %device.device(),
                     "Minted this node's device under an account rooted elsewhere; \
@@ -655,7 +715,7 @@ impl InitCommand {
             let account_root = NodeDeviceRepository::new(&store)
                 .provision_account_root()
                 .wrap_err("could not provision this node's account root")?;
-            info!(
+            debug!(
                 account = %account_root.account(),
                 "Provisioned the node's account root",
             );
@@ -746,7 +806,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("provisioned"),
+            node_name: Some(camino::Utf8PathBuf::from("provisioned")),
         };
 
         let init =
@@ -785,7 +845,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("rootless"),
+            node_name: Some(camino::Utf8PathBuf::from("rootless")),
         };
 
         let init = InitCommand::try_parse_from([

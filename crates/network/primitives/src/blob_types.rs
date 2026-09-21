@@ -14,6 +14,52 @@ pub struct BlobRequest {
     pub auth: Option<BlobAuth>,
 }
 
+/// Sole message of [`crate::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL`]: the
+/// sender has the blob and it belongs to this context.
+///
+/// Serialised with `serde_json`, matching [`BlobRequest`] on the transfer
+/// protocol. Carries no auth envelope on purpose — it asks the receiver for
+/// nothing except that it consider fetching, and the receiver re-derives its
+/// own right to the bytes from local governance state before it does. An
+/// announcement from a stranger is therefore, at worst, an ignored frame.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BlobAnnouncement {
+    pub blob_id: BlobId,
+    pub context_id: ContextId,
+    /// Size in bytes, so a receiver can decline an oversized blob before
+    /// opening a transfer stream for it.
+    pub size: u64,
+}
+
+/// What a probe learned about one peer's copy of a blob.
+///
+/// A probe is a [`BlobRequest`] whose chunks are never read, so this is exactly
+/// the information in the [`BlobResponse`] header the responder sends before it
+/// streams anything — no more, and nothing inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobProbe {
+    /// The peer does not hold it, will not serve it, or never answered. The
+    /// protocol answers "not held" and "not authorised" identically, so a
+    /// caller cannot — and must not try to — tell them apart.
+    Absent,
+    /// The peer holds it and would serve it.
+    Held {
+        /// Size in bytes as the holder reported it. `None` only if it answered
+        /// `found` without a size, which no in-tree responder does; a caller
+        /// that needs the number must then ask someone else rather than
+        /// substitute a guess.
+        size: Option<u64>,
+    },
+}
+
+impl BlobProbe {
+    /// Whether this peer is worth fetching from.
+    #[must_use]
+    pub const fn is_held(self) -> bool {
+        matches!(self, Self::Held { .. })
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobResponse {
     pub found: bool,

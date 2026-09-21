@@ -1,0 +1,91 @@
+name: E2E Account - The Account Namespace Records Each Device
+description: >
+  A phone paired with a one-app scope reads that scope back out of the account
+  namespace, holding no cache of its own.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: account-registry-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-registry-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-registry-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install the app on node-1
+    type: install_application
+    node: account-registry-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-1 creates namespace A, targeting the app
+    type: create_namespace
+    node: account-registry-node-1
+    application_id: '{{app}}'
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-registry-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+      alice_device: deviceId
+
+  # A scope reaches the phone only through the account namespace, so `await_self`
+  # returning is the phone reading the scope back.
+  - name: Pair node-2 with the account namespace and a scope, and read the scope back
+    type: account_pair
+    node: account-registry-node-2
+    holder: account-registry-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    applications:
+      - '{{app}}'
+    await_self: true
+    outputs:
+      phone_device: deviceId
+      account_ns: accountNamespace
+
+  # From the certificate it signed, so a registry that replaced the cache cannot quietly lose it.
+  - name: The laptop bound the phone in the account namespace, with the scope
+    type: account_devices
+    node: account-registry-node-1
+    where:
+      deviceId: '{{phone_device}}'
+    contains:
+      namespaces:
+        - '{{account_ns}}'
+      applications:
+        - '{{app}}'
+
+  - name: The laptop never lists the account namespace as a project
+    type: assert_api_response
+    node: account-registry-node-1
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{account_ns}}'
+    expect_no_match: true
+
+  - name: The phone sees the laptop's own device
+    type: account_devices
+    node: account-registry-node-2
+    where:
+      deviceId: '{{alice_device}}'
+    retries: 45
+    interval: 2
+
+stop_all_nodes: true

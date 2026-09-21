@@ -97,17 +97,30 @@ pub struct Variant {
     pub payload: Option<TypeRef>,
 }
 
-/// Whether a method is guaranteed to only read state or may write it.
+/// Whether a method can persist *shared* state — the bytes the root hash is
+/// computed over and an artifact carries — or only read it.
 ///
-/// Used by the node to select a *shared* read lock (allowing parallel reads on
-/// one context) vs the default *exclusive* write lock. The fail-safe is
+/// Used by the node for two things: selecting a *shared* read lock (allowing
+/// parallel reads on one context) over the default *exclusive* write lock, and
+/// deciding whether a delegated read may run a method at all. The fail-safe is
 /// [`Unspecified`](MethodIntent::Unspecified): unknown intent → write lock →
 /// exactly today's serialized behaviour; nothing breaks if a module predates
 /// this field.
 ///
-/// Declare a method read-only with `#[app::view]` in the SDK. A `ReadOnly`
-/// method that nonetheless produces a non-empty state artifact is rejected
-/// post-execution as defence-in-depth.
+/// The SDK derives this from the receiver — `&self` is `ReadOnly`, `&mut self`
+/// is `Mutating` — because the receiver is already what decides it: the
+/// generated finalizer emits `app.commit()` only for `&mut self`, so a `&self`
+/// method's state changes are dropped rather than written back. `#[app::view]`
+/// remains as an explicit assertion and cannot disagree (it is a compile error
+/// on `&mut self`). A `ReadOnly` method that nonetheless produces a non-empty
+/// state artifact is rejected post-execution as defence-in-depth.
+///
+/// `ReadOnly` says nothing about *node-local* writes. A `&self` method may
+/// still materialize node-local derived state — rebuilding a `SortedMap`'s
+/// ordered index, creating the root element a private collection hangs off —
+/// and the read-only execution path permits exactly that. Treating `ReadOnly`
+/// as "performs no writes whatsoever" is what made ordered reads return nothing
+/// and private reads panic once this field started being derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MethodIntent {

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use actix::prelude::{ActorResponse, WrapFuture};
 use actix::{Actor, AsyncContext};
@@ -26,6 +26,9 @@ use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
 
+pub mod account_follow;
+mod account_migration;
+mod account_namespace;
 pub mod activation;
 pub(crate) mod apply_authorizer;
 pub mod auto_follow;
@@ -247,8 +250,12 @@ impl ContextLock {
     ///
     /// Only used for methods declared read-only in the module ABI. Multiple
     /// concurrent read-guard holders on the same context are safe as long as
-    /// the method cannot write (enforced by the `ReadOnlyContextStorage` wrapper
-    /// passed to the runtime in place of the normal mutable storage).
+    /// none of them writes *shared* state — enforced by the
+    /// `ReadOnlyContextStorage` wrapper passed to the runtime in place of the
+    /// normal mutable storage. Node-local materialization (the ordered index, a
+    /// private-plane root) still happens under a shared guard, because it is
+    /// idempotent and derived: two readers rebuilding the same index write the
+    /// same bytes.
     fn lock_read(
         &self,
     ) -> Either<ContextGuard, std::pin::Pin<Box<dyn Future<Output = ContextGuard> + Send>>> {
@@ -433,6 +440,10 @@ pub struct ContextManager {
     /// existing one is still active (e.g. sleeping in its backoff delay).
     active_propagators: HashSet<ContextGroupId>,
 
+    /// When this node last published a name for each device, so one admin call
+    /// per keystroke cannot become one published op per keystroke.
+    pub(crate) device_label_published: HashMap<calimero_account::DeviceId, Instant>,
+
     /// Per-namespace governance DAG. Single DAG per namespace containing both
     /// root ops and encrypted group-scoped ops.
     ///
@@ -499,6 +510,7 @@ impl ContextManager {
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
+            device_label_published: HashMap::new(),
             namespace_dags: BoundedCache::new(MAX_CACHED_NAMESPACE_DAGS, "namespace_dags"),
             ack_router,
             config: ContextManagerConfig::default(),
@@ -635,6 +647,10 @@ impl ContextManager {
         {
             eyre::bail!("group '{group_id:?}' not found");
         }
+
+        // Before the identity read, which answers for a namespace this device was
+        // narrowed out of: it keeps its identity so a widening needs no re-pairing.
+        crate::account_follow::require_reach(&self.datastore, group_id)?;
 
         let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
             eyre::eyre!(
@@ -807,6 +823,26 @@ impl Actor for ContextManager {
         // rationale as the TEE-admit listener above.
         rotation_listener::shutdown();
         rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // What the account gains, leaves, certifies and revokes, acted on here.
+        // Ahead of the migration below, whose certificates it must project: no
+        // sweep re-drives a projection this listener was not up for.
+        account_follow::shutdown();
+        account_follow::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+        );
+
+        // One-shot. A holder upgraded from before the registry still keeps its
+        // device certificates node-local, where no other device of the account
+        // can read them.
+        account_migration::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+            self.context_client.clone(),
+        );
     }
 }
 

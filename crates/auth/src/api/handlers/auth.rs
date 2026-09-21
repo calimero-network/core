@@ -1150,3 +1150,65 @@ mod callback_xss_tests {
         assert!(js.starts_with('"') && js.ends_with('"'));
     }
 }
+
+/// Response to `GET /auth/challenge`.
+#[derive(Debug, Serialize)]
+pub struct ChallengeResponse {
+    /// Hex of the 32 bytes the client signs over.
+    challenge: String,
+    /// Unix seconds after which the challenge is refused.
+    expires_at: u64,
+}
+
+/// Issue a login challenge for the account-proof provider.
+///
+/// Unauthenticated, and it has to be: a caller asking for one is by definition
+/// not yet authenticated. That is safe because a challenge is inert on its own —
+/// it authorizes nothing, is worthless without a device key certified under an
+/// account, and is minted statelessly, so asking for one repeatedly writes
+/// nothing and costs an HMAC.
+///
+/// The minter is built here over the same storage the provider uses, so both
+/// read the same MAC key; there is nothing to plumb between them.
+///
+/// Refused when the provider is disabled, rather than handing out challenges no
+/// login could ever spend.
+pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
+    if !state
+        .0
+        .config
+        .providers
+        .get("account_proof")
+        .copied()
+        .unwrap_or(false)
+    {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "The account_proof provider is not enabled on this node",
+            None,
+        );
+    }
+
+    let minter = crate::auth::challenge::ChallengeMinter::new(
+        Arc::clone(&state.0.storage),
+        state.0.config.account_proof.challenge_ttl_secs,
+    );
+
+    match minter.issue().await {
+        Ok(challenge) => success_response(
+            ChallengeResponse {
+                challenge: hex::encode(challenge.bytes),
+                expires_at: challenge.expires_at,
+            },
+            None,
+        ),
+        Err(err) => {
+            error!("Failed to issue a login challenge: {err}");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to issue a challenge",
+                None,
+            )
+        }
+    }
+}

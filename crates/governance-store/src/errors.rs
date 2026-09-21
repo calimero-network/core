@@ -410,6 +410,24 @@ pub enum NodeDeviceError {
         account: String,
         namespace: String,
     },
+
+    /// The slot holds a revoked device and this node has no account root to
+    /// re-mint under, so nothing it holds can be presented anywhere.
+    #[error(
+        "this node's device {device} was revoked from account {account} in {namespaces}, and \
+         the node holds no account root of its own to speak as instead. Pair it into an \
+         account again, or import a certificate signed for a fresh device"
+    )]
+    Revoked {
+        device: String,
+        account: String,
+        namespaces: String,
+    },
+
+    /// An imported certificate describes a device other than the one this node
+    /// holds, so presenting it would have every peer refuse the join.
+    #[error("the imported certificate does not describe this node: {reason}")]
+    ImportedCertificateMismatch { reason: String },
 }
 
 /// Errors raised by the context-to-group registration indirection.

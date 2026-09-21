@@ -98,6 +98,34 @@ pub enum AccountError {
         /// The device the caller is withdrawing.
         expected: DeviceId,
     },
+    /// The scope names a different account than the genesis.
+    #[error("device scope is for a different account than the supplied genesis")]
+    ScopeAccountMismatch,
+    /// The scope is not validly signed by the root key at its claimed epoch.
+    #[error("device scope has an invalid signature for its claimed key epoch")]
+    ScopeSignatureInvalid,
+    /// The scope names a different device than the caller is asking about.
+    #[error("device scope is for device {named}, not the {expected} being asked about")]
+    ScopeDeviceMismatch {
+        /// The device the proof actually names.
+        named: DeviceId,
+        /// The device the caller is asking about.
+        expected: DeviceId,
+    },
+    /// The label names a different account than the genesis.
+    #[error("device label is for a different account than the supplied genesis")]
+    LabelAccountMismatch,
+    /// The label is not validly signed by the root key at its claimed epoch.
+    #[error("device label has an invalid signature for its claimed key epoch")]
+    LabelSignatureInvalid,
+    /// The label names a different device than the caller is asking about.
+    #[error("device label is for device {named}, not the {expected} being asked about")]
+    LabelDeviceMismatch {
+        /// The device the proof actually names.
+        named: DeviceId,
+        /// The device the caller is asking about.
+        expected: DeviceId,
+    },
     /// The warrant is not validly signed by the device key it names.
     #[error("warrant has an invalid signature for the device key it names")]
     WarrantSignatureInvalid,
@@ -121,4 +149,35 @@ pub enum AccountError {
     /// [`AccountProof::verify`](crate::AccountProof::verify) would accept it.
     #[error("certificate verifies for its account but certifies a different key")]
     WarrantProofKeyMismatch,
+    /// A warrant cites more heads than [`MAX_WARRANT_CITED_HEADS`] allows.
+    ///
+    /// Its own variant rather than a generic malformed-warrant error because it
+    /// is the one refusal that is about resource bounds rather than
+    /// authenticity: the warrant may be perfectly signed and is still refused,
+    /// and an operator seeing this should think about who is sending it.
+    ///
+    /// [`MAX_WARRANT_CITED_HEADS`]: crate::MAX_WARRANT_CITED_HEADS
+    #[error("warrant cites {len} heads, over the {max} allowed")]
+    WarrantTooManyCitedHeads {
+        /// How many were cited.
+        len: usize,
+        /// The cap.
+        max: usize,
+    },
+    /// The login statement is not validly signed by the device key it names.
+    #[error("login statement has an invalid signature for the device key it names")]
+    LoginSignatureInvalid,
+    /// The login statement was minted for a different node than the one it is
+    /// being presented to.
+    ///
+    /// Its own variant rather than folded into the signature failure: a
+    /// correctly signed statement sent to the wrong node is a client that pinned
+    /// the wrong identity, while a bad signature is a forgery. The two send
+    /// whoever reads the error to entirely different places.
+    #[error("login statement is for a different node than the one it is presented to")]
+    LoginNodeMismatch,
+    /// The login statement was minted for a different client surface than the
+    /// one presenting it.
+    #[error("login statement is for a different audience than the one presenting it")]
+    LoginAudienceMismatch,
 }

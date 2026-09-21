@@ -2,9 +2,11 @@
 //! link it, and hand it the scope key.
 //!
 //! The second half of pairing, run on the device holding the account. Publishes
-//! two ops: `AccountDeviceLinked` (encrypted, carries the root-signed certificate
-//! and confers authority) and `RootOp::KeyDelivery` (the current scope key wrapped
-//! to the device).
+//! three ops: `AccountDeviceLinked` (encrypted, carries the root-signed
+//! certificate and confers authority), `RootOp::KeyDelivery` (the current scope
+//! key wrapped to the device), and `AccountDeviceCertified` into the account
+//! namespace, recording the device's certificate and the applications it may
+//! speak for.
 //!
 //! The delivery is a SEALED root op, and the paired device is not expected to read
 //! it. It holds no scope key, so it could not: what it does instead is what any
@@ -56,6 +58,7 @@ use eyre::Result as EyreResult;
 use tracing::warn;
 
 use crate::error::ContextError;
+use crate::handlers::ensure_account_namespace::ensure_account_namespace;
 use crate::handlers::list_namespaces::namespace_rows_for_applications;
 use crate::ContextManager;
 
@@ -68,7 +71,7 @@ use crate::ContextManager;
 ///
 /// An empty list is every namespace, which is what a caller who names no
 /// application asks for and what the fan-out did unconditionally before.
-fn namespaces_in_scope(
+pub(crate) fn namespaces_in_scope(
     store: &Store,
     applications: &[ApplicationId],
 ) -> EyreResult<Vec<ContextGroupId>> {
@@ -86,6 +89,13 @@ fn namespaces_in_scope(
         .into_iter()
         .filter(|namespace| scoped.contains(&namespace.to_bytes()))
         .collect())
+}
+
+/// Add `namespace` to a set this node follows, unless it is already named.
+pub(crate) fn follow(namespaces: &mut Vec<ContextGroupId>, namespace: ContextGroupId) {
+    if !namespaces.contains(&namespace) {
+        namespaces.push(namespace);
+    }
 }
 
 /// The key this node signs the endorsement, both ops and the key wrap with.
@@ -242,148 +252,101 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let store = self.datastore.clone();
-
-        // Resolved before any check, because the scope is what the checks are
-        // about: which namespaces have to hold an identity and a key for this
-        // pairing to be able to do anything. The same set is published into and
-        // gated on - there is no namespace named separately to check against.
-        let targets = match namespaces_in_scope(&store, &applications) {
-            Ok(targets) => targets,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-
-        // The namespace identity signs the endorsement, both ops, and the key
-        // wrap. It must be a granted member: the endorsement is what carries the
-        // link past the apply gate, and an endorsement from a non-member is
-        // refused.
-        let signer_sk_bytes = match signing_identity(&store, &targets) {
-            Ok(identity) => identity,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-        let signer_sk = PrivateKey::from(signer_sk_bytes);
-
-        let device_repo = NodeDeviceRepository::new(&store);
-
-        // The account root is what certifies the device, and it is also what
-        // decides *which* account this node can pair into: the genesis is the
-        // content address of this node's root key, so it can only ever certify
-        // devices for the one account that root owns.
-        let account_root = match device_repo.require_account_root() {
-            Ok(root) => root,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-        let genesis = account_root.genesis();
-        let account = genesis.account_id();
-
-        // Check the key material before anything is signed over it. The
-        // certificate minted below is what makes these keys a trusted device of
-        // this account, and until this point they are three values a caller
-        // supplied: an attacker who can alter the pairing payload substitutes its
-        // own keys under a captured `DeviceId` and receives the scope-key
-        // fan-out. The statement is the pairing device's own signature over
-        // exactly what is being certified, so it can only be produced by
-        // whoever holds the signing key it names.
-        //
-        // It does not cover a substitution that replaces both keys and re-signs
-        // — nothing here has a prior commitment to the genuine ones, and binding
-        // them into the `DeviceId` is ruled out because the id must survive key
-        // rotation. The confirmation code returned below is what closes that,
-        // out of band and by a person.
-        let offer = PairingOffer::new(account, device, kem_pk, sign_pk);
-        if let Err(err) = check_statement(&offer, &statement) {
-            // Logged, not just returned: this is the security-relevant event the
-            // check exists for, and the error otherwise reaches only whoever made
-            // the request — possibly the attacker rather than an operator reading
-            // logs. Ids only; no key material.
-            warn!(
-                namespaces = targets.len(),
-                %account,
-                %device,
-                %err,
-                "refusing to certify device: pairing statement invalid"
-            );
-            return ActorResponse::reply(Err(err));
-        }
-
-        // The statement proves the keys and the signature agree with each other,
-        // which an attacker holding both can arrange. The code is the value it
-        // cannot produce: the account holder was read it from the pairing
-        // device's own output, so it describes the keys that device minted, and
-        // here it is checked against the keys that actually arrived.
-        if let Err(err) = check_confirmation_code(&offer, &confirmation_code) {
-            // The warn carries no `err`, for the same reason the refusal carries
-            // no expected code.
-            warn!(
-                namespaces = targets.len(),
-                %account,
-                %device,
-                "refusing to certify device: confirmation code does not match the \
-                 key material offered"
-            );
-            return ActorResponse::reply(Err(err));
-        }
-
-        if let Err(err) = require_this_node_holds(&store, account) {
-            return ActorResponse::reply(Err(err));
-        }
-
-        // Before the certificate is signed, not per namespace: the tombstone is
-        // per namespace but the id is spent everywhere, so the fan-out reporting
-        // `Revoked` in each one would already have minted a certificate for it.
-        if let Err(err) = require_not_revoked(&store, device) {
-            return ActorResponse::reply(Err(err));
-        }
-
-        // One precondition covers both ops: the link is an encrypted group op so
-        // publishing it needs the current key, and the delivery is that same key
-        // wrapped for the new device. Checking it here, before anything is
-        // signed, beats failing deep inside the publisher.
-        //
-        // One key anywhere in the scope is enough: the fan-out skips the
-        // namespaces it cannot publish into, and refusing the whole pairing for
-        // one of those would withhold the device from the rest.
-        if let Err(err) = require_a_scope_key(&store, &targets) {
-            return ActorResponse::reply(Err(err));
-        }
-
-        // Epoch 0 on both counts: the account root has not rotated (rotation is
-        // not implemented yet), so there are no handoffs to carry and the
-        // certifying key is the genesis key itself.
-        let device_cert = match DeviceCert::sign(
-            account_root.signing_key(),
-            account,
-            device,
-            &sign_pk,
-            &kem_pk,
-            0,
-            0,
-        ) {
-            Ok(cert) => cert,
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to sign the device certificate: {err}"
-                )))
-            }
-        };
-
-        // One certificate for all three uses: the fan-out publishes it, the cert
-        // store keeps it so a namespace gained later can bind the device with no
-        // second ceremony, and the response hands it back to the device - which
-        // cannot read it off a DAG it is a member of nowhere.
-        let cert = KnownDeviceCert {
-            proof: AccountProof {
-                genesis,
-                chain: vec![],
-                statement: device_cert,
-            },
-            applications,
-        };
-
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        let context_client = self.context_client.clone();
 
         ActorResponse::r#async(
             async move {
+                // Created on first use, and always a target like any namespace in scope.
+                let account_namespace = ensure_account_namespace(&store, &context_client).await?;
+
+                // Resolved first: the checks below are about what these namespaces hold.
+                let mut targets = namespaces_in_scope(&store, &applications)?;
+                if let Some(account_namespace) = account_namespace {
+                    follow(&mut targets, account_namespace);
+                }
+
+                // Signs the endorsement, both ops and the key wrap; it must be a granted member.
+                let signer_sk_bytes = signing_identity(&store, &targets)?;
+                let signer_sk = PrivateKey::from(signer_sk_bytes);
+
+                let device_repo = NodeDeviceRepository::new(&store);
+
+                // The root certifies the device, and only for the one account it owns.
+                let account_root = device_repo.require_account_root()?;
+                let genesis = account_root.genesis();
+                let account = genesis.account_id();
+
+                // Check the key material before signing over it: the statement proves the
+                // offering device holds these keys, and the code below catches a swap of both.
+                let offer = PairingOffer::new(account, device, kem_pk, sign_pk);
+                if let Err(err) = check_statement(&offer, &statement) {
+                    // Logged: the error alone may reach only the attacker. Ids, no key material.
+                    warn!(
+                        namespaces = targets.len(),
+                        %account,
+                        %device,
+                        %err,
+                        "refusing to certify device: pairing statement invalid"
+                    );
+                    return Err(err);
+                }
+
+                // A swap of both keys can carry a valid statement, but not the code the holder
+                // read off the genuine device.
+                if let Err(err) = check_confirmation_code(&offer, &confirmation_code) {
+                    // No `err`: the refusal must not echo the expected code.
+                    warn!(
+                        namespaces = targets.len(),
+                        %account,
+                        %device,
+                        "refusing to certify device: confirmation code does not match the \
+                         key material offered"
+                    );
+                    return Err(err);
+                }
+
+                require_this_node_holds(&store, account)?;
+
+                // Before signing: a revoked id is spent everywhere, not just where it was revoked.
+                require_not_revoked(&store, device)?;
+
+                // Both ops need a current key; one anywhere is enough, the fan-out skips the rest.
+                require_a_scope_key(&store, &targets)?;
+
+                // Epoch 0 for both: the root does not rotate yet, so there are no handoffs.
+                let device_cert = match DeviceCert::sign(
+                    account_root.signing_key(),
+                    account,
+                    device,
+                    &sign_pk,
+                    &kem_pk,
+                    0,
+                    0,
+                ) {
+                    Ok(cert) => cert,
+                    Err(err) => eyre::bail!("failed to sign the device certificate: {err}"),
+                };
+
+                // One certificate for three uses: the fan-out publishes it, the store keeps it for
+                // namespaces gained later, and the response hands it to the device.
+                let proof = AccountProof {
+                    genesis,
+                    chain: vec![],
+                    statement: device_cert,
+                };
+                // Signed before the fan-out because every link it publishes has to
+                // carry it; the account namespace records the same statement below.
+                let scope = crate::account_namespace::next_device_scope(
+                    &store,
+                    account_namespace,
+                    &account_root,
+                    &proof,
+                    &applications,
+                )?;
+                let cert = KnownDeviceCert { proof, scope };
+
                 // A device belongs to an account, not to a scope, so both
                 // credentials the link carries are account-scoped: the certificate
                 // is signed by the account root, and the endorsement by this node's
@@ -418,17 +381,19 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 }
                 let key_delivered = key_delivered_everywhere(&outcomes);
 
-                // Kept only once the pairing reached somewhere, so a call that
-                // failed leaves nothing behind. From here on a namespace this
-                // account gains binds the device on its own, because the root
-                // signature - which the replicated binding row drops - is written
-                // down where it was made.
-                if let Err(err) = NodeDeviceRepository::new(&store)
-                    .remember_device_cert(&cert.proof, &cert.applications)
-                {
-                    warn!(%device, %err,
-                          "paired, but this node could not remember the certificate; \
-                           namespaces gained later will need an explicit relink");
+                // After the bind, so the device already holds the account key when
+                // the op reaches the topic. A failure here is not the caller's.
+                if let Some(account_namespace) = account_namespace {
+                    let _recorded = crate::account_namespace::publish_device_certified(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        account_namespace,
+                        &signer_sk,
+                        &cert,
+                        "pair_device_complete",
+                    )
+                    .await;
                 }
 
                 Ok(PairDeviceCompleteResponse::new(
@@ -450,7 +415,7 @@ mod tests {
 
     use calimero_account::AccountGenesis;
     use calimero_governance_store::{
-        AccountBindingRepository, MembershipRepository, MetaRepository,
+        AccountBindingRepository, AccountDeviceRegistry, MembershipRepository, MetaRepository,
     };
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
@@ -819,6 +784,23 @@ mod tests {
         store
     }
 
+    /// What a real pairing device hands `pair-complete`, minted from `seed` the
+    /// way a device mints its own keys and id.
+    fn pairing_offer(store: &Store, seed: [u8; 16]) -> (PairingOffer, [u8; 64]) {
+        let account = NodeDeviceRepository::new(store)
+            .require_account_root()
+            .expect("the holder's root")
+            .account();
+        let device = DeviceId::mint(account, seed);
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[..16].copy_from_slice(&seed);
+        let device_sk = PrivateKey::from(sk_bytes);
+        let mut kem_bytes = [0u8; 32];
+        kem_bytes[16..].copy_from_slice(&seed);
+        let kem_pk = calimero_account::KemPublicKey::from(kem_bytes);
+        PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the pairing offer")
+    }
+
     /// The id is spent everywhere, so pairing it again is refused before the
     /// certificate exists - not left to the fan-out, which reports `Revoked` per
     /// namespace only after this node has already certified the device.
@@ -860,12 +842,16 @@ mod tests {
             ),
             "a revoked device has to be refused by name, not by a generic bail; got: {refused}"
         );
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("this node holds the account root, so it names its own namespace");
         assert!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read the certificate store")
+            AccountDeviceRegistry::new(&store, namespace)
+                .device(device)
+                .expect("read")
                 .is_none(),
-            "no certificate may exist for a spent device id"
+            "no registry entry may exist for a device refused before it could be certified"
         );
     }
 
@@ -891,5 +877,77 @@ mod tests {
             refused.downcast_ref::<ContextError>(),
             Some(ContextError::PairingNotTheAccountHolder { .. })
         ));
+    }
+
+    /// Pairing writes the scope it was asked for into the account namespace, so
+    /// every other device of the account can read what the new one may speak for.
+    #[actix::test]
+    async fn pairing_records_the_device_and_its_scope_in_the_account_namespace() {
+        let store = a_node_that_can_pair_in_one_namespace();
+        let harness = actor::over(store.clone()).await;
+        let (offer, statement) = pairing_offer(&store, [0x71; 16]);
+
+        let response = harness
+            .manager
+            .send(PairDeviceCompleteRequest {
+                applications: vec![app(APP_ONE)],
+                device: offer.device,
+                kem_pk: offer.kem_pk,
+                sign_pk: offer.sign_pk,
+                statement,
+                confirmation_code: offer.confirmation_code(),
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the holder certifies the device");
+
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("pairing ensured the account namespace");
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
+            .device(response.device)
+            .expect("read")
+            .expect("the paired device is in the registry");
+        let epoch = recorded.scope.statement.scope_epoch;
+        assert_eq!(recorded.applications(), vec![app(APP_ONE)]);
+        assert_eq!(epoch, 0);
+    }
+
+    /// Pairing the same device again replaces the scope the first pairing
+    /// recorded, which is how a holder narrows what a device may speak for.
+    #[actix::test]
+    async fn re_pairing_a_device_supersedes_the_scope_it_recorded() {
+        let store = a_node_that_can_pair_in_one_namespace();
+        let harness = actor::over(store.clone()).await;
+        let (offer, statement) = pairing_offer(&store, [0x71; 16]);
+
+        for application in [APP_TWO, APP_ONE] {
+            let _response = harness
+                .manager
+                .send(PairDeviceCompleteRequest {
+                    applications: vec![app(application)],
+                    device: offer.device,
+                    kem_pk: offer.kem_pk,
+                    sign_pk: offer.sign_pk,
+                    statement,
+                    confirmation_code: offer.confirmation_code(),
+                })
+                .await
+                .expect("the manager answers")
+                .expect("the holder certifies the device");
+        }
+
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("pairing ensured the account namespace");
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
+            .device(offer.device)
+            .expect("read")
+            .expect("the paired device is in the registry");
+        let epoch = recorded.scope.statement.scope_epoch;
+        assert_eq!(recorded.applications(), vec![app(APP_ONE)]);
+        assert_eq!(epoch, 1);
     }
 }

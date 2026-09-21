@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -17,8 +17,28 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4B` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4C`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x54` is taken
+// except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
+// `0x55`**.
+//
+// This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
+// still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
+// without moving it. Nothing catches that — the two key types would have been
+// byte-identical in length and only the prefix distinguishes them — so re-derive
+// the list with `grep 'u8 = 0x'` before claiming a byte, as the note below says,
+// and move this pointer in the same commit.
+//
+// Grepping this file is necessary and not sufficient: it answers for the branch
+// you are on, and two branches in flight can claim the same byte without either
+// one's grep seeing the other. That has now happened twice to this one branch,
+// on two different bytes, and neither time did anything fail until the merge:
+// `GROUP_MEMBER_INDEX_BACKFILL_PREFIX` was `0x4E` here while
+// `NODE_ACCOUNT_NAMESPACE_PREFIX` took `0x4E` on master (#3889), and then
+// `GROUP_MEMBER_BY_ACCOUNT_PREFIX` was `0x4D` here while
+// `GROUP_ACCOUNT_DEVICE_PREFIX` took `0x4D` on master (#3890). So re-derive the
+// list against the *merge base you will land on*, not against your branch, and
+// re-derive it again after every merge of that base — the second collision
+// arrived in a merge made after the first was fixed.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -29,6 +49,20 @@ use zeroize::ZeroizeOnDrop;
 // re-derive this list before claiming a byte.
 pub const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
+/// Reverse of [`GROUP_MEMBER_PREFIX`]: `[account][group_id]`, so an account's
+/// groups are one contiguous range. See [`GroupMemberByAccount`].
+pub const GROUP_MEMBER_BY_ACCOUNT_PREFIX: u8 = 0x50;
+/// Singleton marker: the reverse index above has been built from the membership
+/// rows that predate it. See [`GroupMemberIndexBackfilled`].
+///
+/// 0x4F rather than 0x4E: `NODE_ACCOUNT_NAMESPACE_PREFIX` landed on 0x4E while
+/// this branch was open, in this same `Column::Group`. The two are different
+/// lengths — that one is a bare-prefix singleton, this one carries 32 zero bytes
+/// — so no exact-key lookup could have confused them, and that is exactly why
+/// sharing the byte was worth moving rather than arguing about: the ledger holds
+/// so that nobody has to re-derive that argument per pair, and any prefix scan
+/// over 0x4E would have returned the other family's row regardless.
+pub const GROUP_MEMBER_INDEX_BACKFILL_PREFIX: u8 = 0x4F;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
@@ -174,6 +208,150 @@ impl Debug for GroupMember {
         f.debug_struct("GroupMember")
             .field("group_id", &self.group_id())
             .field("account", &self.account())
+            .finish()
+    }
+}
+
+/// Singleton marker recording that [`GroupMemberByAccount`] has been built from
+/// the membership rows written before it existed.
+///
+/// Without it the index is silently incomplete on any node that already holds
+/// data: rows written by an older build have no reverse entry, so a scan comes
+/// back empty and the caller is told they are in no groups. On a list endpoint
+/// that reads as "my contexts disappeared" — and it is exactly the class
+/// `CLAUDE.md` warns merobox cannot catch, because every node in a merobox run
+/// is the same build against fresh state.
+///
+/// Absent means "not yet built", which is the safe default: a fresh node has
+/// nothing to backfill and writes the marker on its first read having scanned an
+/// empty range.
+///
+/// Shaped like [`GroupMeta`] (prefix plus 32 bytes) rather than a bare prefix
+/// byte, with the id fixed at zero, so it reuses a key layout the column already
+/// has instead of introducing a length no other key in `Column::Group` uses.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberIndexBackfilled(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupMemberIndexBackfilled {
+    /// There is one of these per node, so it takes no arguments.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_MEMBER_INDEX_BACKFILL_PREFIX,
+        ])
+        .concat(GenericArray::from([0u8; 32]))))
+    }
+}
+
+impl Default for GroupMemberIndexBackfilled {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for GroupMemberIndexBackfilled {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupMemberIndexBackfilled {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupMemberIndexBackfilled {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("GroupMemberIndexBackfilled")
+    }
+}
+
+/// The account → group reverse index: which groups an account is a member of.
+///
+/// [`GroupMember`] is keyed `[group_id][account]`, so the column is ordered by
+/// group and answers "who is in this group" with one prefix scan. The opposite
+/// question — "which groups is this account in" — had no answer but a full scan
+/// of every membership row on the node, which is why the node-wide list
+/// endpoints returned the node's entire inventory instead of the caller's own
+/// (#3941): the filter they needed was not affordable.
+///
+/// This key inverts the components so an account's groups are one contiguous
+/// range. It holds no value of its own — the row's existence *is* the fact, and
+/// the authoritative role and capabilities stay on [`GroupMember`], so there is
+/// nothing here to disagree with them.
+///
+/// **It indexes DIRECT rows only.** Inherited membership is computed by walking
+/// ancestors ([`MembershipRepository::check_path`]), and materializing it here
+/// would mean touching every descendant's index on any ancestor change. A reader
+/// that needs the effective set expands each direct group through the same walk;
+/// what this buys is a starting set that is O(the caller's groups) rather than
+/// O(the node's).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberByAccount(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupMemberByAccount {
+    /// Note the argument order: **account first**, which is the whole point of
+    /// the type. Both ids are 32 bytes, so swapping them still compiles and
+    /// still writes a well-formed key — it just indexes the wrong direction and
+    /// every scan comes back empty.
+    #[must_use]
+    pub fn new(account: AccountId, group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_MEMBER_BY_ACCOUNT_PREFIX])
+            .concat(GenericArray::from(*account.as_bytes()))
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        AccountId::from(id)
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupMemberByAccount {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupMemberByAccount {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupMemberByAccount {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupMemberByAccount")
+            .field("account", &self.account())
+            .field("group_id", &self.group_id())
             .finish()
     }
 }
@@ -1854,7 +2032,8 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
 
-/// Device certificates of this node's own account (see [`NodeAccountDeviceCert`]).
+/// Device certificates a pre-registry holder cached, read now only by the startup
+/// migration that publishes them (see [`NodeAccountDeviceCert`]).
 /// Distinct from [`NODE_DEVICE_CERTIFICATE_PREFIX`], which holds the single
 /// certificate signed for THIS device elsewhere.
 pub const NODE_ACCOUNT_DEVICE_CERT_PREFIX: u8 = 0x4C;
@@ -2222,6 +2401,8 @@ pub struct GroupDeviceBindingValue {
     pub device_epoch: u32,
     /// Account root-key epoch that signed this device's certificate.
     pub key_epoch: u32,
+    /// Scope epoch the link carried. A descope below it is a stale replay.
+    pub scope_epoch: u32,
 }
 
 /// Revocation tombstone for a device (see [`GROUP_REVOKED_DEVICE_PREFIX`]).
@@ -2289,6 +2470,240 @@ impl Debug for GroupRevokedDevice {
             .field("device_id", &self.device_id())
             .finish()
     }
+}
+
+/// Prefix for [`GroupDeviceScopeFloor`].
+pub const GROUP_DEVICE_SCOPE_FLOOR_PREFIX: u8 = 0x52;
+
+/// The scope epoch a device was last narrowed out of this group at; a link at or
+/// below it is refused. `slot` hashes account and device, so no other root can raise it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeviceScopeFloor(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupDeviceScopeFloor {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], slot: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_DEVICE_SCOPE_FLOOR_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(slot))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupDeviceScopeFloor {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupDeviceScopeFloor {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupDeviceScopeFloor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("GroupDeviceScopeFloor").finish()
+    }
+}
+
+/// Prefix for [`GroupAccountDevice`].
+pub const GROUP_ACCOUNT_DEVICE_PREFIX: u8 = 0x4D;
+
+/// One device of the account whose namespace this is, in that namespace's
+/// registry. Key `prefix(1) + namespace_id(32) + device_id(32)`, the same shape
+/// as [`GroupDeviceBinding`], so one prefix scan enumerates an account's
+/// devices. Replicated, unlike [`NodeAccountDeviceCert`].
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDevice(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountDevice {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_DEVICE_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountDevice {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountDevice {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountDevice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountDevice")
+            .field("group_id", &self.group_id())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// Prefix for [`GroupAccountDeviceLabel`].
+pub const GROUP_ACCOUNT_DEVICE_LABEL_PREFIX: u8 = 0x53;
+
+/// The name one device of the account carries, keyed exactly like its registry
+/// row. Its own key so a rename never rewrites the certificate and scope beside it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDeviceLabel(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountDeviceLabel {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_DEVICE_LABEL_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+}
+
+impl AsKeyParts for GroupAccountDeviceLabel {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountDeviceLabel {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+/// The name in force for a device, and the epoch that orders it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDeviceLabelValue {
+    pub label: String,
+    /// The account's own ordering of this device's names, not a store clock.
+    pub label_epoch: u32,
+}
+
+/// Prefix for [`GroupAccountNamespace`].
+pub const GROUP_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x51;
+
+/// A namespace this namespace's account takes part in, written only in an
+/// account namespace. Key `prefix(1) + account_namespace(32) + namespace(32)`,
+/// the same shape as [`GroupDeviceBinding`], so one prefix scan gives the set.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountNamespace(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountNamespace {
+    #[must_use]
+    pub fn new(account_namespace: [u8; 32], namespace: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_NAMESPACE_PREFIX])
+            .concat(GenericArray::from(account_namespace))
+            .concat(GenericArray::from(namespace))))
+    }
+
+    #[must_use]
+    pub fn account_namespace(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountNamespace {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountNamespace {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountNamespace {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountNamespace")
+            .field("account_namespace", &self.account_namespace())
+            .field("namespace", &self.namespace())
+            .finish()
+    }
+}
+
+/// The certificate and scope a [`GroupAccountDevice`] row carries. The statement
+/// is stored whole because a link re-presents it and a sibling cannot re-sign it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDeviceValue {
+    /// The root-signed certificate with the chain that reaches its signing epoch.
+    pub proof: AccountProof<DeviceCert>,
+    /// The root-signed scope in force: its applications and its ordering epoch.
+    pub scope: AccountProof<DeviceScope>,
 }
 
 /// An account's current root key within a group (see [`GROUP_ACCOUNT_KEY_PREFIX`]).
@@ -2535,6 +2950,98 @@ impl FromKeyParts for NodeDeviceCertificate {
     }
 }
 
+/// Prefix for [`NodeRevokedFrom`].
+pub const NODE_REVOKED_FROM_PREFIX: u8 = 0x54;
+
+/// The account and device this node was last revoked out of, a node-local
+/// singleton: a released device would otherwise be unpaired with nothing to say why.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeRevokedFrom(Key<(GroupPrefix,)>);
+
+impl NodeRevokedFrom {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_REVOKED_FROM_PREFIX])))
+    }
+}
+
+impl Default for NodeRevokedFrom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeRevokedFrom {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeRevokedFrom {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+/// Which account withdrew this node's device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeRevokedFromValue {
+    pub account_id: [u8; 32],
+    pub device_id: [u8; 32],
+}
+
+/// Prefix for [`NodeAccountNamespace`].
+pub const NODE_ACCOUNT_NAMESPACE_PREFIX: u8 = 0x4E;
+
+/// The account namespace this node follows, a singleton: written by the holder at
+/// creation and by a paired device at `pair-init`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountNamespace(Key<(GroupPrefix,)>);
+
+impl NodeAccountNamespace {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_NAMESPACE_PREFIX])))
+    }
+}
+
+impl Default for NodeAccountNamespace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeAccountNamespace {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountNamespace {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 impl Default for NodeDeviceIdentity {
     fn default() -> Self {
         Self::new()
@@ -2688,6 +3195,13 @@ pub struct NodeDeviceCertificateValue {
     pub proof: Vec<u8>,
 }
 
+/// The 32-byte id of the account namespace this node follows.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountNamespaceValue {
+    pub namespace_id: [u8; 32],
+}
+
 /// Redacted by hand, never derived. `kem_secret` is the only thing that can
 /// unwrap a scope key addressed to this device, and a derived `Debug` prints it
 /// — one `tracing` field, one `dbg!`, one error context and the secret is in a
@@ -2711,6 +3225,9 @@ impl Debug for NodeDeviceIdentityValue {
 /// authorized, not a claim about it. The replicated [`GroupDeviceBinding`] row
 /// cannot serve here because it drops the root signature, so a valid certificate
 /// cannot be reconstructed from it without a DAG scan.
+///
+/// No writer remains. The row survives only so the one-shot migration can read
+/// a pre-registry holder's certificates and publish them into the account namespace.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeAccountDeviceCert(Key<(GroupPrefix, GroupIdComponent)>);
@@ -2765,6 +3282,8 @@ impl Debug for NodeAccountDeviceCert {
 /// [`AccountProof`] keeps the row and the op one shape. Nothing here is secret -
 /// a certificate is public data and proves nothing without the device key it
 /// names.
+///
+/// Read only by that migration; see [`NodeAccountDeviceCert`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeAccountDeviceCertValue {
@@ -3577,10 +4096,19 @@ mod tests {
             ),
             ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
+            ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
+            ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
+            ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
+            ("GROUP_MEMBER_BY_ACCOUNT", GROUP_MEMBER_BY_ACCOUNT_PREFIX),
+            (
+                "GROUP_MEMBER_INDEX_BACKFILL",
+                GROUP_MEMBER_INDEX_BACKFILL_PREFIX,
+            ),
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
             ("NODE_ACCOUNT_DEVICE_CERT", NODE_ACCOUNT_DEVICE_CERT_PREFIX),
+            ("NODE_ACCOUNT_NAMESPACE", NODE_ACCOUNT_NAMESPACE_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
             (

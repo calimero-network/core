@@ -102,20 +102,22 @@ This crate splits the identity half in two:
    pairing.rs ──▶ device.rs ────┐
    warrant.rs ──▶ device.rs ────┤     (DEVICE-signed, so not an AccountProof)
                                 ├──▶ root_key.rs ──▶ account.rs ──▶ domain.rs
-   revocation.rs ───────────────┘     (chain walk)    (the anchor    (every signing domain,
-        │              │                              + borsh        pairwise-distinct)
-        └──────────────┴────────▶ signed.rs            preimages)
+   revocation.rs ───────────────┤     (chain walk)    (the anchor    (every signing domain,
+   scope.rs ────────────────────┘                     + borsh        pairwise-distinct)
+                                                       preimages)
+        │              │
+        └──────────────┴────────▶ signed.rs
                                   (RootSigned, Verified<T>, AccountProof<T>,
                                    verify_root_signed, sign_payload — the one
-                                   verifier and the one bundle both statements share)
+                                   verifier and the one bundle every statement shares)
 
    error.rs ◀── every fallible path in all of the above returns AccountError
 ```
 
 `signed.rs` is where the shape lives, not a helper dump: `verify_root_signed` is the
-*only* end-to-end verifier, and `device.rs` / `revocation.rs` each add just their
-statement's fields and their two error variants. `sign_payload` is likewise the one
-signing tail every minter ends in.
+*only* end-to-end verifier, and `device.rs` / `revocation.rs` / `scope.rs` each add
+just their statement's fields and their own error variants. `sign_payload` is
+likewise the one signing tail every minter ends in.
 
 `pairing.rs` reaches into `device.rs` for `KemPublicKey` alone - it certifies nothing itself. `revocation.rs` does *not* go through `device.rs`: a revocation is verified against the key chain directly, which is why it stays valid under any epoch the chain resolves while a certificate's superseded epochs get filtered on read.
 
@@ -135,10 +137,12 @@ and a `Verified<T>` is one that has been checked.
 | `AccountGenesis` | struct | `{version, root_sign_pk}`; hashing it yields the `AccountId`. No per-scope salt - one root key is one account everywhere |
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
 | `ACCOUNT_GENESIS_VERSION` | const | Version written into a genesis; part of the id preimage |
-| **`RootSigned`** | trait | The shape a statement the account **root** signs shares: `account`, `key_epoch`, `payload`, `signature`, plus the two `AccountError` variants it reports. Implemented by `DeviceCert` and `DeviceRevocation`; deliberately **not** by `AccountMemberEndorsement` |
+| **`RootSigned`** | trait | The shape a statement the account **root** signs shares: `account`, `key_epoch`, `payload`, `signature`, plus the two `AccountError` variants it reports. Implemented by `DeviceCert`, `DeviceRevocation` and `DeviceScope`; deliberately **not** by `AccountMemberEndorsement` |
+| **`DeviceBound`** | trait | A `RootSigned` statement about one device: the device it names, and the `AccountError` reported when that is not the device asked about. Implemented by `DeviceRevocation` and `DeviceScope`, which is what gives them one shared `authorises` |
 | **`Verified<T>`** | struct | A statement whose anchor, chain and signature all checked. Derefs to `T`; unconstructible outside this crate, so holding one *is* the proof a check happened. **Not** a statement that the credential is in force |
 | **`AccountProof<T>`** | struct | `{genesis, chain, statement}` - a credential that stands on its own. The wire form; borsh-identical to the three loose fields it replaced |
 | `AccountProof::verify(claimed_account)` | fn | Check a proof against an account the caller already trusts; yields `Verified<T>` |
+| `AccountProof::authorises(account, device)` | fn | For a `DeviceBound` statement: whether the proof speaks for *that* device; checks the device before spending an Ed25519 verification |
 | `RootKeyHandoff` | struct | Rolls the root key from `from_epoch` to `from_epoch + 1`, signed by the outgoing key |
 | `RootKeyHandoff::sign(sk, account, from_epoch, new_pk)` | fn | Mint one |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
@@ -150,9 +154,13 @@ and a `Verified<T>` is one that has been checked.
 | `DeviceRevocation` | struct | Root-signed withdrawal of a device |
 | `DeviceRevocation::sign(root_sk, account, device, key_epoch)` | fn | Mint one |
 | `SignedDeviceRevocation` | alias | `AccountProof<DeviceRevocation>` - the wire-carried proof |
-| `SignedDeviceRevocation::authorises(account, device)` | fn | Whether this proof authorises withdrawing *that* device; checks the device before spending an Ed25519 verification |
 | `verify_device_revocation(claimed, genesis, chain, revocation)` | fn | Check against a borrowed chain; yields `VerifiedDeviceRevocation` |
 | `VerifiedDeviceRevocation` | alias | `Verified<DeviceRevocation>` |
+| `DeviceScope` | struct | Root-signed statement of the applications one device may speak for; empty means all of them |
+| `DeviceScope::sign(root_sk, account, device, applications, scope_epoch, key_epoch)` | fn | Mint one; `scope_epoch` is what orders two scopes for the same device |
+| `SignedDeviceScope` | alias | `AccountProof<DeviceScope>` - the wire-carried proof |
+| `VerifiedDeviceScope` | alias | `Verified<DeviceScope>` |
+| `scope_covers(applications, application)` | fn | The one place empty-means-all is decided; shared by every reader of a scope |
 | `AccountMemberEndorsement` | struct | A granted member key's signed statement that an account is theirs |
 | `AccountMemberEndorsement::sign(member_sk, account)` | fn | Mint one; the endorser is derived from the key, never named by the caller |
 | `AccountMemberEndorsement::verify()` | fn | Internal validity only; yields `VerifiedEndorsement`, which is where a gate reads the endorser's key from |
@@ -162,6 +170,16 @@ and a `Verified<T>` is one that has been checked.
 | `PairingOffer::new(…)` | fn | The verifying side's constructor, over key material that arrived |
 | `PairingOffer::verify_statement(sig)` | fn | Refuses a **partial** key substitution |
 | `PairingOffer::confirmation_code()` / `code_matches(supplied)` | fn | The 64-bit human-compared code; refuses a **wholesale** substitution |
+| `ExternalSigningDomain` | enum | The closed set of **outside** verifiers' domains this account's root may sign under. A name, never caller-supplied bytes: an unconstrained oracle over the root is account takeover |
+| `ExternalSigningDomain::from_name(s)` / `names()` | fn | Resolve a wire name (`mdma.account-link`, …) and list the accepted set |
+| `ExternalSigningDomain::as_bytes()` | fn | The verifier's exact domain bytes, trailing NUL included |
+| `sign_external(root_sk, domain, payload)` | fn | Sign `domain ‖ payload` raw, for a verifier that specified its own format; yields `(PublicKey, [u8; 64])` |
+| `Audience::from_spelling(s)` | fn | The one mapping from a caller's spelling (`cli`, an `http(s)://` origin, anything else) onto the variant. Shared by `merod`'s `login-statement` and the admin API so the two cannot bind different surfaces for one string |
+| `LoginStatement` | struct | A device key's request for a session on one node, for one client surface. Device-signed like a `Warrant`, so obtaining a session never reaches for the offline root |
+| `LoginStatement::sign(device_sk, node, audience, challenge, session_key, issued_at, expires_at)` | fn | Mint one; the device key is derived from the secret, never named by the caller |
+| `LoginStatement::verify_signature()` | fn | Authenticity of the statement alone - says nothing about whether the key speaks for an account |
+| `LoginStatement::addressed_to(node, audience)` | fn | Whether this statement was minted for *that* node and surface |
+| `Audience` | enum | `WebOrigin(String)` \| `CodeSigningId(String)` \| `Cli` - the client surface a session is bound to |
 | `Warrant` | struct | An author's device-signed authorization for one executor to perform one intent, once. Names accounts **and** keys: `author_account`/`executor` are the authz subjects, `author_device_key` is what the signature verifies against |
 | `Warrant::sign(author_device_sk, …)` | fn | Mint one; the named device key is derived from the secret, so it cannot claim a key it does not hold |
 | `Warrant::verify_signature()` | fn | Authenticity of the warrant alone - says nothing about whether the key speaks for the account |
@@ -184,16 +202,20 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 | --- | --- |
 | `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
 | `src/account.rs` | `ACCOUNT_GENESIS_VERSION`, `AccountGenesis`, `AccountMemberEndorsement` + `sign`/`verify`, `VerifiedEndorsement`, and `borsh_bytes` (the id preimage helper, beside its only production caller) |
-| `src/signed.rs` | The shared shape: `RootSigned`, `Verified<T>`, `AccountProof<T>`, `verify_root_signed` (the one verifier), `sign_payload` (the one signing tail) |
+| `src/signed.rs` | The shared shape: `RootSigned`, `DeviceBound`, `Verified<T>`, `AccountProof<T>` (with `verify` and `authorises`), `verify_root_signed` (the one verifier), `sign_payload` (the one signing tail) |
 | `src/root_key.rs` | `MAX_ROOT_KEY_HANDOFFS`, `RootKeyHandoff` + `sign`, `root_key_at_epoch` (the chain walk) |
 | `src/device.rs` | `KemPublicKey`, `DeviceCert` + `sign`, `VerifiedDeviceCert`, `verify_device_cert` |
-| `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `authorises`, `verify_device_revocation` |
+| `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `verify_device_revocation` |
+| `src/scope.rs` | `DeviceScope` + `sign`, `SignedDeviceScope` (= `AccountProof<DeviceScope>`), `VerifiedDeviceScope` |
 | `src/pairing.rs` | `PairingOffer` - the four values a pairing is about, and every question either end asks of them |
 | `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` + `verify`, `VerifiedWarrant` - delegated authorship |
+| `src/external.rs` | `ExternalSigningDomain`, `sign_external` - root signatures in a format an outside verifier defined, rather than one this crate designed |
+| `src/login.rs` | `LoginStatement` + `sign`/`verify_signature`/`addressed_to`, `Audience` - the statement a device key signs to obtain a session |
 | `src/domain.rs` | Every signing/content-address domain in one place, so `signing_domains_are_pairwise_distinct` is a check over the whole set |
 | `src/error.rs` | `AccountError` |
 | `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
 | `src/tests/<module>.rs` | Tests for the module of the same name, reaching it through `crate::` paths |
+| `src/tests/external.rs` | The exact signed message, per-domain separation, and that no external domain shares a prefix with a core one |
 | `src/tests/wire.rs` | Cross-cutting: borsh round-trips, plus `recorded_before_the_refactor` - hex bytes captured on the pre-`AccountProof` tree, so a field reorder is caught as the wire break it is |
 | `src/tests/signed.rs` | That both verify entry points agree, that each statement kind still reports its own errors, and that the device check precedes the signature check |
 | `src/tests/support.rs` | Shared fixtures (`key`, `genesis_for`, `rotated`, `sign_handoff`, `sign_cert`, `pairing_fixture`) |
@@ -210,6 +232,11 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 - **`AccountMemberEndorsement::verify` is validity, not authority** - same split as `Verified<T>` versus "in force". Whether the endorser is a member is an at-cut question for the projection. Anyone may endorse any account (ids are public) and it grants nothing. It returns `VerifiedEndorsement` rather than `Result<(), _>` precisely so a gate reads the endorser's key off the wrapper instead of off a struct nobody checked.
 - **`AccountMemberEndorsement` does not implement `RootSigned`, deliberately.** It is signed by a granted *member* key, not the account root - which is the entire reason it exists. That difference used to live only in prose; keeping it outside the trait puts it in the type system.
 - **A `Delegation` must check the key a certificate is ABOUT, not just that it verifies.** `AccountProof::verify` establishes that a certificate genuinely came from an account's root; it says nothing about which key the certificate names. A proof for one of the account's *other* devices verifies perfectly and would otherwise vouch for a key the warrant never authorized. `Delegation::verify` therefore does two steps per proof, and `an_author_proof_for_a_different_device_of_the_same_account_is_refused` pins the second one - it is the failure that looks like success.
+- **A login statement and a warrant are the crate's only two DEVICE-signed domains, so their separation is the load-bearing one.** Every other credential here is root-signed, and a collision between `WARRANT_SIGN_DOMAIN` and `AUTH_LOGIN_SIGN_DOMAIN` would let a statement minted to log in be presented as a warrant authorizing a write, or the reverse. `signing_domains_are_pairwise_distinct` covers the constants and `a_login_payload_is_not_a_warrant_payload` covers the payloads they produce.
+- **`sign_external` is the one place the root signs something this crate did not design, and the allowlist is why it is safe.** Everything else here signs a 32-byte `domain_hash` digest over a core domain. An outside verifier — mdma — specified `ed25519(root, DOMAIN ‖ payload)` before core existed, so the bytes are raw and the payload is the caller's. That makes it a signing oracle over the one key that can certify a device, and a length guard does not close it: `calimero_governance_types::admitter_endorsement_payload` already signs a raw concatenation, so "refuse 32-byte payloads" is insufficient and depends on auditing every signing site forever. Naming the reachable domains inverts it — a new signing site elsewhere cannot become a target, because its domain is not in the enum. `no_external_domain_shares_a_prefix_with_a_core_domain` keeps that true as either set grows, in **both** directions, because a caller-chosen payload can extend a message to the right.
+- **The external domains are mdma's constants mirrored, not ours.** A `.v2` appears here only after it appears in its `manager/app/account_proof.py`. The trailing `\0` is part of each one and is the only separator between domain and payload — mdma does not length-prefix the way `domain_hash` does.
+- **`Audience`'s signing bytes are variant-tagged.** Without the tag, `WebOrigin("x")` and `CodeSigningId("x")` share a preimage, and the field would bind the string while binding nothing about the surface it names.
+- **`LoginStatement::verify_signature` is authenticity, never authority.** It says the named device key signed these bytes. Whether that key belongs to an account is the accompanying `AccountProof`; whether the device is revoked needs a cut; whether the challenge was issued and unspent needs the node's MAC key and spent-set; whether `expires_at` has passed needs a clock. A caller that checks only the signature has checked almost nothing.
 - **A warrant is signed by a DEVICE key, so it is not an `AccountProof`.** Every other credential here is root-signed. This one is minted per request by the device making it, which is the point: authorizing a relay must not require the key that mints devices. Its domain is separate from `DEVICE_CERT_SIGN_DOMAIN` for that reason - a shared domain would let a device sign bytes a root-signed check would accept.
 - **`Delegation::verify` is authenticity, never authority** - the same split as `Verified<T>` versus "in force", and the list is longer here. Revocation, membership at the cut, the authorship capability, nonce reuse and `not_after` expiry all need a causal cut or a clock, so all five belong to the projection, `calimero-authz` and the receive path. A caller that checks only the bundle has checked who consented, not whether they may.
 - **`Warrant::executor` is an account, not a key, and that is load-bearing.** A relay re-keying keeps its replica slot by design; pinning a key here would void every warrant already issued to it, including ones sitting unspent on offline clients. Which *process* signed is `Delegation::executor_key`, outside the warrant, so the author never has to know it.

@@ -67,11 +67,17 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             genesis,
             chain,
             cert,
+            scope,
             ..
         } => Some(OpPayload::DeviceLinked {
             genesis: *genesis,
             chain: chain.clone(),
             cert: *cert,
+            // The payload carries the epoch, not the proof, so the statement is
+            // checked here: an unauthorised one lifts no device over a floor.
+            scope_epoch: scope
+                .authorises(cert.account, cert.device)
+                .map_or(0, |verified| verified.scope_epoch),
         }),
         // `proof` is dropped, like `endorsement` on the link above and for the
         // same reason: on the unified plane membership is keyed by `AccountId`,
@@ -85,6 +91,21 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             account: *account,
             device: *device,
         }),
+        // Not `DeviceRevoked`, which is terminal: this records a floor a wider
+        // scope can re-cross. `application` is dropped - the epoch alone decides.
+        GroupOp::AccountDeviceDescoped {
+            account,
+            device,
+            scope,
+            ..
+        } => scope
+            .authorises(*account, *device)
+            .ok()
+            .map(|verified| OpPayload::DeviceDescoped {
+                account: *account,
+                device: *device,
+                scope_epoch: verified.scope_epoch,
+            }),
         GroupOp::AccountKeysRotated { handoff } => {
             Some(OpPayload::AccountKeysRotated { handoff: *handoff })
         }

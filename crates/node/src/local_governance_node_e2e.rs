@@ -620,7 +620,7 @@ async fn create_restricted_subgroup(
         .create_group(CreateGroupRequest {
             group_id: Some(sub_gid),
             bytecode_id: None,
-            application_id: app_id,
+            application_id: Some(app_id),
             name: Some("restricted-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
             restricted: true,
@@ -716,7 +716,7 @@ async fn create_born_open_subgroup(
         .create_group(CreateGroupRequest {
             group_id: Some(sub_gid),
             bytecode_id: None,
-            application_id: app_id,
+            application_id: Some(app_id),
             name: Some("born-open-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
             // Born-Open: visibility carried atomically on GroupCreated (#2771).

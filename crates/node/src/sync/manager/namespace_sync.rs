@@ -5,6 +5,7 @@
 //! block, driven by the stream dispatcher and the `SyncDriverDispatch` trait.
 //! Methods that stay in `mod.rs` remain reachable here via ancestor privacy.
 
+use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
@@ -2383,56 +2384,50 @@ impl SyncManager {
 
     /// A certificate proving this node's device speaks for its account as the
     /// answering identity, borsh-encoded for
-    /// [`MessagePayload::GroupKeyResponseWithResponderProof`].
+    /// [`MessagePayload::GroupKeyResponseWithResponderProof`]. `Ok(vec![])` means
+    /// this node can prove nothing and is claiming nothing -- the requester then
+    /// falls back to the anchor rule. Not a failure.
     ///
-    /// `Ok(vec![])` means this node can prove nothing and is claiming nothing --
-    /// the requester then falls back to the anchor rule. Not a failure.
+    /// Two places hold a node's own certificate: the link that paired it, kept
+    /// verbatim as the imported certificate, and its row in the account
+    /// namespace's registry. Either is accepted only when it names
+    /// `answering_identity`, because the requester requires the proof to name the
+    /// key that wrapped the envelope, so one for another key of ours would be sent
+    /// only to be rejected.
     ///
-    /// Prefers a stored certificate, but only one certifying `answering_identity`:
-    /// the requester requires the proof to name the key that wrapped the
-    /// envelope, so a certificate for some other key of ours would be sent only
-    /// to be rejected.
-    ///
-    /// Otherwise it MINTS one, and that case is the whole point. A node that
-    /// provisioned its own root holds NO certificate for its own device:
-    /// `provision_account_root` stores the root and nothing else, and the only
-    /// paths calling `remember_device_cert` are minting one for somebody else or
-    /// folding a link op. So the first cut of this shipped an always-empty proof
-    /// and the mechanism was inert -- the `account-device-*` scenarios failed
-    /// exactly as they had before it existed.
-    ///
-    /// Minting is not a shortcut. We hold the account root, and a device
-    /// certificate is precisely what that root signs to say "this key speaks for
-    /// my account": the same construction, at the same epochs, as every other
-    /// minting site in the tree.
-    ///
-    /// Deliberately NOT persisted. `remember_device_cert` is keyed by device id,
-    /// so writing this would overwrite a genuine certificate -- possibly one at a
-    /// higher `device_epoch` -- with a locally minted one. One Ed25519 signature
-    /// per served key is cheaper than that risk.
+    /// A node that provisioned its own root has neither and mints one instead, at
+    /// the same epochs as every other minting site -- a device certificate is
+    /// precisely what that root signs to say "this key speaks for my account". Not
+    /// persisted: serving a key is not the place to write a certificate.
     fn own_device_proof_bytes(
-        &self,
         store: &calimero_store::Store,
         answering_identity: PublicKey,
     ) -> eyre::Result<Vec<u8>> {
-        use calimero_account::{AccountProof, DeviceCert};
-
         let devices = calimero_governance_store::NodeDeviceRepository::new(store);
         let Some(device_row) = devices.get()? else {
             return Ok(Vec::new());
         };
         let device = device_row.device();
 
-        if let Some(known) = devices.device_cert(device)? {
-            if known.proof.statement.sign_pk == answering_identity {
-                return Ok(borsh::to_vec(&known.proof)?);
+        if let Some(bytes) = devices.imported_certificate()? {
+            let proof: AccountProof<DeviceCert> = borsh::from_slice(&bytes)?;
+            if proof.statement.sign_pk == answering_identity {
+                return Ok(bytes);
+            }
+        }
+
+        if let Some(namespace) = devices.account_namespace()? {
+            let registry = calimero_governance_store::AccountDeviceRegistry::new(store, namespace);
+            if let Some(known) = registry.device(device)? {
+                if known.proof.statement.sign_pk == answering_identity {
+                    return Ok(borsh::to_vec(&known.proof)?);
+                }
             }
         }
 
         let Some(root) = devices.account_root()? else {
-            // A paired device holds no account root, so it cannot certify
-            // itself. It can still RECEIVE a key this way; it just cannot
-            // serve one.
+            // A paired device holds no root to certify itself with. It can still
+            // RECEIVE a key this way; it just cannot serve one.
             return Ok(Vec::new());
         };
         let genesis = root.genesis();
@@ -2509,15 +2504,14 @@ impl SyncManager {
             // Absent (no certificate for this node, or the read failed) means we
             // claim nothing and the requester falls back to the anchor rule --
             // never an error, since the key itself is still being served.
-            let responder_device_proof = self
-                .own_device_proof_bytes(
-                    &self.context_client.datastore_handle().into_inner(),
-                    responder_identity,
-                )
-                .unwrap_or_else(|err| {
-                    debug!(%err, "no own-device proof to attach to a group-key response");
-                    Vec::new()
-                });
+            let responder_device_proof = Self::own_device_proof_bytes(
+                &self.context_client.datastore_handle().into_inner(),
+                responder_identity,
+            )
+            .unwrap_or_else(|err| {
+                debug!(%err, "no own-device proof to attach to a group-key response");
+                Vec::new()
+            });
             MessagePayload::GroupKeyResponseWithResponderProof {
                 key_envelope_bytes,
                 responder_identity,
@@ -3201,6 +3195,138 @@ mod joiner_credential_tests {
     fn an_absent_credential_is_refused() {
         let joiner = PublicKey::from([0x11; 32]);
         assert!(SyncManager::verified_joiner_account(&[], &joiner).is_err());
+    }
+}
+
+#[cfg(test)]
+mod own_device_proof_tests {
+    //! Where this node's OWN certificate comes from when it serves a group key.
+    //!
+    //! Both fixtures adopt an account rather than provisioning one, so the node
+    //! holds no root and the mint fallback yields nothing - an empty answer here
+    //! means the read under test found nothing, not that a mint covered for it.
+
+    use std::sync::Arc;
+
+    use calimero_account::{AccountGenesis, AccountProof, DeviceCert};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{AccountDeviceRegistry, NodeDevice, NodeDeviceRepository};
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::SyncManager;
+
+    /// The account namespace the adopted node follows.
+    fn ns() -> ContextGroupId {
+        ContextGroupId::from([0x5c; 32])
+    }
+
+    /// A node that adopted `root_sk`'s account, and the device row it minted.
+    fn adopted_node(root_sk: &PrivateKey) -> (Store, NodeDevice) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let held = NodeDeviceRepository::new(&store)
+            .adopt_account(AccountGenesis::new(root_sk.public_key()))
+            .expect("adopt the account");
+        (store, held)
+    }
+
+    /// The link the account root signed for `held` naming `sign_pk`.
+    fn certify(
+        root_sk: &PrivateKey,
+        held: &NodeDevice,
+        sign_pk: PublicKey,
+    ) -> AccountProof<DeviceCert> {
+        let statement = DeviceCert::sign(
+            root_sk,
+            held.account,
+            held.device(),
+            &sign_pk,
+            &held.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("the account root signs the device cert");
+        AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement,
+        }
+    }
+
+    fn decoded(bytes: &[u8]) -> AccountProof<DeviceCert> {
+        borsh::from_slice(bytes).expect("the served proof must decode")
+    }
+
+    #[test]
+    fn the_imported_certificate_proves_this_device() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let (store, held) = adopted_node(&root_sk);
+        let answering = PrivateKey::from([0x42; 32]).public_key();
+        let proof = certify(&root_sk, &held, answering);
+        NodeDeviceRepository::new(&store)
+            .store_imported_certificate(&borsh::to_vec(&proof).expect("encode"))
+            .expect("import");
+
+        let bytes =
+            SyncManager::own_device_proof_bytes(&store, answering).expect("build the proof");
+
+        assert_eq!(decoded(&bytes), proof);
+    }
+
+    #[test]
+    fn the_account_registry_row_proves_this_device() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let (store, held) = adopted_node(&root_sk);
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&ns())
+            .expect("follow the account namespace");
+        let answering = PrivateKey::from([0x42; 32]).public_key();
+        let proof = certify(&root_sk, &held, answering);
+        let scope = calimero_account::AccountProof {
+            genesis: proof.genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                &root_sk,
+                proof.statement.account,
+                proof.statement.device,
+                vec![],
+                0,
+                0,
+            )
+            .expect("the account root signs the device's scope"),
+        };
+        assert!(AccountDeviceRegistry::new(&store, ns())
+            .record(&proof, &scope)
+            .expect("record the row"));
+
+        let bytes =
+            SyncManager::own_device_proof_bytes(&store, answering).expect("build the proof");
+
+        assert_eq!(decoded(&bytes), proof);
+    }
+
+    /// The replay guard: a certificate for another key of ours would be sent
+    /// only to be rejected, so it is not sent at all.
+    #[test]
+    fn a_certificate_naming_another_key_is_not_served() {
+        let root_sk = PrivateKey::from([0x31; 32]);
+        let (store, held) = adopted_node(&root_sk);
+        let other = PrivateKey::from([0x43; 32]).public_key();
+        NodeDeviceRepository::new(&store)
+            .store_imported_certificate(
+                &borsh::to_vec(&certify(&root_sk, &held, other)).expect("encode"),
+            )
+            .expect("import");
+
+        let bytes =
+            SyncManager::own_device_proof_bytes(&store, PrivateKey::from([0x42; 32]).public_key())
+                .expect("build the proof");
+
+        assert!(
+            bytes.is_empty(),
+            "a proof for another key must not be attached"
+        );
     }
 }
 

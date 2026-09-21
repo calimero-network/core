@@ -10,7 +10,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use calimero_governance_store::registration_notify;
 
@@ -285,7 +285,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                                  account that one endorsed"
                             );
                         };
-                        info!(
+                        debug!(
                             target: "calimero::audit::group_membership",
                             group_id = %hex::encode(group_id.to_bytes()),
                             %joiner_identity,
@@ -579,7 +579,9 @@ impl Handler<JoinContextRequest> for ContextManager {
 /// network syncs on namespaces the node can never join into. `participating_namespaces`
 /// is keyed by namespace id, so the result is already distinct.
 fn namespaces_to_sync(datastore: &calimero_store::Store) -> eyre::Result<Vec<ContextGroupId>> {
-    NamespaceRepository::new(datastore).participating_namespaces()
+    // Minus the ones this device's scope stopped covering: re-subscribing there
+    // would replicate a namespace the account took this device out of.
+    crate::account_follow::namespaces_in_reach(datastore)
 }
 
 async fn sync_known_namespaces(

@@ -745,7 +745,7 @@ pub(crate) async fn update_application_with_migration(
 
             // Log migration logs
             for log_line in &migration_logs {
-                info!(%context_id, migration_log = %log_line, "Migration log");
+                debug!(%context_id, migration_log = %log_line, "Migration log");
             }
 
             // Pre-commit migration_check (migration_v2). Run the app's

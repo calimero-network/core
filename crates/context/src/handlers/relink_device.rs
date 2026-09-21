@@ -3,18 +3,23 @@
 //! node takes part in now. A revoked device is refused outright rather than
 //! skipped per namespace: the `DeviceId` is spent everywhere, not just where the
 //! tombstone landed.
+//!
+//! It closes by publishing `AccountDeviceCertified` into the account namespace,
+//! restating the device's certificate and scope at the next scope epoch.
 
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, DeviceId};
+use calimero_account::DeviceId;
 use calimero_context_client::group::{RelinkDeviceRequest, RelinkDeviceResponse};
-use calimero_governance_store::{KnownDeviceCert, NamespaceRepository, NodeDeviceRepository};
+use calimero_governance_store::{
+    AccountDeviceRegistry, AccountRoot, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::info;
+use tracing::debug;
 
 use crate::error::ContextError;
 use crate::handlers::pair_device_complete::{
@@ -22,28 +27,28 @@ use crate::handlers::pair_device_complete::{
 };
 use crate::ContextManager;
 
-/// The certificate a relink will re-publish, and the scope it will use.
+/// The account root this node holds and the stored certificate for `device`.
 ///
 /// Every refusal lives here, in the order a caller can act on: wrong machine,
-/// unknown device, spent id. The scope extension is persisted before returning,
-/// because the scope is what every LATER namespace gain is judged against - one
-/// that held only for this call would leave the next namespace back where it
-/// started.
-fn resolve_target(
+/// unknown device, spent id. Shared with `rescope_device`, which needs the same
+/// three answers before it may sign a replacement scope.
+pub(crate) fn resolve_device(
     store: &Store,
     device: DeviceId,
-    applications: Vec<ApplicationId>,
-) -> EyreResult<(AccountId, KnownDeviceCert)> {
+) -> EyreResult<(AccountRoot, KnownDeviceCert)> {
     let devices = NodeDeviceRepository::new(store);
 
     // The account root decides which account this node may extend a device into:
     // the genesis is the content address of that root, so a node that paired INTO
     // somebody else's account holds no root that could have signed the
     // certificate it would be re-publishing.
-    let account = devices.require_account_root()?.account();
-    require_this_node_holds(store, account)?;
+    let root = devices.require_account_root()?;
+    require_this_node_holds(store, root.account())?;
 
-    let Some(mut cached) = devices.device_cert(device)? else {
+    // The registry rather than the node-local cache: it is replicated, so a
+    // sibling this node never certified itself is still one it can relink.
+    let registry = AccountDeviceRegistry::new(store, root.account_namespace());
+    let Some(cached) = registry.device(device)? else {
         return Err(ContextError::PairingUnknownDevice {
             device: device.to_string(),
         }
@@ -52,18 +57,39 @@ fn resolve_target(
 
     require_not_revoked(store, device)?;
 
+    Ok((root, cached))
+}
+
+/// The certificate a relink will re-publish, and the scope it will use. The
+/// widened scope is returned rather than written.
+fn resolve_target(
+    store: &Store,
+    device: DeviceId,
+    applications: Vec<ApplicationId>,
+) -> EyreResult<(AccountRoot, KnownDeviceCert)> {
+    let (root, mut cached) = resolve_device(store, device)?;
+
     // An empty stored scope already covers every application, so adding to it could
     // only narrow the device rather than widen it.
-    if !applications.is_empty() && !cached.applications.is_empty() {
+    let mut widened = cached.applications().to_vec();
+    if !applications.is_empty() && !widened.is_empty() {
         for application in applications {
-            if !cached.applications.contains(&application) {
-                cached.applications.push(application);
+            if !widened.contains(&application) {
+                widened.push(application);
             }
         }
-        devices.remember_device_cert(&cached.proof, &cached.applications)?;
     }
 
-    Ok((account, cached))
+    // Re-signed here rather than after the fan-out: the links it publishes each
+    // carry the statement, so the widening has to exist before the first one.
+    cached.scope = crate::account_namespace::next_device_scope(
+        store,
+        Some(root.account_namespace()),
+        &root,
+        &cached.proof,
+        &widened,
+    )?;
+    Ok((root, cached))
 }
 
 impl Handler<RelinkDeviceRequest> for ContextManager {
@@ -79,10 +105,11 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
     ) -> Self::Result {
         let store = self.datastore.clone();
 
-        let (account, cached) = match resolve_target(&store, device, applications) {
+        let (root, cached) = match resolve_target(&store, device, applications) {
             Ok(target) => target,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        let account = root.account();
 
         // Every namespace this node takes part in, narrowed by the device's own
         // scope inside the loop. Participation is the base set for the same reason
@@ -101,7 +128,7 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
 
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let scope = cached.applications.clone();
+        let scope = cached.applications().to_vec();
 
         ActorResponse::r#async(
             async move {
@@ -115,7 +142,25 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
                 )
                 .await;
 
-                info!(%account, %device, ?outcomes, "relinked a device of this account");
+                debug!(%account, %device, ?outcomes, "relinked a device of this account");
+
+                // The statement is the only durable record of the widening, so a
+                // response carrying a scope nothing recorded would be a lie.
+                if !crate::account_namespace::publish_device_certified(
+                    &store,
+                    &node_client,
+                    &ack_router,
+                    root.account_namespace(),
+                    &signer_sk,
+                    &cached,
+                    "relink_device",
+                )
+                .await
+                {
+                    eyre::bail!(
+                        "the widened scope for {device} was not recorded in the account namespace"
+                    );
+                }
 
                 Ok(RelinkDeviceResponse::new(account, device, scope, outcomes))
             }
@@ -137,6 +182,7 @@ mod tests {
     use calimero_store::db::InMemoryDB;
 
     use super::*;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
     const APP_ONE: [u8; 32] = [0x11; 32];
@@ -257,31 +303,18 @@ mod tests {
         );
     }
 
-    /// The widening has to outlive the call: the stored scope is what every later
-    /// namespace gain is judged against, so one that held only for this request
-    /// would leave the next namespace exactly where it started.
+    /// The widening is what the relink will publish. It is not written here:
+    /// the statement's apply writes the registry row, which is what every later
+    /// namespace gain on any device of the account is judged against.
     #[test]
-    fn naming_applications_extends_the_stored_scope_persistently() {
+    fn naming_applications_widens_the_scope_the_relink_will_publish() {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x33, &[app(APP_ONE)]);
 
-        let (_account, widened) =
+        let (_root, widened) =
             resolve_target(&store, device, vec![app(APP_TWO)]).expect("extend the scope");
-        assert_eq!(widened.applications, vec![app(APP_ONE), app(APP_TWO)]);
 
-        assert_eq!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read")
-                .expect("present")
-                .applications,
-            vec![app(APP_ONE), app(APP_TWO)],
-            "the widened scope has to be on disk, not merely in this response"
-        );
-
-        // And a repair that names nothing must not narrow it back.
-        let (_account, repaired) = resolve_target(&store, device, vec![]).expect("repair");
-        assert_eq!(repaired.applications, vec![app(APP_ONE), app(APP_TWO)]);
+        assert_eq!(widened.applications(), vec![app(APP_ONE), app(APP_TWO)]);
     }
 
     /// An empty scope already covers every application, so naming one must not
@@ -292,22 +325,12 @@ mod tests {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x35, &[]);
 
-        let (_account, cached) =
-            resolve_target(&store, device, vec![app(APP_ONE)]).expect("repair");
+        let (_root, cached) = resolve_target(&store, device, vec![app(APP_ONE)]).expect("repair");
 
         assert!(
-            cached.applications.is_empty(),
+            cached.applications().is_empty(),
             "an all-applications device stayed all-applications, got {:?}",
-            cached.applications
-        );
-        assert!(
-            NodeDeviceRepository::new(&store)
-                .device_cert(device)
-                .expect("read")
-                .expect("present")
-                .applications
-                .is_empty(),
-            "and the narrowing must not have been persisted either"
+            cached.applications()
         );
     }
 
@@ -318,10 +341,9 @@ mod tests {
         let store = a_node_holding_its_own_account();
         let device = certify_device(&store, 0x34, &[app(APP_ONE)]);
 
-        let (_account, cached) =
-            resolve_target(&store, device, vec![app(APP_ONE)]).expect("extend");
+        let (_root, cached) = resolve_target(&store, device, vec![app(APP_ONE)]).expect("extend");
 
-        assert_eq!(cached.applications, vec![app(APP_ONE)]);
+        assert_eq!(cached.applications(), vec![app(APP_ONE)]);
     }
 
     /// The rest of what a member holds in a namespace it has joined: a
@@ -371,9 +393,15 @@ mod tests {
     async fn a_repair_binds_the_device_in_every_namespace_this_node_takes_part_in() {
         let store = a_node_holding_its_own_account();
         a_namespace_this_node_can_publish_in(&store);
+        let harness = actor::over(store.clone()).await;
+        // A holder has one, and the relink's closing statement has nowhere to
+        // land without it.
+        let namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
         let device = certify_device(&store, 0x35, &[]);
 
-        let harness = actor::over(store.clone()).await;
         let repaired = harness
             .manager
             .send(RelinkDeviceRequest {
@@ -384,20 +412,84 @@ mod tests {
             .expect("the manager answers")
             .expect("the repair runs");
 
-        assert_eq!(
-            repaired.outcomes,
-            vec![(
-                ContextGroupId::from(NS),
-                calimero_context_client::group::BindOutcome::Linked {
-                    key_delivered: true
-                }
-            )]
-        );
+        let linked = calimero_context_client::group::BindOutcome::Linked {
+            key_delivered: true,
+        };
+        // Order follows the key scan over a randomly minted account namespace id,
+        // so the pair is asserted rather than the sequence.
+        assert_eq!(repaired.outcomes.len(), 2, "got: {:?}", repaired.outcomes);
+        assert!(repaired
+            .outcomes
+            .contains(&(ContextGroupId::from(NS), linked)));
+        assert!(repaired.outcomes.contains(&(namespace, linked)));
         assert!(
             AccountBindingRepository::new(&store)
                 .is_device_linked(&NS.into(), device)
                 .expect("read the bindings"),
             "the link has to have APPLIED, not merely been reported"
+        );
+    }
+
+    /// Widening a device's scope is a new signed statement, so the registry
+    /// every other device reads is what moves, not just the cache.
+    #[actix::test]
+    async fn a_relink_publishes_the_widened_scope_into_the_registry() {
+        let store = a_node_holding_its_own_account();
+        let harness = actor::over(store.clone()).await;
+        let namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the holder creates its account namespace")
+            .expect("this node holds an account root");
+
+        let device = certify_device(&store, 0x31, &[app(APP_ONE)]);
+
+        let _first = harness
+            .manager
+            .send(RelinkDeviceRequest {
+                device,
+                applications: vec![app(APP_TWO)],
+            })
+            .await
+            .expect("the manager answers")
+            .expect("relinked");
+
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
+            .device(device)
+            .expect("read")
+            .expect("the relink recorded the device");
+        assert_eq!(recorded.applications(), [app(APP_ONE), app(APP_TWO)]);
+        assert_eq!(
+            recorded.scope.statement.scope_epoch, 1,
+            "the certification itself is epoch 0; the relink is the statement after it"
+        );
+    }
+
+    /// A widening the registry never took must not answer with the new scope.
+    /// The statement is the only durable record of it, so reporting a widening
+    /// every other device still judges the device against the old scope for is
+    /// the one failure this endpoint must not have.
+    #[actix::test]
+    async fn a_widening_the_registry_did_not_record_is_an_error() {
+        let store = a_node_holding_its_own_account();
+        a_namespace_this_node_can_publish_in(&store);
+        let device = certify_device(&store, 0x37, &[app(APP_ONE)]);
+
+        // Nothing created the account namespace here, so this node is not an
+        // admin of the one its root names and the certified op's apply refuses.
+        let harness = actor::over(store.clone()).await;
+        let refused = harness
+            .manager
+            .send(RelinkDeviceRequest {
+                device,
+                applications: vec![app(APP_TWO)],
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the widened scope reached no registry");
+
+        assert!(
+            refused.to_string().contains(&device.to_string()),
+            "the refusal has to name the device; got: {refused}"
         );
     }
 }

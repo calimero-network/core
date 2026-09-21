@@ -1,7 +1,7 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{ListNamespacesRequest, NamespaceSummary};
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MetaRepository, MetadataRepository};
+use calimero_governance_store::{MetaRepository, MetadataRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
@@ -17,18 +17,27 @@ use calimero_governance_store;
 /// by application read `target_application_id` through here - the listing endpoint
 /// and pairing's fan-out - so neither can drift from the other's idea of what an
 /// application covers.
+///
+/// A namespace this node's own device scope no longer reaches is not this node's
+/// to present, so it is dropped here rather than at each caller.
 pub(crate) fn namespace_rows_for_applications(
     store: &Store,
     applications: &[ApplicationId],
 ) -> eyre::Result<Vec<([u8; 32], GroupMetaValue)>> {
-    let entries = MetaRepository::new(store).enumerate_all(0, usize::MAX)?;
-    if applications.is_empty() {
-        return Ok(entries);
+    // The account namespace is not a project.
+    let account_namespace = NodeDeviceRepository::new(store).account_namespace()?;
+    let mut rows = Vec::new();
+    for (group_id, meta) in MetaRepository::new(store).enumerate_all(0, usize::MAX)? {
+        let namespace = ContextGroupId::from(group_id);
+        if account_namespace == Some(namespace)
+            || (!applications.is_empty() && !applications.contains(&meta.target.application_id))
+            || !crate::account_follow::node_reaches(store, &namespace)?
+        {
+            continue;
+        }
+        rows.push((group_id, meta));
     }
-    Ok(entries
-        .into_iter()
-        .filter(|(_, meta)| applications.contains(&meta.target.application_id))
-        .collect())
+    Ok(rows)
 }
 
 pub(crate) fn collect_namespace_summaries(
@@ -103,6 +112,7 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_context_client::group::NamespaceSummary;
+    use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
@@ -114,6 +124,7 @@ mod tests {
     };
     use calimero_governance_store::{
         ApplyError, MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
+        NodeDeviceRepository,
     };
 
     fn test_summary(namespace_id: [u8; 32]) -> NamespaceSummary {
@@ -202,6 +213,84 @@ mod tests {
                 .len(),
             3,
             "no application named is every row, not none"
+        );
+    }
+
+    /// The account namespace is not a project. Everything that resolves rows
+    /// through here - both listings and the pairing fan-out - never sees it.
+    #[test]
+    fn the_account_namespace_is_never_a_row() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let meta = MetaRepository::new(&store);
+        meta.save(&[0x01; 32].into(), &test_meta([0x10; 32]))
+            .expect("save a project");
+        meta.save(&[0x4E; 32].into(), &test_meta([0x00; 32]))
+            .expect("save the account namespace");
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&[0x4E; 32].into())
+            .expect("record it");
+
+        let rows: Vec<_> = namespace_rows_for_applications(&store, &[])
+            .expect("resolve")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(rows, vec![[0x01; 32]]);
+    }
+
+    /// Listed again the moment a wider statement arrives: the participation row and
+    /// local state never move, so nothing has to be re-paired.
+    #[test]
+    fn a_narrowed_device_lists_only_what_its_scope_still_covers() {
+        let app_kept = ApplicationId::from([0x10; 32]);
+        let app_lost = ApplicationId::from([0x20; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let meta = MetaRepository::new(&store);
+        meta.save(&[0x01; 32].into(), &test_meta(*app_kept))
+            .expect("save the kept namespace");
+        meta.save(&[0x02; 32].into(), &test_meta(*app_lost))
+            .expect("save the namespace the narrowing takes away");
+        let account_namespace = ContextGroupId::from([0x4E; 32]);
+        let (device, root_sk) =
+            crate::test_support::paired_device_scoped_to(&store, &account_namespace, &[]);
+
+        let listed = |store: &Store| -> Vec<[u8; 32]> {
+            let mut rows: Vec<_> = namespace_rows_for_applications(store, &[])
+                .expect("resolve")
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            rows.sort_unstable();
+            rows
+        };
+        assert_eq!(listed(&store), vec![[0x01; 32], [0x02; 32]]);
+
+        crate::test_support::rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app_kept],
+            1,
+        );
+        assert_eq!(
+            listed(&store),
+            vec![[0x01; 32]],
+            "the narrowed-out namespace must stop being presented as this device's own"
+        );
+
+        crate::test_support::rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[],
+            2,
+        );
+        assert_eq!(
+            listed(&store),
+            vec![[0x01; 32], [0x02; 32]],
+            "a widening re-lists it with no re-pairing"
         );
     }
 

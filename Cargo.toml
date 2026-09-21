@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.11.0-rc.37"
+version = "0.11.0-rc.41"
 exclude = [
     "./crates/git-hooks",
     "./apps/abi_conformance",
@@ -240,7 +240,7 @@ hkdf = "0.13"
 indexmap = "2.6.0"
 infer = "0.22.0"
 itertools = "0.15.0"
-jsonschema = { version = "0.54", default-features = false }
+jsonschema = { version = "0.56", default-features = false }
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 lazy_static = "1.4"
 libp2p = "0.56.0"
@@ -332,7 +332,7 @@ wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-middlewares = "6.1.0"
 wasm-opt = "0.116"
-wasmparser = "0.258"
+wasmparser = "0.259"
 wat = "1.243.0"
 web3 = "0.19.0"
 webbrowser = "1.2.2"

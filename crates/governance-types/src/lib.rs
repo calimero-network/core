@@ -26,7 +26,8 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
+    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceLabel, SignedDeviceRevocation,
+    SignedDeviceScope,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -171,7 +172,20 @@ id_newtype! {
 /// non-initiator's upgrade record can carry the target ABI state version the
 /// rollup compares against. v11 added mandatory coordinates to three variants,
 /// changing their content hash, so a v10 peer must reject rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 11;
+///
+/// v12: appends `GroupOp::AccountDeviceCertified`; no prior ordinal moves, so a
+/// v11 peer fails at the version gate rather than partway through a DAG.
+///
+/// v13: appends `GroupOp::AccountNamespaceGained` and
+/// `GroupOp::AccountNamespaceLeft`; no prior ordinal moves, so a v12 peer fails
+/// at the version gate rather than partway through a DAG.
+///
+/// v14: appends `GroupOp::AccountDeviceDescoped`, and `AccountDeviceLinked` gains
+/// the root-signed `scope` it was made under - a layout change to an existing
+/// variant, so a v13 peer must reject at the gate rather than mis-decode.
+///
+/// v15: appends `GroupOp::AccountDeviceLabelled`; no prior ordinal moves.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 15;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -520,14 +534,7 @@ pub enum GroupOp {
     //
     // Appended at the END, like every variant before them: borsh tags by source
     // order, so slotting one in beside the membership ops it belongs with would
-    // renumber every later variant and silently change the content hash — and
-    // therefore the signature — of every already-stored op that used one.
-    //
-    // `SIGNED_GROUP_OP_SCHEMA_VERSION` deliberately does NOT change. It is
-    // enforced strictly-equal on decode, so bumping it would make peers reject
-    // *every* op rather than just the ones they don't understand. Peers that
-    // predate these variants decode everything they already knew and fail only
-    // on an account op itself.
+    // renumber every later variant and change the content hash of every stored op.
     /// Bind a device to an account within this group.
     ///
     /// Self-contained: `genesis` hashes to `cert.account`, and `chain` carries
@@ -554,6 +561,9 @@ pub enum GroupOp {
         /// the *endorser* is a member instead of the root. Only a member can
         /// endorse and only the root can certify a device, so it takes both.
         endorsement: AccountMemberEndorsement,
+        /// The root-signed scope this link was made under. Carried, not looked
+        /// up: a project namespace does not fold the account namespace.
+        scope: Box<AccountProof<DeviceScope>>,
     },
     /// Withdraw a device from an account.
     ///
@@ -617,6 +627,75 @@ pub enum GroupOp {
         /// an exclusion: the device is already gone from the recipient list.
         device: DeviceId,
     },
+    /// Record a device of this namespace's account in its registry. The apply
+    /// admits only an admin writing about the account the statements name; the
+    /// publishers, not the apply, confine this op to the account namespace.
+    ///
+    /// Both statements are root-signed and self-contained, so a receiver checks
+    /// them without having folded anything about the account, and the full
+    /// certificate is here because a binding row drops the root signature.
+    /// Boxed like [`JoinAccountCredential`]: two proofs inline make the variant
+    /// too large.
+    AccountDeviceCertified {
+        /// The device's certificate, exactly as a link op carries it.
+        certificate: Box<AccountProof<DeviceCert>>,
+        /// What that device may speak for, at which scope epoch.
+        scope: Box<AccountProof<DeviceScope>>,
+    },
+    /// Record that this namespace's account is a member of `namespace`.
+    ///
+    /// Published by the node that gained it, at either gain site, after the
+    /// links it publishes there - so no device follows a namespace before the
+    /// authority it needs there exists. Never published for the account
+    /// namespace itself, which no device has to be told about.
+    ///
+    /// `application` is what the gainer read from the namespace's metadata at
+    /// that moment, and it decides which devices follow. A device learns the
+    /// authoritative target by folding the namespace itself.
+    AccountNamespaceGained {
+        /// The namespace the account is now a member of.
+        namespace: ContextGroupId,
+        /// The application it targeted when the gainer read it.
+        application: Option<ApplicationId>,
+    },
+    /// Record that this namespace's account is no longer a member of `namespace`.
+    ///
+    /// Published by the node that leaves, after its `MemberLeft` lands there.
+    AccountNamespaceLeft {
+        /// The namespace the account has left.
+        namespace: ContextGroupId,
+    },
+    /// Unbind a device whose account replaced its scope with one that no longer
+    /// reaches here. Not an unlink: that tombstone would spend the `DeviceId`.
+    AccountDeviceDescoped {
+        /// The account whose device is being unbound here.
+        account: AccountId,
+        /// The device losing its binding in this group.
+        device: DeviceId,
+        /// The application this group targeted when the publisher resolved it.
+        /// Carried, not read live: a moved target would split the replicas.
+        application: Option<ApplicationId>,
+        /// The replacement scope, root-signed. Boxed like the certified op's
+        /// proofs: inline it makes the variant too large.
+        scope: Box<SignedDeviceScope>,
+    },
+    /// Name a device of an account, for a listing to render.
+    ///
+    /// Display only: a label gates nothing, which is why it is the one account
+    /// op that is not projected onto the unified plane.
+    AccountDeviceLabelled {
+        /// The account whose device is being named.
+        account: AccountId,
+        /// The device being named.
+        device: DeviceId,
+        /// What to call it; bounded by [`GroupOp::validate`].
+        label: String,
+        /// Orders labels for this device; only a higher one supersedes.
+        label_epoch: u32,
+        /// The account root restating the four fields above. Absent when the
+        /// signer is `device` itself, which a paired device holding no root is.
+        root_proof: Option<Box<SignedDeviceLabel>>,
+    },
 }
 
 impl GroupOp {
@@ -657,6 +736,11 @@ impl GroupOp {
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
             GroupOp::GroupKeyRotatedForDevice { .. } => "group_key_rotated_for_device",
+            GroupOp::AccountDeviceCertified { .. } => "account_device_certified",
+            GroupOp::AccountNamespaceGained { .. } => "account_namespace_gained",
+            GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
+            GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
+            GroupOp::AccountDeviceLabelled { .. } => "account_device_labelled",
         }
     }
 }
@@ -1869,6 +1953,9 @@ pub mod bounds {
     /// against real use: an account rotating its root key once a day would take
     /// well over two years to reach it.
     pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
+    /// Max applications one device scope may name: a cap on what a hostile op
+    /// may claim, not on what a real one needs.
+    pub const MAX_DEVICE_SCOPE_APPLICATIONS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
     /// Admitters named in an invitation, and addresses offered for them.
     ///
@@ -1893,6 +1980,19 @@ pub mod bounds {
     /// Max byte length of a registry coordinate (`package` / `version`). Mirrors
     /// the artifact-URL builder's own cap, applied here at decode instead.
     pub const MAX_COORD_BYTES: usize = 128;
+    /// Max byte length of a device label, which a settings listing renders.
+    pub const MAX_DEVICE_LABEL_BYTES: usize = 64;
+
+    /// The one rule for what a device may be called. Control characters are out
+    /// because a name renders verbatim beside other devices, where a newline
+    /// forges the rows around it.
+    #[must_use]
+    pub fn device_label_is_valid(label: &str) -> bool {
+        !label.is_empty()
+            && label.trim() == label
+            && label.len() <= MAX_DEVICE_LABEL_BYTES
+            && !label.chars().any(char::is_control)
+    }
 }
 
 /// Fail with [`GovernanceError::Bounds`] if `len > max`.
@@ -2037,11 +2137,72 @@ impl GroupOp {
             // Each handoff costs an Ed25519 verification in `root_key_at_epoch`,
             // reached from the wire before any authorization runs, so an
             // uncapped chain is verification amplification.
-            Self::AccountDeviceLinked { chain, .. } => check_bound(
-                "group_op.account_device_linked.chain",
-                chain.len(),
-                bounds::MAX_ROOT_KEY_HANDOFFS,
-            ),
+            Self::AccountDeviceLinked { chain, scope, .. } => {
+                check_bound(
+                    "group_op.account_device_linked.chain",
+                    chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_linked.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_linked.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
+            Self::AccountDeviceCertified { certificate, scope } => {
+                check_bound(
+                    "group_op.account_device_certified.certificate.chain",
+                    certificate.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_certified.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_certified.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
+            Self::AccountDeviceLabelled {
+                label, root_proof, ..
+            } => {
+                if !bounds::device_label_is_valid(label) {
+                    return Err(GovernanceError::Bounds(format!(
+                        "group_op.account_device_labelled.label: {} bytes, max {}, trimmed and \
+                         printable",
+                        label.len(),
+                        bounds::MAX_DEVICE_LABEL_BYTES
+                    )));
+                }
+                match root_proof {
+                    Some(proof) => check_bound(
+                        "group_op.account_device_labelled.root_proof.chain",
+                        proof.chain.len(),
+                        bounds::MAX_ROOT_KEY_HANDOFFS,
+                    ),
+                    None => Ok(()),
+                }
+            }
+            Self::AccountDeviceDescoped { scope, .. } => {
+                check_bound(
+                    "group_op.account_device_descoped.scope.chain",
+                    scope.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                check_bound(
+                    "group_op.account_device_descoped.applications",
+                    scope.statement.applications.len(),
+                    bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
             Self::GroupMetadataSet { name, data } => {
                 check_metadata("group_op.group_metadata", name.as_ref(), data)
             }

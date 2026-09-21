@@ -454,6 +454,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &joiner_credential.genesis,
                     &joiner_credential.chain,
                     &joiner_credential.statement,
+                    calimero_governance_store::JOIN_SCOPE_EPOCH,
                 )? {
                     warn!(
                         ?group_id,
@@ -837,6 +838,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await;
 
+                // Tell the account's other devices, after the bind: no device may follow
+                // a namespace before the authority it needs there exists.
+                crate::account_namespace::announce(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    namespace_id.into(),
+                    crate::account_namespace::AccountNamespaceChange::Gained,
+                    "join_group",
+                )
+                .await;
+
                 // -------------------------------------------------------
                 // Phase 3: Auto-join contexts from the response.
                 // -------------------------------------------------------
@@ -1022,12 +1035,13 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
-    use calimero_governance_store::AccountBindingRepository;
+    use calimero_governance_store::{AccountBindingRepository, AccountNamespaceSet};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
 
     /// A join response's key displaces an unattested held key (#3891).
@@ -1105,24 +1119,9 @@ mod tests {
         }
     }
 
-    /// The sibling of the creation's auto-bind: a namespace joined after a
-    /// pairing is one the paired device was never bound in, so without this the
-    /// join succeeds and that device silently never sees the group.
-    #[actix::test]
-    async fn joining_a_namespace_carries_this_accounts_devices_into_it() {
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let group = ContextGroupId::from(GROUP);
-        // The scope key a join normally takes from its bundle. Seeded because
-        // there is no peer to serve one here, and the auto-bind runs after the
-        // key wait precisely so it can wrap the delivery from it.
-        let _key_id = GroupKeyring::new(&store, group)
-            .store_key(&[0x42; 32])
-            .expect("hold the scope key");
-        let device = certify_device(&store, 0xD6, &[]);
-
-        // A peer that answers the join, because the endorsement it carries is
-        // what authorises the membership — the auto-bind asserted below runs
-        // only on a join that got that far.
+    /// The bundle a peer answers a join with. Its endorsement authorises the
+    /// membership, so without one nothing a successful join writes exists to assert on.
+    fn an_endorsing_bundle() -> calimero_node_primitives::join_bundle::JoinBundle {
         let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
         bundle.admitter_endorsement_bytes = Some(
             borsh::to_vec(
@@ -1136,8 +1135,28 @@ mod tests {
             )
             .expect("borsh the endorsement"),
         );
+        bundle
+    }
 
-        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+    /// The sibling of the creation's auto-bind: a namespace joined after a
+    /// pairing is one the paired device was never bound in, so without this the
+    /// join succeeds and that device silently never sees the group.
+    ///
+    /// The devices come from the account namespace's registry, so this holds on
+    /// any device of the account, not only the one that did the certifying.
+    #[actix::test]
+    async fn joining_a_namespace_carries_this_accounts_devices_into_it() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        // The scope key a join normally takes from its bundle. Seeded because
+        // there is no peer to serve one here, and the auto-bind runs after the
+        // key wait precisely so it can wrap the delivery from it.
+        let _key_id = GroupKeyring::new(&store, group)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        let device = certify_device(&store, 0xD6, &[]);
+
+        let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
         let _joined = harness
             .manager
             .send(JoinGroupRequest {
@@ -1154,6 +1173,43 @@ mod tests {
                 .expect("read the bindings"),
             "the device this account already certified has to be bound in the \
              namespace the join just gained"
+        );
+    }
+
+    /// The sibling of the creation's announcement: a namespace joined after a
+    /// pairing is one the other devices of the account have never heard of.
+    #[actix::test]
+    async fn joining_a_namespace_records_it_in_the_account_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let _key_id = GroupKeyring::new(&store, group)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the holder's root");
+
+        let harness = actor::over_answering_joins(store.clone(), Some(an_endorsing_bundle())).await;
+        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let _joined = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the join runs");
+
+        assert!(
+            AccountNamespaceSet::new(&store, account_namespace)
+                .contains(group)
+                .expect("read the set")
+                .is_some(),
+            "the namespace the join gained has to reach the account's other devices"
         );
     }
 }

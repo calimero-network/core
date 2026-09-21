@@ -18,7 +18,9 @@ pub mod delete_context;
 pub mod delete_group;
 pub mod delete_namespace;
 pub mod detach_context_from_group;
+pub mod ensure_account_namespace;
 pub mod execute;
+pub mod follow_namespace;
 pub mod get_cascade_status;
 pub mod get_context_metadata;
 pub mod get_group_for_context;
@@ -33,6 +35,7 @@ pub mod issue_ownership_proof;
 pub mod join_context;
 pub mod join_group;
 pub mod join_subgroup_inheritance;
+pub mod label_device;
 pub mod leave_context;
 pub mod leave_group;
 pub mod leave_namespace;
@@ -47,6 +50,7 @@ pub mod pair_device_init;
 pub mod relay_signed_join;
 pub mod relink_device;
 pub mod remove_group_members;
+pub mod rescope_device;
 pub mod resync_context;
 pub mod retry_group_upgrade;
 pub mod revoke_device;
@@ -205,6 +209,12 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RelinkDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RescopeDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::LabelDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RotateGroupKey { request, outcome } => {

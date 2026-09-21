@@ -24,7 +24,7 @@
 //! runs the intent is not your problem, and a re-key on its side does not
 //! invalidate a warrant you already signed.
 
-use calimero_account::Warrant;
+use calimero_account::{Warrant, WarrantTerms};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::PerformIntentApiRequest;
@@ -161,17 +161,41 @@ impl IntentCommand {
             .unwrap_or(0)
             .saturating_add(self.valid_for);
 
-        // The commitment, not the intent. The envelope this rides in is plaintext
-        // to anything subscribed to the context's topic, so the method and its
-        // arguments stay sealed and only their hash travels in the clear.
+        // The build the warrant is signed against, read from the node rather
+        // than asserted here: `app_version` pins the code, so a value this
+        // client guessed would pin the wrong one. Read after the relay check so
+        // a refusal that costs nothing comes first.
+        let app_version = client
+            .get_context(&context_id)
+            .await
+            .wrap_err("could not read the context to learn which application it runs")?
+            .data
+            .application_id;
+
+        // The arguments are the commitment, not the intent. The envelope this
+        // rides in is plaintext to anything subscribed to the context's topic,
+        // so the arguments stay sealed and only their hash travels in the clear;
+        // the method itself is carried openly, so a peer can select a per-method
+        // write-set without reversing a hash against the app's ABI.
         let warrant = Warrant::sign(
             &device_sk,
-            context_id,
-            author_account,
-            executor,
-            Warrant::intent_hash(&self.method, &args_bytes),
-            self.nonce,
-            not_after,
+            WarrantTerms {
+                context: context_id,
+                author_account,
+                executor,
+                app_version,
+                method: self.method.clone(),
+                intent_hash: Warrant::intent_hash(&self.method, &args_bytes),
+                // Cited by a client that tracks the logs; meroctl tracks
+                // neither, and an empty list is the honest statement of that
+                // rather than a fabricated view. Nothing verifies these yet
+                // (#3933 lands the field set ahead of its enforcement so a
+                // client builds against the final bytes once).
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: self.nonce,
+                not_after,
+            },
         )
         .wrap_err("could not sign the warrant")?;
 

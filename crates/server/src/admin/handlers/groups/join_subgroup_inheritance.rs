@@ -10,7 +10,7 @@ use calimero_server_primitives::admin::{
     JoinSubgroupInheritanceApiResponse, JoinSubgroupInheritanceApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::parse_group_id;
 use crate::admin::service::{ApiError, ApiResponse};
@@ -33,7 +33,7 @@ pub async fn handler(
         .await
     {
         Ok(resp) => {
-            info!(
+            debug!(
                 group_id=%group_id_str,
                 member=%resp.member_public_key,
                 was_inherited=resp.was_inherited,

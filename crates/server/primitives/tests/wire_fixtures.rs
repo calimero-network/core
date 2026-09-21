@@ -16,9 +16,11 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiRequest, CreateContextRequest, CreateContextResponseData,
-    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, IntentRelayApiResponse,
-    JoinGroupApiResponse, JoinNamespaceApiResponse, ReparentGroupApiRequest,
+    AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
+    AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ContextIdentitiesResponseData,
+    CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
+    GetMigrationStatusApiResponse, IntentRelayApiResponse, JoinGroupApiResponse,
+    JoinNamespaceApiResponse, NodeIdentityApiResponse, ReparentGroupApiRequest,
     ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
@@ -80,6 +82,8 @@ macro_rules! wire_fixtures {
 // Scope: the endpoints that drifted (mero-js #51/#53) + jsonrpc. Adding a fixture
 // is one row here plus the committed JSON; expanding to the full DTO surface and
 // the auth-crate DTOs is mechanical.
+// Identity and account fixtures are pinned because the SDKs mirror these DTOs
+// by hand.
 wire_fixtures! {
     create_context_req: CreateContextRequest => "contexts/create_context.req.json",
     create_context_res: CreateContextResponseData => "contexts/create_context.res.json",
@@ -108,6 +112,22 @@ wire_fixtures! {
     // different values — a field crossed between them shows as a diff rather
     // than round-tripping cleanly.
     intent_relay_res: IntentRelayApiResponse => "contexts/intent_relay.res.json",
+    // `identitiesOf` is the field that says WHICH question the list answers —
+    // the node's own signing identities, the context roster, or the calling
+    // account's devices. A client that reads the list without it cannot tell a
+    // delegated answer from a node one, and the two are different keys. Pinned
+    // so a rename surfaces here rather than as apps silently treating the
+    // node's identities as their own.
+    identities_res: ContextIdentitiesResponseData => "contexts/identities.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
+    node_identity_res: NodeIdentityApiResponse => "identity/node_identity.res.json",
+    account_pair_init_req: AccountPairInitApiRequest => "account/pair_init.req.json",
+    account_devices_res: AccountDevicesApiResponse => "account/devices.res.json",
+    // The cross-repo pair: mdma verifies `domain ‖ payload` and decodes the
+    // signature as base64 and the key as hex. A retype here — hex signature,
+    // renamed field — is a verifier that refuses every proof, with no failure in
+    // this repo to point at it.
+    account_sign_with_root_req: AccountSignWithRootApiRequest => "account/sign_with_root.req.json",
+    account_sign_with_root_res: AccountSignWithRootApiResponse => "account/sign_with_root.res.json",
 }

@@ -39,7 +39,7 @@ pub struct GroupUpgradeInfo {
 pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
     pub bytecode_id: Option<BytecodeId>,
-    pub application_id: ApplicationId,
+    pub application_id: Option<ApplicationId>, // `None` only for the app-less account namespace
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
     /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
@@ -727,6 +727,7 @@ impl Message for AdmitTeeNodeRequest {
 pub struct PairDeviceInitRequest {
     pub namespaces: Vec<ContextGroupId>, // what the device subscribes to; only the holder knows the set
     pub genesis: AccountGenesis,         // the nonce travels because the device id hashes over it
+    pub account_namespace: Option<ContextGroupId>, // recorded and followed like one more namespace
 }
 
 /// What the pairing device minted, for the account holder to certify.
@@ -892,6 +893,7 @@ impl PairDeviceCompleteResponse {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BindOutcome {
     Linked { key_delivered: bool }, // false: link landed, key did not; the device's sync pull retries
+    Descoped { key_rotated: bool }, // false: the device stopped writing here but keeps the key until an admin rotates
     OutOfScope,   // the device's scope does not reach this namespace's application
     Revoked,      // terminal: a revoked id can never be linked again, in any account
     AlreadyBound, // a live binding already
@@ -942,6 +944,102 @@ impl RelinkDeviceResponse {
 
 impl Message for RelinkDeviceRequest {
     type Result = eyre::Result<RelinkDeviceResponse>;
+}
+
+/// What a device's scope is being replaced with. An explicit enum rather than a
+/// list whose emptiness means "everything", which makes the slip the widest ask.
+#[derive(Clone, Debug)]
+pub enum ScopeRequest {
+    /// Every application, now and later.
+    All,
+    /// Only these. An empty list is refused; it would mean `All` on the wire.
+    Only(Vec<ApplicationId>),
+}
+
+/// Replace a device's scope with `scope`, narrowing or widening what it reaches.
+///
+/// The counterpart of [`RelinkDeviceRequest`], which is add-only by design. Run
+/// on the node that holds the account root: it is the only one that can sign the
+/// replacement statement.
+#[derive(Debug)]
+pub struct RescopeDeviceRequest {
+    pub device: DeviceId, // must be one this node holds a certificate for
+    pub scope: ScopeRequest,
+}
+
+/// The scope the device now holds, and what each namespace did about it.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RescopeDeviceResponse {
+    pub account: AccountId,
+    pub device: DeviceId,
+    /// The scope after the request. Empty means every application.
+    pub applications: Vec<ApplicationId>,
+    pub outcomes: Vec<(ContextGroupId, BindOutcome)>,
+}
+
+impl RescopeDeviceResponse {
+    /// Exists because the struct is `#[non_exhaustive]` and the producer lives in
+    /// another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        applications: Vec<ApplicationId>,
+        outcomes: Vec<(ContextGroupId, BindOutcome)>,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            applications,
+            outcomes,
+        }
+    }
+}
+
+impl Message for RescopeDeviceRequest {
+    type Result = eyre::Result<RescopeDeviceResponse>;
+}
+
+/// Name a device of this node's own account, for a listing to render.
+#[derive(Debug)]
+pub struct LabelDeviceRequest {
+    pub device: DeviceId,
+    /// Refused by the handler, so a caller learns which rule it broke.
+    pub label: String,
+}
+
+/// The name that was published, and the epoch that orders it.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct LabelDeviceResponse {
+    pub account: AccountId,
+    pub device: DeviceId,
+    pub label: String,
+    pub label_epoch: u32,
+}
+
+impl LabelDeviceResponse {
+    /// Exists because the struct is `#[non_exhaustive]` and the producer lives in
+    /// another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        label: String,
+        label_epoch: u32,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            label,
+            label_epoch,
+        }
+    }
+}
+
+impl Message for LabelDeviceRequest {
+    type Result = eyre::Result<LabelDeviceResponse>;
 }
 
 /// Withdraw a device from an account, terminally.

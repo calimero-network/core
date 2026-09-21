@@ -17,7 +17,9 @@
 use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
-use calimero_account::{AccountId, DeviceId};
+use calimero_account::{AccountId, DeviceId, SignedDeviceRevocation};
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use tokio::sync::broadcast;
@@ -108,10 +110,44 @@ pub enum OpEvent {
     /// rotate excluding NOBODY by name — the revoked device is already absent from
     /// the recipient list, and excluding its account would cut off a member who
     /// never left.
+    ///
+    /// It carries the proof that authorised the unlink, and none for an admin one,
+    /// whose authority is this group's alone. A proof names no namespace, so it
+    /// verifies wherever another device of the account republishes the withdrawal.
     DeviceRevoked {
         group_id: [u8; 32],
         account: AccountId,
         device: DeviceId,
+        proof: Option<Box<SignedDeviceRevocation>>,
+    },
+    /// `GroupOp::AccountDeviceDescoped` - a device lost its binding here to a
+    /// narrower scope. Not [`OpEvent::DeviceRevoked`]: nothing here is terminal.
+    DeviceDescoped {
+        group_id: [u8; 32],
+        account: AccountId,
+        device: DeviceId,
+    },
+    /// `GroupOp::AccountDeviceCertified` - a device was recorded in this
+    /// namespace's registry. Fires only when the row changed, so a re-gossiped
+    /// op wakes nobody; `group_id` is the namespace, which owns the registry.
+    AccountDeviceCertified {
+        group_id: [u8; 32],
+        device: DeviceId,
+    },
+    /// `GroupOp::AccountNamespaceGained` - this namespace's account is a member
+    /// of `namespace`, which targeted `application` when the gainer read it.
+    /// That field only decides whether to follow; folding gives the real target.
+    AccountNamespaceGained {
+        group_id: [u8; 32],
+        namespace: ContextGroupId,
+        application: Option<ApplicationId>,
+    },
+    /// `GroupOp::AccountNamespaceLeft` - this namespace's account is no longer a
+    /// member of `namespace`. Fires with or without a row: a device may follow
+    /// it from its pairing list and still have to unfollow.
+    AccountNamespaceLeft {
+        group_id: [u8; 32],
+        namespace: ContextGroupId,
     },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including

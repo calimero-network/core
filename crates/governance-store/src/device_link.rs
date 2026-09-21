@@ -1,11 +1,12 @@
-//! Extending a device this account already certified into one more namespace.
+//! Extending a device this account already certified into one more namespace,
+//! and withdrawing one from a namespace it reached.
 //!
 //! Cheap because a [`DeviceCert`](calimero_account::DeviceCert) names no namespace
 //! and no expiry, so this needs only the stored certificate, a fresh endorsement
 //! and one key wrap. One publish path for all three callers: pairing's fan-out,
 //! the auto-bind on gaining a namespace, and the relink that repairs drift.
 
-use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId};
+use calimero_account::{AccountMemberEndorsement, DeviceId};
 use calimero_context_client::group::BindOutcome;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
@@ -14,10 +15,12 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
-    AccountBindingRepository, GroupKeyring, KnownDeviceCert, MetaRepository, NodeDeviceRepository,
+    member_account_in_namespace, AccountBindingRepository, AccountDeviceRegistry,
+    GroupGovernancePublisher, GroupKeyring, KnownDeviceCert, MembershipRepository, MetaRepository,
+    NodeDeviceRepository,
 };
 
 /// Publish, or the reason not to.
@@ -38,11 +41,11 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     }
     // The namespace's target application, read the way the pairing fan-out reads
     // it. A namespace whose metadata has not synced names none, and is reachable
-    // only by a scope that names none either.
+    // only by a scope that names none either. The account namespace is exempt.
     let application = MetaRepository::new(store)
         .load(namespace)?
         .map(|meta| meta.target.application_id);
-    if !cert.covers(application) {
+    if !cert.covers(application) && devices.account_namespace()? != Some(*namespace) {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
 
@@ -83,9 +86,10 @@ async fn publish_link_and_key(
     ack_router: &AckRouter,
     namespace: &ContextGroupId,
     signer_sk: &PrivateKey,
-    proof: &AccountProof<DeviceCert>,
+    known: &KnownDeviceCert,
     ns_key: &[u8; 32],
 ) -> EyreResult<bool> {
+    let proof = &known.proof;
     let cert = &proof.statement;
     let device = cert.device;
 
@@ -110,12 +114,15 @@ async fn publish_link_and_key(
         chain: proof.chain.clone(),
         cert: *cert,
         endorsement,
+        // The registry's statement, re-presented. A sibling holds no account root
+        // and so could not sign a replacement even if it wanted a wider one.
+        scope: Box::new(known.scope.clone()),
     };
 
     let report =
         crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, link)
             .await?;
-    info!(
+    debug!(
         namespace_id = ?namespace,
         %device,
         published = report.is_some(),
@@ -204,12 +211,28 @@ async fn ensure_bound(
         ack_router,
         namespace,
         signer_sk,
-        &cert.proof,
+        cert,
         &ns_key,
     )
     .await
     {
-        Ok(key_delivered) => BindOutcome::Linked { key_delivered },
+        // The local apply is the only durable write and it warns rather than
+        // failing, so the binding row - not the publish - is what says "linked".
+        Ok(key_delivered) => {
+            match AccountBindingRepository::new(store).is_device_linked(namespace, device) {
+                Ok(true) => BindOutcome::Linked { key_delivered },
+                Ok(false) => {
+                    warn!(namespace_id = ?namespace, %device,
+                      "the link was published but this namespace did not record the binding");
+                    BindOutcome::Failed
+                }
+                Err(err) => {
+                    warn!(namespace_id = ?namespace, %device, %err,
+                      "could not confirm the binding this link was meant to write");
+                    BindOutcome::Failed
+                }
+            }
+        }
         Err(err) => {
             warn!(namespace_id = ?namespace, %device, %err,
                   "could not extend a known device into this namespace");
@@ -218,11 +241,13 @@ async fn ensure_bound(
     }
 }
 
-/// Extend every device this account has already certified into `namespace`.
+/// Extend every device the account's registry names into `namespace`.
 ///
-/// Runs when this node gains a namespace and holds its scope key. Best-effort by
-/// construction: it returns what happened rather than a `Result`, so a join or a
-/// creation cannot fail because one device could not be carried across.
+/// Runs when this node gains a namespace and holds its scope key, on every node
+/// rather than only the holder: the registry replicates, so a paired device that
+/// founds or joins a namespace carries its in-scope siblings into it. Best-effort
+/// by construction - it returns what happened rather than a `Result`, so a join
+/// or a creation cannot fail because one device could not be carried across.
 pub async fn bind_known_devices(
     store: &Store,
     node_client: &NodeClient,
@@ -230,11 +255,19 @@ pub async fn bind_known_devices(
     namespace: &ContextGroupId,
     signer_sk: &PrivateKey,
 ) -> Vec<(DeviceId, BindOutcome)> {
-    let certs = match NodeDeviceRepository::new(store).device_certs() {
+    // A node following no account namespace has no registry, and so no siblings.
+    let read = NodeDeviceRepository::new(store)
+        .account_namespace()
+        .and_then(|found| {
+            found.map_or(Ok(Vec::new()), |ns| {
+                AccountDeviceRegistry::new(store, ns).devices()
+            })
+        });
+    let certs = match read {
         Ok(certs) => certs,
         Err(err) => {
             warn!(namespace_id = ?namespace, %err,
-                  "could not read this account's device certificates; binding none here");
+                  "could not read this account's device registry; binding none here");
             return Vec::new();
         }
     };
@@ -274,18 +307,83 @@ pub async fn bind_device_everywhere(
     outcomes
 }
 
+/// Publish the withdrawal of `device` into `namespace`, with the scope-key
+/// rotation where this node may sign one.
+///
+/// The rotation is admin-only - peers accept a sidecar only from an admin at the
+/// cut - so elsewhere the write right is gone and the rotation is left owed.
+/// `Ok(true)` means it rode along.
+pub async fn withdraw_device_in(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    device: DeviceId,
+    op: GroupOp,
+) -> EyreResult<bool> {
+    let what = op.op_kind_label();
+    // Answered where the op is going: a failed read costs the rotation, never
+    // the withdrawal.
+    let is_admin_here = member_account_in_namespace(store, namespace, &signer_sk.public_key())
+        .ok()
+        .flatten()
+        .is_some_and(|account| {
+            MembershipRepository::new(store)
+                .is_admin(namespace, &account)
+                .unwrap_or(false)
+        });
+    let bound_here = AccountBindingRepository::new(store)
+        .is_device_linked(namespace, device)
+        .unwrap_or(false);
+    let rotate = is_admin_here && bound_here;
+
+    let report = if rotate {
+        GroupGovernancePublisher::new(store, node_client, *namespace)
+            .sign_apply_and_publish_device_revocation(ack_router, signer_sk, op)
+            .await?
+    } else {
+        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, op)
+            .await?
+    };
+
+    if bound_here && !is_admin_here {
+        warn!(
+            namespace_id = ?namespace,
+            %device,
+            what,
+            "withdrawn without a key rotation: this node is not an admin here, so the device \
+             loses the right to write immediately but keeps the key it already holds until \
+             an admin rotates"
+        );
+    }
+    debug!(
+        namespace_id = ?namespace,
+        %device,
+        what,
+        published = report.is_some(),
+        key_rotated = rotate,
+        "device withdrawn"
+    );
+    Ok(rotate)
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::GroupMetaValue;
 
     use super::*;
-    use crate::test_fixtures::{namespace_publish_fixture, test_group_id, test_store};
+    use crate::test_fixtures::{
+        device_scope, enrol_member, namespace_publish_fixture, test_group_id, test_store,
+    };
     use crate::{AccountBindingRepository, MembershipRepository};
 
     const APP_ONE: [u8; 32] = [0x11; 32];
     const APP_TWO: [u8; 32] = [0x22; 32];
+    const ACCOUNT_NS: [u8; 32] = [0x4E; 32];
 
     fn app(id: [u8; 32]) -> calimero_primitives::application::ApplicationId {
         calimero_primitives::application::ApplicationId::from(id)
@@ -324,10 +422,45 @@ mod tests {
     }
 
     fn known(root_sk: &PrivateKey, seed: u8, applications: Vec<[u8; 32]>) -> KnownDeviceCert {
-        KnownDeviceCert {
-            proof: certify(root_sk, seed, [seed ^ 0xFF; 32]),
-            applications: applications.into_iter().map(app).collect(),
-        }
+        let proof = certify(root_sk, seed, [seed ^ 0xFF; 32]);
+        let scope = device_scope(
+            root_sk,
+            &proof.statement,
+            applications.into_iter().map(app).collect(),
+            0,
+        );
+        KnownDeviceCert { proof, scope }
+    }
+
+    /// Put a device in the account namespace's registry, the way the certified
+    /// op's apply does, and name that namespace so a bind can find it.
+    /// Derived while the store still holds a root, so a later account swap reads it.
+    fn register(
+        store: &Store,
+        root_sk: &PrivateKey,
+        proof: &AccountProof<DeviceCert>,
+        applications: &[[u8; 32]],
+    ) {
+        let namespace = account_namespace_of(store);
+        NodeDeviceRepository::new(store)
+            .store_account_namespace(&namespace)
+            .expect("record the account namespace");
+        let applications: Vec<_> = applications.iter().copied().map(app).collect();
+        // The SAME root that signed the certificate: a scope from another root
+        // does not authorise this device, which is what the apply gate checks.
+        let scope = device_scope(root_sk, &proof.statement, applications, 0);
+        let _recorded = AccountDeviceRegistry::new(store, namespace)
+            .record(proof, &scope)
+            .expect("record the device in the registry");
+    }
+
+    /// The namespace [`register`] writes into and [`bind_known_devices`] reads
+    /// from: whatever this store's own `account_namespace` resolves to right now.
+    fn account_namespace_of(store: &Store) -> ContextGroupId {
+        NodeDeviceRepository::new(store)
+            .account_namespace()
+            .expect("read the account namespace")
+            .expect("test_store provisions a root")
     }
 
     /// A namespace serving `application`, with a scope key this node holds - the
@@ -353,6 +486,17 @@ mod tests {
         let _key_id = GroupKeyring::new(store, *namespace)
             .store_key(&[0x42; 32])
             .expect("store a scope key");
+    }
+
+    /// The account namespace as the holder creates it: targeting no application,
+    /// a key, and the node-local row that names it.
+    fn account_namespace_serving(store: &Store) -> ContextGroupId {
+        let namespace = account_namespace_of(store);
+        namespace_serving(store, &namespace, [0x00; 32]);
+        NodeDeviceRepository::new(store)
+            .store_account_namespace(&namespace)
+            .expect("record the account namespace");
+        namespace
     }
 
     fn planned(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> BindOutcome {
@@ -419,6 +563,54 @@ mod tests {
         );
     }
 
+    /// Every device of the account belongs in the account namespace, whatever
+    /// its scope: it targets no application, so no scope could name it.
+    #[test]
+    fn a_scoped_device_is_bound_into_the_account_namespace() {
+        let store = test_store();
+        let account_namespace = account_namespace_serving(&store);
+        let root = PrivateKey::from([0x52; 32]);
+
+        assert_eq!(
+            planned(
+                &store,
+                &account_namespace,
+                &known(&root, 0x62, vec![APP_TWO])
+            ),
+            BindOutcome::Linked {
+                key_delivered: true
+            },
+        );
+    }
+
+    /// The exemption is for the account namespace alone. Any other namespace
+    /// whose target is unset still skips a scoped device, as before.
+    #[test]
+    fn an_unset_target_elsewhere_still_skips_a_scoped_device() {
+        let store = test_store();
+        let _account_namespace = account_namespace_serving(&store);
+        let other = ContextGroupId::from([0x4F; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &other,
+                &GroupMetaValue {
+                    target: calimero_store::key::GroupTarget::default(),
+                    created_at: 1_700_000_000,
+                    admin_identity: calimero_account::AccountId::from([0x01; 32]),
+                    owner_identity: calimero_account::AccountId::from([0x01; 32]),
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save");
+        let root = PrivateKey::from([0x52; 32]);
+
+        assert_eq!(
+            planned(&store, &other, &known(&root, 0x62, vec![APP_TWO])),
+            BindOutcome::OutOfScope,
+        );
+    }
+
     /// Revocation is terminal: the id is spent for good, so no later namespace
     /// gain may quietly hand it back.
     #[test]
@@ -453,6 +645,7 @@ mod tests {
                 &cert.proof.genesis,
                 &cert.proof.chain,
                 &cert.proof.statement,
+                0,
             )
             .expect("store the binding")
             .expect("the credential is admissible");
@@ -509,22 +702,23 @@ mod tests {
             .account_root()
             .expect("read")
             .expect("present");
+        let own_proof = AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: DeviceCert::sign(
+                root.signing_key(),
+                held.account,
+                held.device(),
+                &PrivateKey::from([0x68; 32]).public_key(),
+                &held.kem_public_key(),
+                0,
+                0,
+            )
+            .expect("sign"),
+        };
         let cert = KnownDeviceCert {
-            proof: AccountProof {
-                genesis: held.genesis,
-                chain: vec![],
-                statement: DeviceCert::sign(
-                    root.signing_key(),
-                    held.account,
-                    held.device(),
-                    &PrivateKey::from([0x68; 32]).public_key(),
-                    &held.kem_public_key(),
-                    0,
-                    0,
-                )
-                .expect("sign"),
-            },
-            applications: Vec::new(),
+            scope: device_scope(root.signing_key(), &own_proof.statement, Vec::new(), 0),
+            proof: own_proof,
         };
 
         assert_eq!(planned(&store, &ns, &cert), BindOutcome::OwnDevice);
@@ -539,16 +733,11 @@ mod tests {
             namespace_publish_fixture().await;
         let ns = ContextGroupId::from(ns_id.to_bytes());
         let root = account_root_of(&sk.public_key());
-        let devices = NodeDeviceRepository::new(&store);
 
         let in_scope = certify(&root, 0x71, [0x71; 32]);
         let out_of_scope = certify(&root, 0x72, [0x72; 32]);
-        devices
-            .remember_device_cert(&in_scope, &[])
-            .expect("remember the paired device");
-        devices
-            .remember_device_cert(&out_of_scope, &[app(APP_TWO)])
-            .expect("remember a device scoped elsewhere");
+        register(&store, &root, &in_scope, &[]);
+        register(&store, &root, &out_of_scope, &[APP_TWO]);
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
@@ -598,9 +787,10 @@ mod tests {
         // the ordinary "not caught up yet" state rather than a fault.
         let keyless = ContextGroupId::from([0xEE; 32]);
         let root = account_root_of(&sk.public_key());
+        let proof = certify(&root, 0x77, [0x77; 32]);
         let cert = KnownDeviceCert {
-            proof: certify(&root, 0x77, [0x77; 32]),
-            applications: Vec::new(),
+            scope: device_scope(&root, &proof.statement, Vec::new(), 0),
+            proof,
         };
         let _key_id = GroupKeyring::new(&store, repaired)
             .store_key(&[0x42; 32])
@@ -648,18 +838,13 @@ mod tests {
             namespace_publish_fixture().await;
         let ns = ContextGroupId::from(ns_id.to_bytes());
         let root = account_root_of(&sk.public_key());
-        let devices = NodeDeviceRepository::new(&store);
 
         // An all-zero agreement key is a degenerate X25519 point: the scope key
         // cannot be wrapped for it, so nothing about this device is publishable.
         let unaddressable = certify(&root, 0x73, [0u8; 32]);
         let healthy = certify(&root, 0x74, [0x74; 32]);
-        devices
-            .remember_device_cert(&unaddressable, &[])
-            .expect("remember");
-        devices
-            .remember_device_cert(&healthy, &[])
-            .expect("remember");
+        register(&store, &root, &unaddressable, &[]);
+        register(&store, &root, &healthy, &[]);
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
@@ -668,8 +853,8 @@ mod tests {
         // FIRST device the loop meets - otherwise "the rest continue" would be
         // proved by an ordering rather than by the loop.
         assert_eq!(
-            devices
-                .device_certs()
+            AccountDeviceRegistry::new(&store, account_namespace_of(&store))
+                .devices()
                 .expect("scan")
                 .first()
                 .map(KnownDeviceCert::device),
@@ -722,9 +907,7 @@ mod tests {
         let root = account_root_of(&sk.public_key());
 
         let revoked = certify(&root, 0x75, [0x75; 32]);
-        NodeDeviceRepository::new(&store)
-            .remember_device_cert(&revoked, &[])
-            .expect("remember");
+        register(&store, &root, &revoked, &[]);
         AccountBindingRepository::new(&store)
             .apply_revocation(&ns, revoked.statement.device)
             .expect("tombstone the device");
@@ -756,9 +939,7 @@ mod tests {
         let ns = ContextGroupId::from(ns_id.to_bytes());
         let root = account_root_of(&sk.public_key());
         let cert = certify(&root, 0x76, [0x76; 32]);
-        NodeDeviceRepository::new(&store)
-            .remember_device_cert(&cert, &[])
-            .expect("remember");
+        register(&store, &root, &cert, &[]);
         let _key_id = GroupKeyring::new(&store, ns)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
@@ -782,6 +963,268 @@ mod tests {
                 .into_iter()
                 .all(|binding| binding.device != cert.statement.device),
             "a link endorsed by a non-member must not record a binding"
+        );
+    }
+
+    /// A device revoked in the ACCOUNT namespace must never be carried into a
+    /// namespace gained later: the tombstone a binder checks is the target
+    /// namespace's, and the target has none. The healthy device beside it is
+    /// what keeps this from passing for the wrong reason.
+    #[actix::test]
+    async fn a_device_revoked_in_the_account_namespace_is_never_carried_into_a_gain() {
+        let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&sk.public_key());
+        let spent = certify(&root, 0x79, [0x79; 32]);
+        let kept = certify(&root, 0x7A, [0x7A; 32]);
+        register(&store, &root, &spent, &[]);
+        register(&store, &root, &kept, &[]);
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace_of(&store), spent.statement.device)
+            .expect("tombstone the device where the account records it");
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+
+        let outcomes = bind_known_devices(&store, &node_client, &ack_router, &ns, &sk).await;
+
+        assert_eq!(
+            outcomes,
+            vec![(
+                kept.statement.device,
+                BindOutcome::Linked {
+                    key_delivered: true
+                }
+            )],
+            "the revoked device must not even be offered to the binder"
+        );
+    }
+
+    /// The registry lives in the account namespace, so a node that names none
+    /// has nowhere to read this account's devices from. The second half is what
+    /// makes the first mean something: the same store, one row later, binds.
+    #[actix::test]
+    async fn a_registry_this_node_does_not_name_binds_nobody() {
+        let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&sk.public_key());
+        let cert = certify(&root, 0x7B, [0x7B; 32]);
+        let account_namespace = ContextGroupId::from(ACCOUNT_NS);
+        let _recorded = AccountDeviceRegistry::new(&store, account_namespace)
+            .record(&cert, &device_scope(&root, &cert.statement, Vec::new(), 0))
+            .expect("record the device in a registry nothing names yet");
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+
+        // This node's own root would otherwise win the read outright; adopting
+        // root's account is what leaves the naming below as the thing that decides.
+        let devices = NodeDeviceRepository::new(&store);
+        let _adopted = devices
+            .ensure_enrolled_into(&[ns], AccountGenesis::new(root.public_key()))
+            .expect("adopt the account the row will need to name");
+        assert!(devices.holder_root().expect("read").is_none());
+
+        assert!(
+            bind_known_devices(&store, &node_client, &ack_router, &ns, &sk)
+                .await
+                .is_empty(),
+            "a registry this node does not name is not this node's registry"
+        );
+
+        devices
+            .store_account_namespace(&account_namespace)
+            .expect("name it");
+        assert_eq!(
+            bind_known_devices(&store, &node_client, &ack_router, &ns, &sk).await,
+            vec![(
+                cert.statement.device,
+                BindOutcome::Linked {
+                    key_delivered: true
+                }
+            )],
+        );
+    }
+
+    /// The headline of the registry: a node that holds no account root of its
+    /// own - a paired device - carries its siblings into a namespace it gains,
+    /// with the scope only the account root could have signed.
+    #[actix::test]
+    async fn a_node_holding_no_root_of_this_account_still_binds_its_siblings() {
+        let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&sk.public_key());
+        let sibling = certify(&root, 0x7C, [0x7C; 32]);
+        register(&store, &root, &sibling, &[]);
+
+        // What pairing leaves behind: a device of somebody else's account, so
+        // `holder_root` answers `None` and only the recorded row names the
+        // registry.
+        let devices = NodeDeviceRepository::new(&store);
+        devices.delete().expect("release the slot");
+        let _adopted = devices
+            .ensure_enrolled_into(&[ns], AccountGenesis::new(root.public_key()))
+            .expect("adopt the account this node is a device of");
+        assert!(devices.holder_root().expect("read").is_none());
+
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+
+        let outcomes = bind_known_devices(&store, &node_client, &ack_router, &ns, &sk).await;
+
+        assert_eq!(
+            outcomes
+                .iter()
+                .find(|(device, _)| *device == sibling.statement.device)
+                .map(|(_, outcome)| *outcome),
+            Some(BindOutcome::Linked {
+                key_delivered: true
+            }),
+        );
+    }
+
+    /// A link whose apply refused it is not a link: the binding row is the durable
+    /// write, so reporting off the publish alone overstates what the caller has.
+    #[actix::test]
+    async fn a_link_the_apply_refused_is_not_reported_as_linked() {
+        let (store, node_client, ack_router, ns_id, _admin_sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        namespace_serving(&store, &ns, APP_ONE);
+
+        // A signer this namespace holds no membership for, so the endorsement its
+        // link carries is refused at the cut and no binding is written.
+        let stranger_sk = PrivateKey::from([0x6A; 32]);
+        let cert = known(&account_root_of(&stranger_sk.public_key()), 0x6B, vec![]);
+
+        let outcomes = bind_device_everywhere(
+            &store,
+            &node_client,
+            &ack_router,
+            &[ns],
+            &stranger_sk,
+            &cert,
+        )
+        .await;
+
+        assert_eq!(
+            outcomes,
+            vec![(ns, BindOutcome::Failed)],
+            "a namespace that did not record the binding must not be reported as linked"
+        );
+        assert!(!AccountBindingRepository::new(&store)
+            .is_device_linked(&ns, cert.device())
+            .expect("read the bindings"));
+    }
+
+    /// The one thing the extraction changed: what the operator is told about the
+    /// rotation. Only an admin's withdrawal carries one; a member leaves it owed.
+    #[actix::test]
+    async fn the_rotation_rides_along_only_for_an_admin_signer() {
+        let (store, node_client, ack_router, ns_id, admin_sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&admin_sk.public_key());
+        let cert = certify(&root, 0x7D, [0x7D; 32]);
+        let device = cert.statement.device;
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &cert.genesis, &cert.chain, &cert.statement, 0)
+            .expect("bind the device the withdrawal names");
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key the rotation replaces");
+        let op = GroupOp::AccountDeviceUnlinked {
+            account: cert.statement.account,
+            device,
+            proof: None,
+        };
+
+        assert!(
+            withdraw_device_in(
+                &store,
+                &node_client,
+                &ack_router,
+                &ns,
+                &admin_sk,
+                device,
+                op.clone(),
+            )
+            .await
+            .expect("the admin's withdrawal publishes"),
+            "an admin may rotate, so the rotation rides on the withdrawal"
+        );
+
+        // A second, still-bound device: the first one's id is spent, and an
+        // unbound device would make the member's turn pass for the wrong reason.
+        let other = certify(&root, 0x7E, [0x7E; 32]);
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &other.genesis, &other.chain, &other.statement, 0)
+            .expect("bind the device the member's withdrawal names");
+        let member_sk = PrivateKey::from([0x5A; 32]);
+        let member = enrol_member(&store, &ns, &member_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns, &member, GroupMemberRole::Member)
+            .expect("a plain member of this namespace");
+
+        assert!(
+            !withdraw_device_in(
+                &store,
+                &node_client,
+                &ack_router,
+                &ns,
+                &member_sk,
+                other.statement.device,
+                GroupOp::AccountDeviceUnlinked {
+                    account: other.statement.account,
+                    device: other.statement.device,
+                    proof: None,
+                },
+            )
+            .await
+            .expect("the member's withdrawal publishes"),
+            "a plain member withdraws the device and leaves the rotation owed"
+        );
+    }
+
+    /// A descope is published even where the device was never bound - that writes
+    /// the floor - but there is no key it held, so nothing is rotated.
+    #[actix::test]
+    async fn a_withdrawal_where_nothing_is_bound_rotates_nothing() {
+        let (store, node_client, ack_router, ns_id, admin_sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let root = account_root_of(&admin_sk.public_key());
+        let cert = certify(&root, 0x7F, [0x7F; 32]);
+        let device = cert.statement.device;
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold a scope key the rotation would replace");
+        assert!(!AccountBindingRepository::new(&store)
+            .is_device_linked(&ns, device)
+            .expect("read the bindings"));
+
+        assert!(
+            !withdraw_device_in(
+                &store,
+                &node_client,
+                &ack_router,
+                &ns,
+                &admin_sk,
+                device,
+                GroupOp::AccountDeviceDescoped {
+                    account: cert.statement.account,
+                    device,
+                    application: Some(app(APP_ONE)),
+                    scope: Box::new(device_scope(&root, &cert.statement, vec![app(APP_TWO)], 1,)),
+                },
+            )
+            .await
+            .expect("the withdrawal publishes"),
+            "an admin rotates only where the device actually held the key"
         );
     }
 }

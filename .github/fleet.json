@@ -7,6 +7,14 @@
     "          a workspace root's [workspace.dependencies]",
     "  npm   — declares @calimero-network/* packages in some package.json",
     "  tauri — links no SDK; ships a merod BINARY named in merod-config.json",
+    "  tee   — links no SDK either; builds the confidential-VM image the hosted",
+    "          fleet runs, which BUNDLES a merod named in mero-tee/versions.json",
+    "",
+    "mero-tee was missing from this list until rc.39 and nothing noticed: it sat",
+    "on merod 0.11.0-rc.35 across four releases — 37 commits, including every",
+    "account, session and warrant change delegated execution is built out of — so",
+    "the hosted fleet could not run that path at all. A pin nobody bumps is",
+    "invisible precisely because no test and no build ever reads it.",
     "",
     "A consumer's manifests need not sit at either known path. calimero-studio's",
     "pins are workspace roots at foundation-app/base/logic/Cargo.toml — the",
@@ -16,9 +24,9 @@
     "looking for any Cargo.toml in the tree that pins core, so a repository does",
     "not have to be reshaped to be bumpable.",
     "",
-    "A core release moves `cargo` and `tauri`. `npm` is recorded because the same",
+    "A core release moves `cargo`, `tauri` and `tee`. `npm` is recorded because the same",
     "shape of file is read by the equivalent workflow in mero-js, mero-react and",
-    "design-system; fleet-bump.yml here selects cargo and tauri only.",
+    "design-system; fleet-bump.yml here selects the core-release surfaces only.",
     "",
     "A repository's DEFAULT BRANCH is deliberately not recorded here. The fleet is",
     "split roughly evenly between master and main, and a hand-maintained table of",
@@ -66,7 +74,8 @@
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "tauri-app", "surfaces": ["npm", "tauri"] },
     { "repo": "app-registry", "surfaces": ["npm"] },
-    { "repo": "calimero-studio", "surfaces": ["cargo"] }
+    { "repo": "calimero-studio", "surfaces": ["cargo"] },
+    { "repo": "mero-tee", "surfaces": ["tee"] }
   ],
 
   "_migrated_note": [
