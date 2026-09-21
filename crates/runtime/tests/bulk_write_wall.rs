@@ -21,160 +21,32 @@
 //!
 //!   cargo test -p calimero-runtime --test bulk_write_wall -- --ignored --nocapture
 
-use std::path::PathBuf;
-use std::process::Command;
-
-use calimero_account::AccountId;
-use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
-use calimero_runtime::logic::{Outcome, VMLimits};
+use calimero_runtime::logic::VMLimits;
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates/")
-        .parent()
-        .expect("workspace root")
-        .to_path_buf()
-}
+mod wall_harness;
 
-fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
-    fn visit(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, newest);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                    *newest = Some(newest.map_or(m, |cur| cur.max(m)));
-                }
-            }
-        }
-    }
-    let mut newest = None;
-    visit(&app_dir.join("src"), &mut newest);
-    for f in ["Cargo.toml", "build.rs"] {
-        if let Ok(m) = std::fs::metadata(app_dir.join(f)).and_then(|m| m.modified()) {
-            newest = Some(newest.map_or(m, |cur| cur.max(m)));
-        }
-    }
-    newest
-}
+use wall_harness::{call, guest_wasm, Probe, Verdict};
 
-/// Build `bulk-write-bench` once per test-binary run (cached on disk,
-/// rebuilt only when stale), mirroring `rga_wall.rs::editor_wasm`.
+/// The guest this probe drives. No in-repo gate covers the same property, so
+/// a drift message has nothing extra to point at.
+const PROBE: Probe = Probe {
+    app: "bulk-write-bench",
+    gate: "",
+};
+
 fn bench_wasm() -> Vec<u8> {
-    let app_dir = workspace_root().join("apps/bulk-write-bench");
-    let wasm_path = app_dir.join("res/bulk_write_bench.wasm");
-
-    let wasm_mtime = std::fs::metadata(&wasm_path)
-        .and_then(|m| m.modified())
-        .ok();
-    let needs_build = match (wasm_mtime, newest_mtime(&app_dir)) {
-        (Some(w), Some(s)) => w < s,
-        _ => true,
-    };
-    if needs_build {
-        let output = Command::new(env!("CARGO"))
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "cargo-mero",
-                "--",
-                "mero",
-                "build",
-                "--manifest-path",
-            ])
-            .arg(app_dir.join("Cargo.toml"))
-            .output()
-            .expect("failed to spawn cargo mero build");
-        assert!(
-            output.status.success(),
-            "building bulk-write-bench wasm failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    std::fs::read(&wasm_path).unwrap_or_else(|e| panic!("{}: {e}", wasm_path.display()))
-}
-
-fn call(
-    module: &calimero_runtime::Module,
-    storage: &mut InMemoryStorage,
-    method: &str,
-    args: &serde_json::Value,
-) -> Outcome {
-    module
-        .run(
-            [0_u8; 32].into(),
-            AccountId::from([0_u8; 32]),
-            [0_u8; 32].into(),
-            method,
-            &serde_json::to_vec(args).expect("encode args"),
-            storage,
-            None,
-            None,
-        )
-        .expect("run must return an Outcome")
-}
-
-/// Same discipline as `rga_wall.rs`: `GasExhausted` is the only failure that
-/// is a measurement. Anything else means the call site drifted from the
-/// app's real signature, and must never be reported as a wall.
-enum Verdict {
-    Wall { limit: u64 },
-    Drift(String),
-}
-
-fn classify(method: &str, error: &FunctionCallError) -> Verdict {
-    match error {
-        FunctionCallError::GasExhausted { limit } => Verdict::Wall { limit: *limit },
-        FunctionCallError::ExecutionError(payload) => Verdict::Drift(format!(
-            "{method} returned an application error: {}\n\
-             Compare the call site below against bulk-write-bench's current \
-             #[app::logic] signature.",
-            String::from_utf8_lossy(payload)
-        )),
-        other => Verdict::Drift(format!("{method} failed: {other}")),
-    }
-}
-
-fn drift(detail: &str) -> ! {
-    panic!(
-        "\n\
-         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
-         {detail}\n\
-         \n\
-         Nothing has been measured and no wall has been found; fix the call site in this \
-         file, then rerun.\n\
-         ==============================================================================\n"
-    )
-}
-
-fn expect_ok(outcome: &Outcome, method: &str) {
-    if let Err(error) = &outcome.returns {
-        match classify(method, error) {
-            Verdict::Drift(detail) => drift(&detail),
-            Verdict::Wall { limit } => drift(&format!(
-                "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 with n=0. That is not a wall - a wall needs entries behind it."
-            )),
-        }
-    }
+    guest_wasm(PROBE.app)
 }
 
 fn preflight(module: &calimero_runtime::Module, method: &str) {
     let mut storage = InMemoryStorage::default();
-    expect_ok(
+    PROBE.expect_ok(
         &call(module, &mut storage, "init", &serde_json::json!({})),
         "init",
     );
-    expect_ok(
+    PROBE.expect_ok(
         &call(
             module,
             &mut storage,
@@ -198,7 +70,7 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
     let mut hi = 8_192_usize;
     {
         let mut storage = InMemoryStorage::default();
-        expect_ok(
+        PROBE.expect_ok(
             &call(module, &mut storage, "init", &serde_json::json!({})),
             "init",
         );
@@ -209,14 +81,14 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
             &serde_json::json!({"n": hi as u32}),
         );
         match &outcome.returns {
-            Ok(_) => drift(&format!(
+            Ok(_) => PROBE.drift(&format!(
                 "a single {method} call with n={hi} into an EMPTY collection succeeded. \
                  The seeded upper bound for this search is no longer past the wall; \
                  raise it in this file."
             )),
-            Err(error) => match classify(method, error) {
+            Err(error) => match PROBE.classify(method, error) {
                 Verdict::Wall { .. } => {}
-                Verdict::Drift(detail) => drift(&detail),
+                Verdict::Drift(detail) => PROBE.drift(&detail),
             },
         }
     }
@@ -227,7 +99,7 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
         let mut storage = InMemoryStorage::default();
-        expect_ok(
+        PROBE.expect_ok(
             &call(module, &mut storage, "init", &serde_json::json!({})),
             "init",
         );
@@ -244,9 +116,9 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
                 lo_reads = outcome.storage_reads;
                 lo_writes = outcome.storage_writes;
             }
-            Err(error) => match classify(method, error) {
+            Err(error) => match PROBE.classify(method, error) {
                 Verdict::Wall { .. } => hi = mid,
-                Verdict::Drift(detail) => drift(&detail),
+                Verdict::Drift(detail) => PROBE.drift(&detail),
             },
         }
     }
@@ -306,48 +178,4 @@ fn single_call_write_walls() {
             "{label}: binary search did not converge to adjacent lo/hi"
         );
     }
-}
-
-/// The discriminator itself runs in CI, even though the sweep above does not:
-/// everything here rests on `classify` telling a measured wall apart from a
-/// stale call signature.
-#[test]
-fn only_gas_exhaustion_counts_as_a_wall() {
-    assert!(
-        matches!(
-            classify(
-                "insert_n_map",
-                &FunctionCallError::GasExhausted { limit: 1_000 }
-            ),
-            Verdict::Wall { limit: 1_000 }
-        ),
-        "gas exhaustion is the one failure that is a measurement"
-    );
-
-    let Verdict::Drift(detail) = classify(
-        "insert_n_map",
-        &FunctionCallError::ExecutionError(b"missing field `n`".to_vec()),
-    ) else {
-        panic!(
-            "an application error was classified as a wall - the probe would report \
-             a fictional number"
-        );
-    };
-    assert!(
-        detail.contains('n'),
-        "the drift message must carry the app's own complaint, got: {detail}"
-    );
-
-    let Verdict::Drift(detail) = classify(
-        "insert_n_map",
-        &FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
-            name: "insert_n_map".to_owned(),
-        }),
-    ) else {
-        panic!("a renamed method was classified as a wall");
-    };
-    assert!(
-        detail.contains("insert_n_map"),
-        "the drift message must name the method, got: {detail}"
-    );
 }

@@ -46,10 +46,26 @@ use std::process::Command;
 use std::time::Instant;
 
 use calimero_account::AccountId;
-use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
 use calimero_runtime::logic::{Outcome, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
+
+mod wall_harness;
+
+use wall_harness::{Probe, Verdict};
+
+/// The contract this probe drives, and the gate that covers the same property
+/// without it.
+const PROBE: Probe = Probe {
+    app: "mero-chat",
+    gate: "\n\
+           This probe drives a contract in another repo (mero-chat-pwa) whose call \
+           arguments are hand-written here, so they go stale.\n\
+           \n\
+           The in-repo gate for the same property does not depend on that contract:\n\
+           \x20 cargo test -p storage-cost      (vector_get_nth, tools/storage-cost)\n\
+           \x20 ./scripts/check-storage-cost.sh\n",
+};
 
 /// The real mero-chat contract, as a sibling checkout of this workspace.
 ///
@@ -105,7 +121,7 @@ fn build_curb_wasm() -> Vec<u8> {
     let manifest = std::fs::read_to_string(logic_dir.join("Cargo.toml"))
         .expect("mero-chat logic manifest is readable");
     if manifest.contains(&format!("[patch.\"{CORE_GIT_SOURCE}\"]")) {
-        drift(&format!(
+        PROBE.drift(&format!(
             "{}/Cargo.toml contains its own [patch.\"{CORE_GIT_SOURCE}\"] section.\n\
              That overrides the redirect this probe injects, so the build would measure \
              the tree that patch names, not this one. Remove it (it is a workstation-only \
@@ -246,17 +262,17 @@ fn total_count(outcome: &Outcome) -> usize {
     let body = outcome
         .returns
         .as_ref()
-        .unwrap_or_else(|_| drift("get_messages failed while reading total_count"))
+        .unwrap_or_else(|_| PROBE.drift("get_messages failed while reading total_count"))
         .as_ref()
-        .unwrap_or_else(|| drift("get_messages returned no value at all"));
+        .unwrap_or_else(|| PROBE.drift("get_messages returned no value at all"));
     let parsed: serde_json::Value = serde_json::from_slice(body)
-        .unwrap_or_else(|e| drift(&format!("get_messages did not return JSON: {e}")));
+        .unwrap_or_else(|e| PROBE.drift(&format!("get_messages did not return JSON: {e}")));
     parsed
         .pointer("/output/total_count")
         .or_else(|| parsed.get("total_count"))
         .and_then(serde_json::Value::as_u64)
         .unwrap_or_else(|| {
-            drift(&format!(
+            PROBE.drift(&format!(
                 "no total_count in the get_messages response: {parsed}"
             ))
         }) as usize
@@ -268,81 +284,21 @@ fn total_count(outcome: &Outcome) -> usize {
 fn preflight(module: &calimero_runtime::Module) {
     let mut storage = InMemoryStorage::default();
 
-    expect_ok(&call(module, &mut storage, "init", &init_args()), "init");
-    expect_ok(
+    PROBE.expect_ok(&call(module, &mut storage, "init", &init_args()), "init");
+    PROBE.expect_ok(
         &call(module, &mut storage, "send_message", &send_message_args(0)),
         "send_message",
     );
     let read = call(module, &mut storage, "get_messages", &get_messages_args());
-    expect_ok(&read, "get_messages");
+    PROBE.expect_ok(&read, "get_messages");
 
     let total = total_count(&read);
     if total != 1 {
-        drift(&format!(
+        PROBE.drift(&format!(
             "after one send_message, get_messages reports total_count={total}, not 1. \
              The write is not landing where the read looks, so every number this probe \
              would produce is an artifact."
         ));
-    }
-}
-
-/// What a failed call means. The distinction is the whole point of this probe:
-/// a measured wall and a broken harness must never be reported the same way.
-enum Verdict {
-    /// The guest ran and exhausted its budget. This is a result.
-    Wall { limit: u64 },
-    /// The guest did not get far enough to cost anything meaningful. This is
-    /// not a result, and must never be presented as one.
-    Drift(String),
-}
-
-/// Classify a failed outcome. `GasExhausted` is the ONLY failure that counts
-/// as a wall; `ExecutionError` in particular does not, since that is how a
-/// `#[app::logic]` method reports arguments it cannot deserialize.
-fn classify(method: &str, error: &FunctionCallError) -> Verdict {
-    match error {
-        FunctionCallError::GasExhausted { limit } => Verdict::Wall { limit: *limit },
-        FunctionCallError::ExecutionError(payload) => Verdict::Drift(format!(
-            "{method} returned an application error: {}\n\
-             The usual cause is an argument this probe passes that the contract no \
-             longer takes (or one it now requires). Compare the call site below \
-             against mero-chat's current #[app::logic] signature.",
-            String::from_utf8_lossy(payload)
-        )),
-        other => Verdict::Drift(format!("{method} failed: {other}")),
-    }
-}
-
-/// Panic with a message that cannot be mistaken for a measurement.
-fn drift(detail: &str) -> ! {
-    panic!(
-        "\n\
-         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
-         {detail}\n\
-         \n\
-         This probe drives a contract in another repo (mero-chat-pwa) and its call\n\
-         arguments are hand-written here, so they go stale. Nothing has been measured\n\
-         and no wall has been found; fix the call site in this file, then rerun.\n\
-         \n\
-         The in-repo gate for the same property does not depend on that contract:\n\
-         \x20 cargo test -p storage-cost      (vector_get_nth, tools/storage-cost)\n\
-         \x20 ./scripts/check-storage-cost.sh\n\
-         ==============================================================================\n"
-    )
-}
-
-/// Run a call that is expected to succeed; drift if it does not.
-fn expect_ok(outcome: &Outcome, method: &str) {
-    if let Err(error) = &outcome.returns {
-        match classify(method, error) {
-            Verdict::Drift(detail) => drift(&detail),
-            Verdict::Wall { limit } => drift(&format!(
-                "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 against an empty store. That is not a wall - a wall needs data behind \
-                 it. Either max_gas has been lowered dramatically or the contract now \
-                 does unbounded work at n=0."
-            )),
-        }
     }
 }
 
@@ -367,7 +323,7 @@ fn how_many_messages_before_send_message_walls() {
     // store already holds, so it must persist across calls.
     let mut storage = InMemoryStorage::default();
 
-    expect_ok(&call(&module, &mut storage, "init", &init_args()), "init");
+    PROBE.expect_ok(&call(&module, &mut storage, "init", &init_args()), "init");
 
     // Geometric read probes: get_messages is O(n) in the app, so probing it
     // every append would dominate the run. These points are enough to see the
@@ -395,7 +351,7 @@ fn how_many_messages_before_send_message_walls() {
         let write_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         if let Err(error) = &outcome.returns {
-            match classify("send_message", error) {
+            match PROBE.classify("send_message", error) {
                 Verdict::Wall { limit } => {
                     println!("\nWRITE WALL at {landed} (gas limit {limit})");
                     write_wall = Some(landed);
@@ -405,7 +361,7 @@ fn how_many_messages_before_send_message_walls() {
                 // ago with an empty store. Failing now for a non-gas reason is
                 // a state-dependent bug, not a cost measurement, and reporting
                 // it as a wall would put a fictional number in a document.
-                Verdict::Drift(detail) => drift(&format!(
+                Verdict::Drift(detail) => PROBE.drift(&format!(
                     "{detail}\n\
                      This appeared only after {landed} messages, so it is state-dependent \
                      rather than a stale signature."
@@ -428,7 +384,7 @@ fn how_many_messages_before_send_message_walls() {
                     // every call, which looks exactly like success.
                     let total = total_count(&read);
                     if total != landed {
-                        drift(&format!(
+                        PROBE.drift(&format!(
                             "store holds {total} but {landed} were appended — the cost \
                              curve would be an artifact, not a result"
                         ));
@@ -442,7 +398,7 @@ fn how_many_messages_before_send_message_walls() {
                         outcome.gas_used, outcome.storage_reads, read.gas_used, read.storage_reads,
                     );
                 }
-                Err(error) => match classify("get_messages", error) {
+                Err(error) => match PROBE.classify("get_messages", error) {
                     Verdict::Wall { .. } => {
                         println!(
                             "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>7.1} | READ WALL (gas exhausted)",
@@ -452,7 +408,7 @@ fn how_many_messages_before_send_message_walls() {
                             read_wall = Some(landed);
                         }
                     }
-                    Verdict::Drift(detail) => drift(&detail),
+                    Verdict::Drift(detail) => PROBE.drift(&detail),
                 },
             }
         }
@@ -491,49 +447,4 @@ fn how_many_messages_before_send_message_walls() {
              before quoting the number."
         );
     }
-}
-
-/// The discriminator itself runs in CI, even though the probe does not:
-/// everything here rests on `classify` telling a measured wall apart from a
-/// stale call signature, and it has no other coverage.
-#[test]
-fn only_gas_exhaustion_counts_as_a_wall() {
-    assert!(
-        matches!(
-            classify(
-                "send_message",
-                &FunctionCallError::GasExhausted { limit: 1_000 }
-            ),
-            Verdict::Wall { limit: 1_000 }
-        ),
-        "gas exhaustion is the one failure that is a measurement"
-    );
-
-    // How a #[app::logic] method reports arguments it cannot deserialize.
-    let Verdict::Drift(detail) = classify(
-        "send_message",
-        &FunctionCallError::ExecutionError(b"missing field `sender_username`".to_vec()),
-    ) else {
-        panic!(
-            "an application error was classified as a wall - the probe would report \
-                a fictional number"
-        );
-    };
-    assert!(
-        detail.contains("sender_username"),
-        "the drift message must carry the contract's own complaint, got: {detail}"
-    );
-
-    let Verdict::Drift(detail) = classify(
-        "get_messages",
-        &FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
-            name: "get_messages".to_owned(),
-        }),
-    ) else {
-        panic!("a renamed method was classified as a wall");
-    };
-    assert!(
-        detail.contains("get_messages"),
-        "the drift message must name the method, got: {detail}"
-    );
 }

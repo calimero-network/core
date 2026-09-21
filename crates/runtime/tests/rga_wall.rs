@@ -30,177 +30,39 @@
 //! Raise the ceiling if the wall has moved out of the default range:
 //!   RGA_WALL_CEILING=20000 cargo test ... -- --ignored --nocapture
 
-use std::path::PathBuf;
-use std::process::Command;
 use std::time::Instant;
 
-use calimero_account::AccountId;
-use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
-use calimero_runtime::logic::{Outcome, VMLimits};
+use calimero_runtime::logic::VMLimits;
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 
-fn workspace_root() -> PathBuf {
-    // crates/runtime/ -> ../../
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates/")
-        .parent()
-        .expect("workspace root")
-        .to_path_buf()
-}
+mod wall_harness;
 
-/// Newest mtime across the app's build inputs, so this probe never silently
-/// measures a stale binary. Mirrors `tracing_logs.rs`'s fixture.
-fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
-    fn visit(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, newest);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                    *newest = Some(newest.map_or(m, |cur| cur.max(m)));
-                }
-            }
-        }
-    }
-    let mut newest = None;
-    visit(&app_dir.join("src"), &mut newest);
-    for f in ["Cargo.toml", "build.rs"] {
-        if let Ok(m) = std::fs::metadata(app_dir.join(f)).and_then(|m| m.modified()) {
-            newest = Some(newest.map_or(m, |cur| cur.max(m)));
-        }
-    }
-    newest
-}
+use wall_harness::{call, guest_wasm, Probe, Verdict};
 
-/// Build `collaborative-editor` once per test-binary run (cached on disk,
-/// rebuilt only when stale) and return its wasm bytes.
+/// The guest this probe drives, and the gate that covers the same property
+/// without it.
+const PROBE: Probe = Probe {
+    app: "collaborative-editor",
+    gate: "\n\
+           The in-repo gate for the related property does not depend on this app:\n\
+           \x20 cargo test -p storage-cost      (rga_insert_per_char, rga_get_nth)\n\
+           \x20 ./scripts/check-storage-cost.sh\n",
+};
+
 fn editor_wasm() -> Vec<u8> {
-    let app_dir = workspace_root().join("apps/collaborative-editor");
-    let wasm_path = app_dir.join("res/collaborative_editor.wasm");
-
-    let wasm_mtime = std::fs::metadata(&wasm_path)
-        .and_then(|m| m.modified())
-        .ok();
-    let needs_build = match (wasm_mtime, newest_mtime(&app_dir)) {
-        (Some(w), Some(s)) => w < s,
-        _ => true,
-    };
-    if needs_build {
-        let output = Command::new(env!("CARGO"))
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "cargo-mero",
-                "--",
-                "mero",
-                "build",
-                "--manifest-path",
-            ])
-            .arg(app_dir.join("Cargo.toml"))
-            .output()
-            .expect("failed to spawn cargo mero build");
-        assert!(
-            output.status.success(),
-            "building collaborative-editor wasm failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    std::fs::read(&wasm_path).unwrap_or_else(|e| panic!("{}: {e}", wasm_path.display()))
-}
-
-fn call(
-    module: &calimero_runtime::Module,
-    storage: &mut InMemoryStorage,
-    method: &str,
-    args: &serde_json::Value,
-) -> Outcome {
-    module
-        .run(
-            [0_u8; 32].into(),
-            AccountId::from([0_u8; 32]),
-            [0_u8; 32].into(),
-            method,
-            &serde_json::to_vec(args).expect("encode args"),
-            storage,
-            None,
-            None,
-        )
-        .expect("run must return an Outcome")
-}
-
-/// What a failed call means. As in `chat_wall`: a measured wall and a broken
-/// harness must never be reported the same way.
-enum Verdict {
-    /// The guest ran and exhausted its budget. This is a result.
-    Wall { limit: u64 },
-    /// The guest did not get far enough to cost anything meaningful. This is
-    /// not a result, and must never be presented as one.
-    Drift(String),
-}
-
-/// Classify a failed outcome. `GasExhausted` is the ONLY failure that counts
-/// as a wall.
-fn classify(method: &str, error: &FunctionCallError) -> Verdict {
-    match error {
-        FunctionCallError::GasExhausted { limit } => Verdict::Wall { limit: *limit },
-        FunctionCallError::ExecutionError(payload) => Verdict::Drift(format!(
-            "{method} returned an application error: {}\n\
-             The usual cause is an argument this probe passes that the app no longer \
-             takes. Compare the call site below against collaborative-editor's current \
-             #[app::logic] signature.",
-            String::from_utf8_lossy(payload)
-        )),
-        other => Verdict::Drift(format!("{method} failed: {other}")),
-    }
-}
-
-fn drift(detail: &str) -> ! {
-    panic!(
-        "\n\
-         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
-         {detail}\n\
-         \n\
-         Nothing has been measured and no wall has been found; fix the call site in this \
-         file, then rerun.\n\
-         \n\
-         The in-repo gate for the related property does not depend on this app:\n\
-         \x20 cargo test -p storage-cost      (rga_insert_per_char, rga_get_nth)\n\
-         \x20 ./scripts/check-storage-cost.sh\n\
-         ==============================================================================\n"
-    )
-}
-
-fn expect_ok(outcome: &Outcome, method: &str) {
-    if let Err(error) = &outcome.returns {
-        match classify(method, error) {
-            Verdict::Drift(detail) => drift(&detail),
-            Verdict::Wall { limit } => drift(&format!(
-                "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 against an empty document. That is not a wall - a wall needs data \
-                 behind it. Either max_gas has been lowered dramatically or the app now \
-                 does unbounded work at n=0."
-            )),
-        }
-    }
+    guest_wasm(PROBE.app)
 }
 
 /// Prove the app still answers the calls this probe makes, on a THROWAWAY
 /// store, before spending minutes on a sweep.
 fn preflight(module: &calimero_runtime::Module) {
     let mut storage = InMemoryStorage::default();
-    expect_ok(
+    PROBE.expect_ok(
         &call(module, &mut storage, "init", &serde_json::json!({})),
         "init",
     );
-    expect_ok(
+    PROBE.expect_ok(
         &call(
             module,
             &mut storage,
@@ -210,20 +72,15 @@ fn preflight(module: &calimero_runtime::Module) {
         "insert_text",
     );
     let read = call(module, &mut storage, "get_text", &serde_json::json!({}));
-    expect_ok(&read, "get_text");
+    PROBE.expect_ok(&read, "get_text");
     // `get_text` returns the document as a bare JSON string, not wrapped in an
     // "output" envelope: confirmed against the compiled app, not assumed.
-    let body = read
-        .returns
-        .as_ref()
-        .unwrap_or_else(|_| drift("get_text failed during preflight"))
-        .as_ref()
-        .unwrap_or_else(|| drift("get_text returned no value at all"));
-    let text: String = serde_json::from_slice(body)
-        .unwrap_or_else(|e| drift(&format!("get_text did not return a JSON string: {e}")));
+    let text: String = PROBE.decode(&read, "get_text");
     if text != "a" {
-        drift(&format!(
-            "after one insert_text(0, \"a\"), get_text() returned {text:?}, not \"a\".              The write is not landing where the read looks, so every number this probe              would produce is an artifact."
+        PROBE.drift(&format!(
+            "after one insert_text(0, \"a\"), get_text() returned {text:?}, not \"a\". \
+             The write is not landing where the read looks, so every number this probe \
+             would produce is an artifact."
         ));
     }
 }
@@ -263,7 +120,7 @@ fn typing_and_reading_walls() {
     preflight(&module);
 
     let mut storage = InMemoryStorage::default();
-    expect_ok(
+    PROBE.expect_ok(
         &call(&module, &mut storage, "init", &serde_json::json!({})),
         "init",
     );
@@ -291,13 +148,13 @@ fn typing_and_reading_walls() {
         let write_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         if let Err(error) = &outcome.returns {
-            match classify("insert_text", error) {
+            match PROBE.classify("insert_text", error) {
                 Verdict::Wall { limit } => {
                     println!("\nWRITE WALL at {landed} (gas limit {limit})");
                     write_wall = Some(landed);
                     break;
                 }
-                Verdict::Drift(detail) => drift(&format!(
+                Verdict::Drift(detail) => PROBE.drift(&format!(
                     "{detail}\nThis appeared only after {landed} characters, so it is \
                      state-dependent rather than a stale call signature."
                 )),
@@ -318,7 +175,7 @@ fn typing_and_reading_walls() {
                         outcome.gas_used, outcome.storage_reads, read.gas_used, read.storage_reads,
                     );
                 }
-                Err(error) => match classify("get_text", error) {
+                Err(error) => match PROBE.classify("get_text", error) {
                     Verdict::Wall { .. } => {
                         read_wall = Some(landed);
                         println!(
@@ -326,7 +183,7 @@ fn typing_and_reading_walls() {
                             outcome.gas_used, outcome.storage_reads,
                         );
                     }
-                    Verdict::Drift(detail) => drift(&detail),
+                    Verdict::Drift(detail) => PROBE.drift(&detail),
                 },
             }
         }
@@ -363,98 +220,18 @@ fn typing_and_reading_walls() {
     }
 }
 
-/// The mid-document write ceiling: type one character at a time into the
-/// middle of the document (`position: landed / 2`) until a call exhausts gas.
-///
-/// Kept identical to `fugue_wall.rs`'s `mid_document_typing_wall` so the two
-/// ceilings are comparable. It is the control for that one: `get_ordered_chars`
-/// linearises the whole document whatever the position, so RGA has no append
-/// fast path to lose and should land at the append ceiling.
+/// The mid-document write ceiling, swept by the shared harness so this probe
+/// and `fugue_wall.rs` measure it the same way. It is the control for that
+/// one: `get_ordered_chars` linearises the whole document whatever the
+/// position, so RGA has no append fast path to lose and should land at the
+/// append ceiling.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             collaborative-editor app to find where a MID-DOCUMENT insert_text \
             exhausts gas. The in-repo gate for the same underlying property is \
             `cargo test -p storage-cost` (rga_insert_middle)."]
 fn mid_document_typing_wall() {
-    let wasm = editor_wasm();
-    let limits = VMLimits::default();
-    println!("guest:   real collaborative-editor app, built from this tree");
-    println!("max_gas: {:?}", limits.max_gas);
-    println!("position: landed / 2 (mid-document), NOT an append");
-
-    let module = Engine::with_limits(limits)
-        .compile(&wasm)
-        .expect("compile metered module");
-
-    preflight(&module);
-
-    let mut storage = InMemoryStorage::default();
-    expect_ok(
-        &call(&module, &mut storage, "init", &serde_json::json!({})),
-        "init",
-    );
-
-    let ceiling = ceiling();
-    const PROBE_STRIDE: usize = 100;
-
-    let mut landed = 0_usize;
-    let mut write_wall: Option<usize> = None;
-
-    println!("\n  n        insert_gas       i_reads   ms");
-
-    for _ in 0..ceiling {
-        let started = Instant::now();
-        let outcome = call(
-            &module,
-            &mut storage,
-            "insert_text",
-            &serde_json::json!({"position": landed / 2, "text": "x"}),
-        );
-        let write_ms = started.elapsed().as_secs_f64() * 1000.0;
-
-        if let Err(error) = &outcome.returns {
-            match classify("insert_text", error) {
-                Verdict::Wall { limit } => {
-                    println!("\nMID-DOCUMENT WRITE WALL at {landed} (gas limit {limit})");
-                    write_wall = Some(landed);
-                    break;
-                }
-                Verdict::Drift(detail) => drift(&format!(
-                    "{detail}\nThis appeared only after {landed} characters, so it is \
-                     state-dependent rather than a stale call signature."
-                )),
-            }
-        }
-        landed += 1;
-
-        if landed.is_multiple_of(PROBE_STRIDE) {
-            println!(
-                "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1}",
-                outcome.gas_used, outcome.storage_reads,
-            );
-        }
-    }
-
-    println!("\n--- result ---");
-    println!("characters landed:  {landed}");
-    match write_wall {
-        Some(n) => println!("mid-document write wall (insert_text at landed/2): {n}"),
-        None => println!("mid-document write wall: none below {ceiling}"),
-    }
-
-    assert!(
-        landed > 0,
-        "no character was inserted even though preflight succeeded - the failure \
-         classification in this file is broken"
-    );
-    if let Some(n) = write_wall {
-        assert!(
-            n >= 50,
-            "walled after only {n} mid-document characters. Preflight passed, so the \
-             calls are well-formed, but a ceiling this low is a change in the app's work \
-             per call, not the cost curve this probe exists to measure."
-        );
-    }
+    wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
 }
 
 /// How much NEW text ONE call can add, a different question from the write
@@ -480,7 +257,7 @@ fn single_call_paste_wall() {
     let mut hi_confirmed = false;
     while !hi_confirmed {
         let mut storage = InMemoryStorage::default();
-        expect_ok(
+        PROBE.expect_ok(
             &call(&module, &mut storage, "init", &serde_json::json!({})),
             "init",
         );
@@ -492,14 +269,14 @@ fn single_call_paste_wall() {
             &serde_json::json!({"position": 0_usize, "text": text}),
         );
         match &outcome.returns {
-            Ok(_) => drift(&format!(
+            Ok(_) => PROBE.drift(&format!(
                 "a single insert_text call of {hi} characters into an EMPTY document \
                  succeeded. The seeded upper bound for this search is no longer past \
                  the wall; raise it in this file."
             )),
-            Err(error) => match classify("insert_text", error) {
+            Err(error) => match PROBE.classify("insert_text", error) {
                 Verdict::Wall { .. } => hi_confirmed = true,
-                Verdict::Drift(detail) => drift(&detail),
+                Verdict::Drift(detail) => PROBE.drift(&detail),
             },
         }
     }
@@ -508,7 +285,7 @@ fn single_call_paste_wall() {
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
         let mut storage = InMemoryStorage::default();
-        expect_ok(
+        PROBE.expect_ok(
             &call(&module, &mut storage, "init", &serde_json::json!({})),
             "init",
         );
@@ -524,9 +301,9 @@ fn single_call_paste_wall() {
                 lo = mid;
                 lo_gas = outcome.gas_used;
             }
-            Err(error) => match classify("insert_text", error) {
+            Err(error) => match PROBE.classify("insert_text", error) {
                 Verdict::Wall { .. } => hi = mid,
-                Verdict::Drift(detail) => drift(&detail),
+                Verdict::Drift(detail) => PROBE.drift(&detail),
             },
         }
     }
@@ -536,49 +313,5 @@ fn single_call_paste_wall() {
         lo >= 10,
         "the single-call paste wall landed at only {lo} characters - investigate \
          before quoting the number, this is far below anything seen so far"
-    );
-}
-
-/// The discriminator itself runs in CI, even though the probes above do not:
-/// everything here rests on `classify` telling a measured wall apart from a
-/// stale call signature, and it has no other coverage.
-#[test]
-fn only_gas_exhaustion_counts_as_a_wall() {
-    assert!(
-        matches!(
-            classify(
-                "insert_text",
-                &FunctionCallError::GasExhausted { limit: 1_000 }
-            ),
-            Verdict::Wall { limit: 1_000 }
-        ),
-        "gas exhaustion is the one failure that is a measurement"
-    );
-
-    let Verdict::Drift(detail) = classify(
-        "insert_text",
-        &FunctionCallError::ExecutionError(b"missing field `text`".to_vec()),
-    ) else {
-        panic!(
-            "an application error was classified as a wall - the probe would report \
-             a fictional number"
-        );
-    };
-    assert!(
-        detail.contains("text"),
-        "the drift message must carry the app's own complaint, got: {detail}"
-    );
-
-    let Verdict::Drift(detail) = classify(
-        "get_text",
-        &FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
-            name: "get_text".to_owned(),
-        }),
-    ) else {
-        panic!("a renamed method was classified as a wall");
-    };
-    assert!(
-        detail.contains("get_text"),
-        "the drift message must name the method, got: {detail}"
     );
 }
