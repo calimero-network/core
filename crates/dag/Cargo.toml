@@ -34,7 +34,7 @@ testing = []
 # the bench's module docs for why that's a safe, equivalent substitution.
 # `required-features` would make a bare `cargo bench -p calimero-dag --bench
 # pending` silently *skip* the target instead of building it, which is
-# exactly the rot Task 1's workspace-wide compile gate exists to catch.
+# exactly the rot the workspace-wide bench-compile gate exists to catch.
 [[bench]]
 name = "pending"
 harness = false

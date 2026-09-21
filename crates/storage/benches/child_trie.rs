@@ -2,7 +2,8 @@
 //!
 //! Every collection write walks this structure (`crates/storage/src/child_trie.rs`),
 //! so a per-operation cost that grows with `n` here is a cost that grows for
-//! every write in the system — the shape of core#3602.
+//! every write in the system - a regression class that degrades every write
+//! at once and shows up nowhere in particular.
 //!
 //! What would change a decision: `insert` or `get` whose per-call time tracks
 //! `n` rather than `log n`. `children()` IS expected to be linear (it

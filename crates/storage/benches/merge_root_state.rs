@@ -60,8 +60,8 @@
 //!
 //! What would change a decision: framework cost that is a material fraction
 //! of a real apply (say >1ms at 1k items) would make the encode/decode round
-//! trip worth attacking. #2203 measured ~18us at n=1000 on the pre-trie tree
-//! — this bench re-establishes that number on the current one.
+//! trip worth attacking. Framework overhead measured ~18us at n=1000 on the
+//! pre-trie tree - this bench re-establishes that number on the current one.
 
 use std::hint::black_box;
 
