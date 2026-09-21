@@ -46,18 +46,16 @@ const MAX_GROWTH: f64 = 2.0;
 /// Stated as an absolute floor rather than a growth ratio on purpose. The trie
 /// packs better as it deepens, so reads/entry legitimately *falls* with `n`
 /// (4.0 at n=10, 1.3 at n=10,000) while the cost stays linear — a ratio test
-/// would confuse that with a fix. The shallowest linear cost here is a capped
-/// `FugueText` read at two rows per 256-character block (`n / 128`); a
-/// sublinear replacement would still land far below this floor.
+/// would confuse that with a fix. `200` sits below the shallowest linear cost
+/// here, a capped `FugueText` read at `n / 128` rows.
 const LINEAR_FLOOR_DIVISOR: f64 = 200.0;
 
 /// …and at most `n * LINEAR_CEILING_FACTOR`. Past that it is superlinear.
 const LINEAR_CEILING_FACTOR: f64 = 4.0;
 
-/// The smallest and largest `n` a workload was actually measured at, derived
-/// from its own points rather than a fixed `SIZES[..]`: the `QuadraticBuild`
-/// set and the `fugue_simple_*` control set, point READS included, are measured
-/// at [`QUADRATIC_SIZES`], so indexing would panic rather than check them.
+/// The smallest and largest `n` a workload was measured at, derived from its
+/// own points: not every workload runs at the same sizes, so indexing a fixed
+/// `SIZES[..]` would panic rather than check them.
 fn span(points: &BTreeMap<usize, f64>) -> (usize, usize) {
     let (&smallest, _) = points
         .first_key_value()

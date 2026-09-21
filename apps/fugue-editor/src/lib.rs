@@ -19,9 +19,8 @@
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{Counter, FugueText, LwwRegister, UnorderedMap};
 
-/// Application state for the Fugue editor. Field-for-field
-/// `collaborative-editor`'s `EditorState`, with `FugueText` in place of
-/// `ReplicatedGrowableArray`.
+/// Application state for the Fugue editor: field-for-field
+/// `collaborative-editor`'s `EditorState` with `FugueText` in place of RGA.
 #[app::state(emits = FugueEditorEvent)]
 pub struct FugueEditorState {
     /// The collaborative text document using the Tree-Fugue CRDT
@@ -74,9 +73,8 @@ impl FugueEditorState {
         app::log!("Initializing fugue editor: {} by {}", title, owner);
 
         let mut metadata = UnorderedMap::new();
-        // `#[app::init]` must return `Self`, so it can't propagate a failure
-        // with `?`. Surface a storage error loudly rather than silently
-        // dropping the write.
+        // `#[app::init]` must return `Self`, so a storage failure cannot
+        // propagate with `?`; surface it rather than dropping the write.
         metadata
             .insert("title".to_string(), title.clone().into())
             .expect("failed to write initial title metadata");
@@ -98,7 +96,7 @@ impl FugueEditorState {
     /// Insert text at a specific position.
     ///
     /// # Errors
-    /// Returns an error if the position is invalid or storage fails.
+    /// Errors if `position` is past the end of the document.
     pub fn insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
         let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
@@ -124,23 +122,13 @@ impl FugueEditorState {
     }
 
     /// The whole document.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
     pub fn get_text(&self) -> app::Result<String> {
         self.document.get_text().map_err(Into::into)
     }
 
-    /// The character at `position`, or `None` past the end: the positional
-    /// read `ReplicatedGrowableArray` has no analogue for.
-    ///
-    /// A one-character `String` rather than a `char` because `char` has no
-    /// `AbiType`, so an `Option<char>` return does not compile under
-    /// `#[app::logic]`. The allocation touches no storage, so it cannot move
-    /// the wall this app is built to measure.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
+    /// The character at `position`, or `None` past the end. A one-character
+    /// `String` because `char` has no `AbiType`, so an `Option<char>` return
+    /// does not compile under `#[app::logic]`.
     pub fn char_at(&self, position: usize) -> app::Result<Option<String>> {
         Ok(self.document.char_at(position)?.map(String::from))
     }
@@ -148,15 +136,12 @@ impl FugueEditorState {
     /// The characters in `start..end`, clamped at the end of the document.
     ///
     /// # Errors
-    /// Returns an error if `start > end` or storage fails.
+    /// Errors if `start > end`.
     pub fn text_range(&self, start: usize, end: usize) -> app::Result<String> {
         self.document.text_range(start, end).map_err(Into::into)
     }
 
     /// The number of characters in the document.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
     pub fn get_length(&self) -> app::Result<usize> {
         self.document.len().map_err(Into::into)
     }

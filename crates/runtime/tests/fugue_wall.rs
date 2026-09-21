@@ -2,25 +2,18 @@
 //! where it stops being readable at all.
 //!
 //! Deliberately the mirror of `rga_wall.rs` - same harness, same failure
-//! classification, same sweep - so the two sets of numbers are comparable;
-//! that file's module docs carry the reasoning behind the shape. It drives
-//! `apps/fugue-editor`, which exists only as `apps/collaborative-editor`'s
-//! `FugueText` twin, because a wall measured against a synthetic guest or a
-//! different harness would not be comparable to RGA's.
+//! classification, same sweep - so the two sets of numbers are comparable, and
+//! it drives `apps/fugue-editor`, that file's guest twin, for the same reason.
 //!
-//! The write sweeps are split because they hit different layouts:
-//! `typing_and_reading_walls` appends (runs coalesce), `single_call_paste_wall`
-//! pastes into an empty document, and `mid_document_typing_wall` inserts
-//! mid-run, the case the block layout affects most. The three reads
-//! (`get_text`, `char_at`, `text_range`) all rebuild the tree from every stored
-//! block, so their walls land on top of each other: a positional read is not a
-//! way to keep reading a document `get_text` can no longer open.
+//! The write sweeps are split because they hit different layouts: appending
+//! (runs coalesce), pasting into an empty document, and inserting mid-run, the
+//! case the block layout affects most. The three reads all rebuild the tree
+//! from every stored block, so their walls land on top of each other: a
+//! positional read is not a way to keep reading a document `get_text` can no
+//! longer open.
 //!
 //! `GasExhausted` is the only outcome that produces a number; anything else
 //! panics as contract drift, naming the method.
-//!
-//! Run it as a pair with `rga_wall.rs`; a Fugue wall only means something
-//! beside RGA's:
 //!
 //!   cargo test -p calimero-runtime --test fugue_wall -- --ignored --nocapture
 //!
@@ -81,9 +74,8 @@ fn preflight(module: &calimero_runtime::Module) {
         ));
     }
 
-    // The positional reads are the whole reason this probe differs from
-    // rga_wall: a char_at that silently returned None would make its "no wall"
-    // result meaningless.
+    // The positional reads are why this probe differs from rga_wall: a
+    // `char_at` returning None would make its "no wall" result meaningless.
     let one = call(
         module,
         &mut storage,
@@ -290,12 +282,8 @@ fn typing_and_reading_walls() {
 }
 
 /// The mid-document write ceiling, swept by the shared harness so this probe
-/// and `rga_wall.rs` measure it the same way.
-///
-/// Separate from the other two sweeps because neither reaches a mid-run
-/// insert: one only appends and the other pastes into an empty document, so a
-/// change to how runs split leaves both unmoved. Write-only, because the read
-/// walls are already swept by `typing_and_reading_walls`.
+/// and `rga_wall.rs` measure it the same way. Separate because neither other
+/// sweep reaches a mid-run insert, the case a change to run splitting moves.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             fugue-editor app to find where a MID-DOCUMENT insert_text exhausts \
@@ -305,13 +293,9 @@ fn mid_document_typing_wall() {
     wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
 }
 
-/// The single-call ceiling of `insert_str`'s bulk path: the largest string
-/// that can be pasted into an empty document in one `insert_text` call before
-/// that call exhausts gas. The same question `rga_wall.rs` asks of RGA.
-///
-/// Not currently reachable through this guest: 16,000 characters land, and a
-/// larger paste trips the app's log-line limit before gas, so the probe drifts
-/// rather than reporting a number it did not measure.
+/// The single-call ceiling of `insert_str`'s bulk path: the largest string one
+/// `insert_text` call can paste into an empty document before it exhausts gas.
+/// Not reachable through this guest today, since 16,000 characters still land.
 #[test]
 #[ignore = "slow: builds the compiled fugue-editor app. Fast to execute once \
             built, unlike the sweep above."]
@@ -346,9 +330,8 @@ fn single_call_paste_wall() {
         }
     };
 
-    // `lo` is known to land, `hi` is known to wall. `hi` cannot simply be raised:
-    // fugue-editor logs what it inserts, so a paste past the 16 KiB `app::log!`
-    // line-length limit trips that before gas does.
+    // `lo` lands, `hi` walls. `hi` cannot be raised: fugue-editor logs what it
+    // inserts, so a paste past the 16 KiB `app::log!` limit trips that first.
     let mut lo = 1_usize;
     let mut hi = 16_000;
     if paste(hi).is_ok() {

@@ -24,10 +24,8 @@ const RUNS: usize = 7;
 /// order of magnitude — and that job belongs to `flat_curve.rs`.
 const MAX_DECLARED_TOLERANCE_PCT: u32 = 25;
 
-/// `#[ignore]`d because measuring every workload `RUNS` times runs for over
-/// twenty minutes in the debug profile the workspace-wide `cargo test` uses,
-/// for a property that does not change between profiles. The dedicated
-/// `storage-cost` CI job re-includes it in release via `--include-ignored`.
+/// `#[ignore]`d because measuring every workload `RUNS` times costs tens of
+/// minutes in debug; the `storage-cost` CI job re-runs it in release.
 #[ignore = "minutes of work; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn declared_tolerances_bound_the_observed_spread() {

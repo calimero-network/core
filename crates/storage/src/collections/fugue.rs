@@ -18,23 +18,10 @@
 //! `delete(i)` only tombstones, since the node may be an ancestor of live ones.
 //!
 //! This is plain Fugue, not FugueMax: right siblings are ordered by id, so two
-//! concurrent inserts that share a left origin but have different right origins
-//! can come out in the reverse of the maximally non-interleaving order (the
-//! paper's Figure 7). Neither order splits a passage, and that residual case is
-//! pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin` in
-//! `tests/fugue_conformance.rs`.
-//!
-//! ## Example
-//!
-//! ```ignore
-//! use calimero_storage::collections::fugue::FugueTree;
-//!
-//! let mut tree = FugueTree::new();
-//! tree.insert(0, 'a', (1, 0)).unwrap();
-//! tree.insert(1, 'b', (1, 1)).unwrap();
-//! tree.insert(1, 'c', (1, 2)).unwrap();
-//! assert_eq!(tree.values(), "acb");
-//! ```
+//! concurrent inserts sharing a left origin but with different right origins can
+//! come out reversed (the paper's Figure 7). Neither order splits a passage;
+//! `figure_7__right_siblings_order_by_id_not_by_right_origin` in
+//! `tests/fugue_conformance.rs` pins that residual case.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,17 +33,13 @@ pub type ReplicaId = u64;
 pub type SeqNo = u32;
 
 /// A non-root node identifier, `(replicaID, counter)`.
-///
-/// Ordering is lexicographic on the tuple.
 pub type RawId = (ReplicaId, SeqNo);
 
 /// A node identifier. `None` is the root, the paper's `null`.
 pub type NodeId = Option<RawId>;
 
-/// Which side of its parent a node hangs off.
-///
-/// `L` sorts before `R` so that `(parent, side)` keys group left children
-/// before right children.
+/// Which side of its parent a node hangs off. `L` sorts before `R` so that
+/// `(parent, side)` keys group left children before right children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Side {
     /// Left child: ordered *before* the parent's own value.
@@ -108,12 +91,7 @@ impl fmt::Display for FugueError {
 
 impl core::error::Error for FugueError {}
 
-/// The Fugue tree.
-///
-/// The root is implicit: it is [`NodeId`] `None` and is never stored in
-/// `nodes`. Nodes whose parent has not been delivered yet are buffered and
-/// integrated automatically once the parent arrives, which makes
-/// [`FugueTree::integrate`] order-independent.
+/// The Fugue tree; the root is implicit ([`NodeId`] `None`) and never stored.
 #[derive(Clone, Debug, Default)]
 pub struct FugueTree {
     /// All delivered, attached nodes, keyed by id.
@@ -156,12 +134,9 @@ impl FugueTree {
             .flat_map(|s| s.iter().copied())
     }
 
-    /// The full depth-first in-order traversal, **including** the root and
-    /// tombstoned nodes.
-    ///
-    /// Iterative rather than recursive: a sequential append builds a right
-    /// spine of depth `n`, so recursion would blow the stack on real
-    /// documents.
+    /// The full depth-first in-order traversal, including the root and tombstones.
+    /// Iterative, not recursive: a sequential append builds a right spine of
+    /// depth `n`, so recursion would blow the stack on real documents.
     fn traverse_all(&self) -> Vec<NodeId> {
         enum Frame {
             Visit(NodeId),
@@ -237,11 +212,8 @@ impl FugueTree {
         self.len() == 0
     }
 
-    /// Insert `value` at `index`, minting the node with the caller-supplied
-    /// `id`.
-    ///
-    /// Returns the node that must be broadcast, so the caller can ship the
-    /// effector without re-deriving it.
+    /// Insert `value` at `index` under the caller-supplied `id`, returning the
+    /// node to broadcast so the caller need not re-derive the effector.
     pub fn insert(
         &mut self,
         index: usize,
@@ -274,8 +246,7 @@ impl FugueTree {
             }
         } else {
             // `leftOrigin` has a right child, so its successor in the
-            // tombstone-inclusive traversal is the leftmost node of that right
-            // subtree and therefore always exists.
+            // tombstone-inclusive traversal exists: that subtree's leftmost node.
             let pos = order
                 .iter()
                 .position(|n| *n == left_origin)
@@ -293,9 +264,8 @@ impl FugueTree {
         Ok(node)
     }
 
-    /// Tombstone the character at `index`.
-    ///
-    /// Returns the id that must be broadcast. The node stays in the tree.
+    /// Tombstone the character at `index`, returning the id to broadcast. The
+    /// node stays in the tree.
     pub fn delete(&mut self, index: usize) -> Result<RawId, FugueError> {
         let order = self.traverse_all();
         let id = self
@@ -315,12 +285,9 @@ impl FugueTree {
         Ok(())
     }
 
-    /// The insert effector: apply a node from a remote replica.
-    ///
-    /// Idempotent and order-independent. A node whose parent has not arrived
-    /// yet is buffered until it does. Re-delivering a node that is already
-    /// present is a no-op, except that a tombstoned copy wins over a live one
-    /// (deletes are delete-wins).
+    /// The insert effector: apply a node from a remote replica. Idempotent and
+    /// order-independent (a node whose parent has not arrived is buffered), and
+    /// a tombstoned copy wins over a live one: deletes are delete-wins.
     pub fn integrate(&mut self, node: FugueNode) {
         let mut queue = vec![node];
         while let Some(node) = queue.pop() {
@@ -353,19 +320,7 @@ impl FugueTree {
 }
 
 /// The tree of Figure 3 of the paper: the list `abcdef` in which `a` and `b`
-/// are both **left** children of `c`, ordered between themselves by id.
-///
-/// ```text
-///          root
-///            \ R
-///             c (1,2)
-///        L  /  \  R
-///   (1,0) a     d (1,3)
-///   (1,1) b        \ R
-///                   e (1,4)
-///                      \ R
-///                       f (1,5)
-/// ```
+/// are both left children of `c`, ordered between themselves by id.
 #[cfg(test)]
 pub(super) fn figure_3_tree() -> FugueTree {
     let mut tree = FugueTree::new();
@@ -499,11 +454,10 @@ mod tests {
         assert_eq!(tree.node((1, 1)).unwrap().value, None);
     }
 
-    /// Build a replica seeded with `S`, then append `passage` and insert
-    /// `heading` immediately before it. Returns the replica.
+    /// Build a replica whose shared seed is `S`, then append `passage` and
+    /// insert `heading` immediately before it.
     fn backward_insertion_replica(replica: ReplicaId, heading: char, passage: &str) -> FugueTree {
         let mut tree = FugueTree::new();
-        // The shared, already-synchronised seed document.
         tree.integrate(FugueNode {
             id: (0, 0),
             value: Some('S'),
@@ -512,13 +466,11 @@ mod tests {
         });
 
         let mut seq: SeqNo = 0;
-        // Append the passage at the end of the document.
         for ch in passage.chars() {
             let at = tree.len();
             let _ = tree.insert(at, ch, (replica, seq)).unwrap();
             seq += 1;
         }
-        // Go back and insert the heading immediately before our own passage.
         let _ = tree.insert(1, heading, (replica, seq)).unwrap();
         tree
     }

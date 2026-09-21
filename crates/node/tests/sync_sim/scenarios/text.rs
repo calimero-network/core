@@ -45,10 +45,8 @@ const HOSTILE_REPLICA: u64 = 7; // one replica id shared by two writers, to forg
 // Oracle: the pure tree, fed the same edits and the same deliveries
 // =============================================================================
 
-/// A pure-`FugueTree` mirror of one storage replica.
-///
-/// `next` counts the nodes this replica has minted, which is exactly what
-/// `FugueText::next_counter` derives from the stored block set.
+/// A pure-`FugueTree` mirror of one storage replica. `next` counts the nodes
+/// it has minted, which is what `FugueText::next_counter` derives from blocks.
 struct Oracle {
     tree: FugueTree,
     replica: u64,
@@ -107,10 +105,8 @@ impl Oracle {
     }
 }
 
-/// Nodes `after` defines that `before` did not, plus nodes `after` tombstoned.
-///
-/// Under causal delivery that is exactly what one real delta adds: the older
-/// nodes its rewritten blocks also carry are already at the receiver.
+/// Nodes `after` defines that `before` did not, plus nodes `after` tombstoned:
+/// under causal delivery, exactly what one real delta adds at the receiver.
 fn changed(
     before: &BTreeMap<RawId, FugueNode>,
     after: &BTreeMap<RawId, FugueNode>,
@@ -126,10 +122,9 @@ fn changed(
 // Storage helpers
 // =============================================================================
 
-/// Materialise the empty document, the way production `init` does.
-///
-/// The child assertion guards `collections::ROOT_ID`: frozen under a foreign
-/// context, it parents the collection somewhere else and says nothing.
+/// Materialise the empty document, the way production `init` does. The child
+/// assertion catches a `collections::ROOT_ID` frozen under a foreign context,
+/// which parents the collection elsewhere and makes the scenario vacuous.
 fn seed_doc(node: &SimNode) {
     clear_pending_delta();
     node.storage().with_index(|| {
@@ -228,9 +223,7 @@ fn replica_of(node: &SimNode) -> u64 {
 }
 
 /// `count` characters from replica `index`'s private slice, starting at `from`.
-///
-/// Disjoint slices make every inserted character globally unique, so a
-/// duplicated character both fails the uniqueness check and names its author.
+/// Disjoint slices make a duplicated character detectable and attributable.
 fn unique_chars(index: usize, from: usize, count: usize) -> String {
     let base = CHAR_BASE + CHAR_STRIDE * u32::try_from(index).expect("replica index fits u32");
     (0..count)
@@ -249,10 +242,9 @@ fn unique_chars(index: usize, from: usize, count: usize) -> String {
 // Assertions
 // =============================================================================
 
-/// Property (e): every stored block row still carries `CrdtType::FugueTextBlock`.
-///
-/// A row that lost the tag is reconciled by last-writer-wins instead of the
-/// block join, which drops one side's edit silently rather than erroring.
+/// Every stored block row still carries `CrdtType::FugueTextBlock`: a row that
+/// lost the tag is reconciled by last-writer-wins instead of the block join,
+/// which drops one side's edit silently rather than erroring.
 fn assert_blocks_tagged(label: &str, node: &SimNode) {
     let blocks = node.storage().get_children(blocks_collection_id(node));
     assert!(
@@ -275,7 +267,8 @@ fn assert_blocks_tagged(label: &str, node: &SimNode) {
     }
 }
 
-/// Properties (a) to (e) over replicas that should have quiesced.
+/// Text, passage contiguity, character uniqueness, length and Merkle-root
+/// agreement over replicas that should have quiesced.
 fn assert_text_properties(label: &str, nodes: &[&SimNode], expected: &str, passages: &[String]) {
     let first = nodes.first().expect("at least one replica");
     for node in nodes {
@@ -388,11 +381,8 @@ fn union_oracles(oracles: &mut [Oracle], group: &[usize]) {
     }
 }
 
-/// One committed edit in flight, with the oracle nodes it carries and the
-/// deltas its author had already applied.
-///
-/// Delivery respects that dependency set the way the production causal DAG
-/// does, which is what makes the oracle's node-set diff exact.
+/// One committed edit in flight, with the oracle nodes it carries and its
+/// author's already-applied deltas, which delivery honours as causal deps.
 struct Pending {
     key: (usize, usize),
     bytes: Vec<u8>,
@@ -478,11 +468,9 @@ fn random_edit(
 // Scenario 1 - concurrent editing under faults
 // =============================================================================
 
-/// Three to five replicas edit concurrently while their real deltas are
-/// delivered with loss-then-retry, reordering and duplicate delivery.
-///
-/// The last round is a concurrent passage round, and nothing deletes after it,
-/// so passage contiguity is a real property rather than a race with a delete.
+/// Three to five replicas edit concurrently under loss-then-retry, reordering
+/// and duplicate delivery. Nothing deletes after the final passage round, so
+/// passage contiguity is a real property rather than a race with a delete.
 #[tokio::test]
 async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
     for seed in 0..3_u64 {
@@ -583,11 +571,9 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
 // Scenario 2 - partition and heal
 // =============================================================================
 
-/// Two groups edit independently for many rounds, each side then types a long
-/// passage at the very front of its own document, and the partition heals.
-///
-/// Position zero is the sharpest concurrent-insert position there is: both
-/// passages compete for one anchor, the shape that interleaves under RGA.
+/// Two groups edit independently, each then types a long passage at position
+/// zero, and the partition heals. One anchor contested by both passages is the
+/// sharpest concurrent-insert shape, the one that interleaves under RGA.
 #[tokio::test]
 async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
     const GROUPS: [[usize; 2]; 2] = [[0, 1], [2, 3]];
@@ -676,11 +662,8 @@ async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
 // =============================================================================
 
 /// A node with no text state catches up from a peer over a real HashComparison
-/// session.
-///
-/// The cold-joiner block pins what leaf transfer alone cannot give: the
-/// context-root entity's own bytes, which are what `Root::fetch` reads. A
-/// production joiner writes them by running the application's `init`.
+/// session. The cold-joiner block pins what leaf transfer alone cannot give:
+/// the context-root bytes `Root::fetch` reads, written in production by `init`.
 #[tokio::test]
 async fn text_late_joiner_catches_up_via_hash_comparison() {
     const SEED: u64 = 0x7E_4700;
@@ -757,10 +740,8 @@ async fn text_late_joiner_catches_up_via_hash_comparison() {
 // =============================================================================
 
 /// The same catch-up over `LevelWiseProtocol`, which SKIPS untagged leaves
-/// where HashComparison synthesises opaque ones.
-///
-/// So an untagged block row is not merged wrongly here, it is never sent: the
-/// transferred-row count is asserted so a silent skip cannot pass for sync.
+/// where HashComparison synthesises opaque ones, so the transferred-row count
+/// is asserted: a silent skip must not pass for sync.
 #[tokio::test]
 async fn text_late_joiner_catches_up_via_level_wise() {
     const SEED: u64 = 0x1E_4E00;
@@ -821,10 +802,8 @@ async fn text_late_joiner_catches_up_via_level_wise() {
 // =============================================================================
 
 /// An old copy of a block landing after a newer one, and two writers forging
-/// one block key with equal-length different text.
-///
-/// The oracle is the join rule: tombstones OR, the rest of the record maximal
-/// under `(node count, text, parent, side)`, so neither order may shorten it.
+/// one block key with equal-length different text. The join rule is the oracle:
+/// tombstones OR, the record maximal under `(node count, text, parent, side)`.
 #[tokio::test]
 async fn text_stale_and_forged_blocks_resolve_identically() {
     let label = "stale and forged blocks";

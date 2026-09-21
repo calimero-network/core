@@ -1,29 +1,22 @@
 //! Where a real `ReplicatedGrowableArray` document stops being writable, and
 //! separately where it stops being readable at all.
 //!
-//! Unlike `cost_is_flat`, which uses a synthetic guest so that any growth it
-//! measures is unambiguously a storage defect, this wants the number a user of
-//! a real editor hits, so it drives `apps/collaborative-editor` from this
-//! workspace. It is `#[ignore]`d only because reaching a wall this large means
-//! executing thousands of real WASM calls.
+//! Unlike `cost_is_flat`, whose synthetic guest makes any growth it measures
+//! unambiguously a storage defect, this wants the number a user of a real
+//! editor hits, so it drives `apps/collaborative-editor`.
 //!
 //! `insert_str` re-derives the position by linearising the WHOLE document on
-//! every call, so typing is `O(n)` per call and `O(n^2)` in total; once one
-//! `insert_text` exceeds `max_gas`, every later call does too and the document
-//! is permanently unwritable. `get_text()` performs the same linearisation and
-//! so has its own wall, measured separately: a document that still accepts
-//! writes but can no longer be opened is just as dead.
+//! every call, so once one `insert_text` exceeds `max_gas` every later call
+//! does too and the document is permanently unwritable. `get_text` linearises
+//! the same way and so has its own wall, measured separately: a document that
+//! still accepts writes but can no longer be opened is just as dead.
 //!
 //! `GasExhausted` is the only outcome that produces a number; anything else
-//! panics as contract drift, naming the method. A preflight against an empty
-//! document reports drift in seconds rather than after a long sweep.
+//! panics as contract drift, naming the method.
 //!
-//! Measured against this tree (2026-09-19) under a 1,000,000,000 gas ceiling:
-//! typing and `get_text` both wall at ~17,100 characters, and mid-document
-//! typing at ~17,900, so position buys nothing (all three extrapolated from a
-//! 17,000-character sweep). One `insert_text` into an empty document takes 742
-//! characters, executed by binary search; batching buys chunkier calls rather
-//! than a different asymptote, since every later call still re-linearises.
+//! Against this tree, typing and `get_text` both wall near 17,000 characters,
+//! and one `insert_text` into an empty document takes 742 - the numbers the
+//! seeded bounds below are chosen against.
 //!
 //!   cargo test -p calimero-runtime --test rga_wall -- --ignored --nocapture
 //!
@@ -96,12 +89,8 @@ fn ceiling() -> usize {
 }
 
 /// The document ceiling: type one character at a time until a call exhausts
-/// gas, probing `get_text` as the document grows.
-///
-/// The `i_reads`/`r_reads` columns are one call's end-to-end host reads, which
-/// include root-state fetch/commit, `Counter::increment` and SDK marshaling.
-/// They are not comparable with `rga_insert_per_char`'s committed `n + 47`
-/// reads/entry, which averages direct in-process calls over a whole build.
+/// gas, probing `get_text` as it grows. The `i_reads`/`r_reads` columns are
+/// one call's end-to-end host reads, not `rga_insert_per_char`'s `n + 47`.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             collaborative-editor app to find where insert_text/get_text actually \
@@ -221,10 +210,8 @@ fn typing_and_reading_walls() {
 }
 
 /// The mid-document write ceiling, swept by the shared harness so this probe
-/// and `fugue_wall.rs` measure it the same way. It is the control for that
-/// one: `get_ordered_chars` linearises the whole document whatever the
-/// position, so RGA has no append fast path to lose and should land at the
-/// append ceiling.
+/// and `fugue_wall.rs` measure it the same way. It is the control: RGA
+/// linearises whatever the position, so it has no append fast path to lose.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             collaborative-editor app to find where a MID-DOCUMENT insert_text \
@@ -234,9 +221,8 @@ fn mid_document_typing_wall() {
     wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
 }
 
-/// How much NEW text ONE call can add, a different question from the write
-/// wall above: here the linearise cost is paid against an empty document, so
-/// the flat per-character insert cost dominates instead.
+/// How much NEW text ONE call can add: here the linearise cost is paid against
+/// an empty document, so the flat per-character insert cost dominates instead.
 #[test]
 #[ignore = "slow: builds the compiled collaborative-editor app. Fast to execute \
             once built (well under a second), unlike the sweep above."]

@@ -60,10 +60,9 @@ const ALPHABET: [Op; 5] = [
     Op::Del(0, 3),
 ];
 
-/// A replica's synced state: its node set. This is exactly what a state-based
-/// join sees, and it is causally closed by construction:
-/// [`FugueTree::integrate`] only attaches a node once its parent is attached,
-/// so every node in the set has its parent in the set.
+/// A replica's synced state: its node set, exactly what a state-based join
+/// sees. Causally closed by construction, since [`FugueTree::integrate`]
+/// attaches a node only once its parent is attached.
 type State = Vec<FugueNode>;
 
 /// A pure replica: Algorithm 1 plus the same id allocation `FugueText` uses
@@ -153,13 +152,9 @@ fn tree_of(state: &State) -> FugueTree {
     tree
 }
 
-/// The state-based join: deliver both node sets into one tree and read back
-/// the result.
-///
-/// This *is* the production join, not a re-implementation of it:
-/// [`FugueTree::integrate`] keeps the first definition of an id and lets a
-/// tombstone win over a live copy, in either delivery order. Both inputs are
-/// causally closed, so nothing is left buffered and the single pass is exact.
+/// The state-based join: deliver both node sets into one tree and read back the
+/// result. This *is* the production join: [`FugueTree::integrate`] keeps the
+/// first definition of an id and lets a tombstone win, in either order.
 fn merge(a: &State, b: &State) -> State {
     let mut tree = tree_of(a);
     for node in b {
@@ -180,10 +175,8 @@ fn is_tombstoned(state: &State, id: RawId) -> bool {
         .any(|node| node.id == id && node.value.is_none())
 }
 
-/// The `index`-th permutation of `items` in the factorial number system.
-///
-/// A bijection from `0..items.len()!` onto the permutations, so enumerating
-/// the index range enumerates every delivery order exactly once.
+/// The `index`-th permutation of `items` in the factorial number system: a
+/// bijection from `0..items.len()!`, so the index range enumerates each once.
 fn permutation<T: Clone>(items: &[T], mut index: usize) -> Vec<T> {
     let mut pool: Vec<T> = items.to_vec();
     let mut out = Vec::with_capacity(pool.len());
@@ -225,11 +218,8 @@ fn script_of(index: usize) -> [Op; 3] {
 // ---------------------------------------------------------------------------
 
 /// Fugue orders the children of one `(parent, side)` bucket by node id
-/// ascending; that comparator is the whole tie-break of the algorithm, and the
-/// traversal is only well defined if it is a strict total order.
-///
-/// PURE LAYER ONLY: the storage collection has no comparator of its own, it
-/// expands its blocks into a [`FugueTree`] and the tree applies this one.
+/// ascending; the traversal is well defined only if that is a strict total
+/// order. PURE LAYER ONLY: the collection has no comparator of its own.
 const fn sibling_lt(a: RawId, b: RawId) -> bool {
     a.0 < b.0 || (a.0 == b.0 && a.1 < b.1)
 }
@@ -256,10 +246,8 @@ fn check_strict_total_order(a: RawId, b: RawId, c: RawId) {
     }
 }
 
-/// The ids the exhaustive branch ranges over: every combination of three
-/// replica ids and three counters. Distinct replicas, equal replicas with
-/// distinct counters, and equal ids are all represented, which is every case
-/// the lexicographic comparator distinguishes.
+/// The ids the exhaustive branch ranges over: three replica ids x three
+/// counters, covering every case the lexicographic comparator distinguishes.
 const LAW1_IDS: [RawId; 9] = [
     (0, 0),
     (0, 1),
@@ -391,12 +379,9 @@ fn check_order_independence(nodes: &State, index: usize, expected: &str) {
     );
 }
 
-/// LAW 2: `values()` depends on the node SET, not on the order the nodes were
-/// integrated in.
-///
-/// PURE LAYER ONLY: the storage collection has no integration order to
-/// permute. Its counterpart there is delivery-order independence of the apply
-/// path, which law 3 checks end to end.
+/// LAW 2: `values()` depends on the node SET, not on the integration order.
+/// PURE LAYER ONLY: the collection has no integration order to permute; its
+/// counterpart is the apply path's delivery-order independence, law 3.
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(kani, kani::unwind(8))]
 #[cfg_attr(not(kani), test)]
@@ -498,11 +483,9 @@ fn check_join_laws(a: &State, b: &State, c: &State) {
     }
 }
 
-/// LAWS 3-6 on the pure node-set join: commutative, associative, idempotent,
-/// and tombstone-monotone.
-///
-/// EXHAUSTIVE over 3 replicas x 1 op each from the 5-op alphabet = 125 states
-/// triples. Wider than the in-crate sweeps, which stop at two replicas.
+/// LAWS 3-6 on the pure node-set join: commutative, associative, idempotent and
+/// tombstone-monotone. EXHAUSTIVE over 3 replicas x 1 op each from the 5-op
+/// alphabet = 125 state triples, wider than the in-crate two-replica sweeps.
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(kani, kani::unwind(16))]
 #[cfg_attr(not(kani), test)]
@@ -531,12 +514,9 @@ fn law3456__join_is_commutative_associative_idempotent_and_delete_wins() {
 // Exhaustive bounded convergence, wider than the in-crate sweeps.
 // ---------------------------------------------------------------------------
 
-/// EXHAUSTIVE: 3 replicas, 1 op each, every delivery order.
-///
-/// The in-crate sweep stops at 2 replicas; three is where associativity stops
-/// being implied by commutativity, so this is the first bound at which the
-/// join's shape is actually load-bearing. `5^3 = 125` scripts x `3! = 6`
-/// delivery orders = 750 checks.
+/// EXHAUSTIVE: 3 replicas, 1 op each, every delivery order (`5^3 = 125` scripts
+/// x `3! = 6` orders = 750 checks). Three replicas is the first bound at which
+/// associativity stops being implied by commutativity.
 #[test]
 fn exhaustive__three_replicas_one_op_each_converge_in_every_delivery_order() {
     let mut checked = 0_usize;
@@ -567,10 +547,8 @@ fn exhaustive__three_replicas_one_op_each_converge_in_every_delivery_order() {
 }
 
 /// EXHAUSTIVE: 2 replicas, 3 ops each, `5^6 = 15_625` scripts, each merged in
-/// both orders and checked against the join.
-///
-/// The in-crate sweep runs `k = 2` ops; this is `k = 3`, i.e. 25x its script
-/// space, on the pure layer where it is affordable to enumerate.
+/// both orders. The in-crate sweep runs `k = 2` ops; this is `k = 3`, 25x its
+/// script space, on the pure layer where enumerating it is affordable.
 #[test]
 fn exhaustive__two_replicas_three_ops_each_converge_in_both_orders() {
     let mut checked = 0_usize;
@@ -633,19 +611,9 @@ fn edit_op(store: &Store, dev: [u8; 32], replica: u64, op: &Op, model: &mut Repl
     delta
 }
 
-/// LAWS 3-5 through the REAL apply path, with 3 replicas.
-///
-/// At this layer commutativity, associativity and idempotence of the join are
-/// one observable property: the state a replica reaches must depend only on
-/// the SET of deltas it has landed, not on the order it landed them in nor on
-/// how many times each arrived. That is what the sync layer relies on, and it
-/// is checked here through `Interface::apply_action`, the path production
-/// actually runs, rather than through `merge_blocks_from`, which no node ever
-/// calls for a leaf entity.
-///
-/// EXHAUSTIVE: `5^3 = 125` scripts (3 replicas, 1 op each) x `3! = 6` delivery
-/// orders. Three replicas is new here; the in-crate apply-path sweeps stop at
-/// two.
+/// LAWS 3-5 through the REAL apply path, with 3 replicas: the state a replica
+/// reaches must depend only on the SET of deltas it landed, not on their order
+/// or multiplicity. EXHAUSTIVE: 125 scripts x `3! = 6` delivery orders.
 #[test]
 fn law345__apply_path_state_depends_only_on_the_delta_set() {
     let mut checked = 0_usize;
@@ -699,12 +667,9 @@ fn law345__apply_path_state_depends_only_on_the_delta_set() {
     assert_eq!(orders, 750, "every delivery order must be covered");
 }
 
-/// LAW 6 through the REAL apply path: a delete never regresses.
-///
-/// Once a replica has landed a delete, no later delta may bring the character
-/// back, including one authored before the delete by a replica that still
-/// believed it live. Checked over every op of the alphabet as the
-/// concurrent write, and in both landing orders.
+/// LAW 6 through the REAL apply path: once a replica has landed a delete, no
+/// later delta may bring the character back, including one authored before it
+/// by a replica that still believed it live. Every op, both landing orders.
 #[test]
 fn law6__apply_path_tombstones_are_monotone() {
     let mut checked = 0_usize;

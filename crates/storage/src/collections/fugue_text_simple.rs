@@ -124,10 +124,8 @@ pub(crate) struct TextNode {
     parent: Option<NodeId>,
     /// Which side of `parent` this node hangs off.
     side: NodeSide,
-    /// Whether this node has been deleted. A Fugue node must survive deletion,
-    /// since a tombstone can still parent live nodes, so the entity is never
-    /// removed. One entity covers one node here, so a bool suffices where
-    /// `FugueText` needs a per-node bitmap.
+    /// Whether this node has been deleted. The entity is never removed: a
+    /// tombstone can still parent live nodes.
     deleted: bool,
 }
 
@@ -138,9 +136,7 @@ impl TextNode {
 }
 
 /// Tree-Fugue text with one storage entity per node: the paper's Simple shape.
-///
-/// See the module documentation: this is a cost control for
-/// [`FugueText`](super::FugueText), not a collection to build on.
+/// A cost control for [`FugueText`](super::FugueText), not one to build on.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct FugueTextSimple<S: StorageAdaptor = MainStorage> {
     /// Nodes, keyed by their own id.
@@ -189,26 +185,14 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
         }
     }
 
-    /// Insert a character at the given visible position.
-    ///
-    /// # Panics
-    /// Panics if called inside a state migration, for the reason
-    /// [`FugueText::insert`](super::FugueText::insert) does: node ids are minted
-    /// from the node-local device id.
-    ///
-    /// # Errors
-    /// Returns an error if `pos` is out of bounds or storage fails.
+    /// Insert a character at the given visible position. Panics inside a state
+    /// migration, like [`FugueText::insert`](super::FugueText::insert).
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
         self.insert_str(pos, content.encode_utf8(&mut [0_u8; 4]))
     }
 
-    /// Insert a string at the given visible position.
-    ///
-    /// # Panics
-    /// Panics inside a state migration; see [`insert`](Self::insert).
-    ///
-    /// # Errors
-    /// Returns an error if `pos` is out of bounds or storage fails.
+    /// Insert a string at the given visible position. Panics inside a state
+    /// migration; see [`insert`](Self::insert).
     #[expect(
         clippy::panic,
         reason = "non-deterministic during migrate (node-local device id); a loud panic is \
@@ -226,16 +210,9 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
         self.insert_str_with_replica(pos, replica, s)
     }
 
-    /// Insert a string at `pos`, minting node ids under an explicit `replica`.
-    ///
-    /// The deterministic counterpart of [`insert_str`](Self::insert_str).
-    ///
-    /// Re-deriving the tree per character is deliberate: with one entity per
-    /// node there is nothing to batch into, which is the cost this control
-    /// exists to measure.
-    ///
-    /// # Errors
-    /// Returns an error if `pos` is out of bounds or storage fails.
+    /// Insert a string at `pos`, minting node ids under an explicit `replica`:
+    /// the deterministic counterpart of [`insert_str`](Self::insert_str).
+    /// Re-deriving the tree per character is the cost this control measures.
     pub fn insert_str_with_replica(
         &mut self,
         pos: usize,
@@ -249,19 +226,12 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     }
 
     /// Delete the character at the given visible position.
-    ///
-    /// # Errors
-    /// Returns an error if `pos` is out of bounds or storage fails.
     pub fn delete(&mut self, pos: usize) -> Result<(), StoreError> {
         self.delete_range(pos, pos.checked_add(1).ok_or_else(|| out_of_bounds(pos))?)
     }
 
-    /// Delete the half-open range `start..end` of visible positions.
-    ///
-    /// Clamped in `end` exactly like `FugueText::delete_range`.
-    ///
-    /// # Errors
-    /// Returns an error if `start > end` or storage fails.
+    /// Delete the half-open range `start..end` of visible positions, clamped in
+    /// `end` exactly like `FugueText::delete_range`.
     pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
         if start > end {
             return Err(invalid("start must be <= end"));
@@ -297,20 +267,13 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     }
 
     /// The document text, tombstones excluded.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
     pub fn get_text(&self) -> Result<String, StoreError> {
         let loaded = self.load()?;
         Ok(build_tree(&loaded).values())
     }
 
-    /// The characters in the half-open range `start..end` (char indices).
-    ///
-    /// Clamped in `end`, like `FugueText::text_range`.
-    ///
-    /// # Errors
-    /// Returns an error if `start > end` or storage fails.
+    /// The characters in the half-open range `start..end` (char indices),
+    /// clamped in `end` like `FugueText::text_range`.
     pub fn text_range(&self, start: usize, end: usize) -> Result<String, StoreError> {
         if start > end {
             return Err(invalid("start must be <= end"));
@@ -321,27 +284,18 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     }
 
     /// The character at `pos`, or `None` if `pos` is past the end.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
     pub fn char_at(&self, pos: usize) -> Result<Option<char>, StoreError> {
         let loaded = self.load()?;
         Ok(build_tree(&loaded).values().chars().nth(pos))
     }
 
     /// The number of visible characters.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
     pub fn len(&self) -> Result<usize, StoreError> {
         let loaded = self.load()?;
         Ok(build_tree(&loaded).len())
     }
 
     /// Whether the document has no visible characters.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
     pub fn is_empty(&self) -> Result<bool, StoreError> {
         self.len().map(|len| len == 0)
     }
@@ -380,11 +334,7 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     }
 
     /// Copy every node from `other` that `self` does not already hold, and OR
-    /// in incoming tombstones: the delete-wins join, and a lattice one. Generic
-    /// over `S2` so a cross-store merge is testable.
-    ///
-    /// `cfg(test)`-only, because this control ships no leaf `CrdtType`, so only
-    /// this crate's own convergence tests have any business calling it.
+    /// in incoming tombstones: the delete-wins join, and a lattice one.
     #[cfg(test)]
     pub(crate) fn merge_nodes_from<S2: StorageAdaptor>(
         &mut self,
@@ -404,12 +354,9 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     }
 }
 
-/// The container's `CrdtType`.
-///
-/// A plain `UnorderedMap`, not a `FugueText`: the container is structured
-/// storage, so the container arm's job is only to return the incoming bytes.
-/// Claiming `CrdtType::FugueText` would route it to a dispatcher that
-/// deserialises a `FugueText` from these bytes.
+/// The container's `CrdtType`: a plain `UnorderedMap`, not a `FugueText`. The
+/// container is structured storage, so its arm need only return the incoming
+/// bytes; `FugueText` would route it to a dispatcher that deserialises one.
 fn node_map_crdt_type() -> CrdtType {
     CrdtType::UnorderedMap
 }
@@ -429,10 +376,8 @@ fn build_tree(loaded: &[(NodeId, TextNode)]) -> FugueTree {
 }
 
 /// The next unused counter for `replica`, one past every node of that replica
-/// the stored state mentions, as a definition or as a `parent` edge.
-///
-/// `FugueText::next_counter`'s rule, for the same reason: a tombstoned node is
-/// never removed, so the mark survives deletion and a counter is never reused.
+/// the stored state mentions, as a definition or as a `parent` edge:
+/// `FugueText::next_counter`'s rule unchanged.
 fn next_counter(replica: u64, loaded: &[(NodeId, TextNode)]) -> Result<u32, StoreError> {
     let mut next: u64 = 0;
     for (id, node) in loaded {

@@ -2,39 +2,27 @@
 //!
 //! The crate's own sweeps check Fugue against a model oracle that is the same
 //! algorithm, so the two agree by construction. This file checks it against
-//! statements made by somebody else: Weidner, Gentle and Kleppmann, *The Art
-//! of the Fugue* (arXiv 2305.00583), and the specification its Theorem 1
-//! proves Tree-Fugue satisfies.
+//! Weidner, Gentle and Kleppmann, *The Art of the Fugue* (arXiv 2305.00583),
+//! and the specification its Theorem 1 proves Tree-Fugue satisfies.
 //!
 //! Attiya et al.'s strong list specification: there is one total order `<` on
 //! all elements such that **(a)** a replica's `values()` returns, in `<`,
 //! exactly the elements it has received an `insert` and not a `delete` for,
 //! and **(b)** if `values()` yields `[a_0, …, a_{n-1}]` just before
 //! `insert(i, x)`, the new element `e` satisfies
-//! `a_0, …, a_{i-1} < e < a_i, …, a_{n-1}`. Both are tested directly rather
-//! than weakened into "the replicas agree", against a `<` witnessed
-//! explicitly: every element gets a globally unique character, and the order
-//! is read off a shadow tree of every node the execution created, with nothing
-//! tombstoned.
+//! `a_0, …, a_{i-1} < e < a_i, …, a_{n-1}`.
 //!
 //! Non-interleaving (paper Table I, Figure 2): concurrent runs typed at the
-//! same position must stay contiguous. The three anomaly columns are not
+//! same position stay contiguous. The three anomaly columns are not
 //! equivalent, so forward, backward single-replica and backward multi-replica
-//! (one session whose ids span replicas, as when a user changes device) are
-//! separate cases here. This is NOT the paper's *maximal* non-interleaving
-//! (Definition 4), which only FugueMax satisfies: plain Fugue loses one
-//! backward adjacency when two concurrent inserts share a left origin but
-//! differ on the right, pinned by
-//! [`figure_7__right_siblings_order_by_id_not_by_right_origin`]. No passage is
-//! split either way. The backward scenario also runs against
-//! [`ReplicatedGrowableArray`], asserting that RGA DOES interleave, which is
-//! what keeps the Fugue cases from passing vacuously.
+//! are separate cases. This is NOT *maximal* non-interleaving (Definition 4),
+//! which only FugueMax satisfies; plain Fugue's one lost adjacency is pinned
+//! by [`figure_7__right_siblings_order_by_id_not_by_right_origin`], and no
+//! passage is split either way. [`ReplicatedGrowableArray`] runs the backward
+//! scenario too, asserting it DOES interleave, so Fugue cannot pass vacuously.
 //!
 //! Every property is checked on the pure algorithm AND through the real apply
-//! path (`Interface::apply_action`). Where the storage layer needs element
-//! identity it borrows it from a pure twin driven by the identical script, and
-//! the twin's agreement with the document is asserted at every step, so the
-//! identity is not assumed.
+//! path, borrowing element identity from a twin asserted equal at every step.
 
 // The `subject__scenario` naming convention this crate uses in its tests.
 #![allow(non_snake_case)]
@@ -117,13 +105,9 @@ impl Twin {
     }
 }
 
-/// The witness for the strong list specification's total order `<`.
-///
-/// Every element of the execution gets a globally unique character, so the
-/// order can be read off as a string: a shadow tree is built from every node
-/// the execution ever created, with nothing tombstoned, and its `values()` is
-/// `<` written out. This is a *witness*, not a re-derivation: the order comes
-/// from the same [`FugueTree`] traversal the replicas use.
+/// The witness for the strong list specification's total order `<`: every
+/// element gets a globally unique character, so `<` reads off a shadow tree of
+/// every node the execution created, by the [`FugueTree`] traversal replicas use.
 #[derive(Debug, Default)]
 struct Elements {
     /// Every node ever created, in its live form.
@@ -271,12 +255,9 @@ const fn position_for(act: Act, len: usize) -> usize {
     }
 }
 
-/// STRONG LIST SPECIFICATION on the pure algorithm.
-///
-/// EXHAUSTIVE: 2 replicas x 4 acts = 8 choices per step, 4 steps =
-/// `8^4 = 4096` executions. Each execution checks property (a) after every
-/// step and after each of two syncs, and property (b) for every insert it
-/// performed.
+/// STRONG LIST SPECIFICATION on the pure algorithm. EXHAUSTIVE: 2 replicas x 4
+/// acts = 8 choices per step, 4 steps = `8^4 = 4096` executions, each checking
+/// property (a) after every step and every sync, and (b) for every insert.
 #[test]
 fn strong_list_spec__holds_on_the_pure_algorithm() {
     const STEPS: usize = 4;
@@ -365,13 +346,8 @@ fn strong_list_spec__holds_on_the_pure_algorithm() {
 }
 
 /// STRONG LIST SPECIFICATION through the storage collection's REAL apply path.
-///
-/// The document runs the identical script as a pure twin and the two are
-/// asserted equal at every step, so element identity, which `FugueText` does
-/// not expose, is borrowed from the twin without being assumed.
-///
-/// EXHAUSTIVE: 2 replicas x 4 acts = 8 choices per step, 3 steps =
-/// `8^3 = 512` executions through `Interface::apply_action`.
+/// EXHAUSTIVE: `8^3 = 512` executions. Element identity, which `FugueText` does
+/// not expose, is borrowed from a pure twin asserted equal at every step.
 #[test]
 fn strong_list_spec__holds_through_the_apply_path() {
     const STEPS: usize = 3;
@@ -565,9 +541,8 @@ fn assert_blocks_are_contiguous(merged: &str, writers: &[Passage], expected_len:
 }
 
 /// A pure replica that has seen the seed, appended its passage at the END, and
-/// then gone BACK to type its heading immediately before that passage.
-///
-/// This is the paper's Figure 2, the case RGA is proven to interleave.
+/// gone BACK to type its heading before it: the paper's Figure 2, the case RGA
+/// is proven to interleave.
 fn backward_twin(seed: &Twin, writer: &Passage) -> Twin {
     let mut twin = Twin::new(u64::from(writer.replica));
     twin.receive_from(seed);
@@ -579,11 +554,9 @@ fn backward_twin(seed: &Twin, writer: &Passage) -> Twin {
     twin
 }
 
-/// A pure replica that typed its heading and passage LEFT TO RIGHT at the same
-/// position everybody else is typing at.
-///
-/// This is the forward case, which RGA also satisfies: included so a
-/// regression that broke only one direction cannot hide.
+/// A pure replica that typed heading and passage LEFT TO RIGHT at the position
+/// everybody else types at: the forward case, which RGA also satisfies, so a
+/// regression breaking only one direction cannot hide.
 fn forward_twin(seed: &Twin, writer: &Passage) -> Twin {
     let mut twin = Twin::new(u64::from(writer.replica));
     twin.receive_from(seed);
@@ -780,13 +753,9 @@ fn multi_replica_backward_merge(field: &str, passage: u64, heading: u64) -> Stri
     converged.expect("both writers wrote")
 }
 
-/// BACKWARD non-interleaving, MULTI-REPLICA - Table I's third anomaly column.
-///
-/// The three-writer cases above are three independent single-replica sessions
-/// and do not reach this column: it needs ONE session spanning two replica ids,
-/// which is what a user moving between devices produces. Both id orders are
-/// exercised, because the column exists precisely because the ids need not line
-/// up with the session.
+/// BACKWARD non-interleaving, MULTI-REPLICA: Table I's third anomaly column,
+/// which needs ONE session spanning two replica ids, as a user moving between
+/// devices produces. Both id orders run, since ids need not follow the session.
 #[test]
 fn non_interleaving__backward_one_session_spanning_two_replicas() {
     for (field, passage, heading, expected) in [
@@ -832,13 +801,9 @@ fn non_interleaving__forward_two_replicas_through_the_apply_path() {
     }
 }
 
-/// The paper's Figure 7, with `passage`-character passages: three replicas
-/// concurrently insert `A`, `B` and `C` into an empty document, then r2 sees
-/// `{A, B}` and types `Y`s between them while r3 sees `{A, C}` and types `X`s.
-///
-/// Every `Y` and `X` is a right descendant of `A` with a DIFFERENT right origin
-/// (`B` versus `C`) - the one execution shape in which Fugue and FugueMax
-/// disagree.
+/// The paper's Figure 7: three replicas concurrently insert `A`, `B` and `C`,
+/// then r2 sees `{A, B}` and types `Y`s between them while r3 sees `{A, C}` and
+/// types `X`s: right descendants of `A` with DIFFERENT right origins.
 fn figure_7_merged(passage: u32) -> String {
     let mut r1 = FugueTree::new();
     let a = r1.insert(0, 'A', (1, 0)).unwrap();
@@ -886,14 +851,9 @@ fn figure_7_merged(passage: u32) -> String {
     merged.values()
 }
 
-/// FIGURE 7: right siblings are ordered by id, so this implementation is plain
-/// Fugue and not FugueMax.
-///
-/// `Y` was typed immediately before `B`; only FugueMax keeps the two adjacent,
-/// by ordering right siblings on the reverse of their right origins and
-/// yielding `AXYBC`. The residual cost of plain Fugue is exactly that one lost
-/// adjacency - neither order splits a passage. If this assertion ever changes,
-/// the sibling comparator changed, and so did every stored document's text.
+/// FIGURE 7: right siblings are ordered by id, so this is plain Fugue and not
+/// FugueMax, which would keep `Y` adjacent to the `B` it was typed before and
+/// yield `AXYBC`. If this assertion changes, so does every stored text.
 #[test]
 fn figure_7__right_siblings_order_by_id_not_by_right_origin() {
     assert_eq!(figure_7_merged(1), "AYXBC");
@@ -918,12 +878,8 @@ fn pinned(time: u64) -> HybridTimestamp {
 }
 
 /// The paper's Figure 2 against `ReplicatedGrowableArray`: RGA DOES interleave,
-/// pinned to the exact text it produces.
-///
-/// This asserts the defect, not its absence - it is the control that keeps the
-/// Fugue cases above meaningful. Both headings migrate to the front and both
-/// passages follow, so neither writer's block survives. If it ever fails, RGA's
-/// ordering changed and the comparison this collection exists to win is stale.
+/// pinned to the exact text. This asserts the defect, not its absence, and is
+/// the control that keeps the Fugue cases above meaningful.
 #[test]
 fn rga_control__backward_two_replicas_interleave() {
     const FIELD: &str = "conformance_rga_backward";
