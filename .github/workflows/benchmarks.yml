@@ -4,9 +4,8 @@ permissions:
   contents: read
   pull-requests: write
 
-# Post-merge on master, plus opt-in per PR via the `run-benchmarks` label.
-# Deliberately NOT on every pull_request: a full sweep is tens of minutes, and
-# the result is a trend line rather than a verdict.
+# Post-merge on master, plus opt-in per PR via the `run-benchmarks` label: a
+# full sweep is tens of minutes and produces a trend line, not a verdict.
 on:
   push:
     branches:
@@ -65,12 +64,10 @@ jobs:
     if: github.event_name == 'pull_request'
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
-    # actions/download-artifact@v4 only looks at the artifacts of the CURRENT
-    # workflow run by default. Master's baseline was uploaded by a different,
-    # earlier, push-triggered run of this same workflow, so reaching it needs
-    # that run's numeric id plus a token scoped to read Actions metadata --
-    # hence `actions: read` here, on top of the workflow-level `contents:
-    # read` and `pull-requests: write`.
+    # `actions: read` on top of the workflow-level permissions: master's
+    # baseline was uploaded by a different, earlier run of this workflow, and
+    # download-artifact reaches it only with that run's id and a token scoped
+    # to read Actions metadata.
     permissions:
       contents: read
       pull-requests: write
@@ -86,12 +83,9 @@ jobs:
           path: target/criterion
           merge-multiple: true
 
-      # Resolve the base commit's own benchmarks.yml run, if one exists. A PR
-      # based on a commit that predates this workflow, or whose run's
-      # artifacts expired (30-day retention), or whose run failed outright,
-      # has none -- that is expected, not an error, and must not fail the
-      # job. This is a lookup, not a download: it only produces a run id (or
-      # nothing) for the next step to act on.
+      # A base commit with no benchmarks.yml run, or one whose artifacts have
+      # expired, is expected and must not fail the job. This is a lookup only:
+      # it produces a run id, or nothing, for the next step to act on.
       - name: Find master's benchmark run
         id: master-run
         env:
@@ -111,9 +105,8 @@ jobs:
             echo "no successful benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} -- it predates this workflow, or its run failed, or (past 30 days) its artifacts have expired"
           fi
 
-      # Only attempted when the lookup above found a run id. Passing run-id +
-      # github-token is what makes download-artifact reach into a DIFFERENT
-      # workflow run instead of silently matching nothing in the current one.
+      # `run-id` plus `github-token` is what makes download-artifact reach into
+      # a DIFFERENT workflow run instead of matching nothing in the current one.
       - name: Download master's baselines
         if: steps.master-run.outputs.run_id != ''
         uses: actions/download-artifact@v4
@@ -128,17 +121,10 @@ jobs:
       - name: Install critcmp
         run: cargo install critcmp --locked
 
-      # A table, not a verdict. Criterion's own significance threshold is ~5%
-      # and a shared runner beats that on cache state alone, so this is read by
-      # a human deciding whether a number is worth chasing.
-      #
-      # Three distinct "nothing to compare" cases get three distinct
-      # messages, so the posted comment never reads as a comparison that
-      # quietly ran and found no difference: (1) no run at all for the base
-      # commit, (2) a run existed but its artifacts didn't download (expired,
-      # or the download step itself failed), (3) artifacts downloaded but
-      # critcmp still found nothing to diff (baseline name mismatch, empty
-      # dir, etc).
+      # A table, not a verdict: criterion's ~5% significance threshold is inside
+      # shared-runner noise. The three "nothing to compare" branches each get
+      # their own message, so the posted comment never reads as a comparison
+      # that ran and found no difference.
       - name: Compare
         run: |
           if [ -z "${{ steps.master-run.outputs.run_id }}" ]; then

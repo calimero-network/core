@@ -456,8 +456,7 @@ mod tests {
     }
 
     /// The two text CRDTs share an opaque ABI shape but nothing of their
-    /// storage layout - RGA is one entity per character, `FugueText` one per
-    /// run - so a field swapped between them needs a migration.
+    /// storage layout, so a field swapped between them needs a migration.
     #[test]
     fn rga_to_fugue_text_is_breaking() {
         let findings = diff_checked(

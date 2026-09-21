@@ -245,14 +245,11 @@ pub fn infer_schema_from_database(
                                 },
                                 CrdtType::RotationLog | CrdtType::FugueTextBlock => {
                                     // Internal book-keeping children, never
-                                    // user-facing ROOT fields: `RotationLog` is
-                                    // the SharedStorage writer-set history,
-                                    // `FugueTextBlock` is one
-                                    // run-length block INSIDE a `FugueText`
-                                    // (the document itself surfaces under
-                                    // `CrdtType::FugueText` above). Surface
-                                    // either as an opaque record if it ever
-                                    // appears here.
+                                    // user-facing ROOT fields: the SharedStorage
+                                    // writer-set history, and one run-length
+                                    // block INSIDE a `FugueText` (the document
+                                    // itself surfaces above). Surface either as
+                                    // an opaque record if it ever appears here.
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },
                                         crdt_type: None,

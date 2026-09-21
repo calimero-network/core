@@ -30,9 +30,8 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util.workspace = true
 
-# A crate that gains a [[bench]] needs `bench = false` on its [lib], [[bin]]
-# and [[test]] targets, or `cargo bench -p calimero-blobstore` (no --bench
-# filter) hands those to libtest, which rejects criterion's own CLI flags.
+# `bench = false` on every non-criterion target: a bare `cargo bench -p <crate>`
+# otherwise hands them to libtest, which rejects criterion's own CLI flags.
 [lib]
 bench = false
 

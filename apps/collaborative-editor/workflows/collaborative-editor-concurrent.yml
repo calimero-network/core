@@ -6,7 +6,7 @@ description: >
 
   The reason is that RGA orders same-origin siblings by id, so the outcome turns
   on the relative ORDER of the ids, not on concurrency alone. Here each writer
-  types its passage and then its heading back-to-back, giving P1<H1<P2<H2 — and
+  types its passage and then its heading back-to-back, giving P1<H1<P2<H2 - and
   each heading still lands beside its own passage. Nor does omitting
   `wait_for_sync` create concurrency: gossip on loopback propagates in
   milliseconds while the HTTP round-trips take tens of them, so back-to-back
@@ -19,7 +19,6 @@ description: >
   Kept as an ordinary two-node concurrent-editing smoke test, which it is.
 name: Collaborative Editor Concurrent Workflow
 
-# Force pull Docker images even if they exist locally
 force_pull_image: true
 
 nodes:
@@ -28,11 +27,6 @@ nodes:
   prefix: calimero-node
 
 steps:
-  # ============================================
-  # Setup Phase: Install app and create context
-  # ============================================
-
-  # Step 1: Install the collaborative editor application on Node 1
   - name: Install Collaborative Editor on Node 1
     type: install_application
     node: calimero-node-1
@@ -41,7 +35,6 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Step 2: Create mesh with both nodes
   - name: Create Mesh
     type: create_mesh
     context_node: calimero-node-1
@@ -52,19 +45,10 @@ steps:
       context_id: contextId
       member_public_key: memberPublicKey
 
-  # ============================================
-  # Seed the document, matching paper Figure 2 (which starts from a document
-  # containing "existing text..." above both users' sections - not an empty
-  # document). This is also the working precondition for node 2 to write at
-  # all: create_mesh alone leaves node 2's context with zero delta-log
-  # entries. collaborative-editor.yml never hits this because node 2's first
-  # write (step 63) always happens long after node 1's first edit ("Hello")
-  # has synced - node 2 never writes into an empty context. Seeding here
-  # reproduces that same working precondition AND the paper's setup in one
-  # step. This seed step sits BEFORE all four concurrent edits; no wait or
-  # sync goes between them, or they stop being concurrent.
-  # ============================================
-
+  # Node 2 cannot write into a context whose delta log is empty, which is all
+  # `create_mesh` leaves it with, and Figure 2 starts from a non-empty document
+  # anyway. The seed must land before the four concurrent edits, with no wait or
+  # sync between them, or they stop being concurrent.
   - name: Seed the document from Node 1
     type: call
     node: calimero-node-1
@@ -96,28 +80,9 @@ steps:
     statements:
       - 'json_equal({{seeded_text_node2}}, {"output": "existing text. "})'
 
-  # ============================================
-  # Scenario: backward-insertion interleaving (paper Figure 2)
-  #
-  # Starting from the 15-character seeded document ("existing text. "), each
-  # node appends its own "passage" at the end (position 15, the seeded
-  # length), then moves back to the start of its own passage (also position
-  # 15 - each node's own prior insert there shifts nothing else) and inserts
-  # a "heading" immediately before it, with NO propagation wait between Node
-  # 1's pair of edits and Node 2's pair.
-  #
-  # That is Figure 2's shape but not its ordering. Each node types its
-  # passage and heading back-to-back, so RGA's same-origin id order already
-  # keeps every heading beside its own passage and the contiguity assertions
-  # below pass. The scenario that does separate the two CRDTs goes
-  # round-robin: `apps/fugue-collab/workflows/fugue-collab-figure2.yml`.
-  #
-  # (Note: same-position *forward* concurrent insertion - i.e. two nodes
-  # both inserting at position 0 with no wait - is already covered by
-  # collaborative-editor.yml's "Insert ABC from Node 1" / "Insert XYZ from
-  # Node 2" steps, so it is intentionally not duplicated here.)
-  # ============================================
-
+  # Both nodes append at position 15, the seeded length, then insert a heading
+  # back at 15 - their own prior insert there shifts nothing else - with no
+  # propagation wait between Node 1's pair of edits and Node 2's.
   - name: Node 1 types passage
     type: call
     node: calimero-node-1
@@ -198,7 +163,6 @@ steps:
       - "contains({{interleave_text_node2}}, 'HEAD1PASSAGE1')"
       - "contains({{interleave_text_node2}}, 'HEAD2PASSAGE2')"
 
-# Configuration
 stop_all_nodes: false
 restart: false
 wait_timeout: 60

@@ -21,30 +21,16 @@
 //!
 //! # This is a probe, not the gate
 //!
-//! It cannot be the gate: it drives a contract in another repo and is
-//! `#[ignore]`d, so core CI never runs it. It rotted silently once already,
-//! when mero-chat dropped `sender_username` from `send_message` — every call
-//! failed argument deserialization and the probe "walled" at 0.
+//! It drives a contract in another repo and is `#[ignore]`d, so core CI never
+//! runs it and it has rotted silently before. The property it is about, one
+//! positional read costing O(n), is gated in-repo by the `vector_get_nth`
+//! workload in `tools/storage-cost`, which runs on every PR; this probe adds
+//! the end-to-end number in gas, against the real app, on demand.
 //!
-//! The property it is about — one positional read costing O(n) — is gated
-//! in-repo instead, with no cross-repo dependency, by the `vector_get_nth`
-//! workload in `tools/storage-cost` (`cargo test -p storage-cost`, plus
-//! `scripts/check-storage-cost.sh`). That runs on every PR. This probe adds the
-//! end-to-end number in gas, against the real app, on demand.
-//!
-//! # It can no longer rot quietly
-//!
-//! Every failure is classified before it is reported, and the two verdicts are
-//! kept apart on purpose:
-//!
-//! * `GasExhausted` — a real wall. The only outcome that produces a number.
-//! * anything else — CONTRACT DRIFT. Method renamed, arguments changed, ABI
-//!   moved. The probe panics naming the method and the error, and never reports
-//!   a wall, because a wall it did not measure is worse than no wall.
-//!
-//! A preflight runs one `send_message` and one `get_messages` before the sweep
-//! starts, so drift is reported in seconds rather than after a five-minute run
-//! that "found" a wall at 0.
+//! `GasExhausted` is the only outcome that produces a number; anything else
+//! panics as contract drift, naming the method, because a wall it did not
+//! measure is worse than no wall. A preflight makes drift show up in seconds
+//! rather than after a five-minute run that "found" a wall at 0.
 //!
 //! # Running it
 //!
@@ -113,12 +99,9 @@ fn build_curb_wasm() -> Vec<u8> {
         logic_dir.display(),
     );
 
-    // A `[patch]` written into mero-chat's own manifest wins over the one this
-    // harness injects with `--config`, so the probe would silently measure
-    // whatever tree that patch names instead of this one — and report the
-    // number as if it came from here. Workstation overrides like that are
-    // common (they are how people develop against a local core), which is
-    // exactly why this has to be checked rather than assumed.
+    // A `[patch]` in mero-chat's own manifest wins over the one injected with
+    // `--config`, so the probe would measure whatever tree that patch names and
+    // report the number as if it came from here.
     let manifest = std::fs::read_to_string(logic_dir.join("Cargo.toml"))
         .expect("mero-chat logic manifest is readable");
     if manifest.contains(&format!("[patch.\"{CORE_GIT_SOURCE}\"]")) {
@@ -233,11 +216,8 @@ fn init_args() -> serde_json::Value {
     })
 }
 
-/// The `send_message` arguments.
-///
-/// THIS is what rotted in 2026-08: mero-chat dropped `sender_username` and
-/// every call here started failing argument deserialization. Defined once so
-/// fixing it is one edit, and so a reader can diff it against the contract.
+/// The `send_message` arguments. This is the part of the cross-repo contract
+/// that goes stale; defined once so fixing it is one edit.
 fn send_message_args(i: usize) -> serde_json::Value {
     serde_json::json!({
         "message": format!("message {i}"),
@@ -250,7 +230,7 @@ fn send_message_args(i: usize) -> serde_json::Value {
     })
 }
 
-/// The `get_messages` arguments — one page, from the top.
+/// The `get_messages` arguments: one page, from the top.
 fn get_messages_args() -> serde_json::Value {
     serde_json::json!({
         "parent_message": null,
@@ -260,12 +240,8 @@ fn get_messages_args() -> serde_json::Value {
     })
 }
 
-/// How many messages `get_messages` says the store holds.
-///
-/// Drifts if the response shape changes, which is a contract change like any
-/// other: without this number the cost curve could be an artifact of writes
-/// that silently vanished, and a harness whose writes vanish lands every call
-/// and looks exactly like success.
+/// How many messages `get_messages` says the store holds. Drifts if the
+/// response shape changes, which is a contract change like any other.
 fn total_count(outcome: &Outcome) -> usize {
     let body = outcome
         .returns
@@ -287,11 +263,8 @@ fn total_count(outcome: &Outcome) -> usize {
 }
 
 /// Prove the contract still answers the calls this probe makes, on a THROWAWAY
-/// store, before spending minutes on a sweep.
-///
-/// Runs against its own storage so the measured run still starts empty. Costs
-/// three calls; buys the difference between "the wall is at 0" and "your
-/// arguments are stale".
+/// store (so the measured run still starts empty), before spending minutes on
+/// a sweep.
 fn preflight(module: &calimero_runtime::Module) {
     let mut storage = InMemoryStorage::default();
 
@@ -318,18 +291,14 @@ fn preflight(module: &calimero_runtime::Module) {
 enum Verdict {
     /// The guest ran and exhausted its budget. This is a result.
     Wall { limit: u64 },
-    /// The guest did not get far enough to cost anything meaningful — the
-    /// method is gone, the arguments no longer deserialize, the ABI moved. This
-    /// is not a result, and must never be presented as one.
+    /// The guest did not get far enough to cost anything meaningful. This is
+    /// not a result, and must never be presented as one.
     Drift(String),
 }
 
-/// Classify a failed outcome.
-///
-/// `GasExhausted` is the ONLY failure that counts as a wall. `ExecutionError`
-/// in particular does not: that is how a `#[app::logic]` method reports that it
-/// could not deserialize its arguments, which is exactly the drift that made
-/// this probe report a wall at 0 in 2026-08.
+/// Classify a failed outcome. `GasExhausted` is the ONLY failure that counts
+/// as a wall; `ExecutionError` in particular does not, since that is how a
+/// `#[app::logic]` method reports arguments it cannot deserialize.
 fn classify(method: &str, error: &FunctionCallError) -> Verdict {
     match error {
         FunctionCallError::GasExhausted { limit } => Verdict::Wall { limit: *limit },
@@ -348,7 +317,7 @@ fn classify(method: &str, error: &FunctionCallError) -> Verdict {
 fn drift(detail: &str) -> ! {
     panic!(
         "\n\
-         ==================== CONTRACT DRIFT — NOT A STORAGE RESULT ====================\n\
+         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
          {detail}\n\
          \n\
          This probe drives a contract in another repo (mero-chat-pwa) and its call\n\
@@ -369,7 +338,7 @@ fn expect_ok(outcome: &Outcome, method: &str) {
             Verdict::Drift(detail) => drift(&detail),
             Verdict::Wall { limit } => drift(&format!(
                 "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 against an empty store. That is not a wall — a wall needs data behind \
+                 against an empty store. That is not a wall - a wall needs data behind \
                  it. Either max_gas has been lowered dramatically or the contract now \
                  does unbounded work at n=0."
             )),
@@ -503,18 +472,16 @@ fn how_many_messages_before_send_message_walls() {
         (_, None) => println!("read wall  (get_messages):  none below {landed}"),
     }
 
-    // Preflight already proved one message lands, and every non-gas failure
-    // above panics as drift, so reaching here with nothing appended would mean
-    // the classification is wrong rather than the storage layer.
+    // Preflight proved one message lands and every non-gas failure above panics
+    // as drift, so nothing appended means the classification is wrong.
     assert!(
         landed > 0,
-        "no message was appended even though preflight succeeded — the failure \
+        "no message was appended even though preflight succeeded - the failure \
          classification in this file is broken"
     );
 
-    // A wall found in the first handful of messages is not a wall; it is a
-    // symptom that the contract now does something unbounded per call. Say so
-    // rather than publishing the number.
+    // A wall in the first handful of messages is not a wall; it is a symptom
+    // that the contract now does something unbounded per call.
     if let Some(n) = write_wall.or(read_wall) {
         assert!(
             n >= 50,
@@ -526,14 +493,9 @@ fn how_many_messages_before_send_message_walls() {
     }
 }
 
-/// The discriminator itself runs in CI, even though the probe does not.
-///
-/// Everything above rests on `classify` telling a measured wall apart from a
-/// stale call signature. That function has no other coverage — the probe that
-/// uses it is `#[ignore]`d — so a refactor could invert it and nobody would
-/// find out until the next time someone quoted a number that was really a
-/// deserialization failure. Which is the exact history this file is guarding
-/// against.
+/// The discriminator itself runs in CI, even though the probe does not:
+/// everything here rests on `classify` telling a measured wall apart from a
+/// stale call signature, and it has no other coverage.
 #[test]
 fn only_gas_exhaustion_counts_as_a_wall() {
     assert!(
@@ -547,14 +509,13 @@ fn only_gas_exhaustion_counts_as_a_wall() {
         "gas exhaustion is the one failure that is a measurement"
     );
 
-    // How a #[app::logic] method reports that it could not deserialize its
-    // arguments — i.e. exactly the 2026-08 rot.
+    // How a #[app::logic] method reports arguments it cannot deserialize.
     let Verdict::Drift(detail) = classify(
         "send_message",
         &FunctionCallError::ExecutionError(b"missing field `sender_username`".to_vec()),
     ) else {
         panic!(
-            "an application error was classified as a wall — the probe would report \
+            "an application error was classified as a wall - the probe would report \
                 a fictional number"
         );
     };

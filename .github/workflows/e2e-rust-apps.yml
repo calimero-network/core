@@ -1042,36 +1042,22 @@ jobs:
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
-          # An ordinary two-node concurrent-editing smoke test. It used to be
-          # registered as this rework's red-expected acceptance test and did not
-          # work in that role - it PASSES on RGA, which orders same-origin
-          # siblings by id. Kept as the plain scenario it is.
           - workflow: collaborative-editor-concurrent
             file: workflows/collaborative-editor-concurrent.yml
             app: collaborative-editor
-          # The paper's Figure 2, multi-replica. Merely making the edits
-          # concurrent does not pose the question: RGA orders same-origin
-          # siblings by id, so a writer that types its passage and heading
-          # back-to-back yields P1<H1<P2<H2 and each heading still lands beside
-          # its own passage. This scenario goes ROUND-ROBIN instead - every
-          # writer appends its passage, and only then does each go back for its
-          # heading, giving P1<P2<P3<H1<H2<H3 so every heading sorts ahead of
-          # every passage. Isolation is forced by stopping the other nodes and
-          # is ASSERTED before each of the six writes, so a leaked peer edit
-          # fails loudly rather than quietly making the run vacuous.
+          # Writes go round-robin (P1<P2<P3<H1<H2<H3), not passage-then-heading
+          # per writer: RGA orders same-origin siblings by id, so back-to-back
+          # writes would interleave correctly on their own and pose no question.
           #
-          # `registry_fetch: false`: the scenario installs the bundle directly
-          # on EVERY node, before isolation begins, because master acquires
-          # bytecode lazily and a node cut off from its peers has nobody to
-          # fetch from. Nothing is pulled from the fixture registry as a result,
-          # which is correct here and not a missing-registry bug.
+          # `registry_fetch: false`: the bundle is installed on every node before
+          # isolation begins, because a node cut off from its peers cannot
+          # lazily acquire bytecode.
           - workflow: fugue-collab-figure2
             file: workflows/fugue-collab-figure2.yml
             app: fugue-collab
             registry_fetch: false
-          # The same `registry_fetch: false` reasoning covers the four below:
-          # each installs the bundle on every node before any fault is injected.
-          # Each file's `description` says what its own fault shape proves.
+          # Same `registry_fetch: false` reasoning for the four below: each
+          # installs the bundle on every node before any fault is injected.
           - workflow: fugue-collab-partition-heal
             file: workflows/fugue-collab-partition-heal.yml
             app: fugue-collab

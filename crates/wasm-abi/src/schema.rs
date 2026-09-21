@@ -330,8 +330,7 @@ pub enum CrdtCollectionType {
     /// ReplicatedGrowableArray: String with character-level CRDT
     ReplicatedGrowableArray,
     /// FugueText: String with a Tree-Fugue CRDT stored as run-length blocks.
-    /// Same opaque shape as `ReplicatedGrowableArray`, an unrelated layout
-    /// (one entity per run, not per character), so the two never interchange.
+    /// Tagged apart from `ReplicatedGrowableArray`: unrelated storage layouts.
     FugueText,
     /// AuthoredVector: List with per-element author identity
     AuthoredVector,

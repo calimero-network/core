@@ -1,33 +1,24 @@
 //! What does storing a blob cost per byte?
 //!
-//! `BlobManager::put` splits the stream into 1 MiB chunks (`CHUNK_SIZE`,
-//! `src/lib.rs:31`), SHA-256s each chunk to get its id, writes it, and then
-//! hashes the chunk ids together to get the root id. Every image, avatar and
-//! application bundle pays this on the way in, and the receiving node pays it
-//! again on the way out.
+//! `BlobManager::put` splits the stream into `CHUNK_SIZE` (1 MiB) chunks,
+//! SHA-256s each to get its id, writes it, then hashes the chunk ids together
+//! to get the root id. Every image, avatar and application bundle pays this on
+//! the way in, and the receiving node pays it again on the way out.
 //!
-//! Sizes bracket the chunk boundary on purpose: just under one chunk
-//! (1,000,000 bytes), exactly one full chunk (1,048,576 bytes — `CHUNK_SIZE`
-//! is `1 << 20` exactly, `src/lib.rs:31`), and several (4,194,304 bytes, four
-//! chunks). A per-byte cost that jumps between the first two sizes means the
-//! chunking path, not the hashing, dominates; the observed measurement is
-//! flat across that boundary (see the benchmark report).
+//! The sizes bracket the chunk boundary on purpose: just under one chunk,
+//! exactly one, and four. A per-byte cost that jumps between the first two
+//! means the chunking path rather than the hashing dominates; it is currently
+//! flat across that boundary.
 //!
-//! Measured throughput lands around ~120-126 MiB/s, well short of the naive
-//! "hundreds of MB/s" a single SHA-256 pass would suggest, because
-//! `put_sized` hashes every chunk **twice** into two independent `Sha256`
-//! instances over the same bytes: `blob.digest.update(chunk)` accumulates the
-//! root id and `file.digest.update(chunk)` accumulates that chunk's own id
-//! (`src/lib.rs:132-135` for the `State` struct holding both digests,
-//! `:411-412` for the two updates). Two software SHA-256 passes at roughly
-//! 3-4 ns/byte each account for most of the ~7.9 ns/byte this bench measures;
-//! the filesystem write is the smaller remainder, not the dominant cost.
+//! Throughput lands around 120-126 MiB/s rather than the "hundreds of MB/s" a
+//! single SHA-256 pass would suggest, because `put_sized` hashes every chunk
+//! TWICE over the same bytes, once into the root id and once into that chunk's
+//! own id. The filesystem write is the smaller remainder.
 //!
-//! Context for the numbers: a receiver abandons a transfer after 60s
-//! (`crates/network/.../request_blob.rs:18`), so the p2p ceiling of 500 MiB
-//! implies a sustained 8.5 MB/s. If local chunking alone cannot beat that, the
-//! transfer limit is unreachable for reasons that have nothing to do with the
-//! network.
+//! For scale: a receiver abandons a transfer after 60s, so the 500 MiB p2p
+//! ceiling implies a sustained 8.5 MB/s. If local chunking alone cannot beat
+//! that, the transfer limit is unreachable for reasons that have nothing to do
+//! with the network.
 
 use std::hint::black_box;
 use std::path::Path;
@@ -41,12 +32,10 @@ use camino::Utf8PathBuf;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tempfile::TempDir;
 
-/// Mirrors the crate's own test setup (`src/lib.rs:890-900`): an in-memory
-/// data store for metadata plus a real `FileSystem` blob store rooted in a
-/// fresh temp directory. `FileSystem::new` is async, so this is called from
-/// setup on a throwaway runtime, never from inside a timed closure. The
-/// `TempDir` is returned alongside the manager so it outlives the
-/// measurement — dropping it would delete the store out from under `put`.
+/// Mirrors the crate's own test setup: in-memory metadata plus a real
+/// `FileSystem` blob store in a fresh temp directory. The `TempDir` is
+/// returned alongside the manager so it outlives the measurement; dropping it
+/// would delete the store out from under `put`.
 async fn new_manager_async(root: &Path) -> BlobManager {
     let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
     let config = BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());

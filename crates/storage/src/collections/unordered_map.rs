@@ -361,16 +361,14 @@ where
     ///
     /// See `Collection::insert_with_storage_type_and_crdt_type` for why an
     /// untagged entry is a hazard for a container whose VALUES are mutable, and
-    /// `CrdtType::FugueTextBlock` — the only tag passed here today — for the
+    /// `CrdtType::FugueTextBlock`, the only tag passed here today, for the
     /// concrete data loss it prevents.
     ///
-    /// The tag is stamped at CREATION only, and that is sufficient: an entry's
-    /// index metadata is written when its index row is first created (see
-    /// `Index::write_child_index`, which preserves the metadata of an existing
-    /// row) and is restored onto the element by `Interface::find_by_id`, so
-    /// every later update — local or applied — carries it forward unchanged. A
-    /// replica that first learns of the entry over the wire creates its index
-    /// row from the action's metadata, which carries the tag too.
+    /// Stamped at CREATION only, which suffices: `Index::write_child_index`
+    /// preserves an existing row's metadata and `Interface::find_by_id` restores
+    /// it onto the element, so every later update carries the tag forward. A
+    /// replica first learning of the entry over the wire builds its index row
+    /// from the action's metadata, which carries the tag too.
     ///
     /// # Errors
     ///
@@ -409,10 +407,9 @@ where
 
         // Insert into the inner collection.
         // Pass the `StorageType` directly to the `Collection`.
-        // An explicitly requested tag wins; otherwise fall back to master's
-        // `#[app::mergeable]` derivation. `FugueText::put_block` is the only
-        // caller that passes one, and it must reach the leaf as
-        // `CrdtType::FugueTextBlock` or the entry merges last-writer-wins.
+        // An explicitly requested tag wins; otherwise fall back to the
+        // `#[app::mergeable]` derivation. Without the tag the entry would merge
+        // last-writer-wins.
         let _ignored = self.inner.insert_with_storage_type(
             Some(id),
             (value, key),

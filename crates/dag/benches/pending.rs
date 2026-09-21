@@ -3,46 +3,27 @@
 //! A node that has been offline, or is behind a peer mid-catch-up, accumulates
 //! deltas whose parents have not arrived. `get_missing_parents` is called to
 //! build the next sync request, `cleanup_stale` on a timer, `pending_stats` for
-//! metrics — all three walk that set. If any of them is superlinear, a node
+//! metrics, and all three walk that set. If any of them is superlinear, a node
 //! that falls behind gets slower at catching up precisely as it needs to be
 //! faster.
 //!
-//! The brief this bench was written from named the DAG type `Dag` and the
-//! parking entry point `restore_applied_delta`. Neither survived contact with
-//! the tree: the type is `DagStore<T>`, and `restore_applied_delta` (`:468`)
-//! marks a delta as *applied* — it exists to replay already-applied history
-//! from storage, not to park anything. Feeding it a delta with a missing
-//! parent does not put that delta in the pending set at all, which would have
-//! made every number below a measurement of an empty set. The real door is
-//! `add_delta_with_outcome` (`:538`): given a delta whose parent is not in the
-//! DAG, `can_apply` fails and it lands in `pending` via `insert_pending`.
-//! `add_delta_with_outcome` is `async` (the DAG's only async surface,
-//! `apply_delta` at `:737`), but it is never actually awaited on the pending
-//! path — `can_apply` fails before any `.await` point is reached — so driving
-//! it through a bare current-thread `tokio` runtime in the fixture setup adds
-//! no meaningful executor overhead, and the setup itself is outside every
-//! timed closure below regardless.
+//! The pending set is filled through `add_delta_with_outcome`, not
+//! `restore_applied_delta`: the latter marks a delta APPLIED, so a delta with
+//! a missing parent never reaches `pending` and every number here would be a
+//! measurement of an empty set. `add_delta_with_outcome` is `async`, but
+//! `can_apply` fails before any `.await` on the pending path, so the
+//! current-thread runtime in the fixture adds no executor overhead, and the
+//! fixture is outside every timed closure regardless.
 //!
-//! The brief's fixture built each `CausalDelta` with `CausalDelta::new_test`,
-//! which is `#[cfg(any(test, feature = "testing"))]` — unreachable from a
-//! bench binary (no `cfg(test)`) without the crate's own `testing` feature
-//! turned on. Rather than pull that feature in (which would need either
-//! `required-features` on the `[[bench]]`, making a bare `cargo bench -p
-//! calimero-dag --bench pending` silently skip the target instead of
-//! building it, or a self-referential dev-dependency to force it on), the
-//! fixture uses the crate's ungated public constructor,
-//! `CausalDelta::new(id, parents, payload, hlc)` (`:135`), passing
-//! `HybridTimestamp::default()` for the one field `new_test` filled in for
-//! free. That is the only difference between the two constructors — `new_test`
-//! is a convenience wrapper around `new`, not a distinct code path — so this
-//! fixture exercises the exact same `CausalDelta` shape without needing the
-//! feature at all.
+//! Deltas are built with the ungated `CausalDelta::new` rather than
+//! `new_test`, which needs the crate's `testing` feature: reaching that would
+//! mean `required-features` on the `[[bench]]`, and a bare `cargo bench` then
+//! silently SKIPS the target instead of building it. The two constructors
+//! differ only in the default HLC, which the fixture passes explicitly.
 //!
-//! Each sub-benchmark measures a pending set of exactly the size its `n`
-//! claims: `get_missing_parents` and `pending_stats` are read-only and reuse
-//! one fixture across all their iterations, but `cleanup_stale` mutates (it
-//! evicts), so it rebuilds a fresh `n`-sized pending set per sample via
-//! `iter_batched` rather than draining one shared fixture across the batch.
+//! Each sub-benchmark sees a pending set of exactly its `n`. The two read-only
+//! walks share one fixture; `cleanup_stale` evicts, so it rebuilds per sample
+//! rather than draining one shared fixture across the batch.
 //!
 //! What would change a decision: a walk that grows faster than the set, which
 //! would make an index over pending parents worth building.
@@ -115,12 +96,8 @@ fn pending(c: &mut Criterion) {
             b.iter(|| black_box(dag.pending_stats()));
         });
 
-        // cleanup_stale mutates (it evicts), so unlike the two read-only
-        // benches above it cannot reuse one shared fixture across samples --
-        // that would shrink the pending set on every iteration, so only the
-        // first sample would actually measure n. Rebuild a fresh n-sized
-        // pending set per batch instead, so every measured call sees exactly
-        // n pending deltas.
+        // A shared fixture would shrink on every iteration, leaving only the
+        // first sample measuring n, so rebuild an n-sized set per batch.
         group.bench_with_input(BenchmarkId::new("cleanup_stale", n), &n, |b, &n| {
             b.iter_batched(
                 || pending_dag(n),

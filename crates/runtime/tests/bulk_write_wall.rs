@@ -2,34 +2,24 @@
 //! `ReplicatedGrowableArray::insert_str` an RGA defect, or a property of the
 //! whole storage layer?
 //!
-//! `tools/storage-cost/storage-costs.json` reports similar rows-touched-per-
-//! entry across collections at n=10,000 (`unordered_map_insert` 66,
-//! `unordered_set_insert` 66, `rga_insert` 66, `vector_push` 64,
-//! `lww_register_set` 46). If gas is roughly proportional to rows touched,
-//! then a per-call gas ceiling in the same range should show up for EVERY
-//! collection, not just RGA. This probe answers that directly, the same way
-//! `rga_wall.rs::single_call_paste_wall` did: binary search, against a real
-//! compiled guest, to an EXECUTED `GasExhausted`, not a projected one.
+//! `storage-costs.json` reports similar rows-touched-per-entry across
+//! collections, so if gas tracks rows touched then a per-call gas ceiling in
+//! the same range should show up for EVERY collection, not just RGA. This
+//! answers that the way `rga_wall.rs::single_call_paste_wall` did: binary
+//! search against a real compiled guest, to an EXECUTED `GasExhausted` rather
+//! than a projected one.
 //!
-//! # Guest
+//! The guest is `apps/bulk-write-bench`, purpose-built because no in-tree app
+//! bulk-inserts into an empty `UnorderedMap`/`Vector`/`UnorderedSet` in one
+//! call. Inserting into an EMPTY collection is what isolates the flat
+//! per-entry cost, matching how RGA's paste wall was measured.
 //!
-//! `apps/bulk-write-bench` — purpose-built for this probe (no in-tree app
-//! exposes a bulk-insert-into-an-empty-collection-in-one-call method for
-//! `UnorderedMap`, `Vector`, or `UnorderedSet`). Each `insert_n_*` method
-//! inserts `n` entries into an EMPTY collection in one call, so what's
-//! measured is the flat per-entry cost, matching how `single_call_paste_wall`
-//! measured RGA (paste into an empty document, not append to a long one).
-//!
-//! # Running it
+//! Measured against this tree (2026-09-19): `UnorderedMap` 681, `Vector` 696,
+//! `UnorderedSet` 693, against RGA's 742 - all within 9% of each other, so the
+//! ceiling is a property of the storage layer and not of any one collection.
+//! Re-run rather than trusting these numbers:
 //!
 //!   cargo test -p calimero-runtime --test bulk_write_wall -- --ignored --nocapture
-//!
-//! # Measured results (2026-09-19, against this tree)
-//!
-//! `UnorderedMap` 681, `Vector` 696, `UnorderedSet` 693, against RGA's 742
-//! from `rga_wall.rs`: all four within 9% of each other, so the ceiling is a
-//! property of the storage layer and not of any one collection. Re-run the
-//! command above rather than trusting these numbers.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -157,7 +147,7 @@ fn classify(method: &str, error: &FunctionCallError) -> Verdict {
 fn drift(detail: &str) -> ! {
     panic!(
         "\n\
-         ==================== CONTRACT DRIFT — NOT A STORAGE RESULT ====================\n\
+         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
          {detail}\n\
          \n\
          Nothing has been measured and no wall has been found; fix the call site in this \
@@ -172,7 +162,7 @@ fn expect_ok(outcome: &Outcome, method: &str) {
             Verdict::Drift(detail) => drift(&detail),
             Verdict::Wall { limit } => drift(&format!(
                 "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 with n=0. That is not a wall — a wall needs entries behind it."
+                 with n=0. That is not a wall - a wall needs entries behind it."
             )),
         }
     }
@@ -196,18 +186,14 @@ fn preflight(module: &calimero_runtime::Module, method: &str) {
 }
 
 /// The single-call ceiling of one bulk-insert method: the largest `n` that
-/// lands into an EMPTY collection in ONE call before that call itself
-/// exhausts gas. Returns `(largest_landed, gas_at_largest_landed,
-/// storage_reads_at_largest_landed, storage_writes_at_largest_landed,
-/// first_exhausted)`.
+/// lands into an EMPTY collection in ONE call. Returns
+/// `(largest_landed, gas, storage_reads, storage_writes, first_exhausted)`.
 fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u64, u64, usize) {
     preflight(module, method);
 
-    // Seed a bracket wide enough to survive a big shift in the app's cost
-    // model without silently mis-measuring: `lo` known to land, `hi` known to
-    // wall. Checked once, not searched for — if the model shifts far enough
-    // that 8,192 no longer walls, that is itself worth failing loudly on
-    // rather than silently widening past it.
+    // `lo` known to land, `hi` known to wall. The bracket is checked once, not
+    // widened: a model shift far enough that 8,192 no longer walls is worth
+    // failing loudly on rather than searching past.
     let mut lo = 1_usize;
     let mut hi = 8_192_usize;
     {
@@ -225,7 +211,7 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
         match &outcome.returns {
             Ok(_) => drift(&format!(
                 "a single {method} call with n={hi} into an EMPTY collection succeeded. \
-                 The seeded upper bound for this search is no longer past the wall — \
+                 The seeded upper bound for this search is no longer past the wall; \
                  raise it in this file."
             )),
             Err(error) => match classify(method, error) {
@@ -269,8 +255,7 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
 }
 
 /// Executed (not extrapolated) single-call write walls for all three
-/// collections `bulk-write-bench` exposes, answering directly whether RGA's
-/// single-call wall is RGA-specific or platform-wide.
+/// collections, answering whether RGA's is RGA-specific or platform-wide.
 #[test]
 #[ignore = "slow: builds the compiled bulk-write-bench app and binary-searches three \
             single-call gas walls. Fast to execute once built (well under a second \
@@ -312,7 +297,7 @@ fn single_call_write_walls() {
     for (label, lo, _gas, hi) in &results {
         assert!(
             *lo >= 10,
-            "{label} walled after only {lo} entries — investigate before quoting the \
+            "{label} walled after only {lo} entries - investigate before quoting the \
              number, this is far below anything expected"
         );
         assert_eq!(
@@ -323,9 +308,9 @@ fn single_call_write_walls() {
     }
 }
 
-/// The discriminator itself runs in CI, even though the sweep above does
-/// not. Everything above rests on `classify` telling a measured wall apart
-/// from a stale call signature.
+/// The discriminator itself runs in CI, even though the sweep above does not:
+/// everything here rests on `classify` telling a measured wall apart from a
+/// stale call signature.
 #[test]
 fn only_gas_exhaustion_counts_as_a_wall() {
     assert!(
@@ -344,7 +329,7 @@ fn only_gas_exhaustion_counts_as_a_wall() {
         &FunctionCallError::ExecutionError(b"missing field `n`".to_vec()),
     ) else {
         panic!(
-            "an application error was classified as a wall — the probe would report \
+            "an application error was classified as a wall - the probe would report \
              a fictional number"
         );
     };

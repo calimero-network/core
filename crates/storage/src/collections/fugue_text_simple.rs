@@ -1,50 +1,22 @@
-//! `FugueTextSimple` — Tree-Fugue with **one storage entity per node**.
+//! `FugueTextSimple` - Tree-Fugue with one storage entity per node.
 //!
-//! This is a **measurement control**, not a product collection. It exists so
-//! that the win measured for [`FugueText`](super::FugueText) over
-//! [`ReplicatedGrowableArray`](super::ReplicatedGrowableArray) can be split
-//! into its two independent causes, which are otherwise inseparable:
+//! A MEASUREMENT CONTROL, not a product collection, behind the off-by-default
+//! `fugue-simple` feature (and `cfg(test)` for this crate's own tests). It
+//! splits the win measured for [`FugueText`](super::FugueText) over
+//! [`ReplicatedGrowableArray`](super::ReplicatedGrowableArray) into its two
+//! causes: RGA to `FugueTextSimple` isolates Fugue's ordering rule,
+//! `FugueTextSimple` to `FugueText` isolates run-length blocks. Everything but
+//! the entity layout is `FugueText`'s unchanged, ordering included (both
+//! delegate to the pure [`fugue`](super::fugue) module), so a cost difference
+//! between the two can only be attributed to blocks.
 //!
-//! * **Fugue's ordering rule** — non-interleaving on backward insertion, which
-//!   RGA lacks. `FugueTextSimple` has it.
-//! * **Run-length blocks** — the paper's optimisation, "condenses
-//!   sequentially-inserted tree nodes into a single item object instead of one
-//!   object per node" (Weidner/Gentle/Kleppmann, *The Art of the Fugue*, §4),
-//!   credited there to Yjs and RGASplit. `FugueTextSimple` does **not** have
-//!   it; `FugueText` does.
-//!
-//! It is therefore the paper's **Tree-Fugue Simple** reference shape: direct
-//! Algorithm 1, one object per node. Ordering is delegated to the same pure
-//! [`fugue`](super::fugue) module `FugueText` uses, so the *only* difference
-//! between the two collections is how many entities a document occupies. That
-//! is what makes the A/B honest: `RGA → FugueTextSimple` isolates ordering,
-//! `FugueTextSimple → FugueText` isolates blocks.
-//!
-//! ## Deliberately not production-grade
-//!
-//! Gated behind the off-by-default `fugue-simple` cargo feature (and `cfg(test)`
-//! for this crate's own unit tests), so it is not part of the published surface
-//! and cannot be reached by a node build. Two consequences follow from that, and
-//! both are choices rather than oversights:
-//!
-//! 1. **Entries carry no leaf `CrdtType`.** A node entity is mutated exactly
-//!    once in its life — by the delete that tombstones it — so two replicas can
-//!    hold different bytes for one key and the untagged last-writer-wins
-//!    fallback in `Interface::try_merge_non_root` can drop a tombstone. Tagging
-//!    would mean a new `CrdtType` variant, a new dispatch arm and a new
-//!    published enum value, i.e. exactly the permanent maintenance surface this
-//!    type must not acquire. The cost workloads it exists for never delete, so
-//!    the measurement is unaffected; [`merge_nodes_from`](FugueTextSimple::merge_nodes_from)
-//!    implements the correct delete-wins join for the in-crate convergence
-//!    tests.
-//! 2. **No block normalisation, no tombstone bitmaps, no coalescing.** There
-//!    are no runs, so none of `FugueText`'s run-maintenance machinery has
-//!    anything to maintain.
-//!
-//! Everything else — the `(replica, counter)` id space, the counter derived
-//! from stored state rather than a clock, the `(parent, side)` synced edge, the
-//! "no write may read derived state" rule — is `FugueText`'s, unchanged, so
-//! that a cost difference between the two can only be attributed to blocks.
+//! Entries deliberately carry no leaf `CrdtType`: tagging would mean a new
+//! variant, a new dispatch arm and a new published enum value, which is the
+//! permanent maintenance surface this type must not acquire. A node entity is
+//! mutated once in its life, by the delete that tombstones it, so the untagged
+//! last-writer-wins fallback can drop a tombstone; the cost workloads never
+//! delete, and [`merge_nodes_from`](FugueTextSimple::merge_nodes_from)
+//! implements the delete-wins join for the in-crate convergence tests.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -119,9 +91,9 @@ impl AsRef<[u8]> for NodeKey {
 /// `fugue_text::BlockSide` exists: `fugue.rs` is deliberately storage-free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub(crate) enum NodeSide {
-    /// Left child — ordered before the parent's own value.
+    /// Left child, ordered before the parent's own value.
     L,
-    /// Right child — ordered after the parent's own value.
+    /// Right child, ordered after the parent's own value.
     R,
 }
 
@@ -152,13 +124,10 @@ pub(crate) struct TextNode {
     parent: Option<NodeId>,
     /// Which side of `parent` this node hangs off.
     side: NodeSide,
-    /// Whether this node has been deleted.
-    ///
-    /// A Fugue node must survive deletion — a tombstone can still parent live
-    /// nodes — so `UnorderedMap::remove` (RGA's mechanism) is unusable here,
-    /// exactly as in `FugueText`. Where `FugueText` needs a per-node BITMAP
-    /// because one entity covers many nodes, one entity covers one node here,
-    /// so a bool is the whole of it.
+    /// Whether this node has been deleted. A Fugue node must survive deletion,
+    /// since a tombstone can still parent live nodes, so the entity is never
+    /// removed. One entity covers one node here, so a bool suffices where
+    /// `FugueText` needs a per-node bitmap.
     deleted: bool,
 }
 
@@ -168,7 +137,7 @@ impl TextNode {
     }
 }
 
-/// Tree-Fugue text with one storage entity per node — the paper's Simple shape.
+/// Tree-Fugue text with one storage entity per node: the paper's Simple shape.
 ///
 /// See the module documentation: this is a cost control for
 /// [`FugueText`](super::FugueText), not a collection to build on.
@@ -262,7 +231,7 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     /// Insert a string at the given visible position.
     ///
     /// # Panics
-    /// Panics if called inside a state migration — see [`insert`](Self::insert).
+    /// Panics inside a state migration; see [`insert`](Self::insert).
     ///
     /// # Errors
     /// Returns an error if `pos` is out of bounds or storage fails.
@@ -287,12 +256,9 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     ///
     /// The deterministic counterpart of [`insert_str`](Self::insert_str).
     ///
-    /// It re-derives the tree from the stored state on every character, and
-    /// that loop is deliberate: it is the shape whose cost the control exists to
-    /// measure. `FugueText` resolves a whole string from one traversal, which it
-    /// can only do because a run carries its intra-run edges implicitly - with
-    /// one entity per node there is nothing to batch into. So the saving belongs
-    /// to run-length blocks, which is the side of the split this control draws.
+    /// Re-deriving the tree per character is deliberate: with one entity per
+    /// node there is nothing to batch into, which is the cost this control
+    /// exists to measure.
     ///
     /// # Errors
     /// Returns an error if `pos` is out of bounds or storage fails.
@@ -442,14 +408,11 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     }
 
     /// Copy every node from `other` that `self` does not already hold, and OR
-    /// in incoming tombstones — the delete-wins join, and a lattice one.
+    /// in incoming tombstones: the delete-wins join, and a lattice one. Generic
+    /// over `S2` so a cross-store merge is testable.
     ///
-    /// Generic over `S2` so the cross-store merge is testable.
-    ///
-    /// `cfg(test)`-only: this control ships no leaf `CrdtType` (see the module
-    /// doc), so nothing outside this crate's own convergence tests has any
-    /// business calling it, and compiling it into the `fugue-simple` build
-    /// would be dead code.
+    /// `cfg(test)`-only, because this control ships no leaf `CrdtType`, so only
+    /// this crate's own convergence tests have any business calling it.
     #[cfg(test)]
     pub(crate) fn merge_nodes_from<S2: StorageAdaptor>(
         &mut self,
@@ -472,15 +435,14 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
 /// The container's `CrdtType`.
 ///
 /// A plain `UnorderedMap`, not a `FugueText`: the container is structured
-/// storage — its entries are separate entities that sync individually — so the
-/// container arm's job is only to return the incoming bytes, which is exactly
-/// what `merge_unordered_map` does. Claiming `CrdtType::FugueText` here would
-/// route it to a dispatcher that deserialises a `FugueText` from these bytes.
+/// storage, so the container arm's job is only to return the incoming bytes.
+/// Claiming `CrdtType::FugueText` would route it to a dispatcher that
+/// deserialises a `FugueText` from these bytes.
 fn node_map_crdt_type() -> CrdtType {
     CrdtType::UnorderedMap
 }
 
-/// Expand the stored nodes into a Fugue tree — one entity, one node.
+/// Expand the stored nodes into a Fugue tree: one entity, one node.
 fn build_tree(loaded: &[(NodeId, TextNode)]) -> FugueTree {
     let mut tree = FugueTree::new();
     for (id, node) in loaded {
@@ -495,11 +457,10 @@ fn build_tree(loaded: &[(NodeId, TextNode)]) -> FugueTree {
 }
 
 /// The next unused counter for `replica`, one past every node of that replica
-/// the stored state mentions — as a definition or as a `parent` edge.
+/// the stored state mentions, as a definition or as a `parent` edge.
 ///
-/// The same rule `FugueText::next_counter` uses, and for the same reason: a
-/// tombstoned node is never removed, so the high-water mark survives deletion
-/// and a counter is never reused.
+/// `FugueText::next_counter`'s rule, for the same reason: a tombstoned node is
+/// never removed, so the mark survives deletion and a counter is never reused.
 fn next_counter(replica: u64, loaded: &[(NodeId, TextNode)]) -> Result<u32, StoreError> {
     let mut next: u64 = 0;
     for (id, node) in loaded {
@@ -525,8 +486,8 @@ fn slice_chars(text: &str, from: usize, to: usize) -> &str {
     &text[byte_of(from)..byte_of(to)]
 }
 
-/// This node's replica id: the first 8 bytes of its device id — `FugueText`'s
-/// rule, unchanged.
+/// This node's replica id: the first 8 bytes of its device id, `FugueText`'s
+/// rule unchanged.
 fn local_replica() -> u64 {
     let device = env::device_id();
     let mut head = [0_u8; 8];
@@ -561,9 +522,8 @@ mod tests {
         }
     }
 
-    /// (1) The defining property: `n` characters are `n` entities. This is the
-    /// single line that makes the type a control for `FugueText`, whose own
-    /// test `insert_str__round_trips_as_a_single_block` asserts the opposite.
+    /// The defining property: `n` characters are `n` entities, where
+    /// `FugueText`'s `insert_str__round_trips_as_a_single_block` asserts one.
     #[test]
     fn insert_str__stores_one_entity_per_character() {
         env::reset_for_testing();
@@ -578,8 +538,8 @@ mod tests {
         );
     }
 
-    /// (2) Sequential appends do NOT coalesce — the block optimisation is
-    /// absent by construction.
+    /// Sequential appends do NOT coalesce: the block optimisation is absent by
+    /// construction.
     #[test]
     fn insert__sequential_appends_do_not_coalesce() {
         env::reset_for_testing();
@@ -591,7 +551,7 @@ mod tests {
         assert_eq!(doc.nodes.len().unwrap(), 3);
     }
 
-    /// (3) Mid-document insert and the positional reads.
+    /// Mid-document insert and the positional reads.
     #[test]
     fn insert__mid_document_and_positional_reads() {
         env::reset_for_testing();
@@ -604,8 +564,8 @@ mod tests {
         assert_eq!(doc.text_range(4, 99).unwrap(), "lo", "end clamps");
     }
 
-    /// (4) Deletion tombstones the entity in place; the node survives as a
-    /// parent, so the entity count does not fall.
+    /// Deletion tombstones the entity in place; the node survives as a parent,
+    /// so the entity count does not fall.
     #[test]
     fn delete__tombstones_the_entity_and_keeps_it() {
         env::reset_for_testing();
@@ -622,8 +582,8 @@ mod tests {
         assert_eq!(doc.nodes.len().unwrap(), 5);
     }
 
-    /// (5) A deterministic build is a pure function of its inputs — no clock,
-    /// no node-local input — exactly as `FugueText`'s is.
+    /// A deterministic build is a pure function of its inputs: no clock, no
+    /// node-local input, exactly as `FugueText`'s is.
     #[test]
     fn insert_str_with_replica__is_deterministic() {
         type A = crate::store::MockedStorage<881>;
@@ -642,8 +602,7 @@ mod tests {
     }
 
     /// A replica seeded with the shared `S`, which appends `passage` and then
-    /// goes back to insert `heading` immediately before its own passage — the
-    /// mirror of `fugue_text`'s `backward_insertion_doc`.
+    /// goes back to insert `heading` immediately before its own passage.
     fn backward_insertion_doc<S: StorageAdaptor>(
         field_name: &str,
         replica: u64,
@@ -657,9 +616,8 @@ mod tests {
         doc
     }
 
-    /// (6) The headline property is the SAME as `FugueText`'s, which is what
-    /// makes the pair a controlled experiment: backward insertion does not
-    /// interleave, and the merge commutes.
+    /// The same headline property as `FugueText`'s, which is what makes the
+    /// pair a controlled experiment: backward insertion does not interleave.
     #[test]
     fn merge__backward_insertion_does_not_interleave() {
         type A = crate::store::MockedStorage<883>;
@@ -683,7 +641,7 @@ mod tests {
         assert_eq!(merged, "SAaaaBbbb");
     }
 
-    /// (7) The merge join is delete-wins in both directions.
+    /// The merge join is delete-wins in both directions.
     #[test]
     fn merge__delete_wins_in_either_order() {
         type A = crate::store::MockedStorage<885>;

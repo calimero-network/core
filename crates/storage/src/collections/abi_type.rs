@@ -209,9 +209,9 @@ impl<S: StorageAdaptor> AbiType for ReplicatedGrowableArray<S> {
     }
 }
 
-/// `FugueText` shares RGA's opaque ABI shape and none of its layout: RGA stores
-/// one entity per character, `FugueText` one per run. Its own tag is what makes
-/// a field swapped between the two a reported, migration-requiring change.
+/// `FugueText` shares RGA's opaque ABI shape and none of its layout. Its own
+/// tag is what makes a field swapped between the two a reported, breaking
+/// change rather than a silent one.
 impl<S: StorageAdaptor> AbiType for FugueText<S> {
     fn type_ref(_reg: &mut TypeRegistry) -> TypeRef {
         opaque_ref(CrdtCollectionType::FugueText)

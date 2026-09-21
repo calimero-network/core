@@ -26,13 +26,9 @@ fn compile_fail() {
 
     // Feature-SENSITIVE: rustc's "other types implement `RekeyTarget`" help block
     // lists implementors alphabetically and TRUNCATES AT 8, so the `.stderr` depends
-    // on exactly which implementors are compiled in. Two features move that set:
-    // `testing`, and `fugue-simple` (which adds `FugueTextSimple`, displacing
-    // `PermissionedStorage` past the cutoff). CI builds the workspace with BOTH on —
-    // `testing` explicitly, `fugue-simple` by feature unification via
-    // `tools/storage-cost` — so the snapshot is blessed for that combination and
-    // gated to it. Gating on `testing` alone made this pass locally and fail only in
-    // CI, which is how it was missed.
+    // on which implementors are compiled in. Both `testing` and `fugue-simple` move
+    // that set, and CI builds the workspace with both on (`fugue-simple` by feature
+    // unification via `tools/storage-cost`), so the snapshot is gated to that pair.
     #[cfg(all(feature = "testing", feature = "fugue-simple"))]
     t.compile_fail("tests/compile_fail/mergeable_without_rekeytarget.rs");
 }

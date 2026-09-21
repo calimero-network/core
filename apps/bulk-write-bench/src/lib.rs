@@ -9,10 +9,9 @@
 //! fresh `#[app::init]`), so what is measured is the flat per-entry insert
 //! cost, not a cost that grows with pre-existing collection size.
 //!
-//! No app in `apps/` already exposes a bulk-insert-in-one-call entry point
-//! for `UnorderedMap`, `Vector`, or `UnorderedSet` — this crate exists only
-//! to provide one. It carries no other functionality and is not meant as a
-//! usage example.
+//! No other app exposes a bulk-insert-in-one-call entry point for
+//! `UnorderedMap`, `Vector` or `UnorderedSet`, which is the only reason this
+//! crate exists. It is not meant as a usage example.
 
 use calimero_sdk::app;
 use calimero_storage::collections::{LwwRegister, UnorderedMap, UnorderedSet, Vector};

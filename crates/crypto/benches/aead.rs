@@ -1,21 +1,21 @@
 //! What does encryption cost at the sizes this system actually moves?
 //!
 //! Every replicated byte goes through AES-256-GCM: sync deltas, gossip
-//! envelopes (capped at 1 MiB by `GOSSIPSUB_MAX_TRANSMIT_SIZE`) and blob chunks
-//! (exactly 1 MiB, `crates/store/blobs/src/lib.rs:31`). The sizes below are
-//! those, not round numbers.
+//! envelopes (capped at 1 MiB by `GOSSIPSUB_MAX_TRANSMIT_SIZE`) and blob
+//! chunks (exactly 1 MiB, `CHUNK_SIZE`). The sizes below are those, not round
+//! numbers.
 //!
 //! `derive_shared_key` is measured separately because it is per-peer-pair, not
 //! per-message: if it turned out to cost as much as encrypting a chunk, caching
 //! it would matter. Today it should not.
 //!
 //! Both `encrypt_with_nonce` and `decrypt` take their payload by value and
-//! encrypt/decrypt in place, so the `.clone()` inside each timed closure below
-//! is unavoidable — it hands the API ownership of a fresh buffer every
-//! iteration — and is deliberately part of what is measured, not setup noise.
+//! work in place, so the `.clone()` inside each timed closure is unavoidable
+//! (it hands the API a fresh buffer every iteration) and is deliberately part
+//! of what is measured, not setup noise.
 //!
 //! What would change a decision: an encrypt throughput materially below the
-//! network's, which would make crypto — not bandwidth — the transfer ceiling.
+//! network's, which would make crypto rather than bandwidth the ceiling.
 
 use std::hint::black_box;
 

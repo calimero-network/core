@@ -1,57 +1,31 @@
 //! Where a real `FugueText` document stops being writable, and separately
 //! where it stops being readable at all.
 //!
-//! The `FugueText` counterpart of `rga_wall.rs`, and deliberately its mirror:
-//! same harness, same failure classification, same sweep, so the two numbers
-//! it produces are comparable with the two that one produces. Read that file's
-//! module docs for the reasoning behind the shape; what follows is only what
-//! differs.
+//! Deliberately the mirror of `rga_wall.rs` - same harness, same failure
+//! classification, same sweep - so the two sets of numbers are comparable;
+//! that file's module docs carry the reasoning behind the shape. It drives
+//! `apps/fugue-editor`, which exists only as `apps/collaborative-editor`'s
+//! `FugueText` twin, because a wall measured against a synthetic guest or a
+//! different harness would not be comparable to RGA's.
 //!
-//! # A different app, for the same reason
+//! The write sweeps are split because they hit different layouts:
+//! `typing_and_reading_walls` appends (runs coalesce), `single_call_paste_wall`
+//! pastes into an empty document, and `mid_document_typing_wall` inserts
+//! mid-run, the case the block layout affects most. The three reads
+//! (`get_text`, `char_at`, `text_range`) all rebuild the tree from every stored
+//! block, so their walls land on top of each other: a positional read is not a
+//! way to keep reading a document `get_text` can no longer open.
 //!
-//! `rga_wall.rs` drives `apps/collaborative-editor`, whose `insert_text` maps
-//! one keystroke onto `ReplicatedGrowableArray::insert_str` with a
-//! one-character string. This drives `apps/fugue-editor`, which exists solely
-//! as that app's `FugueText` twin: same state fields, same per-call work in
-//! `insert_text` (log, insert, `Counter::increment`, emit), only the
-//! collection differs. A wall measured against a synthetic guest would not be
-//! the number a user hits, and a wall measured against a DIFFERENT harness
-//! would not be comparable to RGA's.
+//! `GasExhausted` is the only outcome that produces a number; anything else
+//! panics as contract drift, naming the method.
 //!
-//! # Two write sweeps, not one
-//!
-//! `typing_and_reading_walls` types at `position: i`, which is always the END
-//! of the document — an append, the case run-length blocks coalesce — and
-//! `single_call_paste_wall` pastes into an EMPTY document. Neither touches
-//! mid-document insertion, which is the operation `FugueText`'s block layout
-//! most affects, so `mid_document_typing_wall` sweeps that separately.
-//!
-//! # Three reads, not one
-//!
-//! `ReplicatedGrowableArray` has exactly one read — `get_text()`, which
-//! materialises the whole document — so `rga_wall.rs` has exactly one read
-//! wall to find. `FugueText` also answers `char_at` and `text_range`, so this
-//! probe sweeps all three. They do not separate: all three rebuild the tree
-//! from every stored block, so their gas is that rebuild rather than the
-//! characters returned, and the three walls land on top of each other. A
-//! positional read is not a way to keep reading a document `get_text` can no
-//! longer open.
-//!
-//! # Measured results
-//!
-//! Not transcribed here: a Fugue wall only means something beside RGA's, so
-//! run this and `rga_wall.rs` as a pair.
+//! Run it as a pair with `rga_wall.rs`; a Fugue wall only means something
+//! beside RGA's:
 //!
 //!   cargo test -p calimero-runtime --test fugue_wall -- --ignored --nocapture
 //!
 //! Raise the ceiling if nothing walls in the default range:
 //!   FUGUE_WALL_CEILING=40000 cargo test ... -- --ignored --nocapture
-//!
-//! # It can no longer rot quietly
-//!
-//! Every failure is classified before it is reported, exactly as in
-//! `rga_wall.rs`: `GasExhausted` is the only outcome that produces a number,
-//! and anything else is CONTRACT DRIFT and panics naming the method.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -188,7 +162,7 @@ fn classify(method: &str, error: &FunctionCallError) -> Verdict {
 fn drift(detail: &str) -> ! {
     panic!(
         "\n\
-         ==================== CONTRACT DRIFT — NOT A STORAGE RESULT ====================\n\
+         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
          {detail}\n\
          \n\
          Nothing has been measured and no wall has been found; fix the call site in this \
@@ -208,7 +182,7 @@ fn expect_ok(outcome: &Outcome, method: &str) {
             Verdict::Drift(detail) => drift(&detail),
             Verdict::Wall { limit } => drift(&format!(
                 "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 against an empty document. That is not a wall — a wall needs data \
+                 against an empty document. That is not a wall - a wall needs data \
                  behind it. Either max_gas has been lowered dramatically or the app now \
                  does unbounded work at n=0."
             )),
@@ -258,9 +232,8 @@ fn preflight(module: &calimero_runtime::Module) {
     }
 
     // The positional reads are the whole reason this probe differs from
-    // rga_wall, so they are preflighted with the same suspicion as get_text:
-    // a char_at that silently returned None would make its "no wall" result
-    // meaningless.
+    // rga_wall: a char_at that silently returned None would make its "no wall"
+    // result meaningless.
     let one = call(
         module,
         &mut storage,
@@ -271,7 +244,7 @@ fn preflight(module: &calimero_runtime::Module) {
     let ch: Option<String> = decode(&one, "char_at");
     if ch.as_deref() != Some("a") {
         drift(&format!(
-            "char_at(0) returned {ch:?}, not Some(\"a\") — the positional read is not \
+            "char_at(0) returned {ch:?}, not Some(\"a\") - the positional read is not \
              reading the document this probe is writing."
         ));
     }
@@ -286,14 +259,13 @@ fn preflight(module: &calimero_runtime::Module) {
     let slice: String = decode(&range, "text_range");
     if slice != "a" {
         drift(&format!(
-            "text_range(0, 1) returned {slice:?}, not \"a\" — the range read is not \
+            "text_range(0, 1) returned {slice:?}, not \"a\" - the range read is not \
              reading the document this probe is writing."
         ));
     }
 }
 
-/// Stop here even if nothing has walled, so a genuinely-flat build cannot run
-/// forever.
+/// Stop even if nothing walls, so a flat build cannot run forever.
 const DEFAULT_CEILING: usize = 20_000;
 
 fn ceiling() -> usize {
@@ -303,12 +275,11 @@ fn ceiling() -> usize {
         .unwrap_or(DEFAULT_CEILING)
 }
 
-/// Characters read by the `text_range` probe — a screenful, not the document.
+/// Characters read by the `text_range` probe: a screenful, not the document.
 const RANGE_READ_CHARS: usize = 100;
 
-/// The document ceiling for `FugueText`, measured the way `rga_wall.rs`'s
-/// `typing_and_reading_walls` measures RGA's: type one character at a time
-/// until a call exhausts gas, probing the reads as the document grows.
+/// The document ceiling: type one character at a time until a call exhausts
+/// gas, probing the reads as the document grows. Mirrors `rga_wall.rs`.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             fugue-editor app to find where insert_text/get_text/char_at actually \
@@ -446,14 +417,14 @@ fn typing_and_reading_walls() {
                 println!("read wall  ({name}): last OK at {ok}, first exhausted at {bad}")
             }
             (_, Some(bad)) => println!("read wall  ({name}): exhausted by {bad}"),
-            (Some(ok), None) => println!("read wall  ({name}): none — still reading at {ok}"),
+            (Some(ok), None) => println!("read wall  ({name}): none, still reading at {ok}"),
             (None, None) => println!("read wall  ({name}): never probed"),
         }
     }
 
     assert!(
         landed > 0,
-        "no character was inserted even though preflight succeeded — the failure \
+        "no character was inserted even though preflight succeeded - the failure \
          classification in this file is broken"
     );
 
@@ -468,25 +439,13 @@ fn typing_and_reading_walls() {
     }
 }
 
-/// The MID-DOCUMENT write ceiling: type one character at a time into the
-/// MIDDLE of the document (`position: landed / 2`) until a call exhausts gas.
+/// The mid-document write ceiling: type one character at a time into the
+/// middle of the document (`position: landed / 2`) until a call exhausts gas.
 ///
-/// # Why this exists as a separate probe
-///
-/// Until it did, nothing here measured mid-document insertion at all, and that
-/// blind spot had already produced a misleading result. `typing_and_reading_
-/// walls` types at `position: i` — `i` is the count of characters already
-/// landed, so every one of its writes is an APPEND at the end, which is
-/// precisely the case run-length blocks coalesce. `single_call_paste_wall`
-/// pastes into an EMPTY document at position 0, which is one run and no
-/// neighbours. So when `FugueText` stopped splitting runs on mid-run insert and
-/// the storage-cost table halved (`fugue_text_insert_middle`: 4,083 -> 2,045.5
-/// reads/entry at n=2,000), NEITHER wall moved — not because the change did
-/// nothing, but because neither wall was looking at the operation it changed.
-///
-/// Write-only on purpose: the three read walls are already swept by
-/// `typing_and_reading_walls`, and probing them again here would multiply the
-/// runtime of an already-slow `#[ignore]`d test without asking a new question.
+/// Separate from the other two sweeps because neither reaches a mid-run
+/// insert: one only appends and the other pastes into an empty document, so a
+/// change to how runs split leaves both unmoved. Write-only, because the read
+/// walls are already swept by `typing_and_reading_walls`.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             fugue-editor app to find where a MID-DOCUMENT insert_text exhausts \
@@ -561,7 +520,7 @@ fn mid_document_typing_wall() {
 
     assert!(
         landed > 0,
-        "no character was inserted even though preflight succeeded — the failure \
+        "no character was inserted even though preflight succeeded - the failure \
          classification in this file is broken"
     );
     if let Some(n) = write_wall {
@@ -574,17 +533,13 @@ fn mid_document_typing_wall() {
     }
 }
 
-/// The single-call ceiling of `insert_str`'s BULK path: the largest string that
-/// can be pasted into an EMPTY document in ONE `insert_text` call before that
-/// one call itself exhausts gas. `rga_wall.rs`'s `single_call_paste_wall`
-/// measured 742 characters for `ReplicatedGrowableArray`; this is the same
-/// question asked of `FugueText`.
+/// The single-call ceiling of `insert_str`'s bulk path: the largest string
+/// that can be pasted into an empty document in one `insert_text` call before
+/// that call exhausts gas. The same question `rga_wall.rs` asks of RGA.
 ///
-/// Currently unanswerable through this guest: 16,000 characters land, and a
-/// larger paste fails with `log size overflow` rather than `GasExhausted`,
-/// because `fugue-editor::insert_text` logs the string it inserts. So the
-/// ceiling is known only as "> 16,000", and the probe drifts rather than
-/// reporting a number it did not measure.
+/// Not currently reachable through this guest: 16,000 characters land, and a
+/// larger paste trips the app's log-line limit before gas, so the probe drifts
+/// rather than reporting a number it did not measure.
 #[test]
 #[ignore = "slow: builds the compiled fugue-editor app. Fast to execute once \
             built, unlike the sweep above."]
@@ -619,9 +574,9 @@ fn single_call_paste_wall() {
         }
     };
 
-    // `lo` is known to land, `hi` is known to wall. `hi` cannot simply be raised
-    // until it walls: fugue-editor logs the string it inserts, so a paste past
-    // the 16 KiB `app::log!` line-length limit trips that before gas does.
+    // `lo` is known to land, `hi` is known to wall. `hi` cannot simply be raised:
+    // fugue-editor logs what it inserts, so a paste past the 16 KiB `app::log!`
+    // line-length limit trips that before gas does.
     let mut lo = 1_usize;
     let mut hi = 16_000;
     if paste(hi).is_ok() {
@@ -648,14 +603,14 @@ fn single_call_paste_wall() {
     println!("single-call paste wall: {lo} characters land ({lo_gas:?} gas), {hi} exhausts gas");
     assert!(
         lo >= 10,
-        "the single-call paste wall landed at only {lo} characters — investigate \
+        "the single-call paste wall landed at only {lo} characters - investigate \
          before quoting the number, this is far below anything seen so far"
     );
 }
 
-/// The discriminator itself runs in CI, even though the two probes above do
-/// not. Everything above rests on `classify` telling a measured wall apart
-/// from a stale call signature, and that function has no other coverage.
+/// The discriminator itself runs in CI, even though the probes above do not:
+/// everything here rests on `classify` telling a measured wall apart from a
+/// stale call signature, and it has no other coverage.
 #[test]
 fn only_gas_exhaustion_counts_as_a_wall() {
     assert!(
@@ -674,7 +629,7 @@ fn only_gas_exhaustion_counts_as_a_wall() {
         &FunctionCallError::ExecutionError(b"missing field `text`".to_vec()),
     ) else {
         panic!(
-            "an application error was classified as a wall — the probe would report \
+            "an application error was classified as a wall - the probe would report \
              a fictional number"
         );
     };

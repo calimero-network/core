@@ -288,13 +288,11 @@ pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
 /// Where the bytes reaching [`Interface::save_internal`] came from.
 ///
-/// Most merge decisions are the same either way, but not all: a CRDT whose
-/// per-key join is a LATTICE join (union-like, never a pick) must run that join
-/// on applied bytes and must NOT run it on local bytes. A local write already
-/// descends from the stored value, so joining the two would make the stored
-/// value un-shrinkable - see `CrdtType::FugueTextBlock`, whose blocks are
-/// rewritten in place under one key: the owner appends, anyone sets tombstone
-/// bits, and the two sides are joined rather than picked between.
+/// A CRDT whose per-key join is a LATTICE join, never a pick, must run that
+/// join on applied bytes and must NOT run it on local bytes: a local write
+/// already descends from the stored value, so joining the two would make the
+/// stored value un-shrinkable. See `CrdtType::FugueTextBlock`, whose blocks are
+/// rewritten in place under one key by any replica that deletes inside them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WriteOrigin {
     /// This node's own write, from guest execution.
@@ -3296,21 +3294,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 // `FugueTextBlock` (one run-length block of a `FugueText`) joins
                 // this timestamp-blind arm for the same reason: its join is a
                 // lattice join, not a pick, so the LWW-by-HLC branches below
-                // would DROP one side. Both directions of the race stale-skip
-                // there — the split copy is younger than the coalesced copy it
-                // must absorb on one replica, and older than it on the other —
-                // so the branch has to be bypassed on both, not just one.
+                // would DROP one side, and both directions of the race
+                // stale-skip there rather than just one.
                 //
-                // APPLIED ONLY. A LOCAL write is not a merge: its bytes descend
-                // from the stored bytes, and a local mutation only ever GROWS a
-                // run (coalescing appends to `text`; nothing shortens it) or
-                // ACCUMULATES tombstone bits. So the incoming copy is already a
-                // lattice-superset of the stored one on both components, the
-                // join would return it unchanged, and skipping the join saves a
-                // decode on the hot path. Pinned by
-                // `fugue_text::tests::local_writes__are_lattice_supersets_of_what_they_overwrite`
-                // — if a local write ever shrinks a run, that test fails and this
-                // arm must widen to every origin.
+                // APPLIED ONLY, because a local write is not a merge: its bytes
+                // descend from the stored bytes, and a local mutation only grows
+                // a run's `text` or accumulates tombstone bits, so the join
+                // would return the incoming copy unchanged. Pinned by
+                // `fugue_text::tests::local_writes__are_lattice_supersets_of_what_they_overwrite`.
                 //
                 // P3 (core#2716) per-`delta_id` rotation-log child. Merge
                 // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
@@ -3905,9 +3896,8 @@ impl<S: StorageAdaptor> Interface<S> {
             // (the value-union merge did not, leaving a sticky HC loop). The
             // old `merge_rotation_log` union was only needed by the abandoned
             // single-blob representation.
-            // A LOCAL `FugueTextBlock` write is not a merge either — see the
-            // APPLIED-ONLY note on the timestamp-blind intercept in
-            // `save_internal`. The block join only ever runs on applied bytes.
+            // A LOCAL `FugueTextBlock` write is not a merge either; the block
+            // join only ever runs on applied bytes (see `save_internal`).
             let is_lww = matches!(
                 crdt_type,
                 CrdtType::LwwRegister { .. } | CrdtType::RotationLog

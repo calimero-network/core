@@ -1,98 +1,29 @@
 //! Where a real `ReplicatedGrowableArray` document stops being writable, and
 //! separately where it stops being readable at all.
 //!
-//! # Why a real contract here, unlike `cost_is_flat`
+//! Unlike `cost_is_flat`, which uses a synthetic guest so that any growth it
+//! measures is unambiguously a storage defect, this wants the number a user of
+//! a real editor hits, so it drives `apps/collaborative-editor` from this
+//! workspace. It is `#[ignore]`d only because reaching a wall this large means
+//! executing thousands of real WASM calls.
 //!
-//! `cost_is_flat` deliberately uses a synthetic guest so that any growth it
-//! measures is unambiguously a defect in the storage layer. This probe wants
-//! the opposite: the number a user of a real editor actually hits. That
-//! requires the actual app — `apps/collaborative-editor` — because its
-//! `insert_text` maps a single keystroke onto `ReplicatedGrowableArray::
-//! insert_str` with a one-character string, which is the per-keystroke access
-//! pattern an editor really uses, not the raw `ReplicatedGrowableArray::insert`
-//! the in-repo `rga_insert_per_char` workload (`tools/storage-cost`) calls
-//! directly.
+//! `insert_str` re-derives the position by linearising the WHOLE document on
+//! every call, so typing is `O(n)` per call and `O(n^2)` in total; once one
+//! `insert_text` exceeds `max_gas`, every later call does too and the document
+//! is permanently unwritable. `get_text()` performs the same linearisation and
+//! so has its own wall, measured separately: a document that still accepts
+//! writes but can no longer be opened is just as dead.
 //!
-//! # No cross-repo dependency, unlike `chat_wall`
+//! `GasExhausted` is the only outcome that produces a number; anything else
+//! panics as contract drift, naming the method. A preflight against an empty
+//! document reports drift in seconds rather than after a long sweep.
 //!
-//! `chat_wall.rs` drives a contract that lives in a sibling repo and is
-//! `#[ignore]`d partly because of that fragility. `collaborative-editor` is
-//! in this workspace, so this probe has none of that: it builds the app with
-//! `cargo mero build` against whatever is checked out right here. It is still
-//! `#[ignore]`d, for the other reason `chat_wall` is too — the sweep below is
-//! slow, because reaching a wall this large means executing thousands of real
-//! WASM calls, each more expensive than the last.
-//!
-//! # What "the wall" means
-//!
-//! Gas is charged per executed wasm operator, and NOTHING else — there is no
-//! read counter or read limit in the VM. `ReplicatedGrowableArray::insert_str`
-//! re-derives the character's position by linearising the WHOLE document on
-//! every call, an `O(current length)` cost paid once per call regardless of
-//! how much new text that call inserts. So a `send`-a-single-keystroke loop is
-//! `O(n)` per call and `O(n^2)` in total, and the read count that linearisation
-//! performs shows up in gas as the cost of borsh-decoding what those reads
-//! returned. Eventually one `insert_text` call exceeds `max_gas` and traps —
-//! and every later call traps too, because the cost only grows from there. The
-//! document is permanently unwritable from that point - this shape has frozen
-//! a collection before, in a different CRDT. The write wall is the length of
-//! the document after the last character that landed.
-//!
-//! `get_text()` performs the SAME linearisation to answer a read — it is the
-//! only read `ReplicatedGrowableArray` has — so it has its own wall, measured
-//! separately: the document length at which `get_text()` itself can no longer
-//! complete inside `max_gas`. A document that can still accept writes but can
-//! no longer be opened is just as dead as one that cannot be written at all,
-//! and the two walls are not assumed to be the same distance out — that is
-//! exactly what this probe checks.
-//!
-//! # Measured results (2026-09-19, against this tree)
-//!
-//! Every number below moved when master's storage work landed on this branch:
-//! rows touched per entry are unchanged (`rga_insert_interleaved_sync` is
-//! within 1%), so what got cheaper is gas per row, not the access pattern.
-//!
-//! * **Write wall (typing, one keystroke at a time)** - EXTRAPOLATED, from a
-//!   170-point sweep run with `RGA_WALL_CEILING=17000`. At 17,000 characters
-//!   one `insert_text` costs 984,904,855 gas, 98% of the 1,000,000,000
-//!   ceiling; the fit crosses it at **≈17,100 characters**. The sweep stops
-//!   just short because a run to the wall costs half an hour; raise the
-//!   ceiling to turn this into an executed number.
-//!
-//! * **Mid-document write wall** - EXTRAPOLATED the same way, and no cheaper
-//!   than appending: 938,136,772 gas at 17,000 characters, crossing at
-//!   **≈17,900**. RGA re-linearises the whole document whichever end you type
-//!   at, so position buys nothing.
-//!
-//! * **Bulk `insert_str`, one call, empty document** — EXECUTED, by binary
-//!   search: 742 characters land in one call (998,820,734 gas); 743 returns
-//!   `GasExhausted`.
-//!
-//!   This is not the escape hatch it looks like. One call is capped at ~742
-//!   NEW characters no matter how empty the document is, so any longer
-//!   document is built from several calls, and every call after the first
-//!   still pays the same `O(current document length)` linearisation. Batching
-//!   buys fewer, chunkier calls, not a different asymptotic wall.
-//!
-//! * **Read wall (`get_text`)** - EXTRAPOLATED, from the SAME sweep as the
-//!   write wall (one `get_text` every 100 characters on the same growing
-//!   document): 984,009,818 gas at 17,000 characters, crossing at **≈17,100**.
-//!   Write and read die within measurement noise of each other.
-//!
-//! # It can no longer rot quietly
-//!
-//! Every failure is classified before it is reported, mirroring `chat_wall`'s
-//! discipline:
-//!
-//! * `GasExhausted` — a real wall. The only outcome that produces a number.
-//! * anything else — CONTRACT DRIFT. Method renamed, arguments changed. The
-//!   probe panics naming the method and the error, and never reports a wall,
-//!   because a wall it did not measure is worse than no wall.
-//!
-//! A preflight runs one `insert_text` and one `get_text` on an empty document
-//! before the sweep starts, so drift is reported in seconds.
-//!
-//! # Running it
+//! Measured against this tree (2026-09-19) under a 1,000,000,000 gas ceiling:
+//! typing and `get_text` both wall at ~17,100 characters, and mid-document
+//! typing at ~17,900, so position buys nothing (all three extrapolated from a
+//! 17,000-character sweep). One `insert_text` into an empty document takes 742
+//! characters, executed by binary search; batching buys chunkier calls rather
+//! than a different asymptote, since every later call still re-linearises.
 //!
 //!   cargo test -p calimero-runtime --test rga_wall -- --ignored --nocapture
 //!
@@ -119,10 +50,8 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Newest mtime across the app's build inputs. Mirrors `tracing_logs.rs`'s
-/// fixture: rebuild whenever any `*.rs` under `src/`, `Cargo.toml`, or
-/// `build.rs` is newer than the last build, so this probe never silently
-/// measures a stale binary.
+/// Newest mtime across the app's build inputs, so this probe never silently
+/// measures a stale binary. Mirrors `tracing_logs.rs`'s fixture.
 fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
     fn visit(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -212,9 +141,8 @@ fn call(
 enum Verdict {
     /// The guest ran and exhausted its budget. This is a result.
     Wall { limit: u64 },
-    /// The guest did not get far enough to cost anything meaningful — the
-    /// method is gone, the arguments no longer deserialise. This is not a
-    /// result, and must never be presented as one.
+    /// The guest did not get far enough to cost anything meaningful. This is
+    /// not a result, and must never be presented as one.
     Drift(String),
 }
 
@@ -237,7 +165,7 @@ fn classify(method: &str, error: &FunctionCallError) -> Verdict {
 fn drift(detail: &str) -> ! {
     panic!(
         "\n\
-         ==================== CONTRACT DRIFT — NOT A STORAGE RESULT ====================\n\
+         ==================== CONTRACT DRIFT - NOT A STORAGE RESULT ====================\n\
          {detail}\n\
          \n\
          Nothing has been measured and no wall has been found; fix the call site in this \
@@ -256,7 +184,7 @@ fn expect_ok(outcome: &Outcome, method: &str) {
             Verdict::Drift(detail) => drift(&detail),
             Verdict::Wall { limit } => drift(&format!(
                 "{method} exhausted its {limit}-point gas budget on the FIRST call, \
-                 against an empty document. That is not a wall — a wall needs data \
+                 against an empty document. That is not a wall - a wall needs data \
                  behind it. Either max_gas has been lowered dramatically or the app now \
                  does unbounded work at n=0."
             )),
@@ -283,8 +211,8 @@ fn preflight(module: &calimero_runtime::Module) {
     );
     let read = call(module, &mut storage, "get_text", &serde_json::json!({}));
     expect_ok(&read, "get_text");
-    // `get_text` returns the document as a bare JSON string (not wrapped in an
-    // "output" envelope) — confirmed against the compiled app, not assumed.
+    // `get_text` returns the document as a bare JSON string, not wrapped in an
+    // "output" envelope: confirmed against the compiled app, not assumed.
     let body = read
         .returns
         .as_ref()
@@ -300,8 +228,7 @@ fn preflight(module: &calimero_runtime::Module) {
     }
 }
 
-/// Stop here even if nothing has walled, so a genuinely-flat build cannot run
-/// forever.
+/// Stop even if nothing walls, so a flat build cannot run forever.
 const DEFAULT_CEILING: usize = 20_000;
 
 fn ceiling() -> usize {
@@ -311,43 +238,13 @@ fn ceiling() -> usize {
         .unwrap_or(DEFAULT_CEILING)
 }
 
-/// Reconciling `outcome.storage_reads` here against `rga_insert_per_char`'s
-/// committed `n + 47` reads/entry (`tools/storage-cost`, `storage-costs.json`):
-/// they are NOT the same statistic and are not expected to match.
+/// The document ceiling: type one character at a time until a call exhausts
+/// gas, probing `get_text` as the document grows.
 ///
-/// 1. **Average over a whole build, vs. one late call.** `rga_insert_per_char`
-///    resets nothing between calls and reports `rows_read` for the WHOLE
-///    build of `n` calls divided by `n` — the historical AVERAGE, blending
-///    cheap early calls with expensive late ones. This probe's
-///    `i_reads`/`r_reads` columns are `Outcome::storage_reads` for ONE call
-///    at a given document length, taken fresh (a new `Module::run`, whose
-///    counters start at zero — see `logic.rs`'s doc comment on
-///    `storage_reads`, "so far" meaning "in this execution"). Since the
-///    per-call cost is roughly linear in document length, the LAST call of a
-///    build of `n` costs roughly double the AVERAGE over that same build —
-///    accounting for part, but not all, of the gap below.
-/// 2. **Different scope.** `rga_insert_per_char` calls
-///    `ReplicatedGrowableArray::insert` directly, in-process, through
-///    `calimero-storage`'s own counting `RuntimeEnv` — no WASM, no SDK, no
-///    other collection in the picture. This probe counts every
-///    `env::storage_read` HOST-IMPORT call the COMPILED APP makes during one
-///    `insert_text`/`get_text` invocation, which additionally includes
-///    `#[app::state]`'s root-state fetch/commit (touching `edit_count` and
-///    `metadata` alongside `document`, since all three live in the same
-///    struct), `Counter::increment()`'s own read(s), and any register/ABI
-///    marshaling the SDK performs. This is the real end-to-end count, not an
-///    isolated one — the same distinction `chat_wall.rs` draws between a
-///    synthetic guest and a real contract.
-///
-/// At document length 7,800 this probe measured 26,857 reads for one
-/// `insert_text` call; `n + 47` would predict ~7,847 for the SAME `n` under
-/// `rga_insert_per_char`'s accounting. Point (1) alone would only close
-/// roughly half that gap (an average-vs-last-call factor of ~2x); the
-/// remainder is attributed to point (2), the larger call scope, but has not
-/// been decomposed further — doing so would need a guest stripped of the
-/// `Counter`/`metadata` fields and the SDK's ABI marshaling to isolate the
-/// RGA-only cost inside a real compiled app, which is a follow-up
-/// measurement, not something resolved by the data this probe collected.
+/// The `i_reads`/`r_reads` columns are one call's end-to-end host reads, which
+/// include root-state fetch/commit, `Counter::increment` and SDK marshaling.
+/// They are not comparable with `rga_insert_per_char`'s committed `n + 47`
+/// reads/entry, which averages direct in-process calls over a whole build.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             collaborative-editor app to find where insert_text/get_text actually \
@@ -451,7 +348,7 @@ fn typing_and_reading_walls() {
 
     assert!(
         landed > 0,
-        "no character was inserted even though preflight succeeded — the failure \
+        "no character was inserted even though preflight succeeded - the failure \
          classification in this file is broken"
     );
 
@@ -466,26 +363,13 @@ fn typing_and_reading_walls() {
     }
 }
 
-/// The single-call ceiling of `insert_str`'s BULK path: the largest string
-/// that can be pasted into an EMPTY document in ONE `insert_text` call before
-/// that one call itself exhausts gas.
+/// The mid-document write ceiling: type one character at a time into the
+/// middle of the document (`position: landed / 2`) until a call exhausts gas.
 ///
-/// The MID-DOCUMENT write ceiling: type one character at a time into the
-/// MIDDLE of the document (`position: landed / 2`) until a call exhausts gas.
-///
-/// The RGA half of the same measurement `fugue_wall.rs`'s
-/// `mid_document_typing_wall` makes, added for the same reason and kept
-/// deliberately identical to it so the two ceilings are comparable: this file's
-/// other two probes only ever write at the END (`typing_and_reading_walls`
-/// types at `position: i`) or into an EMPTY document (`single_call_paste_wall`),
-/// so neither says anything about insertion into the middle.
-///
-/// For `ReplicatedGrowableArray` this is expected to land at or near the append
-/// ceiling rather than below it — `get_ordered_chars` linearises the whole
-/// document on every insert whatever the position, so RGA has no append fast
-/// path to lose. That expectation is exactly why the number is worth having:
-/// it is the control against which `FugueText`'s mid-document ceiling means
-/// something.
+/// Kept identical to `fugue_wall.rs`'s `mid_document_typing_wall` so the two
+/// ceilings are comparable. It is the control for that one: `get_ordered_chars`
+/// linearises the whole document whatever the position, so RGA has no append
+/// fast path to lose and should land at the append ceiling.
 #[test]
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             collaborative-editor app to find where a MID-DOCUMENT insert_text \
@@ -560,7 +444,7 @@ fn mid_document_typing_wall() {
 
     assert!(
         landed > 0,
-        "no character was inserted even though preflight succeeded — the failure \
+        "no character was inserted even though preflight succeeded - the failure \
          classification in this file is broken"
     );
     if let Some(n) = write_wall {
@@ -573,14 +457,9 @@ fn mid_document_typing_wall() {
     }
 }
 
-/// This is a different question from the write wall above. The write wall is
-/// "how long can the document GET, one keystroke at a time" — the linearise
-/// cost dominates and grows with the document's EXISTING length. This is "how
-/// much NEW text can ONE call add, no matter how empty the document is" — the
-/// linearise cost is paid once (on an empty document, near zero) and the flat
-/// per-character insert cost dominates instead. Reporting both is what turns
-/// "RGA is broken" into "RGA is broken two different ways depending on how you
-/// drive it" — see the module docs and the report this probe feeds.
+/// How much NEW text ONE call can add, a different question from the write
+/// wall above: here the linearise cost is paid against an empty document, so
+/// the flat per-character insert cost dominates instead.
 #[test]
 #[ignore = "slow: builds the compiled collaborative-editor app. Fast to execute \
             once built (well under a second), unlike the sweep above."]
@@ -593,14 +472,11 @@ fn single_call_paste_wall() {
 
     preflight(&module);
 
-    // Binary search: `lo` is known to land, `hi` is known to wall. Seed from a
-    // pair well outside the true wall so a shift in the app's cost model still
-    // brackets it correctly.
+    // Binary search: `lo` is known to land, `hi` is known to wall.
     let mut lo = 1_usize;
-    let mut hi = 8_192; // comfortably above the observed wall (~500) and safely
-                        // below the 16 KiB `app::log!` line-length limit that a much
-                        // larger seed would trip first, misreporting a log overflow
-                        // as if it bracketed the gas wall
+    // Above the observed wall but below the 16 KiB `app::log!` line-length
+    // limit, which a larger seed would trip first and misreport as the gas wall.
+    let mut hi = 8_192;
     let mut hi_confirmed = false;
     while !hi_confirmed {
         let mut storage = InMemoryStorage::default();
@@ -619,7 +495,7 @@ fn single_call_paste_wall() {
             Ok(_) => drift(&format!(
                 "a single insert_text call of {hi} characters into an EMPTY document \
                  succeeded. The seeded upper bound for this search is no longer past \
-                 the wall — raise it in this file."
+                 the wall; raise it in this file."
             )),
             Err(error) => match classify("insert_text", error) {
                 Verdict::Wall { .. } => hi_confirmed = true,
@@ -658,14 +534,14 @@ fn single_call_paste_wall() {
     println!("single-call paste wall: {lo} characters land ({lo_gas:?} gas), {hi} exhausts gas");
     assert!(
         lo >= 10,
-        "the single-call paste wall landed at only {lo} characters — investigate \
+        "the single-call paste wall landed at only {lo} characters - investigate \
          before quoting the number, this is far below anything seen so far"
     );
 }
 
-/// The discriminator itself runs in CI, even though the two probes above do
-/// not. Everything above rests on `classify` telling a measured wall apart
-/// from a stale call signature, and that function has no other coverage.
+/// The discriminator itself runs in CI, even though the probes above do not:
+/// everything here rests on `classify` telling a measured wall apart from a
+/// stale call signature, and it has no other coverage.
 #[test]
 fn only_gas_exhaustion_counts_as_a_wall() {
     assert!(
@@ -684,7 +560,7 @@ fn only_gas_exhaustion_counts_as_a_wall() {
         &FunctionCallError::ExecutionError(b"missing field `text`".to_vec()),
     ) else {
         panic!(
-            "an application error was classified as a wall — the probe would report \
+            "an application error was classified as a wall - the probe would report \
              a fictional number"
         );
     };

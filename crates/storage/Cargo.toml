@@ -41,9 +41,8 @@ velcro.workspace = true
 
 calimero-sdk.workspace = true
 
-# A crate that gains a [[bench]] needs `bench = false` on its [lib], [[bin]]
-# and [[test]] targets, or `cargo bench -p calimero-storage` (no --bench
-# filter) hands those to libtest, which rejects criterion's own CLI flags.
+# `bench = false` on every non-criterion target: a bare `cargo bench -p <crate>`
+# otherwise hands them to libtest, which rejects criterion's own CLI flags.
 [lib]
 bench = false
 
@@ -114,11 +113,9 @@ default = []
 # canonical copy instead of mirroring it.
 testing = []
 # Exposes `collections::FugueTextSimple`, the one-entity-per-node measurement
-# control for `FugueText`. Off by default and enabled only by
-# `tools/storage-cost`, so the control never reaches the published surface or a
-# node build. Deliberately NOT folded into `testing`: that feature swaps the
-# merge registry implementation, and enabling it inside the cost harness would
-# move numbers that have nothing to do with this type.
+# control for `FugueText`, enabled only by `tools/storage-cost`. Deliberately
+# not folded into `testing`, which swaps the merge registry implementation and
+# would move numbers unrelated to this type.
 fugue-simple = []
 
 # Registry tests live in `tests/` as separate integration binaries

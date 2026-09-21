@@ -1,11 +1,11 @@
 description: >
-  The paper's Figure 2, multi-replica, end to end — and the first version of
+  The paper's Figure 2, multi-replica, end to end - and the first version of
   this scenario that RGA can actually fail.
 
   Interleaving needs the writers' operations interleaved IN TIME, not merely
   concurrent. RGA orders same-origin siblings by id, so if each writer types
   its passage and its heading back-to-back the ids run P1<H1<P2<H2 and each
-  heading still lands beside its own passage — which is why the earlier
+  heading still lands beside its own passage - which is why the earlier
   round-per-writer version passed on RGA and proved nothing. The in-process
   conformance test forces the real shape with pinned clocks
   (`pinned(10+tick)` for every passage, `pinned(20+tick)` for every heading),
@@ -14,7 +14,7 @@ description: >
   This reproduces that ordering with real HLCs by going round-robin: every
   writer appends its passage, and only then does every writer go back and type
   its heading. Isolation is enforced by stopping the other nodes and is
-  ASSERTED at each step — a writer that can see a peer's text is not isolated
+  ASSERTED at each step - a writer that can see a peer's text is not isolated
   and the scenario has stopped posing the question.
 
   Expected: FugueText keeps every heading against its own passage.
@@ -36,20 +36,18 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
-  # that has never held the blob cannot execute — and this scenario stops every
-  # other node while one writes, leaving nobody to fetch it from. Each node must
-  # therefore own the bytecode before isolation begins.
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
+  # node owns it before isolation leaves the writer's peers with nobody to
+  # fetch from.
   - name: Install fugue-collab on Node 2
     type: install_application
     node: fugue-node-2
     path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
     dev: true
 
-  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so a node
-  # that has never held the blob cannot execute — and this scenario stops every
-  # other node while one writes, leaving nobody to fetch it from. Each node must
-  # therefore own the bytecode before isolation begins.
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
+  # node owns it before isolation leaves the writer's peers with nobody to
+  # fetch from.
   - name: Install fugue-collab on Node 3
     type: install_application
     node: fugue-node-3

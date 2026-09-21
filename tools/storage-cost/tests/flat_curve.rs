@@ -54,16 +54,10 @@ const LINEAR_FLOOR_DIVISOR: f64 = 200.0;
 /// …and at most `n * LINEAR_CEILING_FACTOR`. Past that it is superlinear.
 const LINEAR_CEILING_FACTOR: f64 = 4.0;
 
-/// The smallest and largest `n` a workload was actually measured at.
-///
-/// Derived from its own measured points rather than read off [`SIZES`]: not
-/// every workload is measured at the same sizes. The `QuadraticBuild` set has
-/// always used [`QUADRATIC_SIZES`], and the `fugue_simple_*` control set uses
-/// them for its point READS too — a `FugueTextSimple` document of `n`
-/// characters is `n` entities built by an `O(n^2)` loop, so `n = 10_000` is not
-/// reachable in a debug-profile test run whatever shape the measurement has.
-/// Indexing a fixed `SIZES[..]` here would panic on those rows rather than
-/// check them.
+/// The smallest and largest `n` a workload was actually measured at, derived
+/// from its own points rather than a fixed `SIZES[..]`: the `QuadraticBuild`
+/// set and the `fugue_simple_*` control set, point READS included, are measured
+/// at [`QUADRATIC_SIZES`], so indexing would panic rather than check them.
 fn span(points: &BTreeMap<usize, f64>) -> (usize, usize) {
     let (&smallest, _) = points
         .first_key_value()
@@ -160,7 +154,7 @@ fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
         } else if large > small * MAX_GROWTH {
             failures.push(format!(
                 "{name}: {unit} grew {small:.1} (n={smallest}) -> {large:.1} \
-                 (n={largest}), {:.1}x — budget is {MAX_GROWTH}x",
+                 (n={largest}), {:.1}x - budget is {MAX_GROWTH}x",
                 large / small
             ));
         }

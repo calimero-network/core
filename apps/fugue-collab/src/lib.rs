@@ -4,39 +4,25 @@
 //! Fugue rework can be argued from a running network rather than from unit
 //! tests and cost tables.
 //!
-//! # Why this is not `apps/fugue-editor`
+//! Kept separate from `apps/fugue-editor`, which exists to be measured: that
+//! app's per-call work is a deliberate mirror of `collaborative-editor`'s so
+//! the wall probes differ by the collection and nothing else, and e2e-only
+//! surface would spend that property. This one is free to grow methods that
+//! would perturb a wall measurement.
 //!
-//! `fugue-editor` exists to be measured. Its per-call work is a deliberate
-//! mirror of `collaborative-editor`'s — same `Counter`, same metadata map,
-//! same log/insert/increment/emit sequence — so that
-//! `crates/runtime/tests/fugue_wall.rs` and `rga_wall.rs` differ by the
-//! collection and nothing else. Adding e2e-only surface to it would spend that
-//! property for no gain, and the walls are the one number on this branch that
-//! cannot be re-derived cheaply.
-//!
-//! This app exists to be *collaborated on*. It carries only what a
-//! multi-writer scenario needs to assert something, and it is free to grow
-//! methods that would perturb a wall measurement.
-//!
-//! # What a scenario can prove with it
-//!
-//! * [`get_text`](FugueCollabState::get_text) — convergence, and the merged
-//!   VALUE. Asserting only that replicas agree is not enough: three critical
-//!   bugs on this branch converged on a deterministically WRONG value, and a
-//!   hash check passed on every one of them. The workflows assert the text.
-//! * [`get_length`](FugueCollabState::get_length) — that a merge neither lost
-//!   nor duplicated a character, independent of order.
-//! * [`text_range`](FugueCollabState::text_range) and
-//!   [`char_at`](FugueCollabState::char_at) — positional reads, which
-//!   `ReplicatedGrowableArray` has no analogue for.
-//! * [`delete_range`](FugueCollabState::delete_range) — so a scenario can race
-//!   a delete against a concurrent insert, the shape that produced this
-//!   branch's C1 and C2 defects.
-//!
-//! # Positions are character indices
+//! The workflows assert the merged VALUE of
+//! [`get_text`](FugueCollabState::get_text), not just that replicas agree:
+//! every critical bug found on this branch converged on a deterministically
+//! WRONG text, and a hash check passed on all of them.
+//! [`get_length`](FugueCollabState::get_length) then pins that a merge neither
+//! lost nor duplicated a character, [`text_range`](FugueCollabState::text_range)
+//! and [`char_at`](FugueCollabState::char_at) cover the positional reads
+//! `ReplicatedGrowableArray` has no analogue for, and
+//! [`delete_range`](FugueCollabState::delete_range) lets a scenario race a
+//! delete against a concurrent insert.
 //!
 //! Every `position`, `start` and `end` below is an index into the document's
-//! Unicode scalar values — not bytes, and not grapheme clusters. A JSON-RPC
+//! Unicode scalar values, not bytes and not grapheme clusters. A JSON-RPC
 //! caller counting UTF-8 bytes will address the wrong character in any
 //! document containing non-ASCII text.
 
@@ -57,9 +43,8 @@ pub struct FugueCollabState {
 /// other node, where the receiving node re-emits them.
 ///
 /// Note what `position` means on a remote node: it is the index the AUTHOR saw
-/// when they typed, before their edit was integrated anywhere else. A replica
-/// holding concurrent edits cannot apply it blindly — that is exactly the gap
-/// a receiver-computed patch would close.
+/// when they typed, before their edit was integrated anywhere else, so a
+/// replica holding concurrent edits cannot apply it blindly.
 #[app::event]
 pub enum FugueCollabEvent {
     /// Text was inserted at `position` by `editor`.

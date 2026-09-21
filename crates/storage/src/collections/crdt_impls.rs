@@ -304,9 +304,7 @@ impl CrdtMeta for FugueText {
 impl Mergeable for FugueText {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Same shape as the RGA impl: `TextBlock` is plain data, not a CRDT, so
-        // the union is done explicitly rather than through `blocks.merge()`.
-        // `merge_blocks_from` never resurrects a block `self` tombstoned and
-        // ORs the per-block delete flag, so delete wins.
+        // the union is explicit rather than through `blocks.merge()`.
         self.merge_blocks_from(other)?;
         Ok(())
     }
@@ -1249,9 +1247,6 @@ impl MergeStrategy for ReplicatedGrowableArray {
     const DISPATCHED: bool = false;
 }
 
-// A built-in collection with a fixed rule, exactly like `ReplicatedGrowableArray`:
-// the merge is `FugueText::merge_blocks_from`'s lattice join, chosen by the
-// collection and never by the app, so it is not dispatched.
 #[diagnostic::do_not_recommend]
 impl MergeStrategy for FugueText {
     const DISPATCHED: bool = false;

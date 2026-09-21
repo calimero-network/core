@@ -1553,18 +1553,11 @@ mod tests {
         generate_mergeable_impl(&ident, &generics, &orig).to_string()
     }
 
-    /// Regression: the generator used to skip any field whose type string
-    /// didn't contain a hardcoded CRDT name (UnorderedMap, Counter, ...). User
-    /// types with their own `Mergeable` impl — including those produced by
-    /// `#[derive(Mergeable)]` — would silently fall through, dropping all
-    /// concurrent updates to those fields with no diagnostic. Today every
-    /// field gets a merge call; the trait bound enforces correctness.
     /// Every text-CRDT collection must reach `__assign_deterministic_ids`.
     ///
     /// A top-level field the list misses falls back to `Id::random()`, so every
-    /// node mints a different collection id, its entries land under different
-    /// parents and the field NEVER merges — permanent divergence, silent, and
-    /// reachable by any app. `FugueText` was missing here when it landed.
+    /// node mints a different collection id and the field NEVER merges: silent,
+    /// permanent divergence, reachable by any app.
     #[test]
     fn assign_deterministic_ids_covers_every_text_crdt() {
         let item: syn::ItemStruct = parse_quote! {
@@ -1591,6 +1584,12 @@ mod tests {
         );
     }
 
+    /// Regression: the generator used to skip any field whose type string
+    /// didn't contain a hardcoded CRDT name (UnorderedMap, Counter, ...). User
+    /// types with their own `Mergeable` impl — including those produced by
+    /// `#[derive(Mergeable)]` — would silently fall through, dropping all
+    /// concurrent updates to those fields with no diagnostic. Today every
+    /// field gets a merge call; the trait bound enforces correctness.
     #[test]
     fn merge_impl_calls_every_field_including_user_types() {
         let item: syn::ItemStruct = parse_quote! {

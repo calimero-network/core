@@ -6,7 +6,7 @@
 //! decision here: whether caching compiled modules is worth building.
 //!
 //! The guest is the fixed-work WAT fixture from
-//! `crates/runtime/tests/cost_is_flat.rs` — deliberately not a real contract,
+//! `crates/runtime/tests/cost_is_flat.rs`, deliberately not a real contract,
 //! so a change in the number means a change in the VM rather than in whatever
 //! app happened to be compiled that week.
 //!

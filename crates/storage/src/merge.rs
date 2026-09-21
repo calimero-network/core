@@ -466,10 +466,10 @@ pub fn merge_by_crdt_type(
         // see `merge_fugue_text`. The real join is the `FugueTextBlock` arm.
         CrdtType::FugueText => merge_fugue_text(existing, incoming),
 
-        // One run-length block of a Tree-Fugue document. The LEAF arm — this is
-        // the one the sync path actually reaches, because a `TextBlock` lives as
-        // an `UnorderedMap` entry and it is the ENTRY that carries this tag (the
-        // collection element carries `FugueText`). See `merge_fugue_text_block`.
+        // One run-length block of a Tree-Fugue document, and the arm the sync
+        // path actually reaches: a `TextBlock` lives as an `UnorderedMap` entry
+        // and it is the ENTRY that carries this tag, the collection element
+        // carrying `FugueText`. See `merge_fugue_text_block`.
         CrdtType::FugueTextBlock => merge_fugue_text_block(existing, incoming),
 
         // App-defined types
@@ -586,22 +586,11 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
 
 /// Merge two `FugueText` document containers.
 ///
-/// A no-op, and kept for the same reason [`merge_rga`] is - the two containers
-/// are structurally identical and dispatching them differently would be worse
-/// than the redundancy. A `Collection`'s only serialized field is its element
-/// id, which is derived from the field name and therefore equal on every
-/// replica, so both sides resolve to the SAME stored collection and the block
-/// join runs against itself. The join that does the work is
-/// [`merge_fugue_text_block`].
-///
-/// # Arguments
-///
-/// * `existing` - Currently stored document (Borsh-serialized)
-/// * `incoming` - Incoming document to merge (Borsh-serialized)
-///
-/// # Returns
-///
-/// Merged document as Borsh-serialized bytes.
+/// A no-op by construction, kept for the same reason [`merge_rga`] is. A
+/// `Collection`'s only serialized field is its element id, derived from the
+/// field name and therefore equal on every replica, so both sides resolve to
+/// the SAME stored collection and the block join runs against itself. The join
+/// that does the work is [`merge_fugue_text_block`].
 fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     let mut existing_doc: FugueText =
         borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
@@ -615,16 +604,14 @@ fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeEr
 
 /// Merge two stored ENTRIES of a `FugueText` block map.
 ///
-/// This is the arm the sync path actually reaches for text: the collection
-/// element carries [`CrdtType::FugueText`], but the bytes that collide on the
-/// wire are one `UnorderedMap` entry, stamped [`CrdtType::FugueTextBlock`].
+/// The arm the sync path actually reaches for text: the collection element
+/// carries [`CrdtType::FugueText`], but the bytes that collide on the wire are
+/// one `UnorderedMap` entry, stamped [`CrdtType::FugueTextBlock`].
 ///
 /// Delegates the whole join to
 /// [`FugueText::merge_block_entry_bytes`](crate::collections::FugueText), which
-/// owns the layout (`borsh(Entry<(TextBlock, BlockKey)>)` - value first) and
-/// applies the elementwise tombstone OR plus the `(node count, bytes)` maximum
-/// on text - the same join `merge_blocks_from` uses, so there is exactly one
-/// block-join implementation.
+/// owns the entry layout and is the same join `merge_blocks_from` applies, so
+/// there is exactly one block-join implementation.
 fn merge_fugue_text_block(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     FugueText::<MainStorage>::merge_block_entry_bytes(existing, incoming)
 }
@@ -928,8 +915,7 @@ mod typed_dispatch_tests {
 
     /// The `FugueText` container arm is reachable but changes nothing: its two
     /// sides are byte-identical handles on one stored collection, so the block
-    /// join runs against itself. A future "fix" that made it merge content
-    /// would break here first.
+    /// join runs against itself.
     #[test]
     #[serial]
     fn merge_fugue_text_container_leaves_the_stored_document_unchanged() {

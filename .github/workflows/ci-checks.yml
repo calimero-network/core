@@ -286,10 +286,8 @@ jobs:
 
   bench-compile:
     name: Benchmarks compile
-    # Benches are not run here — timing on a shared runner is noise. This job
-    # exists because a bench target nothing compiles silently rots: a bench that
-    # copies a private function's body stops tracking it once that function
-    # moves, and nothing notices for months.
+    # Compile only: timing on a shared runner is noise. A bench target that
+    # nothing compiles rots silently once the code it mirrors moves.
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -308,11 +306,10 @@ jobs:
         run: cargo bench --workspace --benches --no-run
 
   # Storage costs are deterministic — same inputs, same read/write/remove counts
-  # on any machine — so this gates. Wall-clock benchmarks do NOT gate; they run
-  # post-merge in benchmarks.yml, because timing noise on shared runners makes a
-  # time-based gate a false-alarm generator, and because a timing bench against
-  # an in-memory store cannot reproduce an O(n)-read regression that shows up as
-  # gas cost, not wall-clock time.
+  # on any machine, so this gates. Wall-clock benchmarks do not and run
+  # post-merge in benchmarks.yml: timing noise on shared runners makes a
+  # time-based gate a false-alarm generator, and an in-memory store cannot
+  # reproduce an O(n)-read regression at all.
   storage-cost:
     name: Storage cost gate
     runs-on: ubuntu-24.04-8cpu
@@ -332,12 +329,9 @@ jobs:
       # Shape first, constants second. The shape tests catch a complexity
       # regression even when the snapshot was regenerated to absorb it, which is
       # precisely how a reviewer gets fooled otherwise.
-      # `--include-ignored` is load-bearing: `tests/reproducible.rs` and
-      # `tests/keystroke_bytes.rs` are `#[ignore]`d so the workspace-wide DEBUG
-      # `cargo test` above does not spend twenty-plus minutes re-deriving
-      # tolerances and retyping an 11,000-character document on every PR. This
-      # release job is the only place they run, so dropping the flag drops both
-      # the tolerance check and the bound on bytes written per keystroke.
+      # `--include-ignored` is load-bearing: this release job is the only place
+      # `tests/reproducible.rs` and `tests/keystroke_bytes.rs` run, so dropping
+      # the flag drops the tolerance check and the keystroke-bytes bound.
       - name: Assert cost curves keep their declared shape
         run: cargo test -p storage-cost --release -- --include-ignored
 

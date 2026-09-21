@@ -1,6 +1,6 @@
-//! Tier 2: wall-clock throughput. REPORTING ONLY — never a merge gate.
+//! Tier 2: wall-clock throughput. REPORTING ONLY, never a merge gate.
 //!
-//! Two reasons this does not gate, both load-bearing:
+//! Two reasons it does not gate:
 //!
 //! 1. It would not have caught an O(n)-read regression. Against an in-memory
 //!    store, such a read pattern costs almost nothing in wall-clock, so the
@@ -24,8 +24,7 @@ fn collections(c: &mut Criterion) {
 
     for workload in all() {
         // Elements-per-second rather than time-per-iteration: every workload
-        // builds `n` entries, so the per-entry rate is the comparable number
-        // across sizes. A rate that falls as `n` grows is the signal.
+        // builds `n` entries, so the per-entry rate is comparable across sizes.
         let _ignored = group.throughput(Throughput::Elements(workload.n as u64));
         let _ignored = group.bench_function(format!("{}/{}", workload.name, workload.n), |b| {
             b.iter_batched(

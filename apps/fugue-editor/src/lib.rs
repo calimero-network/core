@@ -8,8 +8,8 @@
 //! not be the number a user hits.
 //!
 //! The state shape and the per-call work of `insert_text` mirror
-//! `collaborative-editor` deliberately — same `Counter`, same metadata map,
-//! same log/insert/increment/emit sequence — so the two walls differ by the
+//! `collaborative-editor` deliberately (same `Counter`, same metadata map,
+//! same log/insert/increment/emit sequence), so the two walls differ by the
 //! collection and not by the harness around it. What this app adds are the
 //! reads `ReplicatedGrowableArray` has no analogue for: [`FugueEditorState::
 //! char_at`] and [`FugueEditorState::text_range`].
@@ -131,15 +131,13 @@ impl FugueEditorState {
         self.document.get_text().map_err(Into::into)
     }
 
-    /// The character at `position`, or `None` past the end — the positional
-    /// read `collaborative-editor` cannot offer, because
-    /// `ReplicatedGrowableArray` has none.
+    /// The character at `position`, or `None` past the end: the positional
+    /// read `ReplicatedGrowableArray` has no analogue for.
     ///
-    /// Returned as a one-character `String` rather than a `char`: `char` has no
-    /// `AbiType` implementation, so an `Option<char>` return does not compile
-    /// under `#[app::logic]`. The extra allocation is one character wide and
-    /// does not touch storage, so it cannot move the wall this app is built to
-    /// measure.
+    /// A one-character `String` rather than a `char` because `char` has no
+    /// `AbiType`, so an `Option<char>` return does not compile under
+    /// `#[app::logic]`. The allocation touches no storage, so it cannot move
+    /// the wall this app is built to measure.
     ///
     /// # Errors
     /// Returns an error if storage fails.

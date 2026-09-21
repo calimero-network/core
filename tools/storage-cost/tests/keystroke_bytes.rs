@@ -12,7 +12,7 @@ use storage_cost::{measure, reset_counters};
 
 const SHORT_RUN: usize = 1_000; // characters typed before the measured keystroke
 const LONG_RUN: usize = 10_000; // ten times the run, one identical keystroke
-const MAX_GROWTH: f64 = 1.5; // wide enough for random-id index drift, far under the 5x an uncapped run costs
+const MAX_GROWTH: f64 = 1.5; // random-id drift headroom; an uncapped run costs 5x
 
 /// Bytes written by ONE append after `run` characters have been typed.
 fn keystroke_bytes(run: usize) -> u64 {
@@ -27,10 +27,9 @@ fn keystroke_bytes(run: usize) -> u64 {
     costs.bytes_written
 }
 
-/// `#[ignore]`d like `tests/reproducible.rs`, and for its reason: typing
-/// `LONG_RUN` characters costs 22s in release and 200s in debug, which the
-/// workspace-wide debug `cargo test` would pay on every PR. The release
-/// storage-cost job runs it via `--include-ignored`.
+/// `#[ignore]`d for `tests/reproducible.rs`'s reason: typing `LONG_RUN`
+/// characters costs 200s in the debug profile the workspace-wide `cargo test`
+/// uses. The release storage-cost job runs it via `--include-ignored`.
 #[ignore = "slow: types 11,000 characters; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn bytes_written_per_keystroke_do_not_grow_with_the_run() {

@@ -5,29 +5,20 @@
 //! it over a *closed* domain, so a shrunken search cannot pass silently: every
 //! enumeration asserts its own cardinality.
 //!
-//! # Kani
+//! Each law's body doubles as a Kani proof harness under `cfg(kani)`. Kani is
+//! not installed in this checkout and the crate gains no dependency on it, so
+//! the `kani::` calls are not even type-checked; what runs in CI is the
+//! `not(kani)` branch, which enumerates a bounded domain exhaustively rather
+//! than sampling it.
 //!
-//! Every law is written so the same body is a Kani proof harness when the
-//! crate is compiled under `cfg(kani)` and an ordinary exhaustive `#[test]`
-//! otherwise. Kani is **not installed in this checkout** (`cargo kani` is not a
-//! cargo subcommand), and this crate deliberately gains no dependency on it:
-//! the `kani::` calls live behind `#[cfg(kani)]` and are therefore not
-//! type-checked here. What actually runs today — and in CI — is the
-//! `not(kani)` branch of each law, which enumerates a bounded domain
-//! exhaustively rather than sampling it.
-//!
-//! # Which layer each law is checked on
-//!
-//! * Laws 1 and 2 are properties of the *ordering function* and only exist on
-//!   the pure layer ([`calimero_storage::collections::fugue`]); the storage
-//!   collection has no comparator and no integration order of its own — it
-//!   builds a tree and asks it. They are noted as pure-only in place.
-//! * Laws 3 to 6 are properties of the state-based **join**, and the join is
-//!   what production actually runs. They are checked twice: once on the pure
-//!   node-set join, and once end to end through the real
-//!   `Interface::apply_action` path that the sync layer uses. (An earlier
-//!   revision of this work checked only `merge_blocks_from`, which production
-//!   never calls for a leaf entity — hence the insistence on the apply path.)
+//! Laws 1 and 2 are properties of the *ordering function* and exist only on
+//! the pure layer ([`calimero_storage::collections::fugue`]): the storage
+//! collection has no comparator of its own, it builds a tree and asks it.
+//! Laws 3 to 6 are properties of the state-based **join**, which is what
+//! production runs, so they are checked twice: on the pure node-set join, and
+//! end to end through the real `Interface::apply_action` path. That path is
+//! the subject rather than `merge_blocks_from`, which production never calls
+//! for a leaf entity.
 
 // The `subject__scenario` naming convention this crate uses in its tests.
 #![allow(non_snake_case)]
@@ -73,7 +64,7 @@ const ALPHABET: [Op; 5] = [
 ];
 
 /// A replica's synced state: its node set. This is exactly what a state-based
-/// join sees, and it is causally closed by construction —
+/// join sees, and it is causally closed by construction:
 /// [`FugueTree::integrate`] only attaches a node once its parent is attached,
 /// so every node in the set has its parent in the set.
 type State = Vec<FugueNode>;
@@ -233,17 +224,15 @@ fn script_of(index: usize) -> [Op; 3] {
 }
 
 // ---------------------------------------------------------------------------
-// LAW 1 — the sibling comparator is a strict total order.
+// LAW 1: the sibling comparator is a strict total order.
 // ---------------------------------------------------------------------------
 
 /// Fugue orders the children of one `(parent, side)` bucket by node id
 /// ascending; that comparator is the whole tie-break of the algorithm, and the
 /// traversal is only well defined if it is a strict total order.
 ///
-/// PURE LAYER ONLY: the storage collection has no comparator of its own — it
-/// expands its blocks into a [`FugueTree`] and the tree applies this one. The
-/// observable half of the law (siblings surface in id order) is checked below
-/// through `values()`.
+/// PURE LAYER ONLY: the storage collection has no comparator of its own, it
+/// expands its blocks into a [`FugueTree`] and the tree applies this one.
 const fn sibling_lt(a: RawId, b: RawId) -> bool {
     a.0 < b.0 || (a.0 == b.0 && a.1 < b.1)
 }
@@ -344,7 +333,7 @@ fn law1__sibling_comparator_is_a_strict_total_order() {
 }
 
 // ---------------------------------------------------------------------------
-// LAW 2 — `values()` is a pure function of the node set.
+// LAW 2: `values()` is a pure function of the node set.
 // ---------------------------------------------------------------------------
 
 /// The tree of Figure 3 of the paper: `abcdef`, with `a` and `b` both left
@@ -408,9 +397,9 @@ fn check_order_independence(nodes: &State, index: usize, expected: &str) {
 /// LAW 2: `values()` depends on the node SET, not on the order the nodes were
 /// integrated in.
 ///
-/// PURE LAYER ONLY as stated — the storage collection has no integration order
-/// to permute. Its counterpart there is delivery-order independence of the
-/// apply path, which law 3 checks end to end.
+/// PURE LAYER ONLY: the storage collection has no integration order to
+/// permute. Its counterpart there is delivery-order independence of the apply
+/// path, which law 3 checks end to end.
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(kani, kani::unwind(8))]
 #[cfg_attr(not(kani), test)]
@@ -460,12 +449,12 @@ fn law2__values_is_a_pure_function_of_the_node_set() {
 }
 
 // ---------------------------------------------------------------------------
-// LAWS 3-6 — the state-based join, on the pure layer.
+// LAWS 3-6: the state-based join, on the pure layer.
 // ---------------------------------------------------------------------------
 
 /// Laws 3, 4, 5 and 6 at one point of the state space.
 fn check_join_laws(a: &State, b: &State, c: &State) {
-    // LAW 3 — commutative.
+    // LAW 3: commutative.
     assert_eq!(merge(a, b), merge(b, a), "merge is not commutative");
     assert_eq!(
         values_of(&merge(a, b)),
@@ -473,7 +462,7 @@ fn check_join_laws(a: &State, b: &State, c: &State) {
         "merge is not commutative as read back"
     );
 
-    // LAW 4 — associative.
+    // LAW 4: associative.
     let left = merge(&merge(a, b), c);
     let right = merge(a, &merge(b, c));
     assert_eq!(left, right, "merge is not associative");
@@ -483,12 +472,12 @@ fn check_join_laws(a: &State, b: &State, c: &State) {
         "merge is not associative as read back"
     );
 
-    // LAW 5 — idempotent.
+    // LAW 5: idempotent.
     assert_eq!(&merge(a, a), a, "merge is not idempotent");
     assert_eq!(&merge(b, b), b, "merge is not idempotent");
     assert_eq!(&merge(c, c), c, "merge is not idempotent");
 
-    // LAW 6 — tombstones are monotone: delete-wins never regresses.
+    // LAW 6: tombstones are monotone, delete-wins never regresses.
     let joined = merge(a, b);
     for state in [a, b] {
         for node in state {
@@ -580,7 +569,7 @@ fn exhaustive__three_replicas_one_op_each_converge_in_every_delivery_order() {
     assert_eq!(orders, 750, "every delivery order must be covered");
 }
 
-/// EXHAUSTIVE: 2 replicas, 3 ops each — `5^6 = 15_625` scripts, each merged in
+/// EXHAUSTIVE: 2 replicas, 3 ops each, `5^6 = 15_625` scripts, each merged in
 /// both orders and checked against the join.
 ///
 /// The in-crate sweep runs `k = 2` ops; this is `k = 3`, i.e. 25x its script
@@ -743,8 +732,8 @@ fn edit_op(store: &Store, dev: [u8; 32], replica: u64, op: &Op, model: &mut Repl
 /// one observable property: the state a replica reaches must depend only on
 /// the SET of deltas it has landed, not on the order it landed them in nor on
 /// how many times each arrived. That is what the sync layer relies on, and it
-/// is checked here through `Interface::apply_action` — the path production
-/// actually runs — rather than through `merge_blocks_from`, which no node ever
+/// is checked here through `Interface::apply_action`, the path production
+/// actually runs, rather than through `merge_blocks_from`, which no node ever
 /// calls for a leaf entity.
 ///
 /// EXHAUSTIVE: `5^3 = 125` scripts (3 replicas, 1 op each) x `3! = 6` delivery
@@ -805,9 +794,9 @@ fn law345__apply_path_state_depends_only_on_the_delta_set() {
 
 /// LAW 6 through the REAL apply path: a delete never regresses.
 ///
-/// Once a replica has landed a delete, no later delta — including one authored
-/// before the delete, by a replica that still believed the character live —
-/// may bring the character back. Checked over every op of the alphabet as the
+/// Once a replica has landed a delete, no later delta may bring the character
+/// back, including one authored before the delete by a replica that still
+/// believed it live. Checked over every op of the alphabet as the
 /// concurrent write, and in both landing orders.
 #[test]
 fn law6__apply_path_tombstones_are_monotone() {

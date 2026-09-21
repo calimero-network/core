@@ -225,38 +225,25 @@ pub enum CrdtType {
     ///
     /// Collaborative text with Fugue ordering, stored as run-length blocks in an
     /// `UnorderedMap` keyed by the id of each run's first node. Order is a pure
-    /// function of the synced `(parent, side)` edges, so merge is the map's own
-    /// add-wins union — no ordering state crosses the wire beyond the edges.
+    /// function of the synced `(parent, side)` edges, so no ordering state
+    /// crosses the wire beyond them.
     /// Merge: union of blocks; delete-wins per block.
-    ///
-    /// DECLARED LAST for the same reason as [`RotationLog`](Self::RotationLog):
-    /// borsh enum discriminants are positional and must only ever be appended.
     FugueText,
 
     /// One run-length block of a [`FugueText`](Self::FugueText) document.
     ///
-    /// The LEAF counterpart of `FugueText`: `FugueText` tags the collection
-    /// element, this tags each `UnorderedMap` **entry** holding one `TextBlock`.
-    /// The distinction is load-bearing rather than cosmetic. Entry entities are
-    /// created by `Element::new`, which stamps no `crdt_type`, so without this
-    /// tag a same-key value collision reaches `Interface::try_merge_non_root`
-    /// as untyped "legacy data" and is resolved by last-writer-wins.
-    ///
-    /// LWW is wrong here because a `FugueText` block is MUTABLE: a run grows in
-    /// place when a local append coalesces into it, and shrinks in place when a
-    /// remote insertion splits it. Two replicas therefore routinely hold
-    /// different values for one key — a longer coalesced copy and a shorter
-    /// split copy — and picking one by timestamp DROPS the nodes only the other
-    /// defines. (`Rga` needs no leaf tag because an `RgaChar` is immutable once
-    /// written, so its keys can never collide on differing values.)
-    ///
-    /// Merge: elementwise tombstone OR, longer `text` wins — the same join
-    /// `FugueText::merge_blocks_from` applies, which is a lattice join and so
+    /// The LEAF counterpart: `FugueText` tags the collection element, this tags
+    /// each `UnorderedMap` **entry** holding one `TextBlock`. Load-bearing,
+    /// because an entry entity is created untagged and an untagged value
+    /// collision resolves last-writer-wins, which drops data here: a block is
+    /// MUTABLE under one key, since a run grows in place when an append
+    /// coalesces into it and any replica rewrites its tombstone bitmap. (`Rga`
+    /// needs no leaf tag because an `RgaChar` is immutable once written.)
+    /// Merge: elementwise tombstone OR, longer `text` wins; a lattice join, so
     /// order-independent, idempotent and commutative.
     ///
-    /// Tagged 16 in the hand-written encoding below. Discriminants stopped
-    /// being positional when the tag space moved to `0x80`, so the number is
-    /// assigned explicitly and may only ever be appended to.
+    /// Appended after [`RotationLog`](Self::RotationLog); the explicit tags in
+    /// the encoding below may only ever grow.
     FugueTextBlock,
 }
 

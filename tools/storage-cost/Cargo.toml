@@ -8,9 +8,8 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
-# Only the criterion target is a benchmark. Without this, `cargo bench -p
-# storage-cost` also hands the lib and integration-test targets to libtest,
-# which then rejects criterion's own CLI flags.
+# Only the criterion target is a benchmark: otherwise `cargo bench` also hands
+# the lib and test targets to libtest, which rejects criterion's own CLI flags.
 [lib]
 bench = false
 

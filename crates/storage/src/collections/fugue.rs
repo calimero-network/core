@@ -1,34 +1,26 @@
 //! Tree-Fugue: a non-interleaving sequence CRDT.
 //!
 //! Transcription of Algorithm 1 (Tree-Fugue) from Weidner, Gentle and
-//! Kleppmann, *The Art of the Fugue* (arXiv 2305.00583; IEEE TPDS 2025).
-//!
-//! This module is **pure**: no storage, no `env`, no HLC. Identifiers are
-//! minted by the caller and passed in. It is a data structure, not a service.
-//!
-//! ## The algorithm
+//! Kleppmann, *The Art of the Fugue* (arXiv 2305.00583; IEEE TPDS 2025). This
+//! module is PURE: no storage, no `env`, no HLC. Identifiers are minted by the
+//! caller and passed in.
 //!
 //! A node is `(id, value, parent, side)` where `side ∈ {L, R}` and `value` is
-//! either a character or the tombstone. The tree always contains a root node
-//! `(null, ⊥, null, null)`. Document order is the depth-first **in-order**
-//! traversal: left children (ordered by id ascending), then the node's own
-//! value, then right children (ordered by id ascending). Tombstoned nodes are
-//! skipped when reading values but are still traversed and can still be
-//! parents.
+//! either a character or the tombstone. Document order is the depth-first
+//! in-order traversal: left children by ascending id, then the node's own value,
+//! then right children by ascending id. Tombstoned nodes are skipped when
+//! reading values but are still traversed and can still be parents.
 //!
 //! `insert(i, x)` takes `leftOrigin` = the node holding the `(i-1)`-th value
-//! (the root when `i == 0`). If `leftOrigin` has no right child, the new node
-//! is its right child. Otherwise `rightOrigin` is the node immediately after
-//! `leftOrigin` in the traversal **including tombstones**, and the new node is
-//! `rightOrigin`'s left child.
-//!
-//! `delete(i)` sets the node's value to the tombstone. The node itself stays,
-//! because it may be an ancestor of live nodes.
+//! (the root when `i == 0`). If `leftOrigin` has no right child, the new node is
+//! its right child; otherwise it is the left child of `rightOrigin`, the node
+//! immediately after `leftOrigin` in the traversal INCLUDING tombstones.
+//! `delete(i)` only tombstones, since the node may be an ancestor of live ones.
 //!
 //! This is plain Fugue, not FugueMax: right siblings are ordered by id, so two
 //! concurrent inserts that share a left origin but have different right origins
 //! can come out in the reverse of the maximally non-interleaving order (the
-//! paper's Figure 7). Neither order splits a passage. That residual case is
+//! paper's Figure 7). Neither order splits a passage, and that residual case is
 //! pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin` in
 //! `tests/fugue_conformance.rs`.
 //!
@@ -58,7 +50,7 @@ pub type SeqNo = u32;
 /// Ordering is lexicographic on the tuple.
 pub type RawId = (ReplicaId, SeqNo);
 
-/// A node identifier. `None` is the root — the paper's `null`.
+/// A node identifier. `None` is the root, the paper's `null`.
 pub type NodeId = Option<RawId>;
 
 /// Which side of its parent a node hangs off.
@@ -197,11 +189,8 @@ impl FugueTree {
         out
     }
 
-    /// Every attached node's id in document order, tombstones **included**.
-    ///
-    /// The ordering source for the storage layer's ordered index: an index
-    /// entry has to describe tombstoned nodes too, because they still occupy a
-    /// position in a run and still parent live nodes.
+    /// Every attached node's id in document order, tombstones INCLUDED: they
+    /// still occupy a position in a run and still parent live nodes.
     #[cfg(test)]
     pub(super) fn ordered_ids(&self) -> Vec<RawId> {
         self.traverse_all().into_iter().flatten().collect()
@@ -460,7 +449,7 @@ mod tests {
         tree.nodes().copied().collect()
     }
 
-    /// (a) Figure 3 of the paper reads back as `abcdef`.
+    /// Figure 3 of the paper reads back as `abcdef`.
     #[test]
     fn values__figure_3_tree_reads_abcdef() {
         let tree = figure_3_tree();
@@ -468,7 +457,7 @@ mod tests {
         assert_eq!(tree.len(), 6);
     }
 
-    /// (a') The same tree integrated in a different order is the same tree.
+    /// The same tree integrated in a different order is the same tree.
     #[test]
     fn values__figure_3_is_order_independent() {
         let reference = figure_3_tree();
@@ -479,7 +468,7 @@ mod tests {
         assert_eq!(reversed.values(), "abcdef");
     }
 
-    /// (b) Sequential typing.
+    /// Sequential typing.
     #[test]
     fn insert__sequential_typing_appends() {
         let mut tree = FugueTree::new();
@@ -495,7 +484,7 @@ mod tests {
         assert_eq!(tree.node((1, 2)).unwrap().parent, Some((1, 1)));
     }
 
-    /// (c) Inserting in the middle becomes a left child of the right origin.
+    /// Inserting in the middle becomes a left child of the right origin.
     #[test]
     fn insert__mid_document_yields_acb() {
         let mut tree = FugueTree::new();
@@ -507,7 +496,7 @@ mod tests {
         assert_eq!(node.side, Side::L);
     }
 
-    /// (d) Delete tombstones in place; the node remains and can still parent.
+    /// Delete tombstones in place; the node remains and can still parent.
     #[test]
     fn delete__tombstones_but_keeps_node_as_parent() {
         let mut tree = FugueTree::new();
@@ -557,10 +546,8 @@ mod tests {
         tree
     }
 
-    /// (e) THE HEADLINE TEST: backward insertion does not interleave.
-    ///
-    /// Paper Figure 2 / Table 1: RGA is proven to interleave here; Fugue is
-    /// proven not to.
+    /// Backward insertion does not interleave. Paper Figure 2 / Table 1: RGA
+    /// is proven to interleave here, Fugue proven not to.
     #[test]
     fn merge__backward_insertion_does_not_interleave() {
         let alice = backward_insertion_replica(1, 'A', "aaa");
@@ -591,7 +578,7 @@ mod tests {
         assert_eq!(merged, "SAaaaBbbb");
     }
 
-    /// (f) Convergence: any delivery order of the same node set converges.
+    /// Any delivery order of the same node set converges.
     #[test]
     fn integrate__converges_under_every_delivery_order() {
         let alice = backward_insertion_replica(1, 'A', "aaa");
