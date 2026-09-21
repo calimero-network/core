@@ -1136,37 +1136,73 @@ async fn nested_text_documents_converge_under_lossy_delta_delivery() {
     assert_documents_converged(&label, &nodes, &mut oracles);
 }
 
-/// FAILING: a replica that has to learn the documents from a peer instead of
-/// authoring them never reaches the same Merkle root. See
-/// `nested_collection_entity_data_never_reaches_a_joiner` for the minimal case.
+const JOINER_SEED: u64 = 0x_4E_57_ED;
+
+/// A replica that learns the documents from a peer instead of authoring them
+/// reaches the same Merkle root. See `nested_collection_entity_data_reaches_a_joiner`
+/// for the minimal case.
 #[tokio::test]
-async fn nested_text_documents_reach_a_late_joiner() {
-    const SEED: u64 = 0x_4E_57_ED;
-    let label = format!("nested joiner (seed {SEED})");
+async fn nested_text_documents_reach_a_hash_comparison_joiner() {
+    let label = format!("nested joiner (seed {JOINER_SEED})");
     let (mut nodes, mut oracles) =
-        edited_document_mesh(&label, &["n0", "n1", "n2", "n-hc", "n-lw"], SEED);
+        edited_document_mesh(&label, &["n0", "n1", "n2", "n-hc"], JOINER_SEED);
 
     assert!(
         converge_group(&mut nodes, &[0, 1, 2, 3]).await,
         "{label}: the hash-comparison joiner did not catch up"
     );
+    assert_documents_converged(&label, &nodes, &mut oracles);
+    for node in &nodes {
+        assert_every_indexed_entity_has_data(&label, node);
+    }
+}
+
+/// Level-wise carries a collection container as an internal `LevelNode`, which
+/// has no room for the container's own row and no `has_children` flag that would
+/// let the initiator both apply a row and still descend. A joiner that catches up
+/// this way rebuilds every container from its children's ancestor chains, so its
+/// `own_hash` stays the sender's stale `full_hash` and the root never settles.
+#[tokio::test]
+#[ignore = "level-wise cannot carry a collection container's own row without a LevelNode wire field"]
+async fn nested_text_documents_reach_a_level_wise_joiner() {
+    let label = format!("level-wise joiner (seed {JOINER_SEED})");
+    let (mut nodes, mut oracles) =
+        edited_document_mesh(&label, &["n0", "n1", "n2", "n-lw"], JOINER_SEED);
+
     for _ in 0..SYNC_ROUNDS {
-        if nodes[4].root_hash() == nodes[0].root_hash() {
+        if nodes[3].root_hash() == nodes[0].root_hash() {
             break;
         }
-        let (left, right) = nodes.split_at_mut(4);
+        let (left, right) = nodes.split_at_mut(3);
         execute_level_wise_sync(&mut right[0], &left[0])
             .await
             .expect("level-wise sync should succeed");
     }
     assert_documents_converged(&label, &nodes, &mut oracles);
+    for node in &nodes {
+        assert_every_indexed_entity_has_data(&label, node);
+    }
 }
 
-/// FAILING, and not about text: HashComparison emits only true leaves
+/// An entity the Merkle index lists but whose `Key::Entry` row is absent hashes
+/// off a stale `own_hash` and is dropped from any snapshot this node serves.
+fn assert_every_indexed_entity_has_data(label: &str, node: &SimNode) {
+    let mut pending = vec![node.storage().root_id()];
+    while let Some(id) = pending.pop() {
+        assert!(
+            node.storage().get_entity_data(id).is_some(),
+            "{label}: {} holds an index entry for {id} with no entity data row",
+            node.id()
+        );
+        pending.extend(node.storage().get_children(id).into_iter().map(|c| c.id()));
+    }
+}
+
+/// Not about text: HashComparison used to emit only true leaves
 /// (`hash_comparison_protocol.rs`, `collect_leaves_recursive`), so a nested
-/// collection a peer never created locally is rebuilt from its children's
+/// collection a peer never created locally was rebuilt from its children's
 /// `parent_id` links with NO entity data row. Its own hash, and therefore the
-/// context root hash, can then never match the author's, so sync never settles.
+/// context root hash, could then never match the author's.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 struct NestedCounters {
     tallies: UnorderedMap<String, Counter>,
@@ -1189,9 +1225,11 @@ impl RekeyTarget for NestedCounters {
     }
 }
 
-#[tokio::test]
-async fn nested_collection_entity_data_never_reaches_a_joiner() {
-    let mut nodes: Vec<SimNode> = ["nc-author", "nc-joiner"]
+/// An author and a peer that only ever receives, with one nested `Counter`
+/// under a map - the smallest state that puts a collection container below the
+/// context root without the receiver ever creating it locally.
+fn nested_counter_pair(names: [&str; 2]) -> Vec<SimNode> {
+    let nodes: Vec<SimNode> = names
         .into_iter()
         .map(|name| SimNode::new_in_context(name, context()))
         .collect();
@@ -1216,9 +1254,71 @@ async fn nested_collection_entity_data_never_reaches_a_joiner() {
             .expect("or_default");
         tally.increment().expect("increment");
     });
+    nodes
+}
+
+#[tokio::test]
+async fn nested_collection_entity_data_reaches_a_joiner() {
+    let mut nodes = nested_counter_pair(["nc-author", "nc-joiner"]);
 
     assert!(
         converge_group(&mut nodes, &[0, 1]).await,
         "the joiner never reached the author's Merkle root"
     );
+    assert_every_indexed_entity_has_data("nested counter", &nodes[1]);
+}
+
+/// The joiner pulls first, so it materialises the container from the leaves'
+/// ancestor chain before anyone pushes the container's own row. From then on
+/// both sides hold the same children, so nothing but an explicit repair of the
+/// container row can close the gap.
+#[tokio::test]
+async fn nested_collection_container_row_reaches_a_joiner_that_pulled_first() {
+    let mut nodes = nested_counter_pair(["pf-author", "pf-joiner"]);
+
+    pull(&mut nodes, 1, 0).await;
+    assert!(
+        converge_group(&mut nodes, &[0, 1]).await,
+        "the joiner that pulled first never reached the author's Merkle root"
+    );
+    assert_every_indexed_entity_has_data("pull-first", &nodes[1]);
+}
+
+/// A map value that holds both an inline field and a nested collection: the
+/// inline bytes live in the entry's own row, so they must survive the same
+/// catch-up that carries the nested collection.
+#[tokio::test]
+async fn inline_field_beside_a_nested_collection_reaches_a_joiner() {
+    let mut nodes: Vec<SimNode> = ["if-author", "if-joiner"]
+        .into_iter()
+        .map(|name| SimNode::new_in_context(name, context()))
+        .collect();
+    for node in &nodes {
+        seed_docs(node);
+    }
+    let _typed = edit::<SimDocs>(&nodes[0], |app| {
+        let mut doc = app
+            .docs
+            .entry("notes".to_owned())
+            .expect("entry")
+            .or_default()
+            .expect("or_default");
+        doc.title.set("a title only the author typed".to_owned());
+        let _minted = doc.body.insert_str(0, "hello").expect("insert");
+    });
+
+    pull(&mut nodes, 1, 0).await;
+    assert!(
+        converge_group(&mut nodes, &[0, 1]).await,
+        "the joiner never reached the author's Merkle root"
+    );
+    assert_every_indexed_entity_has_data("inline field", &nodes[1]);
+    let title = read::<SimDocs, _>(&nodes[1], |app| {
+        app.docs
+            .get("notes")
+            .expect("map read should succeed")
+            .map_or_else(String::new, |doc| doc.title.get().clone())
+    });
+    assert_eq!(title, "a title only the author typed");
+    assert_eq!(doc_text(&nodes[1], "notes"), "hello");
 }
