@@ -423,15 +423,6 @@ fn fugue_text_insert(n: usize) {
     let _ignored = build_fugue_text(n);
 }
 
-/// Cost of ONE `get_text` against a FRAGMENTED document of `n` characters: the
-/// counterpart of [`fugue_text_get_text`], which reads a pasted document, and
-/// the honest number for what a real editing session produces.
-fn fugue_text_get_text_fragmented(n: usize) {
-    let text = build_fugue_text_fragmented(n);
-    reset_counters();
-    let _ignored = text.get_text().expect("get_text should succeed");
-}
-
 /// Cost of ONE `char_at` against a FRAGMENTED document: the counterpart of
 /// [`fugue_text_char_at`]. Positional reads have no fast path here, answering
 /// one still means loading every block and rebuilding the tree.
@@ -441,55 +432,15 @@ fn fugue_text_char_at_fragmented(n: usize) {
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
 }
 
-/// Cost of ONE `text_range` (a screenful) against a FRAGMENTED document: the
-/// counterpart of [`fugue_text_text_range`].
-fn fugue_text_text_range_fragmented(n: usize) {
-    let text = build_fugue_text_fragmented(n);
-    reset_counters();
-    let start = n / 2;
-    let end = (start + RANGE_READ_CHARS).min(n);
-    let _ignored = text
-        .text_range(start, end)
-        .expect("text_range should succeed");
-}
-
-/// Cost of ONE `get_text` against a PASTED document of `n` characters: rows
-/// track BLOCKS, `ceil(n / MAX_RUN_LEN)` of them, not characters. Every row a
-/// `FugueText` read touches goes through this crate's counters, so unlike
-/// `SortedMap` (see [`all`]) nothing here is measured as free.
-fn fugue_text_get_text(n: usize) {
-    let text = build_fugue_text(n);
-    reset_counters();
-    let _ignored = text.get_text().expect("get_text should succeed");
-}
-
 /// Cost of ONE `char_at` against a document of `n` characters, a capability
 /// `ReplicatedGrowableArray` never had at all. The MIDDLE position is read, not
 /// the first, so a hypothetical fast path for position 0 could not make the
-/// measurement lie. Answering it still drags every block through borsh, so the
-/// cost is [`fugue_text_get_text`]'s.
+/// measurement lie. Answering it still drags every block through borsh, so a
+/// point read costs what reading the whole document costs.
 fn fugue_text_char_at(n: usize) {
     let text = build_fugue_text(n);
     reset_counters();
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
-}
-
-/// A screenful, not the document: fixed rather than a fraction of `n`, or the
-/// window would be linear in `n` by construction and the question here is
-/// whether a BOUNDED window costs more as text accumulates around it.
-const RANGE_READ_CHARS: usize = 100;
-
-/// Cost of ONE short [`FugueText::text_range`] read against a document of `n`,
-/// from the MIDDLE for [`fugue_text_char_at`]'s reason. At `n = 10` the window
-/// is longer than the document and clamps; that smallest size is the baseline
-/// the growth ratio is taken against, so clamping cannot flatter the curve.
-fn fugue_text_text_range(n: usize) {
-    let text = build_fugue_text(n);
-    reset_counters();
-    let start = n / 2;
-    let _ignored = text
-        .text_range(start, start + RANGE_READ_CHARS)
-        .expect("text_range should succeed");
 }
 
 /// `n` SEPARATE `insert` calls on a `FugueText`, each appending one character
@@ -629,88 +580,21 @@ const REMOTE_FUGUE_CHAR_ACTIONS: usize = 6;
 // into one entity. `RGA -> simple` then isolates Fugue's ORDERING, and
 // `simple -> fugue_text` isolates run-length BLOCKS.
 //
-// All seven are measured at QUADRATIC_SIZES, including the three point READS.
-// That is forced: one entity per character makes the control's `insert_str`
-// re-derive the tree once per character, so BUILDING the document is `O(n^2)`
-// whatever is measured afterwards.
+// Both are measured at QUADRATIC_SIZES, the point READ included. That is
+// forced: one entity per character makes the control's `insert_str` re-derive
+// the tree once per character, so BUILDING the document is `O(n^2)` whatever is
+// measured afterwards.
 // ---------------------------------------------------------------------------
-
-/// Bulk-insert `n` characters as a single `insert_str` call: the control for
-/// [`fugue_text_insert`].
-///
-/// [`CostShape::QuadraticBuild`], and byte-for-byte equal to
-/// `rga_insert_per_char` at every size, which is half the finding: with blocks
-/// removed, Fugue's ordering costs exactly what RGA's does. With nothing to
-/// coalesce into there is no run to resolve a whole string against, so
-/// `insert_str` loops per character and each call re-derives the whole tree.
-fn fugue_simple_insert(n: usize) {
-    let _ignored = build_fugue_simple(n);
-}
-
-/// Read the whole document after building `n` characters: the control for
-/// [`fugue_text_get_text`].
-///
-/// [`CostShape::KnownLinearInN`] at exactly `2n` rows, matching `rga_get_nth`.
-/// This is where blocks carry the whole win: a read is `O(entities)`, and
-/// blocks are what make `entities` count runs instead of characters.
-fn fugue_simple_get_text(n: usize) {
-    let text = build_fugue_simple(n);
-    reset_counters();
-    let _ignored = text.get_text().expect("get_text should succeed");
-}
 
 /// Cost of ONE `char_at` against a document of `n` characters, read from the
 /// MIDDLE: the control for [`fugue_text_char_at`].
 ///
-/// [`CostShape::KnownLinearInN`] at `2n` rows, identical to
-/// [`fugue_simple_get_text`] because both linearise the whole document: without
-/// blocks there is no positional read worth the name.
+/// [`CostShape::KnownLinearInN`] at `2n` rows, the cost of linearising the
+/// whole document: without blocks there is no positional read worth the name.
 fn fugue_simple_char_at(n: usize) {
     let text = build_fugue_simple(n);
     reset_counters();
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
-}
-
-/// Cost of ONE short `text_range` read against a document of `n`: the control
-/// for [`fugue_text_text_range`], same window and same clamping behaviour.
-///
-/// [`CostShape::KnownLinearInN`] at `2n` rows: a bounded window costs the whole
-/// document when the document is one entity per character.
-fn fugue_simple_text_range(n: usize) {
-    let text = build_fugue_simple(n);
-    reset_counters();
-    let start = n / 2;
-    let _ignored = text
-        .text_range(start, start + RANGE_READ_CHARS)
-        .expect("text_range should succeed");
-}
-
-/// Insert `n` characters ONE AT A TIME at the current end: the control for
-/// [`fugue_text_insert_per_char`], and where blocks matter most, because an
-/// append is precisely what coalesces.
-///
-/// [`CostShape::QuadraticBuild`] where its twin is
-/// [`CostShape::FlatPerEntry`], and byte-identical to `rga_insert_per_char` at
-/// every shared size. Typing is flat because of BLOCKS, not because of Fugue.
-fn fugue_simple_insert_per_char(n: usize) {
-    let mut text = Root::new(FugueTextSimple::<MainStorage>::new);
-    for i in 0..n {
-        text.insert(i, 'a').expect("insert should succeed");
-    }
-}
-
-/// Insert `n` characters one at a time at the MIDDLE: the control for
-/// [`fugue_text_insert_middle`], the position no coalescing can serve.
-///
-/// [`CostShape::QuadraticBuild`], within 0.1% of both neighbours, which is how
-/// little blocks buy here: the run an advancing caret coalesces into is one
-/// entity out of `n` already stored, so the `O(entities)` re-derivation that
-/// dominates the call is unchanged.
-fn fugue_simple_insert_middle(n: usize) {
-    let mut text = Root::new(FugueTextSimple::<MainStorage>::new);
-    for i in 0..n {
-        text.insert(i / 2, 'a').expect("insert should succeed");
-    }
 }
 
 /// Build `n` characters half local and half arriving from a remote replica: the
@@ -982,7 +866,7 @@ pub fn all() -> Vec<Workload> {
     /// `all()` crosses it with [`SIZES`].
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 16] = [
+    const REGISTRY: [Entry; 14] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -1046,21 +930,7 @@ pub fn all() -> Vec<Workload> {
             fugue_text_insert_per_char,
         ),
         ("fugue_text_insert", FlatPerEntry, 0, fugue_text_insert),
-        // Every read rebuilds the tree from all blocks, and runs are capped, so
-        // a read costs two rows per block: linear in the document.
-        (
-            "fugue_text_get_text",
-            KnownLinearInN,
-            0,
-            fugue_text_get_text,
-        ),
         ("fugue_text_char_at", KnownLinearInN, 0, fugue_text_char_at),
-        (
-            "fugue_text_text_range",
-            KnownLinearInN,
-            0,
-            fugue_text_text_range,
-        ),
     ];
 
     /// [`CostShape::QuadraticBuild`] workloads, measured at
@@ -1097,22 +967,10 @@ pub fn all() -> Vec<Workload> {
             fugue_text_insert_middle,
         ),
         (
-            "fugue_text_get_text_fragmented",
-            KnownLinearInN,
-            0,
-            fugue_text_get_text_fragmented,
-        ),
-        (
             "fugue_text_char_at_fragmented",
             KnownLinearInN,
             0,
             fugue_text_char_at_fragmented,
-        ),
-        (
-            "fugue_text_text_range_fragmented",
-            KnownLinearInN,
-            0,
-            fugue_text_text_range_fragmented,
         ),
         (
             "fugue_text_insert_interleaved_sync",
@@ -1120,31 +978,8 @@ pub fn all() -> Vec<Workload> {
             0,
             fugue_text_insert_interleaved_sync,
         ),
-    ];
-
-    /// The `FugueTextSimple` control set, measured at [`QUADRATIC_SIZES`]
-    /// whatever each one's shape is: even its point reads pay an `O(n^2)`
-    /// build, per the block comment above `fugue_simple_insert`. A separate
-    /// array because `QUADRATIC_REGISTRY` is a shape list, not a size list.
-    const SIMPLE_REGISTRY: [Entry; 7] = [
-        (
-            "fugue_simple_insert",
-            QuadraticBuild,
-            0,
-            fugue_simple_insert,
-        ),
-        (
-            "fugue_simple_insert_per_char",
-            QuadraticBuild,
-            0,
-            fugue_simple_insert_per_char,
-        ),
-        (
-            "fugue_simple_insert_middle",
-            QuadraticBuild,
-            0,
-            fugue_simple_insert_middle,
-        ),
+        // The `FugueTextSimple` control pays an `O(n^2)` build before anything
+        // else is measured, so its point read belongs at these sizes too.
         (
             "fugue_simple_insert_interleaved_sync",
             QuadraticBuild,
@@ -1152,28 +987,15 @@ pub fn all() -> Vec<Workload> {
             fugue_simple_insert_interleaved_sync,
         ),
         (
-            "fugue_simple_get_text",
-            KnownLinearInN,
-            0,
-            fugue_simple_get_text,
-        ),
-        (
             "fugue_simple_char_at",
             KnownLinearInN,
             0,
             fugue_simple_char_at,
         ),
-        (
-            "fugue_simple_text_range",
-            KnownLinearInN,
-            0,
-            fugue_simple_text_range,
-        ),
     ];
 
     let mut out = Vec::with_capacity(
-        REGISTRY.len() * SIZES.len()
-            + (QUADRATIC_REGISTRY.len() + SIMPLE_REGISTRY.len()) * QUADRATIC_SIZES.len(),
+        REGISTRY.len() * SIZES.len() + QUADRATIC_REGISTRY.len() * QUADRATIC_SIZES.len(),
     );
     for n in SIZES {
         for (name, shape, tolerance_pct, run) in REGISTRY {
@@ -1187,9 +1009,7 @@ pub fn all() -> Vec<Workload> {
         }
     }
     for n in QUADRATIC_SIZES {
-        for (name, shape, tolerance_pct, run) in
-            QUADRATIC_REGISTRY.into_iter().chain(SIMPLE_REGISTRY)
-        {
+        for (name, shape, tolerance_pct, run) in QUADRATIC_REGISTRY {
             out.push(Workload {
                 name,
                 n,
@@ -1206,6 +1026,10 @@ pub fn all() -> Vec<Workload> {
 mod tests {
     use super::*;
     use crate::measure;
+
+    /// A screenful, not the document: the window a positional read must
+    /// actually return.
+    const RANGE_READ_CHARS: usize = 100;
 
     /// `#[ignore]`d because measuring every workload costs ~260s in the debug
     /// profile that the workspace-wide `cargo test` would pay on every PR, for
@@ -1400,9 +1224,9 @@ mod tests {
         );
     }
 
-    /// `fugue_text_char_at` and `fugue_text_text_range` would publish the same
-    /// cheap curve if they returned NOTHING, so assert they return the
-    /// characters they claim to, at the workloads' own position and size.
+    /// `fugue_text_char_at` would publish the same cheap curve if it returned
+    /// NOTHING, so assert the positional reads return the characters they
+    /// claim to, at the workload's own position and size.
     #[test]
     fn positional_reads_return_real_characters() {
         let n = 1_000;
