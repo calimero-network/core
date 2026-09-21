@@ -842,8 +842,10 @@ fn out_of_bounds(pos: usize) -> StoreError {
 
 #[cfg(test)]
 mod tests {
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
     use super::{join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, MAX_RUN_LEN};
-    use crate::collections::fugue::Rng;
     use crate::collections::{FugueTextSimple, Root, UnorderedMap};
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
@@ -1303,21 +1305,21 @@ mod tests {
     /// Every field but the key varies, since a peer's bytes are not trusted; the
     /// bitmap may set bits past this copy's own text, as a short copy of a run
     /// that grew elsewhere does.
-    fn random_block(rng: &mut Rng, start_id: BlockId) -> TextBlock {
-        let text: String = (0..rng.below(JOIN_LAW_MAX_NODES + 1))
-            .map(|_| JOIN_LAW_POOL[rng.below(JOIN_LAW_POOL.len())])
+    fn random_block(rng: &mut StdRng, start_id: BlockId) -> TextBlock {
+        let text: String = (0..rng.random_range(..JOIN_LAW_MAX_NODES + 1))
+            .map(|_| JOIN_LAW_POOL[rng.random_range(..JOIN_LAW_POOL.len())])
             .collect();
         let mut tombstones = Vec::new();
         for offset in 0..JOIN_LAW_MAX_NODES {
-            if rng.below(4) == 0 {
+            if rng.random_range(..4_usize) == 0 {
                 tomb_set(&mut tombstones, offset);
             }
         }
         TextBlock {
             start_id,
             text,
-            parent: (rng.below(2) == 0).then_some(start_id),
-            side: if rng.below(2) == 0 {
+            parent: (rng.random_range(..2_usize) == 0).then_some(start_id),
+            side: if rng.random_range(..2_usize) == 0 {
                 BlockSide::L
             } else {
                 BlockSide::R
@@ -1384,10 +1386,10 @@ mod tests {
             &block("cdef", Vec::new()),
         );
 
-        let mut seeds = Rng::new(JOIN_LAW_SEED);
+        let mut seeds = StdRng::seed_from_u64(JOIN_LAW_SEED);
         for _ in 0..JOIN_LAW_ROUNDS {
-            let seed = seeds.next_u64();
-            let mut rng = Rng::new(seed);
+            let seed = seeds.random::<u64>();
+            let mut rng = StdRng::seed_from_u64(seed);
             check_join_laws(
                 &format!("seed {seed:#x}"),
                 &random_block(&mut rng, id),
@@ -1507,19 +1509,23 @@ mod tests {
             "differential",
         );
 
-        let mut rng = Rng::new(DIFFERENTIAL_SEED);
+        let mut rng = StdRng::seed_from_u64(DIFFERENTIAL_SEED);
         let mut length = 0_usize;
         let mut minted = 0_usize;
         for round in 0..DIFFERENTIAL_ROUNDS {
-            let replica = rng.below(3) as u64 + 1;
-            let pos = rng.below(length + 1);
+            let replica = rng.random_range(..3_usize) as u64 + 1;
+            let pos = rng.random_range(..length + 1);
             let budget = minted < DIFFERENTIAL_MAX_NODES;
-            let text = match rng.below(10) {
+            let text = match rng.random_range(..10_usize) {
                 // A paste whose length straddles the cap.
-                0..=2 if budget => cap_text(1 + rng.below(MAX_RUN_LEN + MAX_RUN_LEN / 2)),
-                3..=6 if budget => cap_text(1 + rng.below(4)),
+                0..=2 if budget => cap_text(1 + rng.random_range(..MAX_RUN_LEN + MAX_RUN_LEN / 2)),
+                3..=6 if budget => cap_text(1 + rng.random_range(..4_usize)),
                 choice => {
-                    let span = if choice == 7 { 1 } else { 1 + rng.below(64) };
+                    let span = if choice == 7 {
+                        1
+                    } else {
+                        1 + rng.random_range(..64_usize)
+                    };
                     blocked.delete_range(pos, pos + span).unwrap();
                     simple.delete_range(pos, pos + span).unwrap();
                     String::new()
@@ -1559,8 +1565,11 @@ mod tests {
 mod model_tests {
     use std::collections::BTreeMap;
 
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
     use super::{FugueText, TextBlock, UnorderedMap};
-    use crate::collections::fugue::{FugueNode, FugueTree, Rng};
+    use crate::collections::fugue::{FugueNode, FugueTree};
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
 
@@ -1747,16 +1756,19 @@ mod model_tests {
         env::reset_for_testing();
         const WORDS: [&str; 4] = ["a", "bc", "d", "ef"];
 
-        let mut rng = Rng::new(0x_f0_5e_ed_01);
+        let mut rng = StdRng::seed_from_u64(0x_f0_5e_ed_01);
         for seed in 0..200_usize {
-            let script = |rng: &mut Rng| -> Vec<Op> {
-                let count = 1 + rng.below(4);
+            let script = |rng: &mut StdRng| -> Vec<Op> {
+                let count = 1 + rng.random_range(..4_usize);
                 (0..count)
                     .map(|_| {
-                        if rng.below(3) == 0 {
-                            Op::Del(rng.below(8), 1 + rng.below(3))
+                        if rng.random_range(..3_usize) == 0 {
+                            Op::Del(rng.random_range(..8_usize), 1 + rng.random_range(..3_usize))
                         } else {
-                            Op::Ins(rng.below(8), WORDS[rng.below(WORDS.len())])
+                            Op::Ins(
+                                rng.random_range(..8_usize),
+                                WORDS[rng.random_range(..WORDS.len())],
+                            )
                         }
                     })
                     .collect()
@@ -1795,8 +1807,10 @@ mod model_tests {
 /// every authoritative node once) rather than against any internal layout.
 #[cfg(test)]
 mod positional_read_tests {
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
     use super::{build_tree, find_block, BlockId, FugueText, UnorderedMap};
-    use crate::collections::fugue::Rng;
     use crate::collections::Root;
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
@@ -1813,17 +1827,18 @@ mod positional_read_tests {
 
     /// Build a pseudo-random document: appends (which coalesce), mid-document
     /// inserts (which do not) and deletes, covering every storage shape.
-    fn random_doc<S: StorageAdaptor>(doc: &mut FugueText<S>, rng: &mut Rng, ops: usize) {
+    fn random_doc<S: StorageAdaptor>(doc: &mut FugueText<S>, rng: &mut StdRng, ops: usize) {
         const WORDS: [&str; 5] = ["a", "bc", "déf", "ghij", "日本"];
         for _ in 0..ops {
             let len = doc.len().unwrap();
-            if rng.below(4) == 0 && len > 0 {
-                let start = rng.below(len);
-                doc.delete_range(start, start + 1 + rng.below(3)).unwrap();
+            if rng.random_range(..4_usize) == 0 && len > 0 {
+                let start = rng.random_range(..len);
+                doc.delete_range(start, start + 1 + rng.random_range(..3_usize))
+                    .unwrap();
             } else {
-                let pos = rng.below(len + 1);
-                let replica = 1 + rng.below(3) as u64;
-                doc.insert_str_with_replica(pos, replica, WORDS[rng.below(WORDS.len())])
+                let pos = rng.random_range(..len + 1);
+                let replica = 1 + rng.random_range(..3_usize) as u64;
+                doc.insert_str_with_replica(pos, replica, WORDS[rng.random_range(..WORDS.len())])
                     .unwrap();
             }
         }
@@ -1835,7 +1850,7 @@ mod positional_read_tests {
     fn text_range__equals_the_get_text_slice_over_random_documents() {
         env::reset_for_testing();
         type S = MockedStorage<880>;
-        let mut rng = Rng::new(0x_1d_ec_0d_e5);
+        let mut rng = StdRng::seed_from_u64(0x_1d_ec_0d_e5);
 
         for seed in 0..25_usize {
             let mut doc = doc_in::<S>(&format!("tr{seed}"));
@@ -1844,8 +1859,8 @@ mod positional_read_tests {
             let chars: Vec<char> = text.chars().collect();
 
             for _ in 0..12 {
-                let a = rng.below(chars.len() + 3);
-                let b = a + rng.below(chars.len() + 3);
+                let a = rng.random_range(..chars.len() + 3);
+                let b = a + rng.random_range(..chars.len() + 3);
                 let expected: String = chars
                     .iter()
                     .skip(a.min(chars.len()))
@@ -1866,7 +1881,7 @@ mod positional_read_tests {
     fn char_at__equals_chars_nth_including_out_of_bounds() {
         env::reset_for_testing();
         type S = MockedStorage<881>;
-        let mut rng = Rng::new(0x_c4_a2_a7_11);
+        let mut rng = StdRng::seed_from_u64(0x_c4_a2_a7_11);
 
         for seed in 0..25_usize {
             let mut doc = doc_in::<S>(&format!("ca{seed}"));
@@ -1931,7 +1946,7 @@ mod positional_read_tests {
     fn stored_blocks__cover_every_authoritative_node_exactly_once() {
         env::reset_for_testing();
         type S = MockedStorage<882>;
-        let mut rng = Rng::new(0x_ca_2d_11_0a);
+        let mut rng = StdRng::seed_from_u64(0x_ca_2d_11_0a);
 
         for seed in 0..15_usize {
             let mut doc = doc_in::<S>(&format!("card{seed}"));
@@ -1985,7 +2000,7 @@ mod positional_read_tests {
     fn len__agrees_with_get_text() {
         env::reset_for_testing();
         type S = MockedStorage<887>;
-        let mut rng = Rng::new(0x_5e_11_00_02);
+        let mut rng = StdRng::seed_from_u64(0x_5e_11_00_02);
 
         for seed in 0..15_usize {
             let mut doc = doc_in::<S>(&format!("len{seed}"));
@@ -2012,9 +2027,11 @@ mod apply_path_tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
     use super::model_tests::{Model, Op, ALPHABET};
     use super::{BlockId, BlockKey, FugueText, TextBlock, MAX_RUN_LEN};
-    use crate::collections::fugue::Rng;
     use crate::collections::{CrdtType, Root};
     use crate::delta::{clear_pending_delta, StorageDelta};
     use crate::env::{self, RuntimeEnv};
@@ -2460,16 +2477,19 @@ mod apply_path_tests {
         const SEEDS: usize = 200;
         const WORDS: [&str; 4] = ["a", "bc", "d", "ef"];
 
-        let mut rng = Rng::new(0x_f0_5e_ed_01);
+        let mut rng = StdRng::seed_from_u64(0x_f0_5e_ed_01);
         for seed in 0..SEEDS {
-            let script = |rng: &mut Rng| -> Vec<Op> {
-                let count = 1 + rng.below(4);
+            let script = |rng: &mut StdRng| -> Vec<Op> {
+                let count = 1 + rng.random_range(..4_usize);
                 (0..count)
                     .map(|_| {
-                        if rng.below(3) == 0 {
-                            Op::Del(rng.below(8), 1 + rng.below(3))
+                        if rng.random_range(..3_usize) == 0 {
+                            Op::Del(rng.random_range(..8_usize), 1 + rng.random_range(..3_usize))
                         } else {
-                            Op::Ins(rng.below(8), WORDS[rng.below(WORDS.len())])
+                            Op::Ins(
+                                rng.random_range(..8_usize),
+                                WORDS[rng.random_range(..WORDS.len())],
+                            )
                         }
                     })
                     .collect()
@@ -2501,36 +2521,36 @@ mod apply_path_tests {
     /// one. Positions are drawn as start / middle / end / free, the four the
     /// Fugue insert rule resolves differently.
     fn equivalence_script() -> Vec<Step> {
-        let mut rng = Rng::new(EQUIV_SEED);
+        let mut rng = StdRng::seed_from_u64(EQUIV_SEED);
         let mut script = Vec::with_capacity(EQUIV_ROUNDS);
         let mut len = 0_usize;
         let mut minted = 0_usize;
 
         for round in 0..EQUIV_ROUNDS {
-            if round > 0 && rng.below(4) == 0 {
-                let start = rng.below(len + 1);
-                let span = 1 + rng.below(8);
+            if round > 0 && rng.random_range(..4_usize) == 0 {
+                let start = rng.random_range(..len + 1);
+                let span = 1 + rng.random_range(..8_usize);
                 len -= (start + span).min(len).saturating_sub(start);
                 script.push(Step::Delete { start, span });
                 continue;
             }
-            let drawn = EQUIV_LENGTHS[rng.below(EQUIV_LENGTHS.len())];
+            let drawn = EQUIV_LENGTHS[rng.random_range(..EQUIV_LENGTHS.len())];
             let count = if minted + drawn > EQUIV_MAX_NODES {
-                rng.below(4)
+                rng.random_range(..4_usize)
             } else {
                 drawn
             };
-            let pos = match rng.below(4) {
+            let pos = match rng.random_range(..4_usize) {
                 0 => 0,
                 1 => len / 2,
                 2 => len,
-                _ => rng.below(len + 1),
+                _ => rng.random_range(..len + 1),
             };
             script.push(Step::Insert {
                 pos,
-                replica: 1 + rng.below(3) as u64,
+                replica: 1 + rng.random_range(..3_usize) as u64,
                 text: (0..count)
-                    .map(|_| EQUIV_POOL[rng.below(EQUIV_POOL.len())])
+                    .map(|_| EQUIV_POOL[rng.random_range(..EQUIV_POOL.len())])
                     .collect(),
             });
             minted += count;

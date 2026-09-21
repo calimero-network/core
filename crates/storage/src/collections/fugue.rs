@@ -412,35 +412,12 @@ pub(super) fn figure_3_tree() -> FugueTree {
     tree
 }
 
-/// A deterministic xorshift64* PRNG, so the randomised tests are reproducible
-/// without pulling a dependency into the storage crate.
-#[cfg(test)]
-pub(super) struct Rng(u64);
-
-#[cfg(test)]
-impl Rng {
-    pub(super) fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-
-    pub(super) fn next_u64(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-
-    pub(super) fn below(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            0
-        } else {
-            usize::try_from(self.next_u64() % bound as u64).unwrap_or(0)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use rand::rngs::StdRng;
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
     use super::*;
 
     /// Every node delivered to `tree`, as a flat list, for replaying into
@@ -592,18 +569,14 @@ mod tests {
         all.dedup_by_key(|n| n.id);
 
         let mut reference: Option<String> = None;
-        let mut rng = Rng::new(0x5eed_1234);
+        let mut rng = StdRng::seed_from_u64(0x5eed_1234);
         for round in 0..64 {
             let mut order = all.clone();
             // Round 0 is ascending, round 1 descending, the rest shuffled.
             match round {
                 0 => {}
                 1 => order.reverse(),
-                _ => {
-                    for i in (1..order.len()).rev() {
-                        order.swap(i, rng.below(i + 1));
-                    }
-                }
+                _ => order.shuffle(&mut rng),
             }
 
             let mut tree = FugueTree::new();

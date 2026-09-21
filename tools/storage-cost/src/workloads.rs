@@ -792,8 +792,7 @@ const REMOTE_FUGUE_SIMPLE_CHAR_ACTIONS: usize = 6;
 
 fn build_fugue_simple(n: usize) -> Root<FugueTextSimple<MainStorage>> {
     let mut text = Root::new(FugueTextSimple::<MainStorage>::new);
-    let content: String = std::iter::repeat_n('a', n).collect();
-    text.insert_str(0, &content)
+    text.insert_str(0, &"a".repeat(n))
         .expect("insert_str should succeed");
     text
 }
@@ -815,8 +814,7 @@ fn build_fugue_text_fragmented(n: usize) -> Root<FugueText<MainStorage>> {
 
 fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
-    let content: String = std::iter::repeat_n('a', n).collect();
-    text.insert_str(0, &content)
+    text.insert_str(0, &"a".repeat(n))
         .expect("insert_str should succeed");
     text
 }
