@@ -1,0 +1,126 @@
+name: Benchmarks
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [labeled]
+
+jobs:
+  criterion:
+    name: Criterion trend (${{ matrix.crate }})
+    if: >-
+      github.event_name == 'push' ||
+      github.event.label.name == 'run-benchmarks'
+    # timing on shared runners is too noisy to gate on
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - storage-cost
+          - calimero-storage
+          - calimero-store
+          - calimero-blobstore
+          - calimero-crypto
+          - calimero-runtime
+          - calimero-dag
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: bench-${{ matrix.crate }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Run benchmarks
+        run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
+
+      - name: Upload criterion baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ matrix.crate }}-${{ github.sha }}
+          path: target/criterion
+          retention-days: 30
+
+  compare:
+    name: Compare against master
+    needs: criterion
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    # actions: read is needed to download another run's artifacts
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Download this run's baselines
+        uses: actions/download-artifact@v4
+        with:
+          pattern: criterion-*-${{ github.sha }}
+          path: target/criterion
+          merge-multiple: true
+
+      # A base commit with no run, or with expired artifacts, must not fail the job.
+      - name: Find master's benchmark run
+        id: master-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow benchmarks.yml \
+            --commit "${{ github.event.pull_request.base.sha }}" \
+            --status success \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          if [ -n "$run_id" ]; then
+            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+            echo "found benchmarks.yml run $run_id for base commit ${{ github.event.pull_request.base.sha }}"
+          else
+            echo "no successful benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} -- it predates this workflow, or its run failed, or (past 30 days) its artifacts have expired"
+          fi
+
+      # run-id plus github-token are what reach into a different workflow run
+      - name: Download master's baselines
+        if: steps.master-run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: criterion-*-${{ github.event.pull_request.base.sha }}
+          path: target/criterion
+          merge-multiple: true
+          run-id: ${{ steps.master-run.outputs.run_id }}
+          github-token: ${{ github.token }}
+        continue-on-error: true
+
+      - name: Install critcmp
+        run: cargo install critcmp --locked
+
+      - name: Compare
+        run: |
+          if [ -z "${{ steps.master-run.outputs.run_id }}" ]; then
+            echo "no comparison: no benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} (see the 'Find master's benchmark run' step log)" > /tmp/critcmp.txt
+          elif ! find target/criterion -type d -name "${{ github.event.pull_request.base.sha }}" -print -quit | grep -q .; then
+            echo "no comparison: found benchmarks.yml run ${{ steps.master-run.outputs.run_id }} for the base commit, but its baseline artifacts did not download (expired past 30-day retention, or the download step failed -- see its log)" > /tmp/critcmp.txt
+          elif critcmp ${{ github.event.pull_request.base.sha }} ${{ github.sha }} > /tmp/critcmp.txt 2>&1; then
+            :
+          else
+            echo "no comparison: baselines downloaded for both commits but critcmp found nothing to diff" > /tmp/critcmp.txt
+          fi
+          cat /tmp/critcmp.txt
+
+      - name: Post the comparison
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: /tmp/critcmp.txt
+          comment-tag: criterion-comparison
