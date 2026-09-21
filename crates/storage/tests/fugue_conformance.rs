@@ -24,21 +24,31 @@
 //! ever created with nothing tombstoned. Property (b) is then a literal
 //! bracketing assertion against that one order.
 //!
-//! # 2. Maximal non-interleaving (paper §2, Figure 2, Table 1)
+//! # 2. Forward and backward non-interleaving (paper Table I, Figure 2)
 //!
 //! Concurrent sequences of insertions at the same position must be placed one
-//! after another, not interleaved. Two directions, which are NOT equivalent:
+//! after another, not interleaved. Table I has three anomaly columns, and they
+//! are NOT equivalent:
 //!
 //! * **Forward** (left to right): each replica types a run left to right at
 //!   the same position. RGA satisfies this.
-//! * **Backward** (right to left): each replica types a passage, then moves
-//!   the cursor back and types a heading before it — Figure 2. Table 1 records
-//!   RGA as FAILING this, in both the single- and multi-replica forms, and
-//!   Tree-Fugue as satisfying it.
+//! * **Backward, single-replica** (right to left): each replica types a
+//!   passage, then moves the cursor back and types a heading before it -
+//!   Figure 2. Table I records RGA as FAILING this and Tree-Fugue as
+//!   satisfying it.
+//! * **Backward, multi-replica**: one editing session whose ids span several
+//!   replicas, as when a user moves between devices mid-session.
 //!
-//! The backward scenario is therefore also written against
-//! [`ReplicatedGrowableArray`] and marked `#[ignore]`: it documents the defect
-//! `FugueText` exists to fix.
+//! This is NOT the paper's *maximal* non-interleaving (Definition 4), which
+//! only FugueMax satisfies. Plain Fugue - what this collection implements - can
+//! lose one backward adjacency when two concurrent inserts share a left origin
+//! but have different right origins; that residual case is pinned by
+//! [`figure_7__right_siblings_order_by_id_not_by_right_origin`]. No passage is
+//! split either way.
+//!
+//! The backward scenario is also run against [`ReplicatedGrowableArray`],
+//! asserting that RGA DOES interleave: that control is what keeps the Fugue
+//! cases from passing vacuously.
 //!
 //! # Layers
 //!
@@ -58,7 +68,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::fugue::{FugueNode, FugueTree, RawId};
+use calimero_storage::collections::fugue::{FugueNode, FugueTree, RawId, Side};
 use calimero_storage::collections::{FugueText, ReplicatedGrowableArray, Root};
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{self, RuntimeEnv};
@@ -628,7 +638,7 @@ fn strong_list_spec__holds_through_the_apply_path() {
 }
 
 // ---------------------------------------------------------------------------
-// Maximal non-interleaving.
+// Forward and backward non-interleaving.
 // ---------------------------------------------------------------------------
 
 /// One replica's contribution to a non-interleaving scenario: a heading
@@ -779,8 +789,9 @@ fn non_interleaving__backward_two_replicas_on_the_pure_algorithm() {
     assert_blocks_are_contiguous(&merged, &TWO_WRITERS, 9);
 }
 
-/// BACKWARD non-interleaving on the pure algorithm, THREE replicas — Table 1
-/// records RGA as failing the multi-replica form too, so it gets its own case.
+/// BACKWARD non-interleaving on the pure algorithm, THREE concurrent
+/// single-replica sessions. Table I's multi-replica column is a different
+/// shape - see [`non_interleaving__backward_one_session_spanning_two_replicas`].
 #[test]
 fn non_interleaving__backward_three_replicas_on_the_pure_algorithm() {
     let seed = seed_twin();
@@ -864,6 +875,68 @@ fn non_interleaving__backward_three_replicas_through_the_apply_path() {
     assert_blocks_are_contiguous(&merged, &THREE_WRITERS, 12);
 }
 
+/// Drive ONE backward-typed session whose passage and heading carry ids from
+/// two different replicas, concurrent with an ordinary single-replica writer,
+/// and return the text both converge on.
+fn multi_replica_backward_merge(field: &str, passage: u64, heading: u64) -> String {
+    let base = fugue_genesis(field, "S");
+    let (split, single) = (fork(&base), fork(&base));
+    let (session, other) = (&TWO_WRITERS[0], &TWO_WRITERS[1]);
+    let mut deltas: Vec<Vec<u8>> = Vec::new();
+
+    let mut backward = |store: &Store, dev: [u8; 32], writer: &Passage, tail: u64, head: u64| {
+        deltas.push(edit::<FugueText<MainStorage>>(store, dev, |doc| {
+            let end = doc.len().expect("len should succeed");
+            doc.insert_str_with_replica(end, tail, writer.text)
+                .expect("append should succeed");
+        }));
+        deltas.push(edit::<FugueText<MainStorage>>(store, dev, |doc| {
+            doc.insert_str_with_replica(1, head, &writer.heading.to_string())
+                .expect("heading insert should succeed");
+        }));
+    };
+    backward(&split, device(1), session, passage, heading);
+    backward(
+        &single,
+        device(other.replica),
+        other,
+        u64::from(other.replica),
+        u64::from(other.replica),
+    );
+
+    let mut converged: Option<String> = None;
+    for (store, dev) in [(&split, device(1)), (&single, device(other.replica))] {
+        for delta in &deltas {
+            land(store, dev, delta);
+        }
+        let text = fugue_text_in(store, dev);
+        match &converged {
+            None => converged = Some(text),
+            Some(expected) => assert_eq!(&text, expected, "replicas did not converge"),
+        }
+    }
+    converged.expect("both writers wrote")
+}
+
+/// BACKWARD non-interleaving, MULTI-REPLICA - Table I's third anomaly column.
+///
+/// The three-writer cases above are three independent single-replica sessions
+/// and do not reach this column: it needs ONE session spanning two replica ids,
+/// which is what a user moving between devices produces. Both id orders are
+/// exercised, because the column exists precisely because the ids need not line
+/// up with the session.
+#[test]
+fn non_interleaving__backward_one_session_spanning_two_replicas() {
+    for (field, passage, heading, expected) in [
+        ("conformance_backward_split_low_first", 1, 4, "SAaaaBbbb"),
+        ("conformance_backward_split_high_first", 4, 1, "SBbbbAaaa"),
+    ] {
+        let merged = multi_replica_backward_merge(field, passage, heading);
+        assert_blocks_are_contiguous(&merged, &TWO_WRITERS, 9);
+        assert_eq!(merged, expected, "session ids ({passage}, {heading})");
+    }
+}
+
 /// FORWARD non-interleaving through the storage collection's REAL apply path.
 #[test]
 fn non_interleaving__forward_two_replicas_through_the_apply_path() {
@@ -897,6 +970,80 @@ fn non_interleaving__forward_two_replicas_through_the_apply_path() {
     }
 }
 
+/// The paper's Figure 7, with `passage`-character passages: three replicas
+/// concurrently insert `A`, `B` and `C` into an empty document, then r2 sees
+/// `{A, B}` and types `Y`s between them while r3 sees `{A, C}` and types `X`s.
+///
+/// Every `Y` and `X` is a right descendant of `A` with a DIFFERENT right origin
+/// (`B` versus `C`) - the one execution shape in which Fugue and FugueMax
+/// disagree.
+fn figure_7_merged(passage: u32) -> String {
+    let mut r1 = FugueTree::new();
+    let a = r1.insert(0, 'A', (1, 0)).unwrap();
+    let mut r2 = FugueTree::new();
+    let b = r2.insert(0, 'B', (2, 0)).unwrap();
+    let mut r3 = FugueTree::new();
+    let c = r3.insert(0, 'C', (3, 0)).unwrap();
+    for node in [a, b, c] {
+        assert_eq!((node.parent, node.side), (None, Side::R));
+    }
+
+    r2.integrate(a);
+    assert_eq!(r2.values(), "AB");
+    let ys: Vec<FugueNode> = (0..passage)
+        .map(|k| r2.insert(1 + k as usize, 'Y', (2, 1 + k)).unwrap())
+        .collect();
+
+    r3.integrate(a);
+    assert_eq!(r3.values(), "AC");
+    let xs: Vec<FugueNode> = (0..passage)
+        .map(|k| r3.insert(1 + k as usize, 'X', (3, 1 + k)).unwrap())
+        .collect();
+
+    // Both passages hang off A's right side, so the sibling comparator alone
+    // decides their relative order and neither records a right origin.
+    for head in [ys[0], xs[0]] {
+        assert_eq!((head.parent, head.side), (Some((1, 0)), Side::R));
+    }
+
+    let all: Vec<FugueNode> = [a, b, c].into_iter().chain(ys).chain(xs).collect();
+    let mut merged = FugueTree::new();
+    let mut reversed = FugueTree::new();
+    for node in &all {
+        merged.integrate(*node);
+    }
+    for node in all.iter().rev() {
+        reversed.integrate(*node);
+    }
+    assert_eq!(
+        merged.values(),
+        reversed.values(),
+        "the merge must be commutative"
+    );
+    assert_eq!(merged.len(), all.len(), "the merge lost a character");
+    merged.values()
+}
+
+/// FIGURE 7: right siblings are ordered by id, so this implementation is plain
+/// Fugue and not FugueMax.
+///
+/// `Y` was typed immediately before `B`; only FugueMax keeps the two adjacent,
+/// by ordering right siblings on the reverse of their right origins and
+/// yielding `AXYBC`. The residual cost of plain Fugue is exactly that one lost
+/// adjacency - neither order splits a passage. If this assertion ever changes,
+/// the sibling comparator changed, and so did every stored document's text.
+#[test]
+fn figure_7__right_siblings_order_by_id_not_by_right_origin() {
+    assert_eq!(figure_7_merged(1), "AYXBC");
+
+    let multi = figure_7_merged(2);
+    assert_eq!(multi, "AYYXXBC");
+    assert!(
+        multi.contains("YY") && multi.contains("XX"),
+        "a typed passage was split: {multi:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The same backward scenario against RGA — the defect Fugue fixes.
 // ---------------------------------------------------------------------------
@@ -908,19 +1055,15 @@ fn pinned(time: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(NTP64(time << 32), id))
 }
 
-/// The paper's Figure 2, run against `ReplicatedGrowableArray` instead of
-/// `FugueText`.
+/// The paper's Figure 2 against `ReplicatedGrowableArray`: RGA DOES interleave,
+/// pinned to the exact text it produces.
 ///
-/// IGNORED ON PURPOSE. This is not a test of our code being right; it is the
-/// executable record of the defect `FugueText` replaces RGA to fix. *The Art of
-/// the Fugue*, Table 1, lists RGA as exhibiting backward interleaving in both
-/// the single- and multi-replica forms. Run it with
-/// `cargo test -p calimero-storage --test fugue_conformance -- --ignored` to
-/// see the anomaly; if it ever PASSES, the scenario has stopped exercising the
-/// anomaly and the Fugue tests above are weaker than they look.
+/// This asserts the defect, not its absence - it is the control that keeps the
+/// Fugue cases above meaningful. Both headings migrate to the front and both
+/// passages follow, so neither writer's block survives. If it ever fails, RGA's
+/// ordering changed and the comparison this collection exists to win is stale.
 #[test]
-#[ignore = "documents RGA's backward-interleaving defect, which FugueText exists to fix"]
-fn non_interleaving__backward_two_replicas_INTERLEAVES_UNDER_RGA() {
+fn rga_control__backward_two_replicas_interleave() {
     const FIELD: &str = "conformance_rga_backward";
 
     // Genesis: the shared seed "S", authored before either replica forks.
@@ -978,6 +1121,22 @@ fn non_interleaving__backward_two_replicas_INTERLEAVES_UNDER_RGA() {
         }
     }
 
-    // The same assertion the Fugue cases make. RGA is expected to fail it.
-    assert_blocks_are_contiguous(&converged.expect("at least one writer"), &TWO_WRITERS, 9);
+    // Every character survives, but both blocks are shredded: the assertion the
+    // Fugue cases make (`assert_blocks_are_contiguous`) does not hold here.
+    let merged = converged.expect("at least one writer");
+    assert_eq!(merged, "SBAbbbaaa");
+    assert_eq!(
+        merged.chars().count(),
+        9,
+        "RGA lost or duplicated a character"
+    );
+    for writer in &TWO_WRITERS {
+        let block = format!("{}{}", writer.heading, writer.text);
+        assert!(
+            !merged.contains(&block),
+            "writer {}'s block {block:?} stayed contiguous under RGA, so this control \
+             no longer exercises the anomaly",
+            writer.replica
+        );
+    }
 }
