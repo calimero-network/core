@@ -349,31 +349,6 @@
       }
     }
   },
-  "rga_insert_middle": {
-    "tolerance_pct": 0,
-    "sizes": {
-      "00000010": {
-        "rows_read": 635,
-        "rows_written": 205,
-        "rows_removed": 0
-      },
-      "00000100": {
-        "rows_read": 14765,
-        "rows_written": 1825,
-        "rows_removed": 0
-      },
-      "00000500": {
-        "rows_read": 273565,
-        "rows_written": 9025,
-        "rows_removed": 0
-      },
-      "00002000": {
-        "rows_read": 4094065,
-        "rows_written": 36025,
-        "rows_removed": 0
-      }
-    }
-  },
   "rga_insert_per_char": {
     "tolerance_pct": 0,
     "sizes": {
@@ -470,31 +445,6 @@
       "00010000": {
         "rows_read": 1,
         "rows_written": 0,
-        "rows_removed": 0
-      }
-    }
-  },
-  "unordered_set_insert": {
-    "tolerance_pct": 0,
-    "sizes": {
-      "00000010": {
-        "rows_read": 543,
-        "rows_written": 205,
-        "rows_removed": 0
-      },
-      "00000100": {
-        "rows_read": 4863,
-        "rows_written": 1825,
-        "rows_removed": 0
-      },
-      "00001000": {
-        "rows_read": 48063,
-        "rows_written": 18025,
-        "rows_removed": 0
-      },
-      "00010000": {
-        "rows_read": 480063,
-        "rows_written": 180025,
         "rows_removed": 0
       }
     }

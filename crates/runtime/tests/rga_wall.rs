@@ -181,7 +181,7 @@ fn typing_and_reading_walls() {
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             collaborative-editor app to find where a MID-DOCUMENT insert_text \
             exhausts gas. The in-repo gate for the same underlying property is \
-            `cargo test -p storage-cost` (rga_insert_middle)."]
+            `cargo test -p storage-cost` (rga_insert_per_char)."]
 fn mid_document_typing_wall() {
     wall_harness::mid_document_typing_wall(&PROBE, &editor_wasm(), ceiling(), preflight);
 }

@@ -25,7 +25,7 @@ use std::rc::Rc;
 use calimero_storage::action::Action;
 use calimero_storage::collections::{
     FugueText, FugueTextSimple, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root,
-    UnorderedMap, UnorderedSet, Vector,
+    UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -132,16 +132,6 @@ fn unordered_map_insert(n: usize) {
 /// Push `n` entries onto a `Vector`, measuring the whole build.
 fn vector_push(n: usize) {
     build_vector(n);
-}
-
-/// Insert `n` entries into an `UnorderedSet`, measuring the whole build.
-fn unordered_set_insert(n: usize) {
-    let mut set = Root::new(UnorderedSet::<String, MainStorage>::new);
-    for i in 0..n {
-        let _ignored = set
-            .insert(format!("value{i}"))
-            .expect("insert should succeed");
-    }
 }
 
 /// Cost of ONE `len()` against `n` entries. `len()` reading the whole
@@ -268,13 +258,6 @@ fn rga_insert_per_char(n: usize) {
     let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
     for i in 0..n {
         rga.insert(i, 'a').expect("insert should succeed");
-    }
-}
-
-fn rga_insert_middle(n: usize) {
-    let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
-    for i in 0..n {
-        rga.insert(i / 2, 'a').expect("insert should succeed");
     }
 }
 
@@ -648,18 +631,12 @@ pub fn all() -> Vec<Workload> {
     /// `all()` crosses it with [`SIZES`].
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 14] = [
+    const REGISTRY: [Entry; 13] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
             0,
             unordered_map_insert,
-        ),
-        (
-            "unordered_set_insert",
-            FlatPerEntry,
-            0,
-            unordered_set_insert,
         ),
         ("vector_push", FlatPerEntry, 0, vector_push),
         ("unordered_map_len", ConstantPerCall, 0, unordered_map_len),
@@ -721,14 +698,13 @@ pub fn all() -> Vec<Workload> {
     /// rather than a row in `REGISTRY` because `REGISTRY` is crossed with
     /// `SIZES` unconditionally below; a `QuadraticBuild` entry there would
     /// silently get measured at `n=10_000` too.
-    const QUADRATIC_REGISTRY: [Entry; 8] = [
+    const QUADRATIC_REGISTRY: [Entry; 7] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
             0,
             rga_insert_per_char,
         ),
-        ("rga_insert_middle", QuadraticBuild, 0, rga_insert_middle),
         // Remote characters use random entity ids, so rows_read does not reproduce exactly.
         (
             "rga_insert_interleaved_sync",
