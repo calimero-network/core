@@ -123,45 +123,20 @@ steps:
     namespace_id: "{{namespace_id}}"
     invitation: "{{invitation_3}}"
 
+  # 20 repeats, the marker, then 19: the delete took the tail of one repeat and
+  # the head of the next from either side of the cap, so the survivors close up.
+  # `expect` reads every node and retries, so the joiner's catch-up is asserted
+  # rather than raced.
   - name: Wait for Node 3 to catch up to the existing document
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
     timeout: 180
     trigger_sync: true
-
-  - name: Read the document on Node 3
-    type: call
-    node: fugue-node-3
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      joined_text: result
-
-  - name: Read the length on Node 3
-    type: call
-    node: fugue-node-3
-    context_id: "{{context_id}}"
-    method: get_length
-    outputs:
-      joined_len: result
-
-  - name: Read the document on Node 1
-    type: call
-    node: fugue-node-1
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      builder_text: result
-
-  # 20 repeats, the marker, then 19: the delete took the tail of one repeat and
-  # the head of the next from either side of the cap, so the survivors close up.
-  - name: Assert Node 3 caught up to the exact document
-    type: json_assert
-    statements:
-      - 'json_equal({{joined_len}}, {"output": 395})'
-      - 'json_equal({{joined_text}}, {"output": "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ[MID]ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"})'
-      - 'json_equal({{joined_text}}, {{builder_text}})'
+    expect:
+      method: get_text
+      equals:
+        output: "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ[MID]ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"
 
 stop_all_nodes: true
 restart: false

@@ -185,12 +185,19 @@ steps:
     type: wait
     seconds: 12
 
-  - name: Wait for the three histories to converge
+  # abc + LEFTPASSAGE + RIGHTPASSAGE + xyz, with MIDDLE's six characters gone.
+  # The merged TEXT depends on node ids, so the length is what every node can
+  # be held to; `expect` reads all three and retries until they agree on it.
+  - name: Wait for the three histories to converge on the merged length
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
     timeout: 120
     trigger_sync: true
+    expect:
+      method: get_length
+      equals:
+        output: 29
 
   - name: Read the merged document on Node 1
     type: call
@@ -221,20 +228,6 @@ steps:
     statements:
       - 'json_equal({{merged_node1}}, {{merged_node2}})'
       - 'json_equal({{merged_node2}}, {{merged_node3}})'
-
-  - name: Read the merged length
-    type: call
-    node: fugue-node-1
-    context_id: "{{context_id}}"
-    method: get_length
-    outputs:
-      merged_len: result
-
-  # abc + LEFTPASSAGE + RIGHTPASSAGE + xyz, with MIDDLE's six characters gone.
-  - name: Assert nothing was lost or duplicated
-    type: json_assert
-    statements:
-      - 'json_equal({{merged_len}}, {"output": 29})'
 
   - name: Read the text bracketing the merge on Node 1
     type: call

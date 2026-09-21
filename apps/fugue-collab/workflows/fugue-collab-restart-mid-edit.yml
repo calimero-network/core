@@ -153,52 +153,19 @@ steps:
     type: wait
     seconds: 15
 
-  - name: Wait for the three histories to converge
+  # `expect` is the barrier: it reads every node and retries until all three
+  # return the merged document, where a bare converged hash can be published
+  # ahead of the state behind it.
+  - name: Wait for the three histories to converge on the merged document
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
     timeout: 120
     trigger_sync: true
-
-  - name: Read the merged document on Node 1
-    type: call
-    node: fugue-node-1
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      merged_node1: result
-
-  - name: Read the merged document on Node 2
-    type: call
-    node: fugue-node-2
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      merged_node2: result
-
-  - name: Read the merged document on Node 3
-    type: call
-    node: fugue-node-3
-    context_id: "{{context_id}}"
-    method: get_text
-    outputs:
-      merged_node3: result
-
-  - name: Read the merged length on Node 3
-    type: call
-    node: fugue-node-3
-    context_id: "{{context_id}}"
-    method: get_length
-    outputs:
-      merged_len: result
-
-  - name: Assert every node holds the exact merged document
-    type: json_assert
-    statements:
-      - 'json_equal({{merged_node1}}, {"output": "ONE-SEED.-THREE-TWO"})'
-      - 'json_equal({{merged_node2}}, {"output": "ONE-SEED.-THREE-TWO"})'
-      - 'json_equal({{merged_node3}}, {"output": "ONE-SEED.-THREE-TWO"})'
-      - 'json_equal({{merged_len}}, {"output": 19})'
+    expect:
+      method: get_text
+      equals:
+        output: "ONE-SEED.-THREE-TWO"
 
 stop_all_nodes: true
 restart: false
