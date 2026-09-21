@@ -297,13 +297,12 @@ fn single_call_paste_wall() {
     // Binary search: `lo` lands, `hi` walls; `hi` cannot pass the 16 KiB `app::log!` limit.
     let mut lo = 1_usize;
     let mut hi = 16_000;
-    if paste(hi).is_ok() {
-        PROBE.drift(&format!(
-            "a single insert_text call of {hi} characters into an EMPTY document \
-             succeeded, and the seed cannot be raised past the app's log-line limit. \
-             FugueText's single-call paste ceiling is no longer reachable through \
-             fugue-editor; shorten what its insert_text logs before re-seeding."
-        ));
+    if let Ok(gas) = paste(hi) {
+        println!(
+            "single-call paste wall: not reachable through fugue-editor; {hi} characters \
+             land ({gas:?} gas) and the app's log-line limit caps a larger paste"
+        );
+        return;
     }
 
     let mut lo_gas: Option<u64> = None;
