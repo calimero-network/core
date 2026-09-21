@@ -549,7 +549,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         // ActorFuture is in flight on the same actor).
         let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
             if let Some(action) = lazy_upgrade_params {
-                info!(%context_id, %executor, "performing lazy upgrade before execution");
+                debug!(%context_id, %executor, "performing lazy upgrade before execution");
                 return Ok(Either::Right((guard, action)));
             }
             Ok(Either::Left(guard))
@@ -1166,7 +1166,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         }
                     }
 
-                    info!(
+                    debug!(
                         %context_id,
                         %executor,
                         is_state_op,
@@ -1436,7 +1436,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // - State synchronization operations don't trigger broadcasts (prevents loops)
                     // - Events are still broadcast via WebSocket regardless of state changes
                     if !(is_state_op || outcome.artifact.is_empty()) {
-                        info!(
+                        debug!(
                             %context_id,
                             %executor,
                             is_state_op,
@@ -1449,7 +1449,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         if let Some(ref the_delta) = causal_delta {
                             // Serialize events if any were emitted
                             let events_data = if outcome.events.is_empty() {
-                                info!(
+                                debug!(
                                     %context_id,
                                     %executor,
                                     "No events to serialize"
@@ -1468,7 +1468,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     })
                                     .collect();
                                 let serialized = serde_json::to_vec(&events_vec)?;
-                                info!(
+                                debug!(
                                     %context_id,
                                     %executor,
                                     events_count = events_vec.len(),
@@ -2269,7 +2269,7 @@ async fn internal_execute(
     let mut governance_position_for_broadcast: Option<GovernanceParentEdge> = None;
 
     if executor_is_read_only && outcome.root_hash.is_some() {
-        info!(
+        debug!(
             context_id = %context.id,
             %executor,
             method = %method,
@@ -2299,7 +2299,7 @@ async fn internal_execute(
     }
 
     if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
-        info!(
+        debug!(
             context_id = %context.id,
             %executor,
             method = %method,
@@ -2323,7 +2323,7 @@ async fn internal_execute(
             true,
             outcome.root_hash.is_some() || !outcome.xcalls.is_empty(),
         ) {
-            info!(
+            debug!(
                 context_id = %context.id,
                 %executor,
                 method = %method,

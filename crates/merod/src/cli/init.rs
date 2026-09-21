@@ -28,7 +28,7 @@ use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use super::admin_creds::AdminCredArgs;
@@ -703,7 +703,7 @@ impl InitCommand {
                 let device = NodeDeviceRepository::new(&store)
                     .adopt_account(genesis)
                     .wrap_err("could not mint this node's device for that account")?;
-                info!(
+                debug!(
                     account = %device.account,
                     device = %device.device(),
                     "Minted this node's device under an account rooted elsewhere; \
@@ -715,7 +715,7 @@ impl InitCommand {
             let account_root = NodeDeviceRepository::new(&store)
                 .provision_account_root()
                 .wrap_err("could not provision this node's account root")?;
-            info!(
+            debug!(
                 account = %account_root.account(),
                 "Provisioned the node's account root",
             );

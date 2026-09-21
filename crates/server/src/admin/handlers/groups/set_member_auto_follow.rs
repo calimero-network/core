@@ -7,7 +7,7 @@ use calimero_context_client::group::SetMemberAutoFollowRequest;
 use calimero_server_primitives::admin::{
     SetMemberAutoFollowApiRequest, SetMemberAutoFollowApiResponse,
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
@@ -29,7 +29,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    info!(
+    debug!(
         group_id=%group_id_str,
         identity=%account_str,
         contexts=req.auto_follow_contexts,
@@ -50,7 +50,7 @@ pub async fn handler(
 
     match result {
         Ok(()) => {
-            info!(
+            debug!(
                 group_id=%group_id_str,
                 identity=%account_str,
                 "Member auto-follow flags updated"

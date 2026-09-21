@@ -8,7 +8,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, ListNamespacesQuery, NamespaceApiResponse,
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -32,7 +32,7 @@ pub async fn handler(
         }
     };
 
-    info!(%offset, %limit, account = ?scope.account(), "Listing namespaces");
+    debug!(%offset, %limit, account = ?scope.account(), "Listing namespaces");
 
     // An account scope pages the CALLER's namespaces, so the filter has to run
     // before `offset` is applied — hence the unpaginated fetch and the manual

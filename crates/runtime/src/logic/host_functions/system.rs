@@ -1328,7 +1328,7 @@ impl VMHostFunctions<'_> {
                 let value_len = bytes.len();
                 logic.registers.set(logic.limits, dest_register_id, bytes)?;
 
-                info!(
+                debug!(
                     target: "runtime::host::system",
                     value_len,
                     dest_register_id,
@@ -1338,7 +1338,7 @@ impl VMHostFunctions<'_> {
 
                 Ok(1)
             } else {
-                info!(
+                debug!(
                     target: "runtime::host::system",
                     context_id = %context_hex,
                     "read_root_state returned no payload"
@@ -1369,7 +1369,7 @@ impl VMHostFunctions<'_> {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
-            info!(
+            debug!(
                 target: "runtime::host::system",
                 delta_len,
                 context_id = %context_hex,
@@ -1419,7 +1419,7 @@ impl VMHostFunctions<'_> {
 
             logic.root_hash = Some(root_hash);
 
-            info!(
+            debug!(
                 target: "runtime::host::system",
                 delta_len,
                 context_id = %context_hex,

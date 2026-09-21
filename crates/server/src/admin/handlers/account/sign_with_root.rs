@@ -53,7 +53,7 @@ use calimero_server_primitives::admin::{
     AccountSignWithRootApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::admin::handlers::account::no_account_error;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -119,8 +119,12 @@ pub async fn handler(
     };
 
     // The payload is not logged: it is a third party's challenge, and a node log
-    // is a wider audience than the exchange it belongs to.
-    info!(
+    // is a wider audience than the exchange it belongs to. The ACCOUNT is not
+    // logged at info for the same reason carried one step further -- a fleet
+    // node ships its journal to a store operators can read, so naming the
+    // account here records which user proved themselves to which verifier, and
+    // when. `debug!` keeps it for a node someone is actively debugging.
+    debug!(
         account = %root.account(),
         domain = %req.domain,
         payload_len = payload.len(),

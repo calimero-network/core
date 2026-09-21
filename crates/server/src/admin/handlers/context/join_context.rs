@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::JoinContextRequest;
 use calimero_server_primitives::admin::{JoinContextApiResponse, JoinContextApiResponseData};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::admin::handlers::groups::parse_context_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -30,7 +30,7 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            info!(
+            debug!(
                 context_id=%resp.context_id,
                 member=%resp.member_public_key,
                 "Successfully joined context via group"
