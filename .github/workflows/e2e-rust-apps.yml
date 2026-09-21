@@ -860,6 +860,10 @@ jobs:
             file: workflows/fugue-collab-apply-delta.yml
             app: fugue-collab
             registry_fetch: "false"
+          - workflow: fugue-collab-undo
+            file: workflows/fugue-collab-undo.yml
+            app: fugue-collab
+            registry_fetch: "false"
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init

@@ -7,7 +7,7 @@
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::fugue_text::{Anchor, Bias, TextOp};
+use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, TextOp};
 use calimero_storage::collections::FugueText;
 
 #[app::state(emits = FugueCollabEvent)]
@@ -85,6 +85,36 @@ impl FugueCollabState {
             editor: encode_identity(&env::device_id()),
         });
 
+        Ok(())
+    }
+
+    /// Like `insert_text`, returning an opaque token `undo_insert` takes.
+    pub fn insert_text_tracked(&mut self, position: usize, text: String) -> app::Result<String> {
+        let minted = self.document.insert_str(position, &text)?;
+        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&minted)?).into_string())
+    }
+
+    pub fn undo_insert(&mut self, token: String) -> app::Result<()> {
+        let bytes = bs58::decode(token).into_vec()?;
+        if let Some(minted) = calimero_sdk::borsh::from_slice::<Option<IdRange>>(&bytes)? {
+            let _removed = self.document.delete_ids(&minted)?;
+        }
+        Ok(())
+    }
+
+    /// Like `delete_range`, returning an opaque token `undo_delete` takes.
+    pub fn delete_range_tracked(&mut self, start: usize, end: usize) -> app::Result<String> {
+        let removed = self.document.delete_range(start, end)?;
+        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&removed)?).into_string())
+    }
+
+    pub fn undo_delete(&mut self, token: String) -> app::Result<()> {
+        let bytes = bs58::decode(token).into_vec()?;
+        if let Some(removed) = calimero_sdk::borsh::from_slice::<Option<Removed>>(&bytes)? {
+            let _minted = self
+                .document
+                .insert_str_at(&removed.anchor, &removed.text)?;
+        }
         Ok(())
     }
 
