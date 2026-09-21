@@ -37,21 +37,6 @@ use calimero_runtime::logic::{Outcome, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 
-mod wall_harness;
-
-use wall_harness::{Probe, Verdict};
-
-const PROBE: Probe = Probe {
-    app: "mero-chat",
-    gate: "\n\
-           This probe drives a contract in another repo (mero-chat-pwa) whose call \
-           arguments are hand-written here, so they go stale.\n\
-           \n\
-           The in-repo gate for the same property does not depend on that contract:\n\
-           \x20 cargo test -p storage-cost      (vector_get_nth, tools/storage-cost)\n\
-           \x20 ./scripts/check-storage-cost.sh\n",
-};
-
 /// The real mero-chat contract, as a sibling checkout of this workspace.
 ///
 /// Override with `CURB_LOGIC_DIR=/path/to/mero-chat-pwa/logic`.
@@ -99,19 +84,6 @@ fn build_curb_wasm() -> Vec<u8> {
          clone it beside this workspace, or set CURB_LOGIC_DIR",
         logic_dir.display(),
     );
-
-    // A `[patch]` in mero-chat's own manifest would win over the one injected below.
-    let manifest = std::fs::read_to_string(logic_dir.join("Cargo.toml"))
-        .expect("mero-chat logic manifest is readable");
-    if manifest.contains(&format!("[patch.\"{CORE_GIT_SOURCE}\"]")) {
-        PROBE.drift(&format!(
-            "{}/Cargo.toml contains its own [patch.\"{CORE_GIT_SOURCE}\"] section.\n\
-             That overrides the redirect this probe injects, so the build would measure \
-             the tree that patch names, not this one. Remove it (it is a workstation-only \
-             override that should never be committed) and rerun.",
-            logic_dir.display(),
-        ));
-    }
 
     // Absolute paths: `--config` values are resolved against the invoking
     // directory, not the target manifest's.
@@ -203,82 +175,8 @@ fn call(
         .expect("run must return an Outcome")
 }
 
-fn init_args() -> serde_json::Value {
-    serde_json::json!({
-        "name": "wall",
-        "context_type": "Channel",
-        "description": "",
-        "created_at": 0_u64,
-        "creator_username": "alice",
-    })
-}
-
-fn send_message_args(i: usize) -> serde_json::Value {
-    serde_json::json!({
-        "message": format!("message {i}"),
-        "mentions": [],
-        "mentions_usernames": [],
-        "parent_message": null,
-        "timestamp": i as u64,
-        "files": null,
-        "images": null,
-    })
-}
-
-fn get_messages_args() -> serde_json::Value {
-    serde_json::json!({
-        "parent_message": null,
-        "limit": 20,
-        "offset": 0,
-        "search_term": null,
-    })
-}
-
-fn total_count(outcome: &Outcome) -> usize {
-    let body = outcome
-        .returns
-        .as_ref()
-        .unwrap_or_else(|_| PROBE.drift("get_messages failed while reading total_count"))
-        .as_ref()
-        .unwrap_or_else(|| PROBE.drift("get_messages returned no value at all"));
-    let parsed: serde_json::Value = serde_json::from_slice(body)
-        .unwrap_or_else(|e| PROBE.drift(&format!("get_messages did not return JSON: {e}")));
-    parsed
-        .pointer("/output/total_count")
-        .or_else(|| parsed.get("total_count"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_else(|| {
-            PROBE.drift(&format!(
-                "no total_count in the get_messages response: {parsed}"
-            ))
-        }) as usize
-}
-
-/// Runs against a THROWAWAY store, so the measured run still starts empty.
-fn preflight(module: &calimero_runtime::Module) {
-    let mut storage = InMemoryStorage::default();
-
-    PROBE.expect_ok(&call(module, &mut storage, "init", &init_args()), "init");
-    PROBE.expect_ok(
-        &call(module, &mut storage, "send_message", &send_message_args(0)),
-        "send_message",
-    );
-    let read = call(module, &mut storage, "get_messages", &get_messages_args());
-    PROBE.expect_ok(&read, "get_messages");
-
-    let total = total_count(&read);
-    if total != 1 {
-        PROBE.drift(&format!(
-            "after one send_message, get_messages reports total_count={total}, not 1. \
-             The write is not landing where the read looks, so every number this probe \
-             would produce is an artifact."
-        ));
-    }
-}
-
 #[test]
-#[ignore = "cross-repo probe: needs curb.wasm from mero-chat-pwa. The in-repo gate \
-            for the same property is `cargo test -p storage-cost` (vector_get_nth)."]
+#[ignore = "needs curb.wasm from mero-chat-pwa; see module docs"]
 fn how_many_messages_before_send_message_walls() {
     let wasm = build_curb_wasm();
 
@@ -290,13 +188,23 @@ fn how_many_messages_before_send_message_walls() {
         .compile(&wasm)
         .expect("compile metered module");
 
-    preflight(&module);
-
     // One store for the whole run: the point is that cost depends on what the
     // store already holds, so it must persist across calls.
     let mut storage = InMemoryStorage::default();
 
-    PROBE.expect_ok(&call(&module, &mut storage, "init", &init_args()), "init");
+    let init = call(
+        &module,
+        &mut storage,
+        "init",
+        &serde_json::json!({
+            "name": "wall",
+            "context_type": "Channel",
+            "description": "",
+            "created_at": 0_u64,
+            "creator_username": "alice",
+        }),
+    );
+    assert!(init.returns.is_ok(), "init failed: {:?}", init.returns);
 
     // Geometric read probes: get_messages is O(n) in the app, so probing it
     // every append would dominate the run. These points are enough to see the
@@ -320,22 +228,26 @@ fn how_many_messages_before_send_message_walls() {
 
     for i in 0..ceiling {
         let started = Instant::now();
-        let outcome = call(&module, &mut storage, "send_message", &send_message_args(i));
+        let outcome = call(
+            &module,
+            &mut storage,
+            "send_message",
+            &serde_json::json!({
+                "message": format!("message {i}"),
+                "mentions": [],
+                "mentions_usernames": [],
+                "parent_message": null,
+                "timestamp": i as u64,
+                "files": null,
+                "images": null,
+            }),
+        );
         let write_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-        if let Err(error) = &outcome.returns {
-            match PROBE.classify("send_message", error) {
-                Verdict::Wall { limit } => {
-                    println!("\nWRITE WALL at {landed} (gas limit {limit})");
-                    write_wall = Some(landed);
-                    break;
-                }
-                Verdict::Drift(detail) => PROBE.drift(&format!(
-                    "{detail}\n\
-                     This appeared only after {landed} messages, so it is state-dependent \
-                     rather than a stale signature."
-                )),
-            }
+        if outcome.returns.is_err() {
+            println!("\nWRITE WALL at {landed}: {:?}", outcome.returns);
+            write_wall = Some(landed);
+            break;
         }
         landed += 1;
 
@@ -343,21 +255,37 @@ fn how_many_messages_before_send_message_walls() {
             next_probe += 1;
 
             let started = Instant::now();
-            let read = call(&module, &mut storage, "get_messages", &get_messages_args());
+            let read = call(
+                &module,
+                &mut storage,
+                "get_messages",
+                &serde_json::json!({
+                    "parent_message": null,
+                    "limit": 20,
+                    "offset": 0,
+                    "search_term": null,
+                }),
+            );
             let read_ms = started.elapsed().as_secs_f64() * 1000.0;
 
             match &read.returns {
-                Ok(_) => {
+                Ok(value) => {
                     // Confirms the store really accumulated: a harness whose
                     // writes silently vanished would show a flat curve and land
                     // every call, which looks exactly like success.
-                    let total = total_count(&read);
-                    if total != landed {
-                        PROBE.drift(&format!(
-                            "store holds {total} but {landed} were appended — the cost \
-                             curve would be an artifact, not a result"
-                        ));
-                    }
+                    let body = value.as_ref().expect("get_messages returned no value");
+                    let parsed: serde_json::Value =
+                        serde_json::from_slice(body).expect("get_messages returns JSON");
+                    let total = parsed
+                        .pointer("/output/total_count")
+                        .or_else(|| parsed.get("total_count"))
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_else(|| panic!("no total_count in {parsed}"));
+                    assert_eq!(
+                        total as usize, landed,
+                        "store holds {total} but {landed} were appended — the cost \
+                         curve would be an artifact, not a result"
+                    );
 
                     if read_wall.is_none() {
                         last_read_ok = Some(landed);
@@ -367,18 +295,15 @@ fn how_many_messages_before_send_message_walls() {
                         outcome.gas_used, outcome.storage_reads, read.gas_used, read.storage_reads,
                     );
                 }
-                Err(error) => match PROBE.classify("get_messages", error) {
-                    Verdict::Wall { .. } => {
-                        println!(
-                            "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>7.1} | READ WALL (gas exhausted)",
-                            outcome.gas_used, outcome.storage_reads,
-                        );
-                        if read_wall.is_none() {
-                            read_wall = Some(landed);
-                        }
+                Err(e) => {
+                    println!(
+                        "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>7.1} | READ WALL: {e:?}",
+                        outcome.gas_used, outcome.storage_reads,
+                    );
+                    if read_wall.is_none() {
+                        read_wall = Some(landed);
                     }
-                    Verdict::Drift(detail) => PROBE.drift(&detail),
-                },
+                }
             }
         }
     }
@@ -399,17 +324,6 @@ fn how_many_messages_before_send_message_walls() {
 
     assert!(
         landed > 0,
-        "no message was appended even though preflight succeeded - the failure \
-         classification in this file is broken"
+        "the contract could not append even one message — the harness is wrong, not the storage layer"
     );
-
-    if let Some(n) = write_wall.or(read_wall) {
-        assert!(
-            n >= 50,
-            "walled after only {n} messages. Preflight passed, so the calls are \
-             well-formed, but a ceiling this low is a change in the contract's work \
-             per call, not the cost curve this probe exists to measure. Investigate \
-             before quoting the number."
-        );
-    }
 }

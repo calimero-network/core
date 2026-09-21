@@ -33,16 +33,12 @@ rand.workspace = true
 
 [dev-dependencies]
 claims.workspace = true
-criterion.workspace = true
 hex.workspace = true
 serial_test.workspace = true
 trybuild.workspace = true
 velcro.workspace = true
 
 calimero-sdk.workspace = true
-
-[lib]
-bench = false
 
 [features]
 default = []
@@ -54,7 +50,8 @@ default = []
 # crate boundaries so dependent crates' DAG-causal tests can share one
 # canonical copy instead of mirroring it.
 testing = []
-# Measurement control for `FugueText`; enabled only by `tools/storage-cost`.
+# Exposes the measurement control for `FugueText` to out-of-crate cost
+# benchmarks; the in-crate differential test reaches it under `cfg(test)`.
 fugue-simple = []
 
 # Registry tests live in `tests/` as separate integration binaries
@@ -73,14 +70,6 @@ required-features = ["testing"]
 [[test]]
 name = "rekey_record"
 required-features = ["testing"]
-
-[[bench]]
-name = "child_trie"
-harness = false
-
-[[bench]]
-name = "merge_root_state"
-harness = false
 
 [[test]]
 name = "map_entry_layout"

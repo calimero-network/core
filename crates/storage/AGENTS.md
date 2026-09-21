@@ -46,7 +46,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 - A block holds at most `MAX_RUN_LEN` (256) nodes, and a full run is never rewritten or split.
   The overflowing character opens a new block parented on the full run's last node, side right.
-  Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
+  Row counts cannot see a regression here, so only a bytes-per-keystroke gate catches one.
 - No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
 - Tombstones are one bit per NODE, because coalescing grows a run after the fact.
 - Blocks are mutable under one key, so entries carry their own `crdt_type`: the `FugueTextBlock` tag routes to a join instead of the untagged last-writer-wins, which drops every node only the loser defines.
@@ -59,8 +59,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 `FugueTextSimple` is absent from that table on purpose: it has **no `CrdtType`** and is a
 **measurement control, not a product collection**, behind the off-by-default `fugue-simple`
-feature and used only by `tools/storage-cost` to split the `FugueText` win into Fugue's
-ordering and run-length blocks. Do not build on it, do not give it a `CrdtType`, do not grow it.
+feature and used only to split the `FugueText` win into Fugue's ordering and run-length
+blocks. Do not build on it, do not give it a `CrdtType`, do not grow it.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 

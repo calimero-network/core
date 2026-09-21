@@ -128,8 +128,6 @@ cargo test -p calimero-dag test_dag_out_of_order -- --nocapture
 cargo test -p calimero-sdk-macros
 ```
 
-- Benchmarks and cost gates: see `docs/benchmarking.md`. Cost gates block; criterion never does.
-
 ## JIT Index
 
 ### Find Functions
