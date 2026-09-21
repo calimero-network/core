@@ -116,9 +116,10 @@ impl FugueEditorState {
         Ok(())
     }
 
-    pub fn apply_delta(&mut self, changes: Vec<Change>) -> app::Result<()> {
+    /// Returns an opaque token holding what reverses the whole transaction.
+    pub fn apply_delta(&mut self, changes: Vec<Change>) -> app::Result<String> {
         let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
-        self.document.apply_delta(&ops)?;
+        let steps = self.document.apply_delta(&ops)?;
         self.edit_count.increment()?;
 
         // The cursor walk `FugueText::apply_delta` just made: each event carries
@@ -144,7 +145,7 @@ impl FugueEditorState {
             }
         }
 
-        Ok(())
+        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&steps)?).into_string())
     }
 
     pub fn get_text(&self) -> app::Result<String> {

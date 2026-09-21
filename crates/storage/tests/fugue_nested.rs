@@ -14,17 +14,18 @@ use calimero_sdk::app::Mergeable;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::{CrdtType, FugueText, LwwRegister, UnorderedMap};
-use calimero_storage::delta::StorageDelta;
 use calimero_storage::env;
 use calimero_storage::index::Index;
 use calimero_storage::register_rekey_if_supported;
-use calimero_storage::store::{Key, MainStorage};
+use calimero_storage::store::MainStorage;
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, TypeDef, TypeRef};
 
 mod fugue_harness;
 
-use fugue_harness::{device, edit, env_for, fork, genesis, land, read_with, Store};
+use fugue_harness::{
+    device, edit, entry_bytes, env_for, fork, genesis, land, read_with, written_ids, Store,
+};
 
 const ALICE: u8 = 1;
 const BOB: u8 = 2;
@@ -108,18 +109,6 @@ fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
     env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
 }
 
-/// The non-root entity ids a delta writes.
-fn written_ids(delta: &[u8]) -> Vec<Id> {
-    let actions = match borsh::from_slice::<StorageDelta>(delta).unwrap() {
-        StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. } => actions,
-    };
-    actions
-        .iter()
-        .map(|action| action.id())
-        .filter(|id| !id.is_root())
-        .collect()
-}
-
 /// Of `ids`, the ones tagged `FugueTextBlock`, mapped to the collection they hang off.
 fn block_rows(store: &Store, writer: u8, ids: &[Id]) -> BTreeMap<Id, Id> {
     env::with_runtime_env(env_for(store, device(writer)), || {
@@ -133,23 +122,11 @@ fn block_rows(store: &Store, writer: u8, ids: &[Id]) -> BTreeMap<Id, Id> {
     })
 }
 
-/// The stored bytes of every entity `ids` names, so two replicas can be compared row by row.
-fn stored_bytes(store: &Store, ids: &BTreeSet<Id>) -> BTreeMap<Id, Option<Vec<u8>>> {
-    ids.iter()
-        .map(|id| {
-            (
-                *id,
-                store.borrow().get(&Key::Entry(*id).to_bytes()).cloned(),
-            )
-        })
-        .collect()
-}
-
 /// Everything two replicas must agree on after reconciling.
 fn assert_converged(what: &str, a: &Store, b: &Store, ids: &BTreeSet<Id>) {
     assert_eq!(
-        stored_bytes(a, ids),
-        stored_bytes(b, ids),
+        entry_bytes(a, ids),
+        entry_bytes(b, ids),
         "{what}: the replicas hold different bytes, so their Merkle hashes differ"
     );
     assert_eq!(

@@ -6,10 +6,11 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::address::Id;
 use calimero_storage::collections::{FugueText, Root};
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{self, RuntimeEnv};
@@ -126,4 +127,28 @@ pub fn fugue_genesis(field: &str, seed: &str) -> Store {
                 .expect("seed insert should succeed");
         },
     )
+}
+
+/// The non-root entity ids a delta writes.
+pub fn written_ids(delta: &[u8]) -> Vec<Id> {
+    let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
+        StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    actions
+        .iter()
+        .map(|action| action.id())
+        .filter(|id| !id.is_root())
+        .collect()
+}
+
+/// The stored bytes of every entity `ids` names, so two replicas can be compared row by row.
+pub fn entry_bytes(store: &Store, ids: &BTreeSet<Id>) -> BTreeMap<Id, Option<Vec<u8>>> {
+    ids.iter()
+        .map(|id| {
+            (
+                *id,
+                store.borrow().get(&Key::Entry(*id).to_bytes()).cloned(),
+            )
+        })
+        .collect()
 }

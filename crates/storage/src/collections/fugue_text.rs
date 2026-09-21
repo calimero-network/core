@@ -195,6 +195,13 @@ pub enum TextOp {
     Delete(usize),
 }
 
+/// What one op of an applied change took, so the change can be taken back.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Undo {
+    Inserted(IdRange),
+    Removed(Removed),
+}
+
 /// A storage-backed collaborative text collection with Tree-Fugue ordering.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct FugueText<S: StorageAdaptor = MainStorage> {
@@ -317,24 +324,51 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(removed)
     }
 
-    /// Apply a whole editor change in one call. Panics inside a state migration.
-    pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<(), StoreError> {
+    /// Apply a whole editor change in one call, returning what [`Self::undo`]
+    /// takes to reverse it, in application order. Panics inside a state migration.
+    pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<Vec<Undo>, StoreError> {
         let replica = minting_replica("apply_delta");
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
+        let mut steps = Vec::new();
         let mut pos = 0_usize;
         for (index, op) in ops.iter().enumerate() {
             match *op {
                 TextOp::Retain(count) => pos = advance(pos, count)?,
                 TextOp::Insert(ref text) => {
-                    let _minted = draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    let minted = draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    steps.extend(minted.map(Undo::Inserted));
                     pos = advance(pos, text.chars().count())?;
                 }
-                TextOp::Delete(count) => drop(draft.delete(pos, advance(pos, count)?)?),
+                TextOp::Delete(count) => {
+                    let removed = draft.delete(pos, advance(pos, count)?)?;
+                    steps.extend(removed.map(Undo::Removed));
+                }
             }
         }
-        self.flush(draft)
+        self.flush(draft)?;
+        Ok(steps)
+    }
+
+    /// Reverse `steps`, last one first, returning what redoes them. Each step is
+    /// its own write, so a failure part-way leaves the earlier ones undone.
+    pub fn undo(&mut self, steps: &[Undo]) -> Result<Vec<Undo>, StoreError> {
+        let mut redo = Vec::with_capacity(steps.len());
+        for step in steps.iter().rev() {
+            match *step {
+                Undo::Inserted(ref minted) => {
+                    redo.extend(self.delete_ids(minted)?.map(Undo::Removed));
+                }
+                Undo::Removed(ref removed) => {
+                    redo.extend(
+                        self.insert_str_at(&removed.anchor, &removed.text)?
+                            .map(Undo::Inserted),
+                    );
+                }
+            }
+        }
+        Ok(redo)
     }
 
     /// Delete the character at `pos`.
@@ -2511,7 +2545,9 @@ mod apply_path_tests {
                             .expect("delete should succeed");
                     }
                     Step::Delta(ref ops) if per_char => apply_ops_one_at_a_time(&mut doc, ops),
-                    Step::Delta(ref ops) => doc.apply_delta(ops).expect("delta should succeed"),
+                    Step::Delta(ref ops) => {
+                        let _undo = doc.apply_delta(ops).expect("delta should succeed");
+                    }
                 }
             }
             doc.commit();

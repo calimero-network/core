@@ -7,7 +7,7 @@
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, TextOp};
+use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, TextOp, Undo};
 use calimero_storage::collections::FugueText;
 
 #[app::state(emits = FugueCollabEvent)]
@@ -54,6 +54,16 @@ fn encode_identity(identity: &[u8; 32]) -> String {
     bs58::encode(identity).into_string()
 }
 
+/// Undo payloads cross JSON-RPC as one opaque string, so a client never parses them.
+fn encode_token<T: calimero_sdk::borsh::BorshSerialize>(value: &T) -> app::Result<String> {
+    Ok(bs58::encode(calimero_sdk::borsh::to_vec(value)?).into_string())
+}
+
+fn decode_token<T: calimero_sdk::borsh::BorshDeserialize>(token: &str) -> app::Result<T> {
+    let bytes = bs58::decode(token).into_vec()?;
+    Ok(calimero_sdk::borsh::from_slice(&bytes)?)
+}
+
 #[app::logic]
 impl FugueCollabState {
     #[app::init]
@@ -92,12 +102,11 @@ impl FugueCollabState {
     pub fn insert_text_tracked(&mut self, position: usize, text: String) -> app::Result<String> {
         let minted = self.document.insert_str(position, &text)?;
         self.emit_inserted(position, text);
-        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&minted)?).into_string())
+        encode_token(&minted)
     }
 
     pub fn undo_insert(&mut self, token: String) -> app::Result<()> {
-        let bytes = bs58::decode(token).into_vec()?;
-        if let Some(minted) = calimero_sdk::borsh::from_slice::<Option<IdRange>>(&bytes)? {
+        if let Some(minted) = decode_token::<Option<IdRange>>(&token)? {
             if let Some(removed) = self.document.delete_ids(&minted)? {
                 self.emit_deleted(&removed)?;
             }
@@ -111,12 +120,11 @@ impl FugueCollabState {
         if let Some(removed) = &removed {
             self.emit_deleted(removed)?;
         }
-        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&removed)?).into_string())
+        encode_token(&removed)
     }
 
     pub fn undo_delete(&mut self, token: String) -> app::Result<()> {
-        let bytes = bs58::decode(token).into_vec()?;
-        if let Some(removed) = calimero_sdk::borsh::from_slice::<Option<Removed>>(&bytes)? {
+        if let Some(removed) = decode_token::<Option<Removed>>(&token)? {
             let position = self.document.resolve(&removed.anchor)?;
             let _minted = self
                 .document
@@ -145,10 +153,10 @@ impl FugueCollabState {
         Ok(())
     }
 
-    /// A whole editor transaction in one call.
-    pub fn apply_delta(&mut self, changes: Vec<Change>) -> app::Result<()> {
+    /// A whole editor transaction in one call, returning an opaque token `undo_delta` takes.
+    pub fn apply_delta(&mut self, changes: Vec<Change>) -> app::Result<String> {
         let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
-        self.document.apply_delta(&ops)?;
+        let steps = self.document.apply_delta(&ops)?;
 
         // The cursor walk `FugueText::apply_delta` just made: each event carries
         // the position the document held once the events before it were applied.
@@ -173,7 +181,14 @@ impl FugueCollabState {
             }
         }
 
-        Ok(())
+        encode_token(&steps)
+    }
+
+    /// Take back a whole transaction, returning a token that redoes it.
+    pub fn undo_delta(&mut self, token: String) -> app::Result<String> {
+        let steps: Vec<Undo> = decode_token(&token)?;
+        let redo = self.document.undo(&steps)?;
+        encode_token(&redo)
     }
 
     pub fn get_text(&self) -> app::Result<String> {
@@ -193,14 +208,11 @@ impl FugueCollabState {
     /// A cursor for the gap at `position`, as an opaque token any member can resolve.
     pub fn anchor_at(&self, position: usize, before: bool) -> app::Result<String> {
         let bias = if before { Bias::Before } else { Bias::After };
-        let anchor = self.document.anchor_at(position, bias)?;
-        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&anchor)?).into_string())
+        encode_token(&self.document.anchor_at(position, bias)?)
     }
 
     pub fn resolve_anchor(&self, anchor: String) -> app::Result<usize> {
-        let bytes = bs58::decode(anchor).into_vec()?;
-        let anchor: Anchor = calimero_sdk::borsh::from_slice(&bytes)?;
-        Ok(self.document.resolve(&anchor)?)
+        Ok(self.document.resolve(&decode_token::<Anchor>(&anchor)?)?)
     }
 }
 
@@ -239,6 +251,31 @@ mod tests {
         assert_eq!(payload(1)["position"], json!(6));
         assert_eq!(payload(1)["text"], json!("there"));
 
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello there");
+    }
+
+    /// An editor sends whole transactions, so the transaction is what it undoes.
+    #[test]
+    fn apply_delta_returns_a_token_that_takes_the_whole_change_back() {
+        let mut app = TestHost::new(FugueCollabState::init);
+        app.call(|s| s.insert_text(0, "hello world".to_owned()))
+            .unwrap();
+
+        let undo = app
+            .call(|s| {
+                s.apply_delta(vec![
+                    Change::Retain(6),
+                    Change::Delete(5),
+                    Change::Insert("there".to_owned()),
+                ])
+            })
+            .unwrap();
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello there");
+
+        let redo = app.call(|s| s.undo_delta(undo)).unwrap();
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello world");
+
+        let _again = app.call(|s| s.undo_delta(redo)).unwrap();
         assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello there");
     }
 
