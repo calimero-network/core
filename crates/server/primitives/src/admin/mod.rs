@@ -3291,6 +3291,27 @@ impl Validate for SetTeeAdmissionPolicyApiRequest {
                 reason: "at least one MRTD must be specified when accept_mock is false".to_owned(),
             });
         }
+        // RTMR3 is required unconditionally, including for a mock-accepting
+        // policy -- `accept_mock` gates whether a MOCK QUOTE is entertained at
+        // all, not whether its measurements are checked. `admit_tee_node` puts
+        // every quote through the allowlists either way, and `create_mock_quote`
+        // reports the all-zero 48 bytes for every register, so a mock fleet
+        // names that value here exactly as it already names it for MRTD.
+        //
+        // Validated HERE rather than only in the actor so a bad request is a
+        // 400 through `ValidatedJson`. The actor's copy returns an untyped
+        // error, which `parse_api_error` maps to 500 -- a client-shaped failure
+        // reported as a server fault (see #3996 for that mapping in general).
+        if self.allowed_rtmr3.is_empty() {
+            errors.push(ValidationError::InvalidFormat {
+                field: "allowed_rtmr3",
+                reason: "at least one RTMR3 must be specified: MRTD identifies the firmware, \
+                         which is shared by every image profile of a release, so RTMR3 is the \
+                         only measurement that says which image ran. Take the value from the \
+                         release's published-mrtds.json; it changes each release"
+                    .to_owned(),
+            });
+        }
         errors
     }
 }
