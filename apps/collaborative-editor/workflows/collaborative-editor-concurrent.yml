@@ -149,19 +149,13 @@ steps:
     statements:
       - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
 
-  # Contiguity assertions: each node's heading must stay immediately adjacent
-  # to its own passage, on both replicas.
-  - name: Assert each contribution stays contiguous (Node 1's view)
+  # Each node's heading must stay immediately adjacent to its own passage. The
+  # two replicas were asserted equal above, so one view settles both.
+  - name: Assert each contribution stays contiguous
     type: assert
     statements:
       - "contains({{interleave_text_node1}}, 'HEAD1PASSAGE1')"
       - "contains({{interleave_text_node1}}, 'HEAD2PASSAGE2')"
-
-  - name: Assert each contribution stays contiguous (Node 2's view)
-    type: assert
-    statements:
-      - "contains({{interleave_text_node2}}, 'HEAD1PASSAGE1')"
-      - "contains({{interleave_text_node2}}, 'HEAD2PASSAGE2')"
 
 stop_all_nodes: false
 restart: false

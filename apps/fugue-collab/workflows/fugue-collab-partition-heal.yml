@@ -257,26 +257,14 @@ steps:
       - 'json_equal({{head_node1}}, {"output": "abc"})'
       - 'json_equal({{tail_node1}}, {"output": "xyz"})'
 
-  - name: Assert both passages survived contiguously on Node 1
+  # The three replicas were asserted equal above, so contiguity on one settles
+  # all three.
+  - name: Assert both passages survived contiguously
     type: assert
     statements:
       - "contains({{merged_node1}}, 'LEFTPASSAGE')"
       - "contains({{merged_node1}}, 'RIGHTPASSAGE')"
       - "not_contains({{merged_node1}}, 'MIDDLE')"
-
-  - name: Assert both passages survived contiguously on Node 2
-    type: assert
-    statements:
-      - "contains({{merged_node2}}, 'LEFTPASSAGE')"
-      - "contains({{merged_node2}}, 'RIGHTPASSAGE')"
-      - "not_contains({{merged_node2}}, 'MIDDLE')"
-
-  - name: Assert both passages survived contiguously on Node 3
-    type: assert
-    statements:
-      - "contains({{merged_node3}}, 'LEFTPASSAGE')"
-      - "contains({{merged_node3}}, 'RIGHTPASSAGE')"
-      - "not_contains({{merged_node3}}, 'MIDDLE')"
 
 stop_all_nodes: true
 restart: false
