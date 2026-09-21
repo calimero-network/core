@@ -17,8 +17,7 @@ description: >
   ASSERTED at each step — a writer that can see a peer's text is not isolated
   and the scenario has stopped posing the question.
 
-  Expected: FugueText keeps every heading against its own passage. The RGA
-  control beside this file is expected to FAIL exactly there.
+  Expected: FugueText keeps every heading against its own passage.
 name: Fugue Collab Figure 2 Multi-Replica
 
 nodes:

@@ -1,0 +1,168 @@
+description: >
+  A node joins a context whose document already runs past the 256-character run
+  cap and has had a range tombstoned out of the middle of it, and has to arrive
+  at the exact same 395 characters as the two nodes that built it.
+
+  The 400-character paste alone is two blocks, one of them full, and the second
+  writer's marker adds a third rooted inside the first, so the joiner cannot be
+  served by one whole-block copy: it has to pick up every block, with its
+  tombstones, and linearise them into the same order. The node picks its own
+  catch-up path - auto-follow backfill, then whichever of HashComparison or
+  level-wise sync its heads select - and this scenario does not constrain that
+  choice; it constrains the answer.
+
+  The seed is `ABCDEFGHIJ` repeated, not a run of one character, so a block
+  joined in the wrong order or a tombstone applied at the wrong offset shows up
+  as a broken pattern rather than as a document that still looks right.
+
+  Every write is separated by a barrier and lands at an origin its author can
+  already see, so nothing here depends on replica ids and the expected document
+  is asserted exactly.
+name: Fugue Collab Late Joiner
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fugue-node
+  base_port: 2800
+  base_rpc_port: 2900
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: fugue-node-1
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 2-node mesh without Node 3
+    type: create_mesh
+    context_node: fugue-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - fugue-node-2
+    outputs:
+      context_id: contextId
+      namespace_id: groupId
+
+  - name: Node 1 pastes 400 characters, crossing the run cap
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"
+
+  - name: Wait for the paste to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 inserts a marker inside the full first block
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 200
+      text: "[MID]"
+
+  - name: Wait for the marker to reach Node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 1 deletes ten characters straddling the cap boundary
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: delete_range
+    args:
+      start: 256
+      end: 266
+
+  - name: Wait for the deletion to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  # ---- Node 3 joins a context that already holds the document ----
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`); Node 3 owns
+  # it before joining so what is under test is state catch-up, not acquisition.
+  - name: Install fugue-collab on Node 3
+    type: install_application
+    node: fugue-node-3
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a namespace invitation for Node 3
+    type: create_namespace_invitation
+    node: fugue-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 3 joins the namespace
+    type: join_namespace
+    node: fugue-node-3
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for Node 3 to catch up to the existing document
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 180
+    trigger_sync: true
+
+  - name: Read the document on Node 3
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      joined_text: result
+
+  - name: Read the length on Node 3
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_length
+    outputs:
+      joined_len: result
+
+  - name: Read the document on Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      builder_text: result
+
+  # 20 repeats, the marker, then 19: the delete took the tail of one repeat and
+  # the head of the next from either side of the cap, so the survivors close up.
+  - name: Assert Node 3 caught up to the exact document
+    type: json_assert
+    statements:
+      - 'json_equal({{joined_len}}, {"output": 395})'
+      - 'json_equal({{joined_text}}, {"output": "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ[MID]ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"})'
+      - 'json_equal({{joined_text}}, {{builder_text}})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

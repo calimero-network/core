@@ -1,0 +1,205 @@
+description: >
+  A writer's block rows have to survive its container being replaced, and the
+  document it comes back to has to be the one its peers went on building.
+
+  Node 3 types, everyone converges, and then node 3 is replaced by
+  `restart_container` - a new container over the same volume, not a pause. Its
+  first read after the restart is taken before either peer has written anything
+  new, so the only place that text can come from is its own persisted block
+  rows: nothing in the network holds a copy it has not already got.
+
+  `wait_healthy` returns as soon as the admin endpoint answers, which is well
+  before libp2p has redialled and rejoined the gossipsub mesh, so the two writes
+  that follow genuinely land while node 3 is off the mesh.
+
+  Every write here is at an origin its author can already see - node 1 in front
+  of the seed, node 2 behind node 3's passage - so no two inserts are siblings
+  and the merged text does not depend on replica ids. The expected document is
+  therefore asserted exactly.
+name: Fugue Collab Restart Mid Edit
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fugue-node
+  base_port: 2800
+  base_rpc_port: 2900
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: fugue-node-1
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
+  # node owns it before the restart leaves node 3 off the mesh.
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Install fugue-collab on Node 3
+    type: install_application
+    node: fugue-node-3
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: fugue-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - fugue-node-2
+      - fugue-node-3
+    outputs:
+      context_id: contextId
+
+  - name: Seed the document from Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "SEED."
+
+  - name: Wait for the seed to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 3 appends its passage
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 5
+      text: "-THREE"
+
+  - name: Wait for Node 3's passage to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 60
+    trigger_sync: true
+
+  # ---- Replace Node 3's container mid-session ----
+
+  - name: Restart Node 3's container
+    type: restart_container
+    container: fugue-node-3
+    wait_healthy: true
+    timeout: 60
+
+  - name: Read Node 3's document straight out of its restarted store
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      restored_node3: result
+
+  - name: Read Node 3's restored length
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_length
+    outputs:
+      restored_len: result
+
+  - name: Assert the block rows survived the restart
+    type: json_assert
+    statements:
+      - 'json_equal({{restored_node3}}, {"output": "SEED.-THREE"})'
+      - 'json_equal({{restored_len}}, {"output": 11})'
+
+  # ---- The peers keep editing while Node 3 is rejoining the mesh ----
+
+  - name: Node 1 types in front of the seed
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "ONE-"
+
+  - name: Wait for Node 1's edit to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 appends behind Node 3's passage
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "-TWO"
+
+  # wait_healthy only proved the admin endpoint was back. Redialling the boot
+  # node and rejoining this context's gossipsub mesh takes longer than that.
+  - name: Wait for Node 3 to rejoin the mesh
+    type: wait
+    seconds: 15
+
+  - name: Wait for the three histories to converge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read the merged document on Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node1: result
+
+  - name: Read the merged document on Node 2
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node2: result
+
+  - name: Read the merged document on Node 3
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node3: result
+
+  - name: Read the merged length on Node 3
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_length
+    outputs:
+      merged_len: result
+
+  - name: Assert every node holds the exact merged document
+    type: json_assert
+    statements:
+      - 'json_equal({{merged_node1}}, {"output": "ONE-SEED.-THREE-TWO"})'
+      - 'json_equal({{merged_node2}}, {"output": "ONE-SEED.-THREE-TWO"})'
+      - 'json_equal({{merged_node3}}, {"output": "ONE-SEED.-THREE-TWO"})'
+      - 'json_equal({{merged_len}}, {"output": 19})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

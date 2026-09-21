@@ -1,8 +1,8 @@
 description: >
   Two-node concurrent editing over RGA. NOT the acceptance test for the Fugue
-  rework, despite what the comments further down still say — measured against
-  this tree it PASSES on RGA, which is exactly what a scenario that fails to
-  pose the question looks like (#3853).
+  rework - measured against this tree it PASSES on RGA, which is exactly what a
+  scenario that fails to pose the question looks like when siblings are ordered
+  by id.
 
   The reason is that RGA orders same-origin siblings by id, so the outcome turns
   on the relative ORDER of the ids, not on concurrency alone. Here each writer
@@ -12,9 +12,9 @@ description: >
   milliseconds while the HTTP round-trips take tens of them, so back-to-back
   calls simply serialise.
 
-  The real acceptance pair is `apps/fugue-collab/workflows/fugue-collab-figure2.yml`
-  and its control `../rga-figure2-control.yml`, which go round-robin
-  (P1<P2<P3<H1<H2<H3) and assert isolation before every write.
+  The real acceptance scenario is `apps/fugue-collab/workflows/fugue-collab-figure2.yml`,
+  which goes round-robin (P1<P2<P3<H1<H2<H3) and asserts isolation before every
+  write.
 
   Kept as an ordinary two-node concurrent-editing smoke test, which it is.
 name: Collaborative Editor Concurrent Workflow
@@ -99,23 +99,18 @@ steps:
   # ============================================
   # Scenario: backward-insertion interleaving (paper Figure 2)
   #
-  # This scenario is the acceptance test for the Fugue rework. Starting from
-  # the 15-character seeded document ("existing text. "), each node appends
-  # its own "passage" at the end (position 15, the seeded length), then
-  # moves back to the start of its own passage (also position 15 - each
-  # node's own prior insert there shifts nothing else) and inserts a
-  # "heading" immediately before it, with NO propagation wait between Node
-  # 1's pair of edits and Node 2's pair - the merge is genuinely concurrent.
-  # This matches Figure 2 of "The Art of the Fugue", which starts from an
-  # existing document rather than an empty one.
+  # Starting from the 15-character seeded document ("existing text. "), each
+  # node appends its own "passage" at the end (position 15, the seeded
+  # length), then moves back to the start of its own passage (also position
+  # 15 - each node's own prior insert there shifts nothing else) and inserts
+  # a "heading" immediately before it, with NO propagation wait between Node
+  # 1's pair of edits and Node 2's pair.
   #
-  # It is EXPECTED TO FAIL under today's RGA: RGA is proven to interleave
-  # concurrent backward insertions from different users (Weidner, Gentle,
-  # Kleppmann, "The Art of the Fugue", Table 1), so each node's
-  # heading+passage pair is not guaranteed to stay contiguous in the merged
-  # document. The `contains` assertions below check exactly that contiguity,
-  # per node, on both replicas. They must start red under RGA and must turn
-  # green once Fugue lands - do not weaken them to make them pass early.
+  # That is Figure 2's shape but not its ordering. Each node types its
+  # passage and heading back-to-back, so RGA's same-origin id order already
+  # keeps every heading beside its own passage and the contiguity assertions
+  # below pass. The scenario that does separate the two CRDTs goes
+  # round-robin: `apps/fugue-collab/workflows/fugue-collab-figure2.yml`.
   #
   # (Note: same-position *forward* concurrent insertion - i.e. two nodes
   # both inserting at position 0 with no wait - is already covered by
@@ -189,9 +184,8 @@ steps:
     statements:
       - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
 
-  # Contiguity assertions - the actual acceptance criterion for the Fugue
-  # rework. Each node's heading must stay immediately adjacent to its own
-  # passage, on both replicas. Expected to FAIL under today's RGA.
+  # Contiguity assertions: each node's heading must stay immediately adjacent
+  # to its own passage, on both replicas.
   - name: Assert each contribution stays contiguous (Node 1's view)
     type: assert
     statements:

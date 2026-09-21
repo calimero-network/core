@@ -1,0 +1,290 @@
+description: >
+  Two sides of a real network partition type a contiguous passage into the SAME
+  position, and one side deletes the characters the other side is typing right
+  next to.
+
+  `partition_peers` rather than `stop_node`: a stopped node cannot write, so the
+  figure-2 shape has to serialise its writers and prove isolation by reading
+  before each one. Here every node stays up and RPC-reachable while libp2p
+  between node-1 and the {node-2, node-3} side is dropped, so both passages are
+  genuinely concurrent - each builds on the same head - and the delete races an
+  insert whose origin it can never have seen.
+
+  The delete is the part that has broken before: node-1 inserts immediately to
+  the LEFT of `MIDDLE` while node-2 tombstones `MIDDLE` itself, so the surviving
+  document has to keep an insert whose origin is dead.
+
+  Which passage sorts first is decided by the writers' replica ids, which are
+  derived from node identity and differ every run, so that order is NOT
+  asserted. What is asserted is everything that must hold whichever way it
+  falls: the three replicas agree exactly, each passage survives contiguously,
+  `MIDDLE` is gone, the length accounts for every live character, and the
+  untouched text still brackets the merge.
+name: Fugue Collab Partition Heal
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fugue-node
+  base_port: 2800
+  base_rpc_port: 2900
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: fugue-node-1
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Master acquires app bytecode LAZILY (`calimero_app_downloader`), so every
+  # node owns it before the partition leaves some of them nobody to fetch from.
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Install fugue-collab on Node 3
+    type: install_application
+    node: fugue-node-3
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: fugue-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - fugue-node-2
+      - fugue-node-3
+    outputs:
+      context_id: contextId
+
+  - name: Seed the document from Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "abcMIDDLExyz"
+
+  - name: Wait for the seed to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 60
+    trigger_sync: true
+
+  # ---- Partition: node-1 alone, node-2 and node-3 together ----
+
+  - name: Partition Node 1 from Node 2 and Node 3 (libp2p only; RPC stays up)
+    type: partition_peers
+    node: fugue-node-1
+    peers:
+      - fugue-node-2
+      - fugue-node-3
+
+  # The DOCKER-USER DROP rule bites the instant the step returns; this only lets
+  # the already-converged seed's in-flight gossip quiesce.
+  - name: Settle after the partition takes effect
+    type: wait
+    seconds: 12
+
+  - name: Read Node 1's isolated view
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      split_view_1: result
+
+  - name: Node 1 must still be on the seed
+    type: json_assert
+    statements:
+      - 'json_equal({{split_view_1}}, {"output": "abcMIDDLExyz"})'
+
+  - name: Node 1 types LEFTPASSAGE immediately left of MIDDLE
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 3
+      text: "LEFTPASSAGE"
+
+  - name: Read Node 2's isolated view
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      split_view_2: result
+
+  - name: Node 2 must not have seen LEFTPASSAGE
+    type: json_assert
+    statements:
+      - 'json_equal({{split_view_2}}, {"output": "abcMIDDLExyz"})'
+
+  - name: Node 2 types RIGHTPASSAGE into the same position
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 3
+      text: "RIGHTPASSAGE"
+
+  - name: Read Node 2's view before it deletes
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      pre_delete_view_2: result
+
+  - name: Node 2's own passage must be in place before the delete
+    type: json_assert
+    statements:
+      - 'json_equal({{pre_delete_view_2}}, {"output": "abcRIGHTPASSAGEMIDDLExyz"})'
+
+  - name: Node 2 deletes MIDDLE, the text Node 1 is typing next to
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: delete_range
+    args:
+      start: 15
+      end: 21
+
+  - name: Read Node 1's view after the far side has written
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      late_view_1: result
+
+  - name: Node 1 must still be blind to the far side
+    type: json_assert
+    statements:
+      - 'json_equal({{late_view_1}}, {"output": "abcLEFTPASSAGEMIDDLExyz"})'
+
+  # ---- Heal ----
+
+  - name: Heal the partition
+    type: heal_peers
+    node: fugue-node-1
+    peers:
+      - fugue-node-2
+      - fugue-node-3
+
+  - name: Wait for the libp2p mesh to reform
+    type: wait
+    seconds: 12
+
+  - name: Wait for the three histories to converge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read the merged document on Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node1: result
+
+  - name: Read the merged document on Node 2
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node2: result
+
+  - name: Read the merged document on Node 3
+    type: call
+    node: fugue-node-3
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      merged_node3: result
+
+  - name: Assert all three replicas agree exactly
+    type: json_assert
+    statements:
+      - 'json_equal({{merged_node1}}, {{merged_node2}})'
+      - 'json_equal({{merged_node2}}, {{merged_node3}})'
+
+  - name: Read the merged length
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: get_length
+    outputs:
+      merged_len: result
+
+  # abc + LEFTPASSAGE + RIGHTPASSAGE + xyz, with MIDDLE's six characters gone.
+  - name: Assert nothing was lost or duplicated
+    type: json_assert
+    statements:
+      - 'json_equal({{merged_len}}, {"output": 29})'
+
+  - name: Read the text bracketing the merge on Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: text_range
+    args:
+      start: 0
+      end: 3
+    outputs:
+      head_node1: result
+
+  - name: Read the tail on Node 1
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: text_range
+    args:
+      start: 26
+      end: 29
+    outputs:
+      tail_node1: result
+
+  - name: Assert the untouched text still brackets the merge
+    type: json_assert
+    statements:
+      - 'json_equal({{head_node1}}, {"output": "abc"})'
+      - 'json_equal({{tail_node1}}, {"output": "xyz"})'
+
+  - name: Assert both passages survived contiguously on Node 1
+    type: assert
+    statements:
+      - "contains({{merged_node1}}, 'LEFTPASSAGE')"
+      - "contains({{merged_node1}}, 'RIGHTPASSAGE')"
+      - "not_contains({{merged_node1}}, 'MIDDLE')"
+
+  - name: Assert both passages survived contiguously on Node 2
+    type: assert
+    statements:
+      - "contains({{merged_node2}}, 'LEFTPASSAGE')"
+      - "contains({{merged_node2}}, 'RIGHTPASSAGE')"
+      - "not_contains({{merged_node2}}, 'MIDDLE')"
+
+  - name: Assert both passages survived contiguously on Node 3
+    type: assert
+    statements:
+      - "contains({{merged_node3}}, 'LEFTPASSAGE')"
+      - "contains({{merged_node3}}, 'RIGHTPASSAGE')"
+      - "not_contains({{merged_node3}}, 'MIDDLE')"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
