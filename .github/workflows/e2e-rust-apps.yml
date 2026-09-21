@@ -662,6 +662,10 @@ jobs:
             file: workflows/account-paired-device-founds-namespace.yml
             app: scaffolding-e2e
             registry_fetch: "false"
+          - workflow: account-revoked-device-repairs
+            file: workflows/account-revoked-device-repairs.yml
+            app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: account-namespace-left-unfollows
             file: workflows/account-namespace-left-unfollows.yml
             app: scaffolding-e2e

@@ -7,7 +7,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;
@@ -77,7 +77,7 @@ async fn deliver_group_key_to_member(
     )
     .await?;
 
-    info!(
+    debug!(
         group_id = %hex::encode(group_id.to_bytes()),
         %member,
         acked = report.acked_by.len(),
@@ -298,7 +298,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 };
                 report.observe("admit_tee_node", "MemberJoinedViaTeeAttestation");
 
-                info!(%member, ?group_id, "TEE node admitted via attestation");
+                debug!(%member, ?group_id, "TEE node admitted via attestation");
 
                 // Deliver the namespace group key to the freshly-admitted
                 // TEE node. A `MemberJoinedViaTeeAttestation` op is an

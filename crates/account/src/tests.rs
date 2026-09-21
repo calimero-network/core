@@ -11,6 +11,8 @@ mod support;
 mod account;
 mod device;
 mod domain;
+mod external;
+mod label;
 mod login;
 mod login_wire_fixture;
 mod pairing;

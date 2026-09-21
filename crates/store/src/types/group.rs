@@ -37,6 +37,11 @@ impl PredefinedEntry for key::GroupRevokedDevice {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupDeviceScopeFloor {
+    type Codec = Borsh;
+    type DataType<'a> = u32;
+}
+
 impl PredefinedEntry for key::GroupAccountKey {
     type Codec = Borsh;
     type DataType<'a> = key::GroupAccountKeyValue;
@@ -75,6 +80,16 @@ impl PredefinedEntry for key::NodeAccountDeviceCert {
 impl PredefinedEntry for key::GroupAccountDevice {
     type Codec = Borsh;
     type DataType<'a> = key::GroupAccountDeviceValue;
+}
+
+impl PredefinedEntry for key::GroupAccountDeviceLabel {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupAccountDeviceLabelValue;
+}
+
+impl PredefinedEntry for key::NodeRevokedFrom {
+    type Codec = Borsh;
+    type DataType<'a> = key::NodeRevokedFromValue;
 }
 
 impl PredefinedEntry for key::GroupAccountNamespace {

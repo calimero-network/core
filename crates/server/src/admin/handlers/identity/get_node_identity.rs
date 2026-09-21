@@ -5,7 +5,9 @@ use axum::Extension;
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_governance_store::{AccountDeviceRegistry, NodeDeviceRepository};
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{NodeIdentityApiResponse, NodeIdentityApiResponseData};
+use calimero_server_primitives::admin::{
+    NodeIdentityApiResponse, NodeIdentityApiResponseData, RevokedFromApiEntry,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use reqwest::StatusCode;
@@ -66,8 +68,11 @@ pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityPart
         };
         // Certified either by the account namespace's registry - which every
         // device of the account holds - or by a certificate an offline root
-        // signed and an operator imported.
-        let certified = in_registry || devices.imported_certificate()?.is_some();
+        // signed and an operator imported, if it names THIS device.
+        let certified = in_registry
+            || devices
+                .imported_proof()?
+                .is_some_and(|proof| proof.statement.device == held.device());
         return Ok(Some((
             held.account,
             held.genesis.root_sign_pk,
@@ -177,6 +182,23 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
     };
 
+    // A withdrawal releases this node's device silently, so without this the
+    // operator sees an unpaired node and no reason for it.
+    let revoked_from = match NodeDeviceRepository::new(store).revoked_from() {
+        Ok(marker) => marker.map(|(account, device)| RevokedFromApiEntry {
+            account_id: hex::encode(account.as_bytes()),
+            device_id: hex::encode(device.as_bytes()),
+        }),
+        Err(err) => {
+            error!(error = ?err, "Failed to read what withdrew this node's device");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read what withdrew this node's device".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: NodeIdentityApiResponse {
             data: NodeIdentityApiResponseData {
@@ -196,6 +218,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 holds_account_root,
                 device_certified,
                 account_namespace_id,
+                revoked_from,
             },
         },
     }
@@ -316,6 +339,53 @@ mod tests {
         assert!(node_identity(&store).expect("read").is_none());
     }
 
+    /// The proof `root_sk`'s holder publishes when it links `held`.
+    fn own_link(
+        root_sk: &PrivateKey,
+        held: &calimero_governance_store::NodeDevice,
+    ) -> AccountProof<DeviceCert> {
+        AccountProof {
+            genesis: held.genesis,
+            chain: vec![],
+            statement: DeviceCert::sign(
+                root_sk,
+                held.account,
+                held.device(),
+                &PrivateKey::from([0x77; 32]).public_key(),
+                &held.kem_public_key(),
+                0,
+                0,
+            )
+            .expect("sign"),
+        }
+    }
+
+    /// A stored certificate certifies the device it NAMES. One left behind by a
+    /// device this node no longer holds says nothing about the one it holds now.
+    #[test]
+    fn a_certificate_for_another_device_does_not_certify_this_one() {
+        let store = a_node_taking_part_somewhere();
+        let devices = NodeDeviceRepository::new(&store);
+        let alice = PrivateKey::from([0x53; 32]);
+        let held = devices
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS)],
+                AccountGenesis::new(alice.public_key()),
+            )
+            .expect("adopt");
+        let mut stale = own_link(&alice, &held);
+        stale.statement.device = DeviceId::from([0xD0; 32]);
+        devices
+            .store_imported_certificate(&borsh::to_vec(&stale).expect("encode"))
+            .expect("import");
+
+        let (.., certified) = node_identity(&store).expect("read").expect("present");
+        assert!(
+            !certified,
+            "a certificate for device D0 does not certify this device"
+        );
+    }
+
     /// The holder: it minted the root the account is derived from, so it is the
     /// one machine that can certify another device into it.
     #[test]
@@ -397,16 +467,15 @@ mod tests {
         devices
             .store_account_namespace(&namespace)
             .expect("pair-init records the account namespace");
+        let proof = AccountProof {
+            genesis: adopted.genesis,
+            chain: vec![],
+            statement: cert,
+        };
+        let scope =
+            calimero_governance_store::test_fixtures::device_scope(&holder_root, &cert, vec![], 0);
         let _recorded = calimero_governance_store::AccountDeviceRegistry::new(&store, namespace)
-            .record(
-                &AccountProof {
-                    genesis: adopted.genesis,
-                    chain: vec![],
-                    statement: cert,
-                },
-                &[],
-                0,
-            )
+            .record(&proof, &scope)
             .expect("fold the certified op");
 
         let (.., certified) = node_identity(&store).expect("read").expect("present");
@@ -419,10 +488,11 @@ mod tests {
     fn an_imported_certificate_certifies_a_root_free_device() {
         let store = a_node_taking_part_somewhere();
         let devices = NodeDeviceRepository::new(&store);
-        let _adopted = devices
+        let alice = PrivateKey::from([0x57; 32]);
+        let adopted = devices
             .ensure_enrolled_into(
                 &[ContextGroupId::from(NS)],
-                AccountGenesis::new(PrivateKey::from([0x57; 32]).public_key()),
+                AccountGenesis::new(alice.public_key()),
             )
             .expect("adopt");
 
@@ -430,7 +500,9 @@ mod tests {
         assert!(!certified);
 
         devices
-            .store_imported_certificate(&[0x01; 32])
+            .store_imported_certificate(
+                &borsh::to_vec(&own_link(&alice, &adopted)).expect("encode"),
+            )
             .expect("import the certificate signed elsewhere");
 
         let (.., certified) = node_identity(&store).expect("read").expect("present");

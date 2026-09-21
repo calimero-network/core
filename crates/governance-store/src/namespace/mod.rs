@@ -28,7 +28,6 @@ pub use self::core::{
     ResolvedNamespaceIdentity,
 };
 pub use self::dag::{NamespaceDagService, NamespaceHead};
-pub(crate) use self::governance::classify_report_readiness;
 pub use self::governance::{
     apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
     build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,

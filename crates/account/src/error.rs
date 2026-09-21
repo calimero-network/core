@@ -112,6 +112,20 @@ pub enum AccountError {
         /// The device the caller is asking about.
         expected: DeviceId,
     },
+    /// The label names a different account than the genesis.
+    #[error("device label is for a different account than the supplied genesis")]
+    LabelAccountMismatch,
+    /// The label is not validly signed by the root key at its claimed epoch.
+    #[error("device label has an invalid signature for its claimed key epoch")]
+    LabelSignatureInvalid,
+    /// The label names a different device than the caller is asking about.
+    #[error("device label is for device {named}, not the {expected} being asked about")]
+    LabelDeviceMismatch {
+        /// The device the proof actually names.
+        named: DeviceId,
+        /// The device the caller is asking about.
+        expected: DeviceId,
+    },
     /// The warrant is not validly signed by the device key it names.
     #[error("warrant has an invalid signature for the device key it names")]
     WarrantSignatureInvalid,

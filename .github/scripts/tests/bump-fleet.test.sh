@@ -414,6 +414,120 @@ echo "no surface at all"
 D=$(mkfixture bare); echo '{}' > "$D/package.json"; commit "$D"
 expect_exit 3 "no contract anywhere" bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
 
+# ─────────────────────────────────────────────────────────────────────────────
+echo "tee — the fleet image bundles a merod"
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Two versions in ONE object, which is what makes this different from `tauri`:
+# there the document's own `version` is the first key and position is enough, so
+# a positional rewrite here would move whichever version happened to come first.
+# These cases pin that both fields move, and that the OTHERS do not.
+mkversions() {
+  mkdir -p "$1/mero-tee"
+  cat > "$1/mero-tee/versions.json" <<EOF
+{
+  "traefikVersion": "3.5.0",
+  "nodeExporterVersion": "1.9.1",
+  "vectorVersion": "0.50.0",
+  "imageVersion": "$2",
+  "merodVersion": "$3"
+}
+EOF
+}
+
+# The full shape mero-tee actually has: the image version is ONE version in
+# THREE files, and the docs state both pins. A surface that moved only the JSON
+# produced a pull request that failed the consumer's own guards — which is what
+# the first generated one would have done.
+mkkms() {
+  mkdir -p "$1/mero-kms"
+  cat > "$1/mero-kms/Cargo.toml" <<EOF
+[package]
+name = "mero-kms-phala"
+version = "$2"
+
+[dependencies]
+serde = { version = "1.0.200" }
+EOF
+  cat > "$1/Cargo.lock" <<EOF
+[[package]]
+name = "serde"
+version = "1.0.200"
+
+[[package]]
+name = "mero-kms-phala"
+version = "$2"
+EOF
+}
+mkteedocs() {
+  mkdir -p "$1/docs/src/content/docs/operate" "$1/docs/dist"
+  cat > "$1/docs/src/content/docs/operate/config-reference.mdx" <<EOF
+| \`imageVersion\` | the image, currently \`$2\` |
+| \`merodVersion\` | the core tag, currently \`$3\` |
+
+The interim 25.10 release reached EOL and was dropped.
+EOF
+  echo "imageVersion 9.9.9" > "$1/docs/dist/index.html"
+}
+
+D=$(mkfixture tee-companions); mkversions "$D" 2.3.56 0.11.0-rc.35
+mkkms "$D" 2.3.56; mkteedocs "$D" 2.3.56 0.11.0-rc.35; commit "$D"
+expect_exit 0 "the companion files move with the image version" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-kms/Cargo.toml" 'version = "2.3.57"' "  the KMS package version tracks imageVersion"
+expect_file "$D/mero-kms/Cargo.toml" 'serde = { version = "1.0.200" }' "  a dependency version is NOT rewritten"
+expect_file "$D/Cargo.lock" 'name = "mero-kms-phala"' "  the lock still names the package"
+expect_absent "$D/Cargo.lock" 'version = "2.3.56"' "  the lock entry moved"
+expect_file "$D/Cargo.lock" 'version = "1.0.200"' "  an unrelated lock entry did not"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`2.3.57`' "  the docs state the new image"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`0.11.0-rc.39`' "  ...and the new core tag"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" 'interim 25.10 release' "  prose about another version is untouched"
+expect_file "$D/docs/dist/index.html" 'imageVersion 9.9.9' "  built output under dist/ is left alone"
+
+# Docs drift on their own, and a sweep that matched the OLD value would do
+# nothing in exactly that case — which is the state mero-tee was really in, two
+# releases apart. Anchoring on the key makes it self-healing.
+D=$(mkfixture tee-docs-drifted); mkversions "$D" 2.3.56 0.11.0-rc.35
+mkkms "$D" 2.3.56; mkteedocs "$D" 2.3.52 0.11.0-rc.33; commit "$D"
+expect_exit 0 "already-drifted docs still get corrected" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`0.11.0-rc.39`' "  a doc two releases behind is repaired"
+expect_absent "$D/docs/src/content/docs/operate/config-reference.mdx" '2.3.52' "  ...and its stale image version is gone"
+
+# A repository with no KMS crate and no docs is not an error: the surface is
+# shaped for mero-tee but must not hard-fail on a consumer without those.
+D=$(mkfixture tee-json-only); mkversions "$D" 2.3.56 0.11.0-rc.35; commit "$D"
+expect_exit 0 "versions.json alone still bumps" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"merodVersion": "0.11.0-rc.39"' "  the pin moved anyway"
+
+D=$(mkfixture tee-image); mkversions "$D" 2.3.56 0.11.0-rc.35; commit "$D"
+expect_exit 0 "the bundled merod moves" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"merodVersion": "0.11.0-rc.39"' "  merodVersion took the release"
+expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.3.57"' "  imageVersion patch-incremented"
+expect_file "$D/mero-tee/versions.json" '"traefikVersion": "3.5.0"' "  an unrelated version is untouched"
+expect_file "$D/mero-tee/versions.json" '"vectorVersion": "0.50.0"' "  ...and so is the one after it"
+
+# Re-running a release must be a no-op, not a second image version. Without the
+# early exit this would walk imageVersion forward on every re-run.
+D=$(mkfixture tee-already); mkversions "$D" 2.3.57 0.11.0-rc.39; commit "$D"
+expect_exit 4 "already bundling this merod" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.3.57"' "  the image version did NOT drift on a re-run"
+
+# `nothing to do here` and `this does not apply here` stay distinguishable.
+D=$(mkfixture tee-absent); echo '{}' > "$D/package.json"; commit "$D"
+expect_exit 3 "no versions.json is not-applicable, not failure" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+
+# A version with no patch field would silently print `2.4.0` from awk's empty $3
+# if the increment were not explicit about it.
+D=$(mkfixture tee-two-field); mkversions "$D" 2.4 0.11.0-rc.35; commit "$D"
+expect_exit 0 "a two-field image version still bumps" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.4.1"' "  missing patch reads as 0 and becomes 1"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

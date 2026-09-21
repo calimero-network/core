@@ -390,6 +390,10 @@ pub(crate) fn setup(
         // endorsement node-level, so neither half ever named a namespace.
         .route("/account/pair-init", post(account::pair_init::handler))
         .route(
+            "/account/sign-with-root",
+            post(account::sign_with_root::handler),
+        )
+        .route(
             "/account/pair-complete",
             post(account::pair_complete::handler),
         )
@@ -406,6 +410,18 @@ pub(crate) fn setup(
         .route(
             "/account/devices/{device_id}/relink",
             post(account::relink::handler),
+        )
+        // The other direction, which relink deliberately cannot do: replace the
+        // scope outright, so an application can be taken away again.
+        .route(
+            "/account/devices/{device_id}/scope",
+            put(account::rescope::handler),
+        )
+        // The name every device of the account renders, as opposed to whatever
+        // alias one node happens to hold locally.
+        .route(
+            "/account/devices/{device_id}/label",
+            put(account::label::handler),
         )
         .route(
             "/namespaces/{namespace_id}/account/revoke",
@@ -766,15 +782,20 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     use calimero_context::error::ContextError as Refusal;
 
     Some(match err {
-        Refusal::PairingStatementInvalid { .. } | Refusal::PairingCodeMismatch { .. } => {
-            StatusCode::BAD_REQUEST
-        }
-        Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
-            StatusCode::CONFLICT
-        }
-        Refusal::PairingNotTheAccountHolder { .. } | Refusal::PairingDeviceRevoked { .. } => {
-            StatusCode::FORBIDDEN
-        }
+        Refusal::PairingStatementInvalid { .. }
+        | Refusal::PairingCodeMismatch { .. }
+        | Refusal::ScopeReplacementEmpty
+        | Refusal::ScopeReplacementTooLarge { .. }
+        | Refusal::ScopeReplacementUnknownApplication { .. }
+        | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
+        Refusal::PairingNoNamespaceIdentity { .. }
+        | Refusal::PairingNoScopeKey { .. }
+        | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,
+        Refusal::PairingNotTheAccountHolder { .. }
+        | Refusal::PairingDeviceRevoked { .. }
+        | Refusal::ScopeReplacementHoldsTheRoot { .. }
+        | Refusal::DeviceLabelNotOwn { .. } => StatusCode::FORBIDDEN,
+        Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
         Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
         _ => return None,
     })
@@ -855,8 +876,12 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // typed 403 with its (safe, intended) message instead of letting it fall
     // through to the generic 500 below. This is what a caller sees when it
     // lists a group the node hasn't joined / isn't in.
-    if let Some(calimero_context::error::ContextError::NotAGroupMember { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    // `DeviceOutOfScope` rides along: it is the same kind of "no" about this
+    // node's own standing, and a `500` would read as a server fault.
+    if let Some(
+        calimero_context::error::ContextError::NotAGroupMember { .. }
+        | calimero_context::error::ContextError::DeviceOutOfScope { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
@@ -1202,6 +1227,20 @@ mod parse_api_error_tests {
         );
     }
 
+    #[test]
+    fn a_narrowed_device_maps_to_403_with_message() {
+        let err = calimero_context::error::ContextError::DeviceOutOfScope {
+            group_id: "test-group".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("narrowed its application scope"),
+            "expected the typed reason to reach the client, got: {}",
+            api.message
+        );
+    }
+
     /// The whole point of the typed variant: a caller that got the init params
     /// wrong must be told so. Before this, the same case answered
     /// `500 {"error":"Internal server error"}` and the reason lived only in the
@@ -1476,6 +1515,67 @@ mod parse_api_error_tests {
                 "the refusal has to say what to do next; got: {}",
                 api.message
             );
+        }
+
+        /// A write from a device that was revoked and has no root to fall back to
+        /// is a client error naming the revocation, never a 500.
+        #[test]
+        fn a_revoked_device_with_no_root_maps_to_403_and_names_the_revocation() {
+            let api = parse_api_error(
+                eyre::Report::from(calimero_governance_store::NodeDeviceError::Revoked {
+                    device: "d".to_owned(),
+                    account: "a".to_owned(),
+                    namespaces: "[ns]".to_owned(),
+                })
+                .wrap_err("failed to mint this node's account credential"),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("revoked from account a"),
+                "{}",
+                api.message
+            );
+        }
+
+        /// A scope replacement that names no application at all. `400`: the
+        /// caller has to fix the payload, and `all` is the request they meant.
+        #[test]
+        fn an_empty_scope_replacement_maps_to_400() {
+            let api = parse_api_error(ContextError::ScopeReplacementEmpty.into());
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        }
+
+        /// A scope replacement naming the device that holds the account root.
+        /// `403`: the request was understood and can never work, on any node.
+        #[test]
+        fn rescoping_the_root_holding_device_maps_to_403() {
+            let api = parse_api_error(
+                ContextError::ScopeReplacementHoldsTheRoot {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("holds the account root")
+                    && api.message.contains("nothing to replace"),
+                "the refusal has to say why there is nothing to do; got: {}",
+                api.message
+            );
+        }
+
+        /// A device whose scope epochs are spent. `409`: the request is understood
+        /// and conflicts with a state no retry moves.
+        #[test]
+        fn a_spent_scope_epoch_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::ScopeEpochExhausted {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+            assert!(api.message.contains("last scope epoch"), "{}", api.message);
         }
 
         /// A relink names a device this node holds no certificate for. `404`,

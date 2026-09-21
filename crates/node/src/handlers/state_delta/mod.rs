@@ -1509,7 +1509,7 @@ async fn request_missing_deltas(
                     let storage_delta: calimero_storage::delta::CausalDelta =
                         borsh::from_slice(&delta)?;
 
-                    info!(
+                    debug!(
                         %context_id,
                         delta_id = ?missing_id,
                         author = %response_author,
@@ -1947,7 +1947,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
 
     let delta_id = buffered.id;
 
-    info!(
+    debug!(
         %context_id,
         delta_id = ?delta_id,
         author = %buffered.author_id,

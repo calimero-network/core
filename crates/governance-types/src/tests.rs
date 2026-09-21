@@ -259,9 +259,10 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
     );
 }
 
-/// GroupOp ordinal 24 - AccountDeviceLinked (genesis + empty chain + cert + endorsement)
+/// GroupOp ordinal 24 - AccountDeviceLinked (genesis + empty chain + cert +
+/// endorsement + the root-signed scope the link was made under)
 const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
-    0x18, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -283,7 +284,18 @@ const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// GroupOp ordinal 25 - AccountDeviceUnlinked { account: [0;32], device: [0;32], proof: None }
@@ -342,8 +354,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 13,
-        "the ordinals frozen below are the v13 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 15,
+        "the ordinals frozen below are the v15 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -599,7 +611,11 @@ fn group_op_discriminants_are_golden() {
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED,
-        GroupOp::AccountDeviceLinked { ref chain, .. } if chain.is_empty(),
+        GroupOp::AccountDeviceLinked {
+            ref chain,
+            ref scope,
+            ..
+        } if chain.is_empty() && scope.chain.is_empty() && scope.statement.scope_epoch == 0,
         24
     );
     check_group_op!(
@@ -2334,6 +2350,79 @@ fn an_oversized_device_scope_application_list_is_refused() {
     assert!(matches!(op.validate(), Err(GovernanceError::Bounds(_))));
 }
 
+/// The narrowing op carries the same root-signed scope off the same wire, so an
+/// uncapped application list would be the same amplification one variant along.
+#[test]
+fn an_oversized_descoped_application_list_is_refused() {
+    let root = PrivateKey::from([0x27; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::from([0x28; 32]);
+    let applications =
+        vec![ApplicationId::from([0x29; 32]); bounds::MAX_DEVICE_SCOPE_APPLICATIONS + 1];
+    let scope = DeviceScope::sign(&root, account, device, applications, 1, 0).expect("sign");
+
+    let op = SignedGroupOp::sign(
+        &PrivateKey::from([0x2A; 32]),
+        ContextGroupId::from([0x2B; 32]),
+        vec![],
+        1,
+        GroupOp::AccountDeviceDescoped {
+            account,
+            device,
+            application: None,
+            scope: Box::new(AccountProof {
+                genesis,
+                chain: vec![],
+                statement: scope,
+            }),
+        },
+    )
+    .expect("sign the op");
+
+    assert!(matches!(op.validate(), Err(GovernanceError::Bounds(_))));
+}
+
+/// Appended last, so every ordinal before it is untouched and the narrowing op
+/// decodes back to the scope its publisher signed.
+#[test]
+fn the_descoped_op_is_the_last_ordinal_and_round_trips() {
+    let root = PrivateKey::from([0x2C; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::from([0x2D; 32]);
+    let scope = DeviceScope::sign(
+        &root,
+        account,
+        device,
+        vec![ApplicationId::from([0x2E; 32])],
+        3,
+        0,
+    )
+    .expect("sign");
+    let target = ApplicationId::from([0x2F; 32]);
+    let op = GroupOp::AccountDeviceDescoped {
+        account,
+        device,
+        application: Some(target),
+        scope: Box::new(AccountProof {
+            genesis,
+            chain: vec![],
+            statement: scope,
+        }),
+    };
+
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(bytes[0], 31, "the variant must be appended, never inserted");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("decode");
+    assert!(matches!(
+        decoded,
+        GroupOp::AccountDeviceDescoped { ref scope, application, .. }
+            if scope.statement.scope_epoch == 3 && application == Some(target)
+    ));
+    assert_eq!(op.op_kind_label(), "account_device_descoped");
+}
+
 /// All-zero credential, so the printed vector is reproducible.
 /// A fixed endorsement, so the golden vector below is reproducible.
 fn deterministic_endorsement() -> AdmitterEndorsement {
@@ -2620,4 +2709,88 @@ fn only_the_two_bootstrap_variants_travel_in_the_clear() {
         founder: calimero_account::AccountId::from([5u8; 32]),
         account: deterministic_credential(),
     }));
+}
+
+/// A label rides in from the wire before any authorization runs and is rendered
+/// verbatim in a listing, so the shape is decided here, not at the handler.
+#[test]
+fn a_device_label_is_refused_unless_it_is_trimmed_non_empty_and_printable() {
+    let root = PrivateKey::from([0x30; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::from([0x31; 32]);
+
+    let labelled = |label: &str| {
+        SignedGroupOp::sign(
+            &PrivateKey::from([0x32; 32]),
+            ContextGroupId::from([0x33; 32]),
+            vec![],
+            1,
+            GroupOp::AccountDeviceLabelled {
+                account,
+                device,
+                label: label.to_owned(),
+                label_epoch: 0,
+                root_proof: None,
+            },
+        )
+        .expect("sign the op")
+    };
+
+    assert!(labelled("Work laptop").validate().is_ok());
+    for refused in [
+        "",
+        "   ",
+        " untrimmed",
+        "untrimmed ",
+        "two\nlines",
+        "bell\u{7}",
+        &"x".repeat(bounds::MAX_DEVICE_LABEL_BYTES + 1),
+    ] {
+        assert!(
+            matches!(
+                labelled(refused).validate(),
+                Err(GovernanceError::Bounds(_))
+            ),
+            "{refused:?} is not a usable device name"
+        );
+    }
+}
+
+/// Appended last, so every ordinal before it is untouched and the root-signed
+/// authority a holder attaches survives the round trip.
+#[test]
+fn the_labelled_op_is_the_last_ordinal_and_round_trips() {
+    let root = PrivateKey::from([0x34; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::from([0x35; 32]);
+    let statement =
+        calimero_account::DeviceLabel::sign(&root, account, device, "Phone".to_owned(), 2, 0)
+            .expect("sign the label");
+    let op = GroupOp::AccountDeviceLabelled {
+        account,
+        device,
+        label: "Phone".to_owned(),
+        label_epoch: 2,
+        root_proof: Some(Box::new(AccountProof {
+            genesis,
+            chain: vec![],
+            statement,
+        })),
+    };
+
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(bytes[0], 32, "the variant must be appended, never inserted");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("decode");
+    assert!(matches!(
+        decoded,
+        GroupOp::AccountDeviceLabelled { ref label, label_epoch, ref root_proof, .. }
+            if label == "Phone"
+                && label_epoch == 2
+                && root_proof.as_ref().is_some_and(|proof| proof
+                    .authorises(account, device)
+                    .is_ok())
+    ));
+    assert_eq!(op.op_kind_label(), "account_device_labelled");
 }

@@ -28,7 +28,7 @@ use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use super::admin_creds::AdminCredArgs;
@@ -357,7 +357,7 @@ impl InitCommand {
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
-        let path = root_args.home.join(root_args.node_name);
+        let path = root_args.node_home()?;
 
         // Idempotent short-circuit FIRST: a plain re-run against an already
         // initialized node stays a credential-free no-op (provisioning
@@ -703,7 +703,7 @@ impl InitCommand {
                 let device = NodeDeviceRepository::new(&store)
                     .adopt_account(genesis)
                     .wrap_err("could not mint this node's device for that account")?;
-                info!(
+                debug!(
                     account = %device.account,
                     device = %device.device(),
                     "Minted this node's device under an account rooted elsewhere; \
@@ -715,7 +715,7 @@ impl InitCommand {
             let account_root = NodeDeviceRepository::new(&store)
                 .provision_account_root()
                 .wrap_err("could not provision this node's account root")?;
-            info!(
+            debug!(
                 account = %account_root.account(),
                 "Provisioned the node's account root",
             );
@@ -806,7 +806,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("provisioned"),
+            node_name: Some(camino::Utf8PathBuf::from("provisioned")),
         };
 
         let init =
@@ -845,7 +845,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("rootless"),
+            node_name: Some(camino::Utf8PathBuf::from("rootless")),
         };
 
         let init = InitCommand::try_parse_from([

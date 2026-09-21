@@ -53,6 +53,8 @@ enum AccountSubcommands {
     Warrant(WarrantCommand),
     /// Sign a session request offline, for a client that holds no node
     LoginStatement(LoginStatementCommand),
+    /// Sign a verifier's payload with the account root, offline
+    SignWithRoot(SignWithRootCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -131,6 +133,7 @@ impl AccountCommand {
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
             AccountSubcommands::LoginStatement(cmd) => cmd.run(),
+            AccountSubcommands::SignWithRoot(cmd) => cmd.run(root_args).await,
         }
     }
 }
@@ -466,23 +469,12 @@ pub struct LoginStatementCommand {
 
 /// Map the `--audience` spelling onto the variant it names.
 ///
-/// Split out because it is the only branching this command does, and each arm
-/// binds a session to a different surface: getting it wrong hands a token
-/// obtained by one client to another, which is the whole reason the field is
-/// signed over.
-///
-/// A web origin is passed through verbatim rather than normalized. The verifier
-/// compares it byte for byte against what the browser sends, so "helpfully"
-/// stripping a trailing slash here would produce a statement the browser's own
-/// origin no longer matches.
+/// A thin alias over [`calimero_account::Audience::from_spelling`], kept because
+/// the call sites read better for it — the mapping itself lives in the crate so
+/// this command and the admin API cannot bind different surfaces for one string,
+/// which would hand a proof minted by one client to another.
 fn parse_audience(spelling: &str) -> calimero_account::Audience {
-    match spelling.trim() {
-        "cli" => calimero_account::Audience::Cli,
-        other if other.starts_with("http://") || other.starts_with("https://") => {
-            calimero_account::Audience::WebOrigin(other.to_owned())
-        }
-        other => calimero_account::Audience::CodeSigningId(other.to_owned()),
-    }
+    calimero_account::Audience::from_spelling(spelling)
 }
 
 impl LoginStatementCommand {
@@ -626,6 +618,91 @@ impl SignCertCommand {
     }
 }
 
+/// Sign a payload an outside verifier specified, with the account root.
+///
+/// The offline counterpart to `POST /admin-api/account/sign-with-root`, and the
+/// cold-storage half of it: with `--from` this needs no node, no home and no
+/// init, which is the case a running node cannot serve — a root that lives on
+/// paper because it deliberately lives nowhere else.
+///
+/// **The verifier owns the format, not core.** mdma already specifies what the
+/// root must sign and shipped before this did, so the payload comes from the
+/// caller verbatim and this supplies only the domain. A signature core finds
+/// tidier is a signature that fails at the far end.
+///
+/// **`--domain` is a name from a closed set.** Signing caller-supplied bytes
+/// under a caller-supplied prefix is a signing oracle over the one key that can
+/// certify a device, which is account takeover. See
+/// `calimero_account::ExternalSigningDomain`.
+#[derive(Debug, Parser)]
+pub struct SignWithRootCommand {
+    /// Which verifier's domain to sign under.
+    #[arg(long, value_name = "NAME", value_parser = parse_external_domain)]
+    domain: calimero_account::ExternalSigningDomain,
+
+    /// The bytes to sign after the domain, hex-encoded.
+    ///
+    /// For mdma this is the hex of its challenge string — the nonce it sealed
+    /// and handed out, UTF-8 then hex. Hex rather than raw text because the
+    /// field is bytes: a verifier that signs something non-textual should not
+    /// need a second flag.
+    #[arg(long, value_name = "HEX")]
+    payload: String,
+
+    /// Read the account root from a 24-word recovery phrase at PATH instead of
+    /// from a node's store. `-` reads the phrase from stdin.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+/// Resolve `--domain` at parse time, so an unknown name fails with clap's own
+/// error listing the accepted set rather than after a store has been opened.
+fn parse_external_domain(name: &str) -> Result<calimero_account::ExternalSigningDomain, String> {
+    calimero_account::ExternalSigningDomain::from_name(name).ok_or_else(|| {
+        format!(
+            "unknown signing domain; expected one of: {}",
+            calimero_account::ExternalSigningDomain::names().join(", ")
+        )
+    })
+}
+
+impl SignWithRootCommand {
+    async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let payload = hex::decode(self.payload.trim())
+            .wrap_err("--payload must be an even-length hex string")?;
+
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+
+        let (public_key, signature) =
+            calimero_account::sign_external(root.signing_key(), self.domain, &payload)
+                .map_err(|err| eyre::eyre!("failed to sign: {err}"))?;
+
+        // Base64 for the signature and hex for the key, because that is the pair
+        // the consuming verifiers expect — mdma's `verify_login_proof` decodes
+        // exactly this way, and re-encoding at the client is a step that can be
+        // got wrong silently.
+        use base64::Engine as _;
+        println!(
+            "{}",
+            base64::engine::general_purpose::STANDARD.encode(signature)
+        );
+        println!();
+        println!("Account:    {}", root.account());
+        println!("Root key:   {}", hex::encode(public_key.digest()));
+        println!();
+        // The domain is printed without its trailing NUL, which is a separator
+        // rather than something a reader needs to see.
+        let domain_bytes = self.domain.as_bytes();
+        let printable = String::from_utf8_lossy(&domain_bytes[..domain_bytes.len() - 1]);
+        println!(
+            "Signed `{printable}` followed by the payload. Hand the signature and root key \n\
+             to the verifier that issued the payload; it needs nothing else from this machine."
+        );
+
+        Ok(())
+    }
+}
+
 impl RevokeProofCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         let device = parse_device(&self.device)?;
@@ -677,7 +754,14 @@ impl RevokeProofCommand {
 /// CLI on a replacement machine generally cannot reproduce. Saying so is more
 /// useful than failing to decode a row.
 async fn open_store(root_args: &RootArgs) -> EyreResult<Store> {
-    let path = root_args.home.join(&root_args.node_name);
+    // The `--node`-less case reaches here only for a command that was *not*
+    // given `--from`, so the missing name is worth naming alongside the
+    // alternative: the offline signers want a phrase, not a node.
+    let path = root_args.node_home().wrap_err(
+        "This command reads the account root from a node's store. Pass \
+         `--from <PHRASE-FILE>` to sign from a recovery phrase instead, which \
+         needs no node.",
+    )?;
     if !ConfigFile::exists(&path) {
         bail!("Node is not initialized in {path:?}");
     }

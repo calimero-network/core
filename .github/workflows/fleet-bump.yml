@@ -72,8 +72,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Two surfaces move when core releases: `cargo` pins the SDK by git tag;
-      # `tauri` ships a merod binary via merod-config.json and needs its own bump.
+      # Three surfaces move when core releases: `cargo` pins the SDK by git tag;
+      # `tauri` ships a merod binary via merod-config.json; `tee` bundles one into
+      # the confidential-VM image via mero-tee/versions.json. The last two link no
+      # SDK at all, so a release reaches them only through this list — which is how
+      # mero-tee sat four releases behind without anything reporting it.
       - name: Select the targets
         id: pick
         env:
@@ -84,7 +87,7 @@ jobs:
             [ .consumers[]
               | . as $c
               | $c.surfaces[]
-              | select(. == "cargo" or . == "tauri")
+              | select(. == "cargo" or . == "tauri" or . == "tee")
               | { repo: $c.repo, surface: . } ]
             | if $only == "" then .
               else
@@ -209,6 +212,8 @@ jobs:
 
           if [ "$SURFACE" = "tauri" ]; then
             title="chore: bundle merod $VERSION and cut a new desktop version"
+          elif [ "$SURFACE" = "tee" ]; then
+            title="chore(image): bundle merod $VERSION and cut a new image version"
           else
             title="chore(deps): pin the Calimero SDK to $VERSION"
           fi
@@ -264,6 +269,34 @@ jobs:
           Opened automatically by \`fleet-bump\` in
           [calimero-network/core](https://github.com/calimero-network/core) when
           \`$VERSION\` was released.
+          PR_BODY
+          elif [ "$SURFACE" = "tee" ]; then
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Bundles merod \`$VERSION\` into the fleet image, and cuts an image version
+          that ships it.
+
+          This repository links no Calimero SDK. It builds the confidential-VM image
+          the hosted fleet runs, and that image **bundles a merod binary** —
+          \`mero-tee/versions.json\` names both: \`merodVersion\` is the binary,
+          \`imageVersion\` is the image's own version. So a core release means two
+          things here, the same as it does for the desktop app: bundle the new merod,
+          and cut a version that ships it. An image whose contents changed under an
+          unchanged \`imageVersion\` cannot be told apart from the one already
+          deployed, which is how a fleet keeps quietly running the old binary.
+
+          **This repository was missing from the fleet list until \`0.11.0-rc.39\`.**
+          It sat on merod \`0.11.0-rc.35\` across four releases — 37 commits,
+          including every account, session and warrant change that delegated
+          execution is built out of — so the hosted fleet could not run that path at
+          all. Nothing reported it, because a pin nobody bumps is read by no test and
+          no build.
+
+          **Check the upgrade range before merging.** Breaking changes between the
+          pinned version and this one are a real risk for a fleet carrying state:
+          merobox validates a uniform, new-from-scratch network by construction, and
+          does not exercise mixed-version interop or data written by an older binary.
+          If the fleet's state is disposable this is routine; if it is not, it wants a
+          deliberate answer rather than a merge.
           PR_BODY
           elif [ -f Cargo.toml ] && [ ! -f logic/Cargo.toml ]; then
           # The monorepo. One pull request stands in for what used to be

@@ -3,10 +3,11 @@ use calimero_server_primitives::admin::{
     AccountPairInitApiRequest, AdmitJoinApiRequest, AdmitJoinApiResponse,
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse,
-    ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
-    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RelinkDeviceApiRequest,
-    RelinkDeviceApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
+    JoinGroupApiRequest, JoinNamespaceApiResponse, LabelDeviceApiRequest, LabelDeviceApiResponse,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
+    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
+    RelinkDeviceApiRequest, RelinkDeviceApiResponse, RescopeDeviceApiRequest,
+    RescopeDeviceApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -141,6 +142,44 @@ where
             .connection
             .post(
                 &format!("admin-api/account/devices/{device_id}/relink"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Replace a device's scope, narrowing or widening what it reaches.
+    ///
+    /// The counterpart of [`Self::relink_device`], which is add-only: this is the
+    /// only way to take an application away from a device without spending its id.
+    pub async fn rescope_device(
+        &self,
+        device_id: &str,
+        request: RescopeDeviceApiRequest,
+    ) -> Result<RescopeDeviceApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/account/devices/{device_id}/scope"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Name a device of this account, so every device of it renders the same one.
+    ///
+    /// Run on the node holding the account root to name any device; a paired node
+    /// may name only its own device.
+    pub async fn label_device(
+        &self,
+        device_id: &str,
+        request: LabelDeviceApiRequest,
+    ) -> Result<LabelDeviceApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/account/devices/{device_id}/label"),
                 request,
             )
             .await?;

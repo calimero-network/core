@@ -39,7 +39,7 @@ use calimero_server_primitives::admin::{
 };
 use eyre::WrapErr as _;
 use futures_util::StreamExt;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -191,7 +191,7 @@ async fn perform(
     let signer = local_signer(ctx_client, &context_id).await?;
     let executor_proof =
         calimero_context::join_credential::build(ctx_client.datastore(), &group_id, &signer)
-            .map_err(|err| eyre::eyre!("this node could not present its own credential: {err}"))?;
+            .wrap_err("this node could not present its own credential")?;
 
     let delegation = calimero_account::Delegation {
         warrant: Box::new(warrant),
@@ -247,7 +247,7 @@ async fn perform(
         &delegation,
     )?;
 
-    info!(
+    debug!(
         %context_id,
         method = %req.method,
         author = %warrant.author_account,

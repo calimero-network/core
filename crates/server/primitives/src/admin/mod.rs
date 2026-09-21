@@ -2066,6 +2066,103 @@ pub struct AccountPairInitApiRequest {
     pub account_namespace: Option<String>,
 }
 
+// ---- Sign with the account root, for an outside verifier ----
+//
+// A verifier that is not a Calimero node — mdma, for one — defines its own wire
+// format and shipped before core did. Core's job here is to produce the exact
+// bytes that verifier already checks, so this takes the payload from the caller
+// and supplies only the domain.
+//
+// The domain is a NAME from a closed set rather than bytes, which is the whole
+// security property: see `calimero_account::ExternalSigningDomain`.
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountSignWithRootApiRequest {
+    /// Which verifier's domain to sign under, e.g. `mdma.account-link`.
+    ///
+    /// A name, never the domain bytes. A caller that could send bytes could send
+    /// any bytes, and the account root is the one key that can certify a device
+    /// — so an unconstrained signing oracle over it is account takeover.
+    pub domain: String,
+    /// The bytes to sign after the domain, hex-encoded.
+    ///
+    /// Opaque to the node, which is the point: the caller knows the verifier's
+    /// format and core does not need to. For mdma this is the UTF-8 of the
+    /// challenge it issued.
+    pub payload: String,
+}
+
+/// Longest payload this will sign, in bytes.
+///
+/// A bound rather than none, because the payload is attacker-influenced and
+/// every byte is hashed into a signature. mdma's nonces are ~120 bytes; 4 KiB
+/// leaves room for a verifier with a larger statement without making this a
+/// general-purpose bulk signer.
+pub const MAX_EXTERNAL_SIGN_PAYLOAD_BYTES: usize = 4096;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSignWithRootApiResponse {
+    pub data: AccountSignWithRootApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSignWithRootApiResponseData {
+    /// The account root's public key, 64 hex chars.
+    ///
+    /// Returned because every consumer needs it beside the signature and cannot
+    /// derive it themselves — the secret never leaves the node.
+    pub root_public_key: String,
+    /// The signature over `domain ‖ payload`, base64.
+    ///
+    /// Base64 rather than hex, matching what the verifiers consuming it expect;
+    /// mdma's `verify_login_proof` calls `base64.b64decode` on this field.
+    pub signature: String,
+    /// The account the signing key belongs to, 64 hex chars. Convenience: a
+    /// verifier derives the same value from `rootPublicKey`.
+    pub account_id: String,
+}
+
+impl Validate for AccountSignWithRootApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // Resolved here as well as in the handler so an unknown domain is a 400
+        // listing what is accepted, rather than a bare failure deeper in.
+        if calimero_account::ExternalSigningDomain::from_name(&self.domain).is_none() {
+            errors.push(ValidationError::InvalidFormat {
+                field: "domain",
+                reason: format!(
+                    "unknown signing domain; expected one of: {}",
+                    calimero_account::ExternalSigningDomain::names().join(", ")
+                ),
+            });
+        }
+
+        // Hex of any length, so no `validate_hex_string` (which pins a byte
+        // count). An odd-length or non-hex string is a caller bug worth naming.
+        if !self.payload.len().is_multiple_of(2)
+            || !self.payload.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            errors.push(ValidationError::InvalidFormat {
+                field: "payload",
+                reason: "payload must be an even-length hex string".into(),
+            });
+        } else if self.payload.len() / 2 > MAX_EXTERNAL_SIGN_PAYLOAD_BYTES {
+            errors.push(ValidationError::InvalidFormat {
+                field: "payload",
+                reason: format!(
+                    "payload must decode to at most {MAX_EXTERNAL_SIGN_PAYLOAD_BYTES} bytes"
+                ),
+            });
+        }
+
+        errors
+    }
+}
+
 impl Validate for AccountPairInitApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
@@ -2350,6 +2447,109 @@ pub struct RelinkDeviceApiResponse {
     pub data: RelinkDeviceApiResponseData,
 }
 
+/// Replace a device's scope, narrowing or widening what it reaches.
+///
+/// The counterpart of [`RelinkDeviceApiRequest`], which is add-only. Run on the
+/// node that holds the account root; the device need not be online.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RescopeDeviceApiRequest {
+    pub scope: DeviceScopeApiRequest,
+}
+
+/// `"all"`, or `{"only": ["<application id>", ...]}`. Tagged rather than a list
+/// whose emptiness means everything, which makes the slip the widest ask.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum DeviceScopeApiRequest {
+    /// Every application, now and later.
+    All,
+    /// Only these, hex-encoded. An empty list is refused.
+    Only(Vec<String>),
+}
+
+impl Validate for RescopeDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // What a string names, and whether an empty `only` is a scope at all, is
+        // the handler's parse - exactly as on `relink`.
+        Vec::new()
+    }
+}
+
+/// The scope the device now holds, and what each namespace did about it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescopeDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was rescoped.
+    pub device_id: String,
+    /// The scope after the request. Empty means every application.
+    pub applications: Vec<String>,
+    /// Namespaces the new scope no longer reaches, and whether the key rotated.
+    ///
+    /// Reported per namespace for the same reason `linkedIn` is: publication is
+    /// per-DAG, so which namespaces a replacement reached has to be visible.
+    pub descoped: Vec<RescopeDescopeApiEntry>,
+    /// Namespaces the device was linked into by this call.
+    pub linked_in: Vec<RelinkOutcomeApiEntry>,
+    /// Namespaces nothing was published into, and why.
+    pub skipped: Vec<RelinkSkipApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescopeDescopeApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// `false` means the device stopped writing there but still holds the key it
+    /// had, until an admin rotates.
+    pub key_rotated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescopeDeviceApiResponse {
+    pub data: RescopeDeviceApiResponseData,
+}
+
+/// Name a device of this account, for a listing to render.
+///
+/// Run on the node holding the account root to name any device; a paired node
+/// is accepted only for that device's own id.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LabelDeviceApiRequest {
+    /// Trimmed, non-empty, bounded and free of control characters.
+    pub label: String,
+}
+
+impl Validate for LabelDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // What counts as a name is the handler's parse - exactly as on `rescope`.
+        Vec::new()
+    }
+}
+
+/// The name that was published, and the epoch that orders it against a rename
+/// another device of the account made at the same time.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was named.
+    pub device_id: String,
+    pub label: String,
+    pub label_epoch: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelDeviceApiResponse {
+    pub data: LabelDeviceApiResponseData,
+}
+
 /// One device of this account, joined from the node-local certificate cache and
 /// the live bindings of every namespace this node takes part in.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2368,6 +2568,10 @@ pub struct AccountDeviceApiEntry {
     /// Hex-encoded ids of the namespaces currently holding a live binding for
     /// this device. Empty for a certified device not yet bound anywhere.
     pub namespaces: Vec<String>,
+    /// The replicated name the account gave this device, absent while it has
+    /// none. Every device of the account reads the same one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3148,6 +3352,53 @@ pub struct SetSubgroupVisibilityApiResponse {}
 mod tests {
     use super::*;
 
+    /// The two shapes the route accepts. An empty `only` is refused by the
+    /// handler, which answers `ScopeReplacementEmpty` as a `400`.
+    #[test]
+    fn a_scope_replacement_reads_all_and_only() {
+        let all: RescopeDeviceApiRequest =
+            serde_json::from_value(serde_json::json!({"scope": "all"})).expect("`all` is a scope");
+        assert!(matches!(all.scope, DeviceScopeApiRequest::All));
+
+        let named = hex::encode([0x11; 32]);
+        let only: RescopeDeviceApiRequest =
+            serde_json::from_value(serde_json::json!({"scope": {"only": [named.clone()]}}))
+                .expect("`only` is a scope");
+        assert!(matches!(only.scope, DeviceScopeApiRequest::Only(ref apps) if apps == &[named]));
+    }
+
+    /// `revokedFrom` is skipped rather than serialized as null, so a node no
+    /// revocation has reached answers exactly as it did without the field.
+    #[test]
+    fn an_identity_with_no_revocation_carries_no_revoked_from_key() {
+        let data = NodeIdentityApiResponseData {
+            account_id: hex::encode([0x11; 32]),
+            device_id: None,
+            public_key: hex::encode([0x22; 32]),
+            account_root_public_key: hex::encode([0x33; 32]),
+            device_agreement_key: None,
+            holds_account_root: true,
+            device_certified: false,
+            account_namespace_id: None,
+            revoked_from: None,
+        };
+        let json = serde_json::to_value(&data).expect("serialize");
+        assert!(json.get("revokedFrom").is_none());
+
+        let data = NodeIdentityApiResponseData {
+            revoked_from: Some(RevokedFromApiEntry {
+                account_id: hex::encode([0x44; 32]),
+                device_id: hex::encode([0x55; 32]),
+            }),
+            ..data
+        };
+        let json = serde_json::to_value(&data).expect("serialize");
+        assert_eq!(
+            json["revokedFrom"]["deviceId"],
+            serde_json::json!(hex::encode([0x55; 32]))
+        );
+    }
+
     #[test]
     fn create_device_id_alias_request_round_trips_through_json() {
         let device_id = DeviceId::from([0x11; 32]);
@@ -3738,6 +3989,21 @@ pub struct NodeIdentityApiResponseData {
     /// holder before it exists, so an invite can carry it; recorded at pair-init.
     #[serde(default)]
     pub account_namespace_id: Option<String>,
+
+    /// The account that withdrew this node's device, absent on a node no
+    /// revocation has reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_from: Option<RevokedFromApiEntry>,
+}
+
+/// Which account withdrew this node's device, and which device it was.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokedFromApiEntry {
+    /// Hex-encoded `AccountId` the device spoke for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was withdrawn.
+    pub device_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

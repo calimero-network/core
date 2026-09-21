@@ -78,7 +78,7 @@ impl RunCommand {
             bail!("--exit-on-eof is only supported on unix");
         }
 
-        let path = root_args.home.join(root_args.node_name);
+        let path = root_args.node_home()?;
 
         if !ConfigFile::exists(&path) {
             bail!("Node is not initialized in {:?}", path);

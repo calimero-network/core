@@ -86,7 +86,8 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             chain,
             cert,
             endorsement,
-        } => account_ops::apply_device_linked(ctx, genesis, chain, cert, endorsement)?,
+            scope,
+        } => account_ops::apply_device_linked(ctx, genesis, chain, cert, endorsement, scope)?,
         GroupOp::AccountDeviceUnlinked {
             account,
             device,
@@ -103,6 +104,26 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::AccountNamespaceLeft { namespace } => {
             account_ops::apply_namespace_left(ctx, namespace)?
         }
+        GroupOp::AccountDeviceDescoped {
+            account,
+            device,
+            application,
+            scope,
+        } => account_ops::apply_device_descoped(ctx, account, device, *application, scope)?,
+        GroupOp::AccountDeviceLabelled {
+            account,
+            device,
+            label,
+            label_epoch,
+            root_proof,
+        } => account_ops::apply_device_labelled(
+            ctx,
+            account,
+            device,
+            label,
+            *label_epoch,
+            root_proof.as_deref(),
+        )?,
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,
