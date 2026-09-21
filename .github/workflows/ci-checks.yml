@@ -119,6 +119,16 @@ jobs:
       - name: Naming gate
         run: ./scripts/check-naming.sh
 
+      # A fleet node ships its journal to a store operators can read, and merod
+      # runs at INFO there (`DEFAULT_DIRECTIVES`; nothing sets RUST_LOG on a
+      # node image). So an `info!` naming an account, or logging an app's own
+      # output, puts user data in front of an operator -- which the product
+      # promises never happens. `WASM_LOG` did exactly that, and
+      # `perform_intent` logged which account performed which method on the
+      # path every relay has open by design.
+      - name: No user data at info level
+        run: python3 scripts/check-no-user-data-at-info.py
+
       # No-warnings gate: every workspace target (libs, bins, tests, examples)
       # must be clippy- and rustc-warning-free. `--features calimero-storage/testing`
       # pulls in that crate's feature-gated `testing` harness so it's linted in the

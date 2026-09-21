@@ -11,7 +11,7 @@ use calimero_server_primitives::admin::{
     RelinkOutcomeApiEntry, RelinkSkipApiEntry,
 };
 use reqwest::StatusCode;
-use tracing::info;
+use tracing::debug;
 
 use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -47,7 +47,7 @@ pub async fn handler(
         }
     }
 
-    info!(
+    debug!(
         device = %device_id_str,
         extending_by = applications.len(),
         "relinking a device of this account"
@@ -94,7 +94,7 @@ pub async fn handler(
                 });
             }
 
-            info!(
+            debug!(
                 account = %resp.account,
                 device = %resp.device,
                 linked = linked_in.len(),

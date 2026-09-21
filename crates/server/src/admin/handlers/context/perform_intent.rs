@@ -39,7 +39,7 @@ use calimero_server_primitives::admin::{
 };
 use eyre::WrapErr as _;
 use futures_util::StreamExt;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -247,7 +247,7 @@ async fn perform(
         &delegation,
     )?;
 
-    info!(
+    debug!(
         %context_id,
         method = %req.method,
         author = %warrant.author_account,

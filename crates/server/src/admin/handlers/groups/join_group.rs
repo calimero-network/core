@@ -6,7 +6,7 @@ use calimero_context_client::group::JoinGroupRequest;
 use calimero_server_primitives::admin::{
     JoinGroupApiRequest, JoinGroupApiResponse, JoinGroupApiResponseData,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -30,7 +30,7 @@ pub async fn handler(
     match result {
         Ok(resp) => {
             let group_id_hex = hex::encode(resp.group_id.to_bytes());
-            info!(group_id=%group_id_hex, member=%resp.member_identity, "Joined group successfully");
+            debug!(group_id=%group_id_hex, member=%resp.member_identity, "Joined group successfully");
             ApiResponse {
                 payload: JoinGroupApiResponse {
                     data: JoinGroupApiResponseData {

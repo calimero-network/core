@@ -15,7 +15,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     member_account_in_namespace, AccountBindingRepository, AccountDeviceRegistry,
@@ -122,7 +122,7 @@ async fn publish_link_and_key(
     let report =
         crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, link)
             .await?;
-    info!(
+    debug!(
         namespace_id = ?namespace,
         %device,
         published = report.is_some(),
@@ -357,7 +357,7 @@ pub async fn withdraw_device_in(
              an admin rotates"
         );
     }
-    info!(
+    debug!(
         namespace_id = ?namespace,
         %device,
         what,

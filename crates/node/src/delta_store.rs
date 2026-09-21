@@ -688,7 +688,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         let total_elapsed_ms = apply_start.elapsed().as_secs_f64() * 1000.0;
 
         // Log with unique marker for parsing: DELTA_APPLY_TIMING
-        info!(
+        debug!(
             context_id = %self.context_id,
             delta_id = %Hash::from(delta.id),
             action_count = delta.payload.len(),
