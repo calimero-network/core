@@ -7,7 +7,7 @@
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::fugue_text::TextOp;
+use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, TextOp, Undo};
 use calimero_storage::collections::{Counter, FugueText, LwwRegister, UnorderedMap};
 
 #[app::state(emits = FugueEditorEvent)]
@@ -26,17 +26,40 @@ pub enum FugueEditorEvent {
         owner: String,
     },
 
+    /// Ids, not positions: the payload is replayed on the RECEIVING node, where a
+    /// concurrent edit has already moved everything the author counted.
     TextInserted {
-        position: usize,
+        ids: Span,
         text: String,
         editor: String,
     },
 
     TextDeleted {
-        start: usize,
-        end: usize,
+        ids: Vec<Span>,
+        text: String,
         editor: String,
     },
+}
+
+/// A run of character ids, mirroring `IdRange`, which has no `AbiType` - the same
+/// reason `Change` mirrors `TextOp`. `replica` is decimal text because it is a full
+/// `u64` and a JSON number loses the top bits in a browser.
+#[derive(Clone, Debug, Serialize, Deserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct Span {
+    pub replica: String,
+    pub counter: u32,
+    pub len: u32,
+}
+
+impl From<IdRange> for Span {
+    fn from(range: IdRange) -> Self {
+        Self {
+            replica: range.start.0.to_string(),
+            counter: range.start.1,
+            len: range.len,
+        }
+    }
 }
 
 /// One step of an editor change, walking the document as it was before the change.
@@ -60,6 +83,14 @@ impl From<Change> for TextOp {
 
 fn encode_identity(identity: &[u8; 32]) -> String {
     bs58::encode(identity).into_string()
+}
+
+fn emit_deleted(removed: &Removed, editor: &str) {
+    app::emit!(FugueEditorEvent::TextDeleted {
+        ids: removed.ids.iter().copied().map(Span::from).collect(),
+        text: removed.text.clone(),
+        editor: editor.to_owned(),
+    });
 }
 
 #[app::logic]
@@ -103,15 +134,17 @@ impl FugueEditorState {
             editor
         );
 
-        self.document.insert_str(position, &text)?;
+        let minted = self.document.insert_str(position, &text)?;
 
         self.edit_count.increment()?;
 
-        app::emit!(FugueEditorEvent::TextInserted {
-            position,
-            text: text.clone(),
-            editor,
-        });
+        if let Some(ids) = minted {
+            app::emit!(FugueEditorEvent::TextInserted {
+                ids: ids.into(),
+                text,
+                editor,
+            });
+        }
 
         Ok(())
     }
@@ -122,26 +155,24 @@ impl FugueEditorState {
         let steps = self.document.apply_delta(&ops)?;
         self.edit_count.increment()?;
 
-        // The cursor walk `FugueText::apply_delta` just made: each event carries
-        // the position the document held once the events before it were applied.
+        // A non-empty insert always mints, so the steps pair with the ops by kind.
         let editor = encode_identity(&env::device_id());
-        let mut position = 0;
-        for op in &ops {
-            match *op {
-                TextOp::Retain(count) => position += count,
-                TextOp::Insert(ref text) => {
-                    app::emit!(FugueEditorEvent::TextInserted {
-                        position,
-                        text: text.clone(),
-                        editor: editor.clone(),
-                    });
-                    position += text.chars().count();
+        let mut typed = ops.iter().filter_map(|op| match *op {
+            TextOp::Insert(ref text) if !text.is_empty() => Some(text),
+            _ => None,
+        });
+        for step in &steps {
+            match *step {
+                Undo::Inserted(ids) => {
+                    if let Some(text) = typed.next() {
+                        app::emit!(FugueEditorEvent::TextInserted {
+                            ids: ids.into(),
+                            text: text.clone(),
+                            editor: editor.clone(),
+                        });
+                    }
                 }
-                TextOp::Delete(count) => app::emit!(FugueEditorEvent::TextDeleted {
-                    start: position,
-                    end: position + count,
-                    editor: editor.clone(),
-                }),
+                Undo::Removed(ref removed) => emit_deleted(removed, &editor),
             }
         }
 
@@ -164,5 +195,19 @@ impl FugueEditorState {
 
     pub fn get_length(&self) -> app::Result<usize> {
         self.document.len().map_err(Into::into)
+    }
+
+    /// Where an event's ids sit in THIS replica's document, one rebuild for the lot.
+    pub fn resolve_ids(&self, ids: Vec<Span>) -> app::Result<Vec<usize>> {
+        let anchors = ids
+            .iter()
+            .map(|span| {
+                Ok(Anchor::Char {
+                    id: (span.replica.parse()?, span.counter),
+                    bias: Bias::Before,
+                })
+            })
+            .collect::<app::Result<Vec<Anchor>>>()?;
+        Ok(self.document.resolve_many(&anchors)?)
     }
 }

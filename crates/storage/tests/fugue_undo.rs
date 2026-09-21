@@ -89,6 +89,10 @@ fn undo_delete__reinserts_as_new_characters_where_the_text_was() {
                 id: (0, 6),
                 bias: Bias::Before
             },
+            ids: vec![IdRange {
+                start: (0, 6),
+                len: 5
+            }],
         }
     );
     let (_, before) = insert(&bob, BOB, 0, "AA");
@@ -341,5 +345,40 @@ fn apply_delta__undo_round_trips_a_change_over_astral_characters() {
         fugue_text_in(&store, device(ALICE)),
         "\u{1F600}\u{1F680}\u{0301}\u{1F602}!",
         "undoing the undo must redo the change"
+    );
+}
+
+/// A delete can take characters from several writers at once, so the one anchor
+/// cannot name them; the runs can, and they are what an app event carries.
+#[test]
+fn removed__names_every_run_the_delete_took() {
+    let store = fugue_genesis("removed_ids", "");
+    let _first = insert(&store, ALICE, 0, "abc");
+    let _second = act(&store, BOB, |doc| {
+        doc.insert_str_with_replica(1, u64::from(BOB), "XY")
+            .unwrap()
+    });
+    assert_eq!(fugue_text_in(&store, device(ALICE)), "aXYbc");
+
+    let (removed, _delta) = act(&store, ALICE, |doc| doc.delete_range(0, 5).unwrap());
+    let removed = removed.unwrap();
+    assert_eq!(removed.text, "aXYbc");
+    assert_eq!(
+        removed.ids,
+        vec![
+            IdRange {
+                start: (u64::from(ALICE), 0),
+                len: 1
+            },
+            IdRange {
+                start: (u64::from(BOB), 0),
+                len: 2
+            },
+            IdRange {
+                start: (u64::from(ALICE), 1),
+                len: 2
+            },
+        ],
+        "consecutive ids coalesce, a change of writer starts a run"
     );
 }

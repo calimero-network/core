@@ -191,11 +191,13 @@ pub struct IdRange {
 }
 
 /// What a delete took out, and where from: the input to [`FugueText::insert_str_at`].
-/// JSON: `{"text":"...","anchor":<Anchor>}`.
+/// JSON: `{"text":"...","anchor":<Anchor>,"ids":[<IdRange>]}`.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Removed {
     pub text: String,
     pub anchor: Anchor,
+    /// The characters taken, as runs of consecutive ids: a delete can span several.
+    pub ids: Vec<IdRange>,
 }
 
 /// One step of an editor change, walking the document as it was before the change.
@@ -729,8 +731,28 @@ impl Draft {
                 id: *first,
                 bias: Bias::Before,
             },
+            ids: id_runs(picked),
         }))
     }
+}
+
+/// Runs of consecutive ids, so one delete names what it took without listing every character.
+fn id_runs(picked: &[(RawId, char)]) -> Vec<IdRange> {
+    let mut runs: Vec<IdRange> = Vec::new();
+    for &((replica, counter), _) in picked {
+        let extends = runs.last().is_some_and(|last| {
+            last.start.0 == replica
+                && u64::from(last.start.1) + u64::from(last.len) == u64::from(counter)
+        });
+        match runs.last_mut() {
+            Some(last) if extends => last.len += 1,
+            _ => runs.push(IdRange {
+                start: (replica, counter),
+                len: 1,
+            }),
+        }
+    }
+    runs
 }
 
 /// The gap `anchor` names in `tree`; a deleted character names the gap it left.

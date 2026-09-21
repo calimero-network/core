@@ -16,19 +16,51 @@ pub struct FugueCollabState {
     pub document: FugueText,
 }
 
-/// `position` is the index the AUTHOR saw, so a replica cannot apply it blindly.
+/// Ids, not positions: the payload is replayed on the RECEIVING node, where a
+/// concurrent edit has already moved everything the author counted.
 #[app::event]
 pub enum FugueCollabEvent {
     TextInserted {
-        position: usize,
+        ids: Span,
         text: String,
         editor: String,
     },
     TextDeleted {
-        start: usize,
-        end: usize,
+        ids: Vec<Span>,
+        text: String,
         editor: String,
     },
+}
+
+/// A run of character ids, mirroring `IdRange`, which has no `AbiType` - the same
+/// reason `Change` mirrors `TextOp`. `replica` is decimal text because it is a full
+/// `u64` and a JSON number loses the top bits in a browser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct Span {
+    pub replica: String,
+    pub counter: u32,
+    pub len: u32,
+}
+
+impl From<IdRange> for Span {
+    fn from(range: IdRange) -> Self {
+        Self {
+            replica: range.start.0.to_string(),
+            counter: range.start.1,
+            len: range.len,
+        }
+    }
+}
+
+impl Span {
+    /// The gap before the run's first character, which is what a subscriber places.
+    fn anchor(&self) -> app::Result<Anchor> {
+        Ok(Anchor::Char {
+            id: (self.replica.parse()?, self.counter),
+            bias: Bias::Before,
+        })
+    }
 }
 
 /// One step of an editor change, walking the document as it was before the change.
@@ -74,41 +106,34 @@ impl FugueCollabState {
     }
 
     pub fn insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
-        self.document.insert_str(position, &text)?;
-
-        app::emit!(FugueCollabEvent::TextInserted {
-            position,
-            text,
-            editor: encode_identity(&env::device_id()),
-        });
-
+        let minted = self.document.insert_str(position, &text)?;
+        if let Some(ids) = minted {
+            self.emit_inserted(ids, text);
+        }
         Ok(())
     }
 
     /// Deletes the half-open character range `[start, end)`.
     pub fn delete_range(&mut self, start: usize, end: usize) -> app::Result<()> {
-        self.document.delete_range(start, end)?;
-
-        app::emit!(FugueCollabEvent::TextDeleted {
-            start,
-            end,
-            editor: encode_identity(&env::device_id()),
-        });
-
+        if let Some(removed) = self.document.delete_range(start, end)? {
+            self.emit_deleted(&removed);
+        }
         Ok(())
     }
 
     /// Like `insert_text`, returning an opaque token `undo_insert` takes.
     pub fn insert_text_tracked(&mut self, position: usize, text: String) -> app::Result<String> {
         let minted = self.document.insert_str(position, &text)?;
-        self.emit_inserted(position, text);
+        if let Some(ids) = minted {
+            self.emit_inserted(ids, text);
+        }
         encode_token(&minted)
     }
 
     pub fn undo_insert(&mut self, token: String) -> app::Result<()> {
         if let Some(minted) = decode_token::<Option<IdRange>>(&token)? {
             if let Some(removed) = self.document.delete_ids(&minted)? {
-                self.emit_deleted(&removed)?;
+                self.emit_deleted(&removed);
             }
         }
         Ok(())
@@ -118,39 +143,37 @@ impl FugueCollabState {
     pub fn delete_range_tracked(&mut self, start: usize, end: usize) -> app::Result<String> {
         let removed = self.document.delete_range(start, end)?;
         if let Some(removed) = &removed {
-            self.emit_deleted(removed)?;
+            self.emit_deleted(removed);
         }
         encode_token(&removed)
     }
 
     pub fn undo_delete(&mut self, token: String) -> app::Result<()> {
         if let Some(removed) = decode_token::<Option<Removed>>(&token)? {
-            let position = self.document.resolve(&removed.anchor)?;
-            let _minted = self
+            if let Some(ids) = self
                 .document
-                .insert_str_at(&removed.anchor, &removed.text)?;
-            self.emit_inserted(position, removed.text);
+                .insert_str_at(&removed.anchor, &removed.text)?
+            {
+                self.emit_inserted(ids, removed.text);
+            }
         }
         Ok(())
     }
 
-    fn emit_inserted(&self, position: usize, text: String) {
+    fn emit_inserted(&self, ids: IdRange, text: String) {
         app::emit!(FugueCollabEvent::TextInserted {
-            position,
+            ids: ids.into(),
             text,
             editor: encode_identity(&env::device_id()),
         });
     }
 
-    /// The removed characters' gap is where they started; a peer's text typed inside them is not counted.
-    fn emit_deleted(&self, removed: &Removed) -> app::Result<()> {
-        let start = self.document.resolve(&removed.anchor)?;
+    fn emit_deleted(&self, removed: &Removed) {
         app::emit!(FugueCollabEvent::TextDeleted {
-            start,
-            end: start + removed.text.chars().count(),
+            ids: removed.ids.iter().copied().map(Span::from).collect(),
+            text: removed.text.clone(),
             editor: encode_identity(&env::device_id()),
         });
-        Ok(())
     }
 
     /// A whole editor transaction in one call, returning an opaque token `undo_delta` takes.
@@ -158,26 +181,19 @@ impl FugueCollabState {
         let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
         let steps = self.document.apply_delta(&ops)?;
 
-        // The cursor walk `FugueText::apply_delta` just made: each event carries
-        // the position the document held once the events before it were applied.
-        let editor = encode_identity(&env::device_id());
-        let mut position = 0;
-        for op in &ops {
-            match *op {
-                TextOp::Retain(count) => position += count,
-                TextOp::Insert(ref text) => {
-                    app::emit!(FugueCollabEvent::TextInserted {
-                        position,
-                        text: text.clone(),
-                        editor: editor.clone(),
-                    });
-                    position += text.chars().count();
+        // A non-empty insert always mints, so the steps pair with the ops by kind.
+        let mut typed = ops.iter().filter_map(|op| match *op {
+            TextOp::Insert(ref text) if !text.is_empty() => Some(text),
+            _ => None,
+        });
+        for step in &steps {
+            match *step {
+                Undo::Inserted(ids) => {
+                    if let Some(text) = typed.next() {
+                        self.emit_inserted(ids, text.clone());
+                    }
                 }
-                TextOp::Delete(count) => app::emit!(FugueCollabEvent::TextDeleted {
-                    start: position,
-                    end: position + count,
-                    editor: editor.clone(),
-                }),
+                Undo::Removed(ref removed) => self.emit_deleted(removed),
             }
         }
 
@@ -188,6 +204,23 @@ impl FugueCollabState {
     pub fn undo_delta(&mut self, token: String) -> app::Result<String> {
         let steps: Vec<Undo> = decode_token(&token)?;
         let redo = self.document.undo(&steps)?;
+
+        // Re-inserting non-empty text always mints, so these pair by kind too.
+        let mut restored = steps.iter().rev().filter_map(|step| match *step {
+            Undo::Removed(ref removed) => Some(&removed.text),
+            Undo::Inserted(_) => None,
+        });
+        for step in &redo {
+            match *step {
+                Undo::Inserted(ids) => {
+                    if let Some(text) = restored.next() {
+                        self.emit_inserted(ids, text.clone());
+                    }
+                }
+                Undo::Removed(ref removed) => self.emit_deleted(removed),
+            }
+        }
+
         encode_token(&redo)
     }
 
@@ -213,6 +246,15 @@ impl FugueCollabState {
 
     pub fn resolve_anchor(&self, anchor: String) -> app::Result<usize> {
         Ok(self.document.resolve(&decode_token::<Anchor>(&anchor)?)?)
+    }
+
+    /// Where an event's ids sit in THIS replica's document, one rebuild for the lot.
+    pub fn resolve_ids(&self, ids: Vec<Span>) -> app::Result<Vec<usize>> {
+        let anchors = ids
+            .iter()
+            .map(Span::anchor)
+            .collect::<app::Result<Vec<Anchor>>>()?;
+        Ok(self.document.resolve_many(&anchors)?)
     }
 }
 
@@ -245,13 +287,34 @@ mod tests {
         let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
         assert_eq!(kinds, ["TextDeleted", "TextInserted"]);
 
+        // The replica is this host's device id, so only the run within it is fixed.
         let payload = |at: usize| -> Value { from_slice(&events[at].data).expect("JSON payload") };
-        assert_eq!(payload(0)["start"], json!(6));
-        assert_eq!(payload(0)["end"], json!(11));
-        assert_eq!(payload(1)["position"], json!(6));
-        assert_eq!(payload(1)["text"], json!("there"));
+        let deleted = payload(0);
+        assert_eq!(deleted["text"], json!("world"));
+        assert_eq!(deleted["ids"].as_array().expect("one run").len(), 1);
+        assert_eq!(deleted["ids"][0]["counter"], json!(6));
+        assert_eq!(deleted["ids"][0]["len"], json!(5));
+
+        let inserted = payload(1);
+        assert_eq!(inserted["text"], json!("there"));
+        assert_eq!(inserted["ids"]["counter"], json!(11));
+        assert_eq!(inserted["ids"]["len"], json!(5));
+        assert_eq!(inserted["ids"]["replica"], deleted["ids"][0]["replica"]);
 
         assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello there");
+
+        // What a subscriber does with the payload: ids to local positions.
+        let span = |value: &Value| Span {
+            replica: value["replica"].as_str().expect("replica").to_owned(),
+            counter: u32::try_from(value["counter"].as_u64().expect("counter")).expect("u32"),
+            len: u32::try_from(value["len"].as_u64().expect("len")).expect("u32"),
+        };
+        let placed = app
+            .view(|s| s.resolve_ids(vec![span(&deleted["ids"][0]), span(&inserted["ids"])]))
+            .unwrap();
+        // The replacement text was typed at the gap the delete left, and Fugue orders
+        // it BEFORE the tombstones, so the deleted run now reads as the document end.
+        assert_eq!(placed, [11, 6]);
     }
 
     /// An editor sends whole transactions, so the transaction is what it undoes.
@@ -301,10 +364,10 @@ mod tests {
             .map(|e| (e.kind.clone(), from_slice(&e.data).expect("JSON payload")))
             .collect();
         let expected = [
-            ("TextDeleted", json!({"start": 6, "end": 11})),
-            ("TextInserted", json!({"position": 6, "text": "world"})),
-            ("TextInserted", json!({"position": 0, "text": ">> "})),
-            ("TextDeleted", json!({"start": 0, "end": 3})),
+            ("TextDeleted", json!({"text": "world"})),
+            ("TextInserted", json!({"text": "world"})),
+            ("TextInserted", json!({"text": ">> "})),
+            ("TextDeleted", json!({"text": ">> "})),
         ];
         assert_eq!(seen.len(), expected.len(), "{seen:?}");
         for ((kind, payload), (want_kind, want)) in seen.iter().zip(&expected) {
