@@ -30,13 +30,10 @@ tempfile.workspace = true
 camino.workspace = true
 calimero-store-rocksdb.workspace = true
 
-# `bench = false` on every non-criterion target: a bare `cargo bench -p <crate>`
-# otherwise hands them to libtest, which rejects criterion's own CLI flags.
+# The lib target is the only non-criterion one `cargo bench` would select (test
+# targets already default to `bench = false`), and libtest rejects criterion's
+# own CLI flags.
 [lib]
-bench = false
-
-[[test]]
-name = "rocksdb"
 bench = false
 
 [[bench]]

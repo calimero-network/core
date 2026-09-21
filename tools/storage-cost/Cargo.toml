@@ -8,21 +8,14 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
-# Only the criterion target is a benchmark: otherwise `cargo bench` also hands
-# the lib and test targets to libtest, which rejects criterion's own CLI flags.
+# The lib and bin targets are the non-criterion ones `cargo bench` would select
+# (test targets already default to `bench = false`), and libtest rejects
+# criterion's own CLI flags.
 [lib]
 bench = false
 
 [[bin]]
 name = "storage-cost"
-bench = false
-
-[[test]]
-name = "flat_curve"
-bench = false
-
-[[test]]
-name = "reproducible"
 bench = false
 
 [dependencies]

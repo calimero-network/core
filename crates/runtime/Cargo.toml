@@ -51,25 +51,10 @@ wat.workspace = true
 [features]
 profiling = []
 
-# `bench = false` on every non-criterion target: a bare `cargo bench -p <crate>`
-# otherwise hands them to libtest, which rejects criterion's own CLI flags.
+# The lib target is the only non-criterion one `cargo bench` would select (test
+# targets already default to `bench = false`), and libtest rejects criterion's
+# own CLI flags.
 [lib]
-bench = false
-
-[[test]]
-name = "chat_wall"
-bench = false
-
-[[test]]
-name = "cost_is_flat"
-bench = false
-
-[[test]]
-name = "crdt_conformance"
-bench = false
-
-[[test]]
-name = "tracing_logs"
 bench = false
 
 [[bench]]
