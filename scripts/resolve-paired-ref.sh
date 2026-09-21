@@ -15,7 +15,7 @@ REF_KEY="${REF_KEY:-sdk-ref}"
 
 # 1. explicit `<REF_KEY>:` in the PR body
 if [ -n "${PR_BODY:-}" ]; then
-  ref="$(printf '%s\n' "$PR_BODY" | sed -n "s/^[[:space:]]*$REF_KEY:[[:space:]]*\\([^[:space:]]*\\).*/\\1/p" | head -n1)"
+  ref="$(printf '%s\n' "$PR_BODY" | sed -n "/^[[:space:]]*$REF_KEY:[[:space:]]*\\([^[:space:]]*\\).*/{s//\\1/p;q;}")"
   if [ -n "$ref" ]; then
     # The ref is fed to `actions/checkout`; restrict it to a safe git-ref shape so
     # a crafted PR body can't smuggle anything through. Reject illegal characters,

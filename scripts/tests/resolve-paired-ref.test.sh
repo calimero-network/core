@@ -35,6 +35,7 @@ check "another key's line is ignored"       0 "main"        "devtools-ref" "sdk-
 check "same-named branch is the fallback"   0 "feat/paired" "devtools-ref" "no ref here"               "feat/paired"
 check "the body wins over the branch"       0 "fix/y"       "devtools-ref" "devtools-ref: fix/y"       "feat/paired"
 check "no match resolves to the default"    0 "main"        "devtools-ref" ""                          "feat/absent"
+check "the first of two lines wins"         0 "fix/y"       "devtools-ref" $'devtools-ref: fix/y\ndevtools-ref: fix/z'  ""
 check "an unsafe ref is refused"            1 ""            "devtools-ref" "devtools-ref: --upload-pack=x" ""
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

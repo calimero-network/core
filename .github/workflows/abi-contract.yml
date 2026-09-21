@@ -20,6 +20,8 @@ on:
   push:
     branches: [master]
   pull_request:
+    # edited: a changed `devtools-ref:` line in the PR body must re-resolve the pair.
+    types: [opened, synchronize, reopened, edited]
     paths:
       - "crates/wasm-abi/**"
       - "apps/**"

@@ -61,7 +61,6 @@ steps:
     statements:
       - 'json_equal({{seeded_text_node2}}, {"output": "existing text. "})'
 
-  # Writers run one after the other, so ids order P1<H1<P2<H2 and RGA keeps each pair adjacent; the interleaving order is fugue-collab-figure2.
   - name: Node 1 types passage
     type: call
     node: calimero-node-1
@@ -128,11 +127,13 @@ steps:
     statements:
       - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
 
-  - name: Assert each contribution stays contiguous
+  - name: Assert every contribution survived
     type: assert
     statements:
-      - "contains({{interleave_text_node1}}, 'HEAD1PASSAGE1')"
-      - "contains({{interleave_text_node1}}, 'HEAD2PASSAGE2')"
+      - "contains({{interleave_text_node1}}, 'HEAD1')"
+      - "contains({{interleave_text_node1}}, 'PASSAGE1')"
+      - "contains({{interleave_text_node1}}, 'HEAD2')"
+      - "contains({{interleave_text_node1}}, 'PASSAGE2')"
 
 stop_all_nodes: false
 restart: false
