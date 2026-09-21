@@ -5,7 +5,7 @@
 // Each probe uses a different subset of this module.
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
@@ -26,66 +26,34 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-pub fn newest_mtime(app_dir: &Path) -> Option<std::time::SystemTime> {
-    fn visit(dir: &Path, newest: &mut Option<std::time::SystemTime>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, newest);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                    *newest = Some(newest.map_or(m, |cur| cur.max(m)));
-                }
-            }
-        }
-    }
-    let mut newest = None;
-    visit(&app_dir.join("src"), &mut newest);
-    for f in ["Cargo.toml", "build.rs"] {
-        if let Ok(m) = std::fs::metadata(app_dir.join(f)).and_then(|m| m.modified()) {
-            newest = Some(newest.map_or(m, |cur| cur.max(m)));
-        }
-    }
-    newest
-}
-
-/// Build `apps/<app>` if its wasm is stale, and return the wasm bytes.
+/// Build `apps/<app>` and return the wasm bytes. The build runs every time:
+/// cargo already knows the whole dependency graph these probes measure, and a
+/// local mtime check over the app's own sources does not.
 pub fn guest_wasm(app: &str) -> Vec<u8> {
     let app_dir = workspace_root().join("apps").join(app);
     let wasm_path = app_dir.join(format!("res/{}.wasm", app.replace('-', "_")));
 
-    let wasm_mtime = std::fs::metadata(&wasm_path)
-        .and_then(|m| m.modified())
-        .ok();
-    let needs_build = match (wasm_mtime, newest_mtime(&app_dir)) {
-        (Some(w), Some(s)) => w < s,
-        _ => true,
-    };
-    if needs_build {
-        let output = Command::new(env!("CARGO"))
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "cargo-mero",
-                "--",
-                "mero",
-                "build",
-                "--manifest-path",
-            ])
-            .arg(app_dir.join("Cargo.toml"))
-            .output()
-            .expect("failed to spawn cargo mero build");
-        assert!(
-            output.status.success(),
-            "building {app} wasm failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "cargo-mero",
+            "--",
+            "mero",
+            "build",
+            "--manifest-path",
+        ])
+        .arg(app_dir.join("Cargo.toml"))
+        .output()
+        .expect("failed to spawn cargo mero build");
+    assert!(
+        output.status.success(),
+        "building {app} wasm failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
     std::fs::read(&wasm_path).unwrap_or_else(|e| panic!("{}: {e}", wasm_path.display()))
 }
 
