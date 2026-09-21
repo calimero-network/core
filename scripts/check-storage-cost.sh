@@ -50,14 +50,13 @@ cargo run --quiet -p storage-cost --bin storage-cost --release >"$measured"
 # side, which is how an added or deleted workload announces itself instead of
 # silently passing.
 deltas="$(jq -r -s '
-  def num: if . == null then null else . end;
   .[0] as $old | .[1] as $new
   | [ (($old + $new) | keys[]) as $w
       | ((($old[$w].sizes // {}) + ($new[$w].sizes // {})) | keys[]) as $s
       | ["rows_read", "rows_written", "rows_removed"][] as $m
       | { workload: $w, size: $s, metric: $m,
-          old: ($old[$w].sizes[$s][$m] | num),
-          new: ($new[$w].sizes[$s][$m] | num),
+          old: $old[$w].sizes[$s][$m],
+          new: $new[$w].sizes[$s][$m],
           tol: (($old[$w].tolerance_pct // 0)) }
     ]
   | map(select(

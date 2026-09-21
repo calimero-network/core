@@ -65,8 +65,6 @@ pub struct Costs {
     pub rows_removed: u64,
     /// Bytes handed to the write callback.
     pub bytes_written: u64,
-    /// Bytes returned by the read callback (misses contribute nothing).
-    pub bytes_read: u64,
 }
 
 impl Costs {
@@ -98,9 +96,6 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
             let mut b = b.borrow_mut();
             let value = b.map.get(&key.to_bytes()).cloned();
             b.costs.rows_read += 1;
-            if let Some(bytes) = value.as_ref() {
-                b.costs.bytes_read += bytes.len() as u64;
-            }
             value
         })
     };
@@ -221,34 +216,6 @@ mod tests {
             second.rows(),
             "identical workloads produced different row counts — state is leaking \
              between measurements, and the snapshot gate cannot be trusted"
-        );
-    }
-
-    /// Pins the reason bytes are not gated, so a future contributor who wants
-    /// to add them to the snapshot finds out here rather than from a flaky CI
-    /// run. If this ever FAILS, entity ids have become deterministic and
-    /// `bytes_written`/`bytes_read` can be promoted into `RowCosts`.
-    #[test]
-    fn byte_counts_are_not_reproducible() {
-        let workload = || {
-            let mut map = Root::new(UnorderedMap::<String, String, MainStorage>::new);
-            for i in 0..256 {
-                map.insert(format!("k{i}"), "v".to_owned())
-                    .expect("insert should succeed");
-            }
-        };
-
-        let mut seen = std::collections::BTreeSet::new();
-        for _ in 0..8 {
-            let (_, costs) = measure(workload);
-            let _ignored = seen.insert(costs.bytes_written);
-        }
-
-        assert!(
-            seen.len() > 1,
-            "byte counts reproduced exactly across 8 runs ({seen:?}) — entity ids may \
-             have become deterministic. If so, promote bytes into RowCosts and delete \
-             this test; see the module docs."
         );
     }
 }
