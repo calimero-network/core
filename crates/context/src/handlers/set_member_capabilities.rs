@@ -60,7 +60,7 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                 )
                 .await?;
                 report.observe("set_member_capabilities", "MemberCapabilitySet");
-                tracing::info!(?group_id, %member, capabilities, "member capabilities updated");
+                tracing::debug!(?group_id, %member, capabilities, "member capabilities updated");
                 Ok(())
             }
             .into_actor(self),

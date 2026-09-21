@@ -18,7 +18,7 @@ use calimero_governance_types::bounds::{device_label_is_valid, MAX_DEVICE_LABEL_
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::info;
+use tracing::debug;
 
 use crate::error::ContextError;
 use crate::handlers::relink_device::resolve_device;
@@ -168,7 +168,7 @@ impl Handler<LabelDeviceRequest> for ContextManager {
                     eyre::bail!("the account namespace did not take the name for {device}");
                 }
 
-                info!(%account, %device, label_epoch, "named a device");
+                debug!(%account, %device, label_epoch, "named a device");
                 Ok(LabelDeviceResponse::new(
                     account,
                     device,

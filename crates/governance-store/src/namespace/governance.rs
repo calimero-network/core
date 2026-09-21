@@ -1565,7 +1565,7 @@ impl<'a> NamespaceGovernance<'a> {
             // node running the default filter emits nothing, so an operator asking
             // "did we ever serve the key back to the laptop I revoked?" has no
             // evidence either way — and neither does any test.
-            tracing::info!(
+            tracing::debug!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 group_id = %hex::encode(group_id),
                 requester = %requester.identity,

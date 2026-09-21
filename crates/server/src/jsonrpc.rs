@@ -162,7 +162,7 @@ async fn handle_request_inner(
                 span.record("context_id", field::display(&exec_request.context_id));
                 span.record("method", field::display(&exec_request.method));
 
-                info!(args=%exec_request.args_json, "Received execution request");
+                debug!(args=%exec_request.args_json, "Received execution request");
 
                 let result = exec_request
                     .handle(state, auth_key, auth_node_owner)
@@ -202,7 +202,13 @@ async fn handle_request_inner(
             }
         },
         Err(err) => {
-            error!(%err, payload=%request.payload, "Failed to parse request payload");
+            // The payload is the CALLER'S request body: their method arguments.
+            // Logging it here put user data in an always-on level, which on a
+            // fleet node means the operator's log store. The length and the
+            // parse error are what actually diagnose a malformed request; the
+            // body itself is available at `debug!` on a node being debugged.
+            error!(%err, payload_len = request.payload.to_string().len(), "Failed to parse request payload");
+            debug!(payload=%request.payload, "Failed to parse request payload (body)");
 
             ResponseBody::Error(ResponseBodyError::ServerError(
                 ServerResponseError::ParseError(err.to_string()),

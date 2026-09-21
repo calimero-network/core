@@ -83,7 +83,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
                 )
                 .await?;
                 report.observe("update_member_role", "MemberRoleSet");
-                tracing::info!(?group_id, ?identity, "member role updated");
+                tracing::debug!(?group_id, ?identity, "member role updated");
                 Ok(())
             }
             .into_actor(self),

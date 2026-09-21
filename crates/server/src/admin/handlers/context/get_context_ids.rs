@@ -12,7 +12,7 @@ use calimero_server_primitives::admin::{ContextWithGroup, GetContextsResponse};
 use futures_util::future::Either;
 use futures_util::TryStreamExt;
 use serde::Deserialize;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -61,7 +61,7 @@ pub async fn handler(
         }
     };
 
-    info!(offset, limit, account = ?scope.account(), "Listing contexts");
+    debug!(offset, limit, account = ?scope.account(), "Listing contexts");
 
     // An account scope enumerates the caller's OWN contexts, from their groups,
     // rather than scanning the node's and discarding what does not match. Two

@@ -8,7 +8,7 @@ use calimero_context_client::group::LabelDeviceRequest;
 use calimero_server_primitives::admin::{
     LabelDeviceApiRequest, LabelDeviceApiResponse, LabelDeviceApiResponseData,
 };
-use tracing::info;
+use tracing::debug;
 
 use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -37,7 +37,7 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            info!(device = %resp.device, label_epoch = resp.label_epoch, "device named");
+            debug!(device = %resp.device, label_epoch = resp.label_epoch, "device named");
             ApiResponse {
                 payload: LabelDeviceApiResponse {
                     data: LabelDeviceApiResponseData {

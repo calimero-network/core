@@ -152,7 +152,7 @@ pub(crate) fn apply_device_linked(
     match outcome {
         Ok(binding) => {
             remember_own_link_if_ours(ctx, genesis, chain, cert);
-            tracing::info!(
+            tracing::debug!(
                 group_id = ?group_id,
                 account = %binding.account,
                 device = %binding.device,
@@ -281,7 +281,7 @@ pub(crate) fn apply_device_certified(
         group_id: group_id.to_bytes(),
         device,
     });
-    tracing::info!(
+    tracing::debug!(
         group_id = ?group_id,
         %device,
         scope_epoch = scope.statement.scope_epoch,
@@ -454,7 +454,7 @@ pub(crate) fn apply_device_unlinked(
     // Puts this node back on its own root when the withdrawn device is its own.
     // Best-effort: a node-local write must never refuse an op the group accepted.
     match crate::NodeDeviceRepository::new(ctx.store()).release_revoked_device(*device) {
-        Ok(true) => tracing::info!(group_id = ?group_id, %device,
+        Ok(true) => tracing::debug!(group_id = ?group_id, %device,
                                    "released this node's withdrawn device"),
         Ok(false) => {}
         Err(err) => tracing::warn!(group_id = ?group_id, %device, %err,
@@ -472,7 +472,7 @@ pub(crate) fn apply_device_unlinked(
             .flatten(),
     });
 
-    tracing::info!(
+    tracing::debug!(
         group_id = ?group_id,
         account = %account,
         device = %device,
@@ -543,7 +543,7 @@ pub(crate) fn apply_device_descoped(
         account: *account,
         device: *device,
     });
-    tracing::info!(
+    tracing::debug!(
         group_id = ?group_id,
         %account,
         %device,
@@ -603,7 +603,7 @@ pub(crate) fn apply_device_labelled(
     )? {
         return Ok(());
     }
-    tracing::info!(group_id = ?group_id, %device, label_epoch, "account device labelled");
+    tracing::debug!(group_id = ?group_id, %device, label_epoch, "account device labelled");
     Ok(())
 }
 
@@ -708,7 +708,7 @@ pub(crate) fn apply_keys_rotated(
 
     match AccountBindingRepository::new(store).apply_rotation(&group_id, handoff)? {
         Ok(()) => {
-            tracing::info!(
+            tracing::debug!(
                 group_id = ?group_id,
                 account = %handoff.account,
                 from_epoch = handoff.from_epoch,

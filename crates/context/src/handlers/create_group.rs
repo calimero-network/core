@@ -10,7 +10,7 @@ use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use rand::RngExt;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;
@@ -703,7 +703,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     .await;
                 }
 
-                info!(
+                debug!(
                     ?group_id,
                     ?parent_group_id,
                     %admin_identity,

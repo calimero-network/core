@@ -7,7 +7,7 @@ use calimero_context_client::group::{GetMemberMetadataRequest, SetMemberMetadata
 use calimero_server_primitives::admin::{
     GetMetadataApiResponse, SetMemberMetadataApiRequest, SetMetadataApiResponse,
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use super::{parse_account, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
@@ -29,7 +29,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, identity=%account_str, "Setting member metadata");
+    debug!(group_id=%group_id_str, identity=%account_str, "Setting member metadata");
 
     let result = state
         .ctx_client
@@ -44,7 +44,7 @@ pub async fn handler(
 
     match result {
         Ok(()) => {
-            info!(group_id=%group_id_str, identity=%account_str, "Member metadata set");
+            debug!(group_id=%group_id_str, identity=%account_str, "Member metadata set");
             ApiResponse {
                 payload: SetMetadataApiResponse {},
             }

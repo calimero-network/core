@@ -10,7 +10,7 @@ use calimero_server_primitives::admin::{
     RevokeDeviceApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::info;
+use tracing::debug;
 
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
@@ -80,7 +80,7 @@ pub async fn handler(
         }
     };
 
-    info!(
+    debug!(
         namespace_id = %namespace_id_str,
         device = %req.device_id,
         with_proof = proof.is_some(),
@@ -99,7 +99,7 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            info!(
+            debug!(
                 namespace_id = %namespace_id_str,
                 account = %resp.account,
                 device = %resp.device,

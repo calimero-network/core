@@ -574,7 +574,7 @@ async fn publish_sibling_link(
     }
     let outcomes =
         bind_device_everywhere(store, node_client, ack_router, targets, signer_sk, cert).await;
-    info!(
+    debug!(
         %device,
         ?outcomes,
         "account-follow: carried a newly certified device of this account into the \
@@ -609,7 +609,7 @@ async fn handle_revocation_carry(
         device,
         proof: Some(proof),
     };
-    info!(
+    debug!(
         %device,
         %account,
         namespaces = targets.len(),
