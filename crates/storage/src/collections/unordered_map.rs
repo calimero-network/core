@@ -359,7 +359,7 @@ where
     /// stamping each ENTRY element with its own `crdt_type` so the sync path
     /// dispatches a value collision to that type's join instead of to LWW.
     ///
-    /// See `Collection::insert_with_storage_type_and_crdt_type` for why an
+    /// See `Collection::insert_with_storage_type` for why an
     /// untagged entry is a hazard for a container whose VALUES are mutable, and
     /// `CrdtType::FugueTextBlock`, the only tag passed here today, for the
     /// concrete data loss it prevents.

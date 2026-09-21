@@ -712,29 +712,12 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     ///
     /// It is what makes app-defined merge reachable: `try_merge_non_root`
     /// dispatches on the entry's own `crdt_type`, and an entry that declares
-    /// nothing takes the legacy branch and resolves last-write-wins. Only the
-    /// collections that know their value type pass `Some` — the generic
-    /// `insert` cannot, since `T` there is already the erased item.
+    /// nothing takes the legacy branch and resolves last-write-wins: correct
+    /// for a container whose values never collide, wrong for one whose values
+    /// do (see `CrdtType::FugueTextBlock`). Only the collections that know
+    /// their value type pass `Some` — the generic `insert` cannot, since `T`
+    /// there is already the erased item.
     pub(crate) fn insert_with_storage_type(
-        &mut self,
-        id: Option<Id>,
-        item: T,
-        storage_type: StorageType,
-        crdt_type: Option<CrdtType>,
-    ) -> StoreResult<(Id, T)> {
-        self.insert_with_storage_type_and_crdt_type(id, item, storage_type, crdt_type)
-    }
-
-    /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally
-    /// stamping the ENTRY element with its own `crdt_type`.
-    ///
-    /// Entry elements are otherwise untyped, and an untyped entity is merged by
-    /// last-writer-wins in `Interface::try_merge_non_root`: correct for a
-    /// container whose values never collide, wrong for one whose values do (see
-    /// `CrdtType::FugueTextBlock`, the only caller today). The tag is persisted
-    /// through `Index::add_child_to` and travels with the action, so a receiving
-    /// replica dispatches on it too.
-    pub(crate) fn insert_with_storage_type_and_crdt_type(
         &mut self,
         id: Option<Id>,
         item: T,
