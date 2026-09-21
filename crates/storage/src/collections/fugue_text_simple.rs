@@ -211,21 +211,8 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
     ///
     /// # Errors
     /// Returns an error if `pos` is out of bounds or storage fails.
-    #[expect(
-        clippy::panic,
-        reason = "non-deterministic during migrate (node-local device id); a loud panic is \
-                  the intended, unmissable guard against a silent network divergence"
-    )]
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
-        if env::in_merge_mode() {
-            panic!(
-                "FugueTextSimple::insert() is non-deterministic during a state migration: \
-                 it mints node ids from the node-local device id, producing a different id \
-                 per node and diverging the network."
-            );
-        }
-        let replica = local_replica();
-        self.insert_str_with_replica(pos, replica, content.encode_utf8(&mut [0_u8; 4]))
+        self.insert_str(pos, content.encode_utf8(&mut [0_u8; 4]))
     }
 
     /// Insert a string at the given visible position.
@@ -345,7 +332,7 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
         }
         let loaded = self.load()?;
         let text = build_tree(&loaded).values();
-        Ok(slice_chars(&text, start, end).to_owned())
+        Ok(text.chars().skip(start).take(end - start).collect())
     }
 
     /// The character at `pos`, or `None` if `pos` is past the end.
@@ -474,16 +461,6 @@ fn next_counter(replica: u64, loaded: &[(NodeId, TextNode)]) -> Result<u32, Stor
         }
     }
     u32::try_from(next).map_err(|_| invalid("replica counter space exhausted"))
-}
-
-/// The `from..to` character range of `text` (character indices, not bytes).
-fn slice_chars(text: &str, from: usize, to: usize) -> &str {
-    let byte_of = |offset: usize| {
-        text.char_indices()
-            .nth(offset)
-            .map_or(text.len(), |(index, _)| index)
-    };
-    &text[byte_of(from)..byte_of(to)]
 }
 
 /// This node's replica id: the first 8 bytes of its device id, `FugueText`'s
