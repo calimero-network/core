@@ -61,6 +61,7 @@ steps:
     statements:
       - 'json_equal({{seeded_text_node2}}, {"output": "existing text. "})'
 
+  # Writers run one after the other, so ids order P1<H1<P2<H2 and RGA keeps each pair adjacent; the interleaving order is fugue-collab-figure2.
   - name: Node 1 types passage
     type: call
     node: calimero-node-1
