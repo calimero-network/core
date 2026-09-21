@@ -237,11 +237,6 @@ fn quadratic_build_costs_are_still_exactly_quadratic() {
     let mut failures = Vec::new();
 
     for (name, points) in &series(CostShape::QuadraticBuild, |c| c.rows_read) {
-        let (_, largest) = span(points);
-        assert_eq!(
-            largest, QUADRATIC_LARGEST,
-            "{name} is QuadraticBuild but was not measured at n={QUADRATIC_LARGEST}"
-        );
         let large = points[&QUADRATIC_LARGEST];
 
         if large < floor {

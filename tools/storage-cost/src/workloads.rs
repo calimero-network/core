@@ -304,7 +304,13 @@ fn rga_insert_interleaved_sync(n: usize) {
             .expect("document root should exist");
         rga.insert(i, 'a').expect("local insert should succeed");
         rga.commit();
-        land_remote_char();
+        land_remote_char(REMOTE_RGA_DEVICE, "a ReplicatedGrowableArray", || {
+            let mut rga = Root::new(|| {
+                ReplicatedGrowableArray::<MainStorage>::new_with_field_name(INTERLEAVED_DOC_FIELD)
+            });
+            rga.insert(0, 'r').expect("remote insert should succeed");
+            rga.commit();
+        });
     }
 }
 
@@ -314,13 +320,17 @@ fn rga_insert_interleaved_sync(n: usize) {
 /// different collection ids and quietly build two documents that never meet.
 const INTERLEAVED_DOC_FIELD: &str = "interleaved_doc";
 
-/// Apply one character the way the SYNC path does: author it on a SEPARATE
-/// replica, over its own backing map so none of the authoring cost is counted,
-/// then replay that replica's delta through [`Interface::apply_action`]. The
-/// root action is skipped because the receiver's root is not the sender's to
-/// overwrite.
-fn land_remote_char() {
-    for action in remote_char_actions() {
+/// The RGA remote replica's device id. Any id but the measurement env's will
+/// do: RGA ids carry an HLC timestamp, not the device, so they cannot collide.
+const REMOTE_RGA_DEVICE: [u8; 32] = [2; 32];
+
+/// Apply one character the way the SYNC path does: `author` it on a SEPARATE
+/// replica under `device_id`, over its own backing map so none of the authoring
+/// cost is counted, then replay that replica's delta through
+/// [`Interface::apply_action`]. The root action is skipped because the
+/// receiver's root is not the sender's to overwrite.
+fn land_remote_char(device_id: [u8; 32], collection: &str, author: impl FnOnce()) {
+    for action in remote_char_actions(device_id, collection, author) {
         if action.id().is_root() {
             continue;
         }
@@ -337,14 +347,14 @@ fn land_remote_char() {
 /// `clear_pending_delta()` makes the isolation a property of this function
 /// rather than of where the caller happens to commit; the count assertion is
 /// what actually detects a leak however it arrives.
-fn remote_char_actions() -> Vec<Action> {
+fn remote_char_actions(
+    device_id: [u8; 32],
+    collection: &str,
+    author: impl FnOnce(),
+) -> Vec<Action> {
     clear_pending_delta();
-    let delta = with_runtime_env(uncounted_env(), || {
-        let mut rga = Root::new(|| {
-            ReplicatedGrowableArray::<MainStorage>::new_with_field_name(INTERLEAVED_DOC_FIELD)
-        });
-        rga.insert(0, 'r').expect("remote insert should succeed");
-        rga.commit();
+    let delta = with_runtime_env(uncounted_env(device_id), || {
+        author();
         take_last_artifact().expect("commit should emit a delta")
     });
     let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
@@ -355,37 +365,34 @@ fn remote_char_actions() -> Vec<Action> {
         actions.len(),
         REMOTE_CHAR_ACTIONS,
         "the remote replica's delta carried {} actions, not the {REMOTE_CHAR_ACTIONS} that \
-         typing ONE character emits. Either the thread-local pending-delta buffer leaked into \
-         it (check that `clear_pending_delta()` above still runs, so this workload is not about \
-         to re-apply writes that were already done and report the cost as sync), or a \
-         legitimate storage-layer change altered what one character insert emits, in which case \
-         move REMOTE_CHAR_ACTIONS deliberately per its doc comment and regenerate the snapshot.",
+         typing ONE character into {collection} emits. Either the thread-local pending-delta \
+         buffer leaked into it (check that `clear_pending_delta()` above still runs, so this \
+         workload is not about to re-apply writes that were already done and report the cost \
+         as sync), or a storage-layer change altered what one character insert emits, in which \
+         case move REMOTE_CHAR_ACTIONS deliberately per its doc comment and regenerate the \
+         snapshot, because the applied cost changed too.",
         actions.len()
     );
     actions
 }
 
-/// Actions in the delta a remote replica emits for exactly one character.
-/// A fixed COUNT rather than an id filter, because the likeliest pollution is
-/// the caller's own inserts into the very same document, which share its
-/// collection id and would pass an id check.
+/// Actions in the delta a remote replica emits for exactly one character, the
+/// same count for every collection measured here. A fixed COUNT rather than an
+/// id filter, because the likeliest pollution is the caller's own inserts into
+/// the very same document, which share its collection id and would pass an id
+/// check.
 const REMOTE_CHAR_ACTIONS: usize = 6;
 
 /// A throwaway `RuntimeEnv` over its own map, deliberately NOT wired to
 /// [`crate::measure`]'s counters: what is measured is what the RECEIVER pays,
 /// so the sender's own writes must not be counted.
-fn uncounted_env() -> RuntimeEnv {
-    uncounted_env_with_device([2; 32])
-}
-
-/// [`uncounted_env`] with an explicit device id.
 ///
 /// `FugueText` mints node ids as `(replica, counter)` with `replica` derived
 /// from the DEVICE id, so a remote replica sharing the measurement env's device
 /// id would mint the very ids the local writer is minting and the two halves
 /// would collide instead of interleaving. `ReplicatedGrowableArray` has no such
 /// hazard: its ids carry an HLC timestamp from a clock both envs share.
-fn uncounted_env_with_device(device_id: [u8; 32]) -> RuntimeEnv {
+fn uncounted_env(device_id: [u8; 32]) -> RuntimeEnv {
     let map: Rc<RefCell<BTreeMap<[u8; 32], Vec<u8>>>> = Rc::new(RefCell::new(BTreeMap::new()));
     let read = {
         let map = Rc::clone(&map);
@@ -468,10 +475,7 @@ fn fugue_text_insert_per_char(n: usize) {
 /// insertion point is its own block. That is what run-length blocks do not buy:
 /// only APPENDS coalesce (see [`fugue_text_insert_per_char`]).
 fn fugue_text_insert_middle(n: usize) {
-    let mut text = Root::new(FugueText::<MainStorage>::new);
-    for i in 0..n {
-        text.insert(i / 2, 'a').expect("insert should succeed");
-    }
+    let _ignored = build_fugue_text_fragmented(n);
 }
 
 /// Build `n` `FugueText` characters half local and half arriving from a remote
@@ -519,58 +523,15 @@ fn remote_fugue_device(index: usize) -> [u8; 32] {
     device
 }
 
-/// Apply one character to the `FugueText` document the way the SYNC path does;
-/// [`land_remote_char`]'s counterpart, same decode-and-replay shape.
+/// Apply one character to the `FugueText` document the way the SYNC path does.
 fn land_remote_fugue_char(index: usize) {
-    for action in remote_fugue_char_actions(index) {
-        if action.id().is_root() {
-            continue;
-        }
-        Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
-            .expect("remote apply_action should succeed");
-    }
+    land_remote_char(remote_fugue_device(index), "a FugueText", || {
+        let mut text =
+            Root::new(|| FugueText::<MainStorage>::new_with_field_name(FUGUE_INTERLEAVED_FIELD));
+        text.insert(0, 'r').expect("remote insert should succeed");
+        text.commit();
+    });
 }
-
-/// The actions a remote `FugueText` replica emits when one character is typed.
-/// The thread-local pending-delta hazard, and the fixed-count guard against it,
-/// are [`remote_char_actions`]'s; only the collection and device id differ.
-fn remote_fugue_char_actions(index: usize) -> Vec<Action> {
-    clear_pending_delta();
-    let delta = with_runtime_env(
-        uncounted_env_with_device(remote_fugue_device(index)),
-        || {
-            let mut text = Root::new(|| {
-                FugueText::<MainStorage>::new_with_field_name(FUGUE_INTERLEAVED_FIELD)
-            });
-            text.insert(0, 'r').expect("remote insert should succeed");
-            text.commit();
-            take_last_artifact().expect("commit should emit a delta")
-        },
-    );
-    let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
-        StorageDelta::Actions(actions) => actions,
-        StorageDelta::CausalActions { actions, .. } => actions,
-    };
-    assert_eq!(
-        actions.len(),
-        REMOTE_FUGUE_CHAR_ACTIONS,
-        "the remote replica's delta carried {} actions, not the \
-         {REMOTE_FUGUE_CHAR_ACTIONS} that typing ONE character into a FugueText emits. \
-         Either the thread-local pending-delta buffer leaked into it (check that \
-         `clear_pending_delta()` above still runs, so this workload is not about to \
-         re-apply writes that were already done and report the cost as sync), or a \
-         change to FugueText altered what one character insert emits - in which case \
-         move REMOTE_FUGUE_CHAR_ACTIONS deliberately per its doc comment and regenerate \
-         the snapshot, because the applied cost changed too.",
-        actions.len()
-    );
-    actions
-}
-
-/// Actions in the delta a remote replica emits for exactly one `FugueText`
-/// character. Measured, and stable across runs; see [`REMOTE_CHAR_ACTIONS`] for
-/// why this is a fixed COUNT rather than an id filter.
-const REMOTE_FUGUE_CHAR_ACTIONS: usize = 6;
 
 // ---------------------------------------------------------------------------
 // `FugueTextSimple`: the one-entity-per-node control.
@@ -626,53 +587,16 @@ fn fugue_simple_insert_interleaved_sync(n: usize) {
 const FUGUE_SIMPLE_INTERLEAVED_FIELD: &str = "interleaved_fugue_simple_doc";
 
 /// Apply one character the way the SYNC path does;
-/// [`land_remote_fugue_char`]'s counterpart, same decode-and-replay shape.
+/// [`land_remote_fugue_char`]'s counterpart over the control collection.
 fn land_remote_fugue_simple_char(index: usize) {
-    for action in remote_fugue_simple_char_actions(index) {
-        if action.id().is_root() {
-            continue;
-        }
-        Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
-            .expect("remote apply_action should succeed");
-    }
+    land_remote_char(remote_fugue_device(index), "a FugueTextSimple", || {
+        let mut text = Root::new(|| {
+            FugueTextSimple::<MainStorage>::new_with_field_name(FUGUE_SIMPLE_INTERLEAVED_FIELD)
+        });
+        text.insert(0, 'r').expect("remote insert should succeed");
+        text.commit();
+    });
 }
-
-/// The actions a remote `FugueTextSimple` replica emits for one character.
-/// The per-character device id and the fixed-count guard are
-/// [`remote_fugue_char_actions`]'s; only the collection differs.
-fn remote_fugue_simple_char_actions(index: usize) -> Vec<Action> {
-    clear_pending_delta();
-    let delta = with_runtime_env(
-        uncounted_env_with_device(remote_fugue_device(index)),
-        || {
-            let mut text = Root::new(|| {
-                FugueTextSimple::<MainStorage>::new_with_field_name(FUGUE_SIMPLE_INTERLEAVED_FIELD)
-            });
-            text.insert(0, 'r').expect("remote insert should succeed");
-            text.commit();
-            take_last_artifact().expect("commit should emit a delta")
-        },
-    );
-    let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode") {
-        StorageDelta::Actions(actions) => actions,
-        StorageDelta::CausalActions { actions, .. } => actions,
-    };
-    assert_eq!(
-        actions.len(),
-        REMOTE_FUGUE_SIMPLE_CHAR_ACTIONS,
-        "the remote replica's delta carried {} actions, not the \
-         {REMOTE_FUGUE_SIMPLE_CHAR_ACTIONS} that typing ONE character into a \
-         FugueTextSimple emits - see REMOTE_FUGUE_CHAR_ACTIONS's doc comment for the two \
-         causes and what to do about each.",
-        actions.len()
-    );
-    actions
-}
-
-/// Actions in the delta a remote replica emits for exactly one
-/// `FugueTextSimple` character. Measured; see [`REMOTE_CHAR_ACTIONS`] for why
-/// this is a fixed COUNT rather than an id filter.
-const REMOTE_FUGUE_SIMPLE_CHAR_ACTIONS: usize = 6;
 
 fn build_fugue_simple(n: usize) -> Root<FugueTextSimple<MainStorage>> {
     let mut text = Root::new(FugueTextSimple::<MainStorage>::new);
@@ -1031,6 +955,12 @@ mod tests {
     /// actually return.
     const RANGE_READ_CHARS: usize = 100;
 
+    /// One `*_interleaved_sync` workload and the document it leaves behind.
+    type LandingCase = (&'static str, fn(usize), fn() -> String);
+
+    /// One positional-read case: label, document size, and the reads it makes.
+    type ReadCase = (&'static str, usize, fn(usize) -> (Option<char>, String));
+
     /// `#[ignore]`d because measuring every workload costs ~260s in the debug
     /// profile that the workspace-wide `cargo test` would pay on every PR, for
     /// a property that does not change between profiles. The dedicated
@@ -1099,162 +1029,117 @@ mod tests {
         );
     }
 
-    /// The sync half of `rga_insert_interleaved_sync` must actually arrive: if
-    /// `apply_action` stopped landing the remote characters the workload would
-    /// silently become a single-replica build again, at a cost nothing else in
-    /// this crate can tell apart from the real thing.
-    #[test]
-    fn every_remote_character_actually_lands() {
-        let n = 10;
-        let (text, _) = measure(|| {
-            rga_insert_interleaved_sync(n);
-            Root::<ReplicatedGrowableArray<MainStorage>>::fetch()
-                .expect("document root should exist after the workload")
-                .get_text()
-                .expect("get_text should succeed")
-        });
-
-        assert_eq!(
-            text.chars().count(),
-            n,
-            "rga_insert_interleaved_sync(n={n}) left a {}-character document ({text:?}): \
-             the remote half is not landing through apply_action, so this workload is \
-             measuring a single-replica build under a sync name",
-            text.chars().count(),
-        );
-        assert!(
-            text.contains('r') && text.contains('a'),
-            "document {text:?} is missing one side of the interleave - local chars are \
-             'a', remote chars are 'r', and both must be present"
-        );
-    }
-
-    /// [`every_remote_character_actually_lands`]'s `FugueText` counterpart. It
-    /// also covers the failure RGA does not have: node ids are
+    /// The sync half of each `*_interleaved_sync` workload must actually
+    /// arrive: if `apply_action` stopped landing the remote characters the
+    /// workload would silently become a single-replica build again, at a cost
+    /// nothing else in this crate can tell apart from the real thing. The two
+    /// `Fugue` ones also cover the failure RGA does not have: node ids are
     /// `(replica, counter)` with the replica derived from the DEVICE id, so two
     /// replicas sharing one device id mint colliding ids instead of
     /// interleaving. Both failures show up as a short document.
     #[test]
-    fn every_remote_fugue_character_actually_lands() {
+    fn every_remote_character_actually_lands() {
         let n = 10;
-        let (text, _) = measure(|| {
-            fugue_text_insert_interleaved_sync(n);
-            Root::<FugueText<MainStorage>>::fetch()
-                .expect("document root should exist after the workload")
-                .get_text()
-                .expect("get_text should succeed")
-        });
+        let cases: [LandingCase; 3] = [
+            (
+                "rga_insert_interleaved_sync",
+                rga_insert_interleaved_sync,
+                || {
+                    Root::<ReplicatedGrowableArray<MainStorage>>::fetch()
+                        .expect("document root should exist after the workload")
+                        .get_text()
+                        .expect("get_text should succeed")
+                },
+            ),
+            (
+                "fugue_text_insert_interleaved_sync",
+                fugue_text_insert_interleaved_sync,
+                || {
+                    Root::<FugueText<MainStorage>>::fetch()
+                        .expect("document root should exist after the workload")
+                        .get_text()
+                        .expect("get_text should succeed")
+                },
+            ),
+            (
+                "fugue_simple_insert_interleaved_sync",
+                fugue_simple_insert_interleaved_sync,
+                || {
+                    Root::<FugueTextSimple<MainStorage>>::fetch()
+                        .expect("document root should exist after the workload")
+                        .get_text()
+                        .expect("get_text should succeed")
+                },
+            ),
+        ];
 
-        assert_eq!(
-            text.chars().count(),
-            n,
-            "fugue_text_insert_interleaved_sync(n={n}) left a {}-character document \
-             ({text:?}): either the remote half is not landing through apply_action, or \
-             the two replicas are minting colliding node ids - both make this workload \
-             a single-replica build under a sync name",
-            text.chars().count(),
-        );
-        assert!(
-            text.contains('r') && text.contains('a'),
-            "document {text:?} is missing one side of the interleave - local chars are \
-             'a', remote chars are 'r', and both must be present"
-        );
+        for (name, workload, read) in cases {
+            let (text, _) = measure(|| {
+                workload(n);
+                read()
+            });
+
+            assert_eq!(
+                text.chars().count(),
+                n,
+                "{name}(n={n}) left a {}-character document ({text:?}): either the remote \
+                 half is not landing through apply_action, or the two replicas are minting \
+                 colliding node ids - both make this workload a single-replica build under \
+                 a sync name",
+                text.chars().count(),
+            );
+            assert!(
+                text.contains('r') && text.contains('a'),
+                "{name} left {text:?}, missing one side of the interleave - local chars are \
+                 'a', remote chars are 'r', and both must be present"
+            );
+        }
     }
 
-    /// The `FugueTextSimple` half of
-    /// [`every_remote_fugue_character_actually_lands`]: the control shares the
-    /// per-character device-id hazard exactly, so it needs the same guard.
-    #[test]
-    fn every_remote_fugue_simple_character_actually_lands() {
-        let n = 10;
-        let (text, _) = measure(|| {
-            fugue_simple_insert_interleaved_sync(n);
-            Root::<FugueTextSimple<MainStorage>>::fetch()
-                .expect("document root should exist after the workload")
-                .get_text()
-                .expect("get_text should succeed")
-        });
-
-        assert_eq!(
-            text.chars().count(),
-            n,
-            "fugue_simple_insert_interleaved_sync(n={n}) left a {}-character document \
-             ({text:?}): either the remote half is not landing through apply_action, or \
-             the two replicas are minting colliding node ids - both make this workload \
-             a single-replica build under a sync name",
-            text.chars().count(),
-        );
-        assert!(
-            text.contains('r') && text.contains('a'),
-            "document {text:?} is missing one side of the interleave - local chars are \
-             'a', remote chars are 'r', and both must be present"
-        );
-    }
-
-    /// The `FugueTextSimple` half of [`positional_reads_return_real_characters`],
-    /// so the control's `KnownLinearInN` reads are known to be reading
-    /// something.
-    #[test]
-    fn simple_positional_reads_return_real_characters() {
-        let n = 500;
-        let (found, _) = measure(|| {
-            let text = build_fugue_simple(n);
-            let one = text.char_at(n / 2).expect("char_at should succeed");
-            let start = n / 2;
-            let range = text
-                .text_range(start, start + RANGE_READ_CHARS)
-                .expect("text_range should succeed");
-            (one, range)
-        });
-
-        let (one, range) = found;
-        assert_eq!(
-            one,
-            Some('a'),
-            "char_at({}) returned {one:?} against a {n}-character FugueTextSimple \
-             document - the control's cost curve is measuring a read that finds nothing",
-            n / 2
-        );
-        assert_eq!(
-            range.chars().count(),
-            RANGE_READ_CHARS,
-            "text_range returned {} characters, not {RANGE_READ_CHARS} - the control's \
-             cost curve is measuring a shorter read than it reports",
-            range.chars().count()
-        );
-    }
-
-    /// `fugue_text_char_at` would publish the same cheap curve if it returned
-    /// NOTHING, so assert the positional reads return the characters they
-    /// claim to, at the workload's own position and size.
+    /// A positional read would publish the same cheap curve if it returned
+    /// NOTHING, so assert the reads return the characters they claim to, at the
+    /// workloads' own position and size.
     #[test]
     fn positional_reads_return_real_characters() {
-        let n = 1_000;
-        let (found, _) = measure(|| {
-            let text = build_fugue_text(n);
-            let one = text.char_at(n / 2).expect("char_at should succeed");
-            let start = n / 2;
-            let range = text
-                .text_range(start, start + RANGE_READ_CHARS)
-                .expect("text_range should succeed");
-            (one, range)
-        });
+        let cases: [ReadCase; 2] = [
+            ("fugue_text", 1_000, |n| {
+                let text = build_fugue_text(n);
+                let start = n / 2;
+                (
+                    text.char_at(start).expect("char_at should succeed"),
+                    text.text_range(start, start + RANGE_READ_CHARS)
+                        .expect("text_range should succeed"),
+                )
+            }),
+            ("fugue_simple", 500, |n| {
+                let text = build_fugue_simple(n);
+                let start = n / 2;
+                (
+                    text.char_at(start).expect("char_at should succeed"),
+                    text.text_range(start, start + RANGE_READ_CHARS)
+                        .expect("text_range should succeed"),
+                )
+            }),
+        ];
 
-        let (one, range) = found;
-        assert_eq!(
-            one,
-            Some('a'),
-            "char_at({}) returned {one:?} against a {n}-character document - the \
-             workload's flat cost curve is measuring a read that finds nothing",
-            n / 2
-        );
-        assert_eq!(
-            range.chars().count(),
-            RANGE_READ_CHARS,
-            "text_range returned {} characters, not {RANGE_READ_CHARS} - the workload's \
-             flat cost curve is measuring a shorter read than it reports",
-            range.chars().count()
-        );
+        for (name, n, read) in cases {
+            let ((one, range), _) = measure(|| read(n));
+
+            assert_eq!(
+                one,
+                Some('a'),
+                "char_at({}) returned {one:?} against a {n}-character {name} document - the \
+                 cost curve is measuring a read that finds nothing",
+                n / 2
+            );
+            assert_eq!(
+                range.chars().count(),
+                RANGE_READ_CHARS,
+                "text_range returned {} characters, not {RANGE_READ_CHARS} - the {name} cost \
+                 curve is measuring a shorter read than it reports",
+                range.chars().count()
+            );
+        }
     }
 
     #[test]
