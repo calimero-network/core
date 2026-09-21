@@ -16,8 +16,8 @@
 //! WRONG text, and a hash check passed on all of them.
 //! [`get_length`](FugueCollabState::get_length) then pins that a merge neither
 //! lost nor duplicated a character, [`text_range`](FugueCollabState::text_range)
-//! and [`char_at`](FugueCollabState::char_at) cover the positional reads
-//! `ReplicatedGrowableArray` has no analogue for, and
+//! covers the positional reads `ReplicatedGrowableArray` has no analogue for,
+//! and
 //! [`delete_range`](FugueCollabState::delete_range) lets a scenario race a
 //! delete against a concurrent insert.
 //!
@@ -139,16 +139,5 @@ impl FugueCollabState {
     /// storage fails.
     pub fn text_range(&self, start: usize, end: usize) -> app::Result<String> {
         Ok(self.document.text_range(start, end)?)
-    }
-
-    /// The character at `position`, or `None` past the end.
-    ///
-    /// Returned as a `String` because the ABI has no `char`; it is always
-    /// either empty or exactly one character wide.
-    ///
-    /// # Errors
-    /// Returns an error if storage fails.
-    pub fn char_at(&self, position: usize) -> app::Result<Option<String>> {
-        Ok(self.document.char_at(position)?.map(String::from))
     }
 }
