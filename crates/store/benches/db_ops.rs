@@ -86,21 +86,6 @@ fn run_group<D: for<'a> Database<'a>>(
                 .expect("put must succeed");
         });
     });
-
-    group.bench_function(BenchmarkId::new("read_then_put", n), |b| {
-        let mut cursor = 0_usize;
-        b.iter(|| {
-            cursor = cursor.wrapping_add(1);
-            let k = &hit_keys[cursor % hit_keys.len()];
-            let prev = db
-                .get(COLUMN, Slice::from(&k[..]))
-                .expect("get must succeed");
-            black_box(&prev);
-            let v = value_bytes(cursor as u64);
-            db.put(COLUMN, Slice::from(&k[..]), Slice::from(&v[..]))
-                .expect("put must succeed");
-        });
-    });
 }
 
 // `make`'s second return must outlive the database: RocksDB's temp directory.
