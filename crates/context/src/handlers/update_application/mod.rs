@@ -272,7 +272,9 @@ fn resolve_context_and_application(
         Some(context) => context,
         None => {
             let Some(context) = context_client.get_context(&context_id)? else {
-                bail!("context '{}' does not exist", context_id);
+                bail!(crate::error::ContextError::ContextNotFound {
+                    context_id: context_id.to_string(),
+                });
             };
 
             context
@@ -283,7 +285,9 @@ fn resolve_context_and_application(
         Some(application) => application,
         None => {
             let Some(application) = node_client.get_application(&application_id)? else {
-                bail!("application with id '{}' not found", application_id);
+                bail!(crate::error::ContextError::ApplicationNotFound {
+                    application_id: application_id.to_string(),
+                });
             };
 
             application

@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::GetGroupInfoRequest;
 use calimero_server_primitives::admin::{GroupInfoApiResponse, GroupInfoApiResponseData};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::{parse_group_id, upgrade_info_to_api_data};
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -52,7 +52,14 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, error=?err, "Failed to get group info");
+            // A 4xx is the caller naming something absent or not theirs, not a
+            // fault of this node. On a fleet node these journals ship to a
+            // central store, where an `ERROR` per poll buries real faults.
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, error=?err, "Failed to get group info");
+            } else {
+                error!(group_id=%group_id_str, error=?err, "Failed to get group info");
+            }
             err.into_response()
         }
     }

@@ -223,7 +223,9 @@ impl Prepared<'_> {
 
         let identity_account = crate::member_account::require(datastore, &group_id, &identity_pk)?;
         if !MembershipRepository::new(datastore).is_member(&group_id, &identity_account)? {
-            bail!("identity is not a member of group '{group_id:?}'");
+            bail!(crate::error::ContextError::NotAGroupMember {
+                group_id: format!("{group_id:?}"),
+            });
         }
 
         if !MembershipRepository::new(datastore).is_admin_or_has_capability(

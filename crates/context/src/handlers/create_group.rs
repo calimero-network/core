@@ -849,9 +849,12 @@ fn load_app_meta(
 ) -> eyre::Result<ApplicationMetaValue> {
     let handle = datastore.handle();
     let key = calimero_store::key::ApplicationMeta::new(*application_id);
-    handle
-        .get(&key)?
-        .ok_or_else(|| eyre::eyre!("application '{application_id}' not found"))
+    handle.get(&key)?.ok_or_else(|| {
+        crate::error::ContextError::ApplicationNotFound {
+            application_id: application_id.to_string(),
+        }
+        .into()
+    })
 }
 
 /// A caller-chosen `bytecode_id` must point at locally-present bytecode of the
