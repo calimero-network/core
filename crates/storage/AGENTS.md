@@ -42,14 +42,27 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
 
+A `FugueText` block holds at most `MAX_RUN_LEN` (256) nodes; the character that overflows a
+full run opens a new block parented on the full one's last node, side right, and nothing is
+ever split. So a document of `n` characters is at least `ceil(n / 256)` block rows, and one
+keystroke rewrites and ships at most one capped block rather than the whole typed run. The
+gate on that is `tools/storage-cost/tests/keystroke_bytes.rs`: row counts cannot see it,
+because an append touches exactly one row however long the run has grown.
+
+`insert_str` resolves the Fugue insert rule once, for the first character only, and writes
+each block it touches exactly once - every later character of the string is by definition
+the right child of the one before it, which is the edge a run already carries implicitly.
+A paste therefore costs one load and one action per block, not per character.
+
 `FugueTextSimple` is deliberately absent from that table: it has **no `CrdtType`** of its
 own. It is a **measurement control, not a product collection**, behind the
 off-by-default `fugue-simple` cargo feature and enabled only by `tools/storage-cost`. It is
 the paper's "Tree-Fugue Simple" shape — one storage entity per node — and exists so the
 `FugueText` vs `ReplicatedGrowableArray` win can be split into "Fugue's ordering" and
 "run-length blocks". Do not build on it, do not give it a `CrdtType`, do not grow it. See
-the module doc in `src/collections/fugue_text_simple.rs` and the matrix in
-`.superpowers/sdd/2026-09-02-rga-fugue-rework/variant-matrix-report.md`.
+the module doc in `src/collections/fugue_text_simple.rs`; the measured split is the
+`fugue_simple_*` versus `fugue_text_*` versus `rga_*` rows of
+`tools/storage-cost/storage-costs.json`.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
@@ -158,8 +171,8 @@ function is registered, it returns an error rather than silently falling back to
 *`FugueTextBlock` is why `FugueText` entries carry their OWN `crdt_type`. An entry element
 is created untagged (`Element::new`), and an untagged entity merges by LWW. That is safe for
 `Rga` (an `RgaChar` is immutable once written, so two replicas never hold different values
-for one key) and UNSAFE for `FugueText`, whose blocks are mutated in place - a run grows when
-an append coalesces into it and shrinks when a mid-run insert splits it. LWW on such a
+for one key) and UNSAFE for `FugueText`, whose blocks are rewritten in place - the owner
+appends to a run's text and any replica sets tombstone bits on it. LWW on such a
 collision drops every node only the loser defines. The tag is stamped by
 `FugueText::put_block` and dispatched on the APPLIED path only: a local write is not a merge,
 and joining it against the stored bytes would make a run un-shrinkable.

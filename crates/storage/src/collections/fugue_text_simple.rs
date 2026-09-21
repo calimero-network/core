@@ -285,13 +285,14 @@ impl<S: StorageAdaptor> FugueTextSimple<S> {
 
     /// Insert a string at `pos`, minting node ids under an explicit `replica`.
     ///
-    /// The deterministic counterpart of [`insert_str`](Self::insert_str), and
-    /// the exact analogue of `FugueText::insert_str_with_replica` — including
-    /// its per-character loop, which re-derives the tree from the stored state
-    /// on every character. That loop is copied deliberately: it is the shape
-    /// whose cost the control exists to measure, and replacing it with a single
-    /// batched traversal here would measure a different algorithm from
-    /// `FugueText`'s and hide the very difference under test.
+    /// The deterministic counterpart of [`insert_str`](Self::insert_str).
+    ///
+    /// It re-derives the tree from the stored state on every character, and
+    /// that loop is deliberate: it is the shape whose cost the control exists to
+    /// measure. `FugueText` resolves a whole string from one traversal, which it
+    /// can only do because a run carries its intra-run edges implicitly - with
+    /// one entity per node there is nothing to batch into. So the saving belongs
+    /// to run-length blocks, which is the side of the split this control draws.
     ///
     /// # Errors
     /// Returns an error if `pos` is out of bounds or storage fails.

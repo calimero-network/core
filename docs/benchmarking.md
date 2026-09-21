@@ -86,7 +86,7 @@ placeholders, not as a cost gate on sync.
    change a decision. A bench with no question gets deleted at the next cleanup.
 4. Never reach into a private function by copying its body. If it is worth
    benchmarking it is worth a `pub(crate)` seam — the copy silently stops
-   tracking the original, which is how PR #2203's merkle bench died.
+   tracking the original, which is how a copied-body bench silently rots.
 5. `cargo bench --workspace --benches --no-run` before pushing.
 6. If this is the crate's *first* `[[bench]]`, add the crate name to the
    `matrix.crate` list in `.github/workflows/benchmarks.yml` (`criterion`

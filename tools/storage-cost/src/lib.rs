@@ -193,7 +193,7 @@ mod tests {
     ///
     /// The collection is built with `new_with_field_name`, NOT `new`. `new`
     /// mints a RANDOM entity id, and a parent's children live in a hash trie
-    /// (core#3633) whose descent depth follows the hash of that id — so two
+    /// whose descent depth follows the hash of that id - so two
     /// runs of an identical workload read a different number of trie nodes
     /// while writing exactly the same set. That is why `rows_written` was
     /// stable at 313 and only `rows_read` moved, and why this failed under

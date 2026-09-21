@@ -2,9 +2,10 @@
 //!
 //! Two reasons this does not gate, both load-bearing:
 //!
-//! 1. It would not have caught core#3602. Against an in-memory store, an O(n)
-//!    read pattern costs almost nothing in wall-clock, so the curve reads flat
-//!    while real gas explodes. The gate for that is the cost snapshot.
+//! 1. It would not have caught an O(n)-read regression. Against an in-memory
+//!    store, such a read pattern costs almost nothing in wall-clock, so the
+//!    curve reads flat while real gas explodes. The gate for that is the cost
+//!    snapshot.
 //! 2. Criterion's default significance threshold is ~5%; shared CI runners
 //!    routinely exceed that from cache state and neighbouring jobs alone. A
 //!    gate that cries wolf gets muted, which is worse than no gate.

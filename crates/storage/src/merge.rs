@@ -462,7 +462,8 @@ pub fn merge_by_crdt_type(
         // a correct-but-unreached arm to satisfy the exhaustive match.
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
-        // Tree-Fugue text - union of run-length blocks, delete-wins per block
+        // Tree-Fugue text container. Reachable, but a no-op by construction -
+        // see `merge_fugue_text`. The real join is the `FugueTextBlock` arm.
         CrdtType::FugueText => merge_fugue_text(existing, incoming),
 
         // One run-length block of a Tree-Fugue document. The LEAF arm — this is
@@ -583,11 +584,15 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     borsh::to_vec(&existing_rga).map_err(|e| MergeError::SerializationError(e.to_string()))
 }
 
-/// Merge two `FugueText` documents (Tree-Fugue collaborative text).
+/// Merge two `FugueText` document containers.
 ///
-/// Blocks are unioned; a block `existing` has tombstoned is never resurrected,
-/// and the tombstone flag is delete-wins. Ordering needs no merge at all — it is
-/// recomputed from the `(parent, side)` edges of whatever block set results.
+/// A no-op, and kept for the same reason [`merge_rga`] is - the two containers
+/// are structurally identical and dispatching them differently would be worse
+/// than the redundancy. A `Collection`'s only serialized field is its element
+/// id, which is derived from the field name and therefore equal on every
+/// replica, so both sides resolve to the SAME stored collection and the block
+/// join runs against itself. The join that does the work is
+/// [`merge_fugue_text_block`].
 ///
 /// # Arguments
 ///
@@ -616,9 +621,10 @@ fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeEr
 ///
 /// Delegates the whole join to
 /// [`FugueText::merge_block_entry_bytes`](crate::collections::FugueText), which
-/// owns the layout (`borsh(Entry<(BlockKey, TextBlock)>)`) and applies the
-/// elementwise tombstone OR plus longer-text rule — the same join
-/// `merge_blocks_from` uses, so there is exactly one block-join implementation.
+/// owns the layout (`borsh(Entry<(TextBlock, BlockKey)>)` - value first) and
+/// applies the elementwise tombstone OR plus the `(node count, bytes)` maximum
+/// on text - the same join `merge_blocks_from` uses, so there is exactly one
+/// block-join implementation.
 fn merge_fugue_text_block(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     FugueText::<MainStorage>::merge_block_entry_bytes(existing, incoming)
 }
@@ -736,7 +742,7 @@ fn merge_rotation_log(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, Merge
 #[cfg(test)]
 mod typed_dispatch_tests {
     use super::*;
-    use crate::collections::Counter;
+    use crate::collections::{Counter, Root};
     use crate::env;
     use serial_test::serial;
 
@@ -918,6 +924,36 @@ mod typed_dispatch_tests {
         );
 
         clear_merge_registry();
+    }
+
+    /// The `FugueText` container arm is reachable but changes nothing: its two
+    /// sides are byte-identical handles on one stored collection, so the block
+    /// join runs against itself. A future "fix" that made it merge content
+    /// would break here first.
+    #[test]
+    #[serial]
+    fn merge_fugue_text_container_leaves_the_stored_document_unchanged() {
+        env::reset_for_testing();
+        let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name("merge_noop"));
+        doc.insert_str_with_replica(0, 1, "hello").unwrap();
+        let existing = borsh::to_vec(&*doc).unwrap();
+
+        doc.insert_str_with_replica(5, 2, " world").unwrap();
+        let incoming = borsh::to_vec(&*doc).unwrap();
+        assert_eq!(
+            existing, incoming,
+            "a Collection serializes only its element id, so two handles on one \
+             document are byte-identical however far their contents have diverged"
+        );
+
+        let merged = merge_by_crdt_type(&CrdtType::FugueText, &existing, &incoming)
+            .expect("the container arm must succeed");
+        assert_eq!(merged, existing, "the container merge must be byte-stable");
+        assert_eq!(
+            doc.get_text().unwrap(),
+            "hello world",
+            "the container merge must not touch the stored blocks"
+        );
     }
 
     /// P3 (core#2716): the rotation-log merge must be an order-invariant union

@@ -25,6 +25,13 @@
 //! `delete(i)` sets the node's value to the tombstone. The node itself stays,
 //! because it may be an ancestor of live nodes.
 //!
+//! This is plain Fugue, not FugueMax: right siblings are ordered by id, so two
+//! concurrent inserts that share a left origin but have different right origins
+//! can come out in the reverse of the maximally non-interleaving order (the
+//! paper's Figure 7). Neither order splits a passage. That residual case is
+//! pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin` in
+//! `tests/fugue_conformance.rs`.
+//!
 //! ## Example
 //!
 //! ```ignore

@@ -3,7 +3,7 @@
 //! A per-operation cost that does not grow with collection size is the property
 //! that keeps a collection usable forever. Asserting it directly is
 //! machine-independent, immune to constant-factor drift, and runs in seconds —
-//! the four regressions in core#3602 were all violations of it, including one
+//! four prior regressions were all violations of it, including one
 //! caused by a log line calling `enumerate()` instead of counting.
 //!
 //! Deliberately NOT a criterion benchmark: this is a correctness property.
@@ -46,10 +46,10 @@ const MAX_GROWTH: f64 = 2.0;
 /// Stated as an absolute floor rather than a growth ratio on purpose. The trie
 /// packs better as it deepens, so reads/entry legitimately *falls* with `n`
 /// (4.0 at n=10, 1.3 at n=10,000) while the cost stays linear — a ratio test
-/// would confuse that with a fix. A sublinear replacement would land three
-/// orders of magnitude below this floor, so the band is wide and the verdict is
-/// unambiguous.
-const LINEAR_FLOOR_DIVISOR: f64 = 100.0;
+/// would confuse that with a fix. The shallowest linear cost here is a capped
+/// `FugueText` read at two rows per 256-character block (`n / 128`); a
+/// sublinear replacement would still land far below this floor.
+const LINEAR_FLOOR_DIVISOR: f64 = 200.0;
 
 /// …and at most `n * LINEAR_CEILING_FACTOR`. Past that it is superlinear.
 const LINEAR_CEILING_FACTOR: f64 = 4.0;
@@ -210,8 +210,8 @@ fn known_linear_costs_are_still_exactly_linear() {
                  floor that marks a linear cost — this appears to have been FIXED. That \
                  is good news, and it must be recorded: move it to \
                  CostShape::ConstantPerCall, regenerate \
-                 tools/storage-cost/storage-costs.json, and update the wall write-up in \
-                 docs/superpowers/2026-08-26-chat-read-wall.md"
+                 tools/storage-cost/storage-costs.json, and update the wall write-up \
+                 on that workload in tools/storage-cost/src/workloads.rs"
             ));
         } else if large > ceiling {
             failures.push(format!(

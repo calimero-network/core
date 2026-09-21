@@ -145,7 +145,7 @@ fn unordered_set_insert(n: usize) {
 }
 
 /// Cost of ONE `len()` against `n` entries. `len()` reading the whole
-/// collection to count it was core#3602 finding 2.
+/// collection to count it is a real regression this pins against.
 fn unordered_map_len(n: usize) {
     let map = build_map(n);
     reset_counters();
@@ -163,10 +163,9 @@ fn unordered_map_get(n: usize) {
 ///
 /// # Why this is `KnownLinearInN`, and what it is standing in for
 ///
-/// This is the in-repo fixture for the read wall documented in
-/// `docs/superpowers/2026-08-26-chat-read-wall.md`: mero-chat's `get_messages`
-/// exhausts a 1e9 gas budget at ~32,000 messages, and 30,000 already spends
-/// 99.83% of it. The cause is not the app. It is this call:
+/// This is the in-repo fixture for a read wall measured in mero-chat, whose
+/// `get_messages` exhausts a 1e9 gas budget at ~32,000 messages, with 30,000
+/// already spending 99.83% of it. The cause is not the app. It is this call:
 ///
 /// ```text
 /// Vector::get(i) -> Collection::nth(i) -> children_cache()
@@ -546,21 +545,30 @@ fn build_rga(n: usize) -> Root<ReplicatedGrowableArray<MainStorage>> {
     rga
 }
 
-/// Bulk-insert `n` characters into an empty `FugueText` as a single
-/// `insert_str` call — the `fugue_text` counterpart of [`rga_insert`], and the
-/// "paste one string" pattern.
+/// ONE `insert_str` of `n` characters into an empty `FugueText` - the
+/// `fugue_text` counterpart of [`rga_insert`], and the "paste one string"
+/// pattern. The cost of a PASTE, not of typing; [`fugue_text_insert_per_char`]
+/// is the keystroke row.
 ///
 /// Measured `reads/entry` at [`SIZES`], against `rga_insert`'s committed row:
 ///
 /// | `n`    | `fugue_text_insert` | `rga_insert` |
 /// |--------|---------------------|--------------|
-/// | 10     | 46.7                | 54.5         |
-/// | 100    | 39.8                | 48.7         |
-/// | 1,000  | 39.1                | 48.1         |
-/// | 10,000 | 39.0                | 48.0         |
+/// | 10     | 11.3                | 54.5         |
+/// | 100    | 1.1                 | 48.7         |
+/// | 1,000  | 0.3                 | 48.1         |
+/// | 10,000 | 0.2                 | 48.0         |
 ///
-/// Flat, and flat slightly lower than RGA's — [`CostShape::FlatPerEntry`],
-/// same as its counterpart.
+/// [`CostShape::FlatPerEntry`], and the per-entry cost now FALLS with `n`
+/// because the whole call costs one load, one position resolution and one write
+/// per block. The Fugue insert rule is resolved for the first character only:
+/// every later character of the string is by definition the right child of the
+/// one before it, which is the edge a run already carries implicitly. A paste
+/// therefore touches `ceil(n / MAX_RUN_LEN)` blocks, not `n` of them.
+///
+/// It used to be a per-character loop, and measured `46.7 / 39.8 / 42.0 / 77.1`,
+/// the same row as `fugue_text_insert_per_char`, which is what made the two
+/// indistinguishable.
 fn fugue_text_insert(n: usize) {
     let _ignored = build_fugue_text(n);
 }
@@ -570,23 +578,19 @@ fn fugue_text_insert(n: usize) {
 ///
 /// # Measured, and what the row counter can and cannot see
 ///
-/// Exactly `3` rows read at every size in [`SIZES`], against `rga_get_nth`'s
-/// `2n` (`20 / 200 / 2_000 / 20_000`). Declared
-/// [`CostShape::ConstantPerCall`], not `KnownLinearInN`, because that is what
-/// was measured — the shape is asserted from the number, not the other way
-/// round.
+/// `2 / 2 / 8 / 80` rows read at [`SIZES`], against `rga_get_nth`'s `2n`
+/// (`20 / 200 / 2_000 / 20_000`).
 ///
-/// Two things make that `3` honest but narrow, and both are stated here rather
-/// than left for a reader to discover:
+/// Two things frame that number, and both are stated here rather than left for
+/// a reader to discover:
 ///
-/// 1. **Rows are not bytes.** `insert_str` appends into ONE run-length block,
-///    so a document of any size built this way is a single storage entity: the
-///    read count stops growing while the entity's LENGTH does not. Measured
-///    `bytes_read` for this workload is `1_390` at `n=1_000` and `10_390` at
-///    `n=10_000` — linear in `n`, as a whole-document read must be. The
-///    snapshot deliberately gates rows and not bytes (entity ids are random,
-///    so byte counts flake — see `lib.rs`'s module docs), so the linear part
-///    of this cost is real, measured, and NOT gated.
+/// 1. **The rows now track the bytes.** A paste is chunked into one block per
+///    `MAX_RUN_LEN` characters, so a whole-document read loads `ceil(n /
+///    MAX_RUN_LEN)` entities. It used to load exactly one, however long the
+///    document - flat rows over a `bytes_read` of `1_390` at `n=1_000` and
+///    `10_390` at `n=10_000`. The snapshot gates rows and not bytes (entity
+///    ids are random, so byte counts flake - see `lib.rs`'s module docs), so
+///    that linear cost used to be entirely outside the gate.
 /// 2. **There is nothing invisible left to account for.** An earlier revision
 ///    served these reads from a node-local ordered index whose `S::index_*`
 ///    calls bypassed this crate's counting callbacks entirely, so index
@@ -647,20 +651,16 @@ fn fugue_text_get_text(n: usize) {
 /// position 0 could not make the measurement lie — the same discipline
 /// [`vector_get_nth`] applies.
 ///
-/// [`CostShape::ConstantPerCall`] at [`SIZES`], and constant for a structural
-/// reason rather than an indexed one: `build_fugue_text` appends, so the whole
-/// document is ONE run-length block whatever `n` is, and the read loads that
-/// one block however long it has grown. (An earlier revision made this constant
-/// via a node-local ordered index; that index is gone — see `fugue_text.rs`'s
-/// module doc — and the row count did not need it.) There is no RGA counterpart
-/// to compare against — that is the point of the workload — and the nearest
-/// thing, `vector_get_nth`, is `KnownLinearInN` at `13_279` rows at `n=10_000`.
+/// `2 / 2 / 8 / 80` rows at [`SIZES`]: answering one position still means
+/// loading every block and rebuilding the tree, and a pasted document is
+/// `ceil(n / MAX_RUN_LEN)` blocks. (An earlier revision served this from a
+/// node-local ordered index; that index is gone - see `fugue_text.rs`'s module
+/// doc.) There is no RGA counterpart to compare against - that is the point of
+/// the workload - and the nearest thing, `vector_get_nth`, is `KnownLinearInN`
+/// at `13_279` rows at `n=10_000`.
 ///
-/// The two caveats on [`fugue_text_get_text`] apply here too, and matter LESS:
-/// `bytes_read` is `1_390` at `n=1_000` and `10_390` at `n=10_000`, i.e. this
-/// call still drags the whole run-length block through borsh to return one
-/// character. The row count is genuinely constant; the byte cost is not, and
-/// is not gated.
+/// The framing on [`fugue_text_get_text`] applies here too: this call drags
+/// every block through borsh to return one character.
 fn fugue_text_char_at(n: usize) {
     let text = build_fugue_text(n);
     reset_counters();
@@ -684,9 +684,8 @@ const RANGE_READ_CHARS: usize = 100;
 /// read, and the smallest size is the baseline the growth ratio is taken
 /// against, so clamping there cannot flatter the curve.
 ///
-/// [`CostShape::ConstantPerCall`] at [`SIZES`]; identical to
-/// [`fugue_text_char_at`], because both load the same single block. The same
-/// rows-are-not-bytes caveat applies — see [`fugue_text_get_text`].
+/// Identical to [`fugue_text_char_at`] at every size, because both load the
+/// same block set - see [`fugue_text_get_text`] for what that number means.
 fn fugue_text_text_range(n: usize) {
     let text = build_fugue_text(n);
     reset_counters();
@@ -696,9 +695,12 @@ fn fugue_text_text_range(n: usize) {
         .expect("text_range should succeed");
 }
 
-/// Insert `n` characters into a `FugueText` ONE AT A TIME, each appended at the
-/// current end — the counterpart of [`rga_insert_per_char`], and the "someone
-/// is typing" access pattern.
+/// `n` SEPARATE `insert` calls on a `FugueText`, each appending one character at
+/// the current end - the counterpart of [`rga_insert_per_char`], and the
+/// "someone is typing" access pattern. `n` keystrokes, where
+/// [`fugue_text_insert`] is one paste: each call pays its own `load()`, so this
+/// row is what a user feels per keypress and did not move when `insert_str`
+/// stopped being a loop over this path.
 ///
 /// # Why this is `FlatPerEntry` where its RGA counterpart is `QuadraticBuild`
 ///
@@ -712,23 +714,23 @@ fn fugue_text_text_range(n: usize) {
 /// | 10     | 48.4                         | 63.5                  |
 /// | 100    | 41.7                         | 147.7                 |
 /// | 500    | —                            | 547.1                 |
-/// | 1,000  | 41.1                         | —                     |
+/// | 1,000  | 42.0                         | -                     |
 /// | 2,000  | —                            | 2,047.0               |
-/// | 10,000 | 41.0                         | —                     |
+/// | 10,000 | 77.1                         | -                     |
 ///
-/// An append extends the tail run in place, so the block COUNT does not grow
-/// and the number of rows one insert touches does not either.
+/// An append extends the tail run in place, so one keystroke touches one block
+/// row whatever the document weighs; the climb is the run cap adding a block
+/// per `MAX_RUN_LEN` characters for `load()` to re-read.
 ///
-/// # The part the row counter does not see
+/// # The part the row counter cannot see, and why the cap exists
 ///
-/// The single block it extends does grow, and every insert re-reads and
-/// re-writes the whole of it: measured `bytes_read` is `6_738_532` at
-/// `n=1_000` and `247_335_532` at `n=10_000` — 36.7x for 10x the characters,
-/// i.e. still quadratic in BYTES. Rows are flat; bytes are not. The snapshot
-/// gates rows only (see `lib.rs`'s module docs on why byte counts flake), so
-/// `FlatPerEntry` here asserts a real property and NOT "typing is now free".
-/// `crates/runtime/tests/fugue_wall.rs` is where that byte cost is visible as
-/// a number a user feels, because gas charges the decode.
+/// Rows stayed flat here while the block being rewritten grew without bound:
+/// one keystroke wrote `2_200` bytes after `1_000` characters and `11_200`
+/// after `10_000`. Capping the run holds that at `1_543` and `1_723`.
+/// `tests/keystroke_bytes.rs` is the gate on it, because bytes cannot go in the
+/// snapshot (see `lib.rs`'s module docs on why byte counts flake), and
+/// `crates/runtime/tests/fugue_wall.rs` is where the cost is visible as a
+/// number a user feels, because gas charges the decode.
 fn fugue_text_insert_per_char(n: usize) {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {
@@ -935,9 +937,9 @@ const REMOTE_FUGUE_CHAR_ACTIONS: usize = 6;
 //
 // All seven are measured at [`QUADRATIC_SIZES`], not [`SIZES`], including the
 // three point READS. That is forced, not chosen: a document of `n` characters
-// is `n` entities, and `insert_str` re-derives the tree from the stored state
-// once per character (exactly as `FugueText::insert_str` does), so BUILDING the
-// document is `O(n^2)` whatever is being measured afterwards. At `n = 10_000`
+// is `n` entities, and the control's `insert_str` re-derives the tree from the
+// stored state once per character, so BUILDING the document is `O(n^2)`
+// whatever is being measured afterwards. At `n = 10_000`
 // that is ~50M entity reads for the setup alone, in a test binary that CI runs
 // in the debug profile.
 // ---------------------------------------------------------------------------
@@ -950,18 +952,18 @@ const REMOTE_FUGUE_CHAR_ACTIONS: usize = 6;
 ///
 /// | `n`   | `fugue_simple_insert` | `fugue_text_insert` | `rga_insert_per_char` |
 /// |-------|-----------------------|---------------------|-----------------------|
-/// | 10    | 635                   | 466                 | 635                   |
-/// | 100   | 14,765                | 3,976               | 14,765                |
+/// | 10    | 635                   | 113                 | 635                   |
+/// | 100   | 14,765                | 113                 | 14,765                |
 /// | 500   | 273,565               | —                   | 273,565               |
 /// | 2,000 | 4,094,065             | —                   | 4,094,065             |
 ///
 /// [`CostShape::QuadraticBuild`] from the measurement: `2_047.0` reads/entry at
-/// `n = 2_000`, tracking `n` almost 1:1. `insert_str` loops `insert_one` and
-/// each call re-derives the tree from every stored entity — the same loop
-/// `FugueText::insert_str_with_replica` runs, where the entity count is 1
-/// because the run coalesces. Byte-for-byte equal to `rga_insert_per_char` at
-/// every size, which is the first half of the finding: with blocks removed,
-/// Fugue's ordering costs exactly what RGA's does.
+/// `n = 2_000`, tracking `n` almost 1:1. `insert_str` loops one insert per
+/// character and each call re-derives the tree from every stored entity, which
+/// is what one entity per node forces: with nothing to coalesce into there is
+/// no run to resolve a whole string against. Byte-for-byte equal to
+/// `rga_insert_per_char` at every size, which is the first half of the finding:
+/// with blocks removed, Fugue's ordering costs exactly what RGA's does.
 fn fugue_simple_insert(n: usize) {
     let _ignored = build_fugue_simple(n);
 }
@@ -1171,11 +1173,10 @@ fn build_fugue_simple(n: usize) -> Root<FugueTextSimple<MainStorage>> {
 /// character — by typing into the middle, exactly as
 /// [`fugue_text_insert_middle`] does.
 ///
-/// This is the document every `FugueText` read workload was missing. The three
-/// existing ones ([`fugue_text_get_text`], [`fugue_text_char_at`],
-/// [`fugue_text_text_range`]) all build with [`build_fugue_text`], a single
-/// `insert_str` that produces exactly ONE block — so their constant 2 rows is
-/// the cost of loading one entity, not a property of the collection.
+/// This is the worst case for a `FugueText` read. The three workloads built by
+/// [`build_fugue_text`] ([`fugue_text_get_text`], [`fugue_text_char_at`],
+/// [`fugue_text_text_range`]) paste, so they hold one block per `MAX_RUN_LEN`
+/// characters; this one holds one per character.
 ///
 /// A mid-document insert cannot coalesce: the new node's parent is not the tail
 /// of the writer's own most recent run, so every keystroke mints a fresh block.
@@ -1338,8 +1339,7 @@ fn build_vector(n: usize) -> Root<Vector<String, MainStorage>> {
 /// Every workload at every size.
 ///
 /// `SortedMap` and `SortedSet` are deliberately absent — reconsidered for this
-/// registry expansion (task 9 asked for `sorted_map_insert`/`sorted_map_get`
-/// by name) and still excluded, for the same reason as before.
+/// registry expansion and still excluded.
 ///
 /// Their cost depends on `StorageAdaptor::index_supported()`
 /// (`crates/storage/src/store.rs`). Without `RuntimeEnv::with_index` installed,
@@ -1354,7 +1354,7 @@ fn build_vector(n: usize) -> Root<Vector<String, MainStorage>> {
 /// a number that looks identical to `UnorderedMap` and claiming to be
 /// `SortedMap`'s indexed path. Adding them means wiring all eight
 /// `IndexCallbacks` through the counting store first — a separate piece of
-/// work, not a workload entry. See the task 9 report for the full note.
+/// work, not a workload entry.
 pub fn all() -> Vec<Workload> {
     use CostShape::{ConstantPerCall, FlatPerEntry, KnownLinearInN, QuadraticBuild};
 
@@ -1426,20 +1426,18 @@ pub fn all() -> Vec<Workload> {
             fugue_text_insert_per_char,
         ),
         ("fugue_text_insert", FlatPerEntry, 0, fugue_text_insert),
-        // Measured `3` rows at every size, so ConstantPerCall — see the
-        // workload's doc comment for the two caveats that number carries
-        // (run-length blocks make rows blind to a linear BYTE cost, and the
-        // ordered index is not routed through this crate's counting store).
+        // Every read rebuilds the tree from all blocks, and runs are capped, so
+        // a read costs two rows per block: linear in the document.
         (
             "fugue_text_get_text",
-            ConstantPerCall,
+            KnownLinearInN,
             0,
             fugue_text_get_text,
         ),
-        ("fugue_text_char_at", ConstantPerCall, 0, fugue_text_char_at),
+        ("fugue_text_char_at", KnownLinearInN, 0, fugue_text_char_at),
         (
             "fugue_text_text_range",
-            ConstantPerCall,
+            KnownLinearInN,
             0,
             fugue_text_text_range,
         ),

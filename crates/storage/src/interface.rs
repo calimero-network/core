@@ -292,8 +292,9 @@ pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 /// per-key join is a LATTICE join (union-like, never a pick) must run that join
 /// on applied bytes and must NOT run it on local bytes. A local write already
 /// descends from the stored value, so joining the two would make the stored
-/// value un-shrinkable — see `CrdtType::FugueTextBlock`, whose runs are split
-/// (shortened) in place by a mid-run insertion.
+/// value un-shrinkable - see `CrdtType::FugueTextBlock`, whose blocks are
+/// rewritten in place under one key: the owner appends, anyone sets tombstone
+/// bits, and the two sides are joined rather than picked between.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WriteOrigin {
     /// This node's own write, from guest execution.
