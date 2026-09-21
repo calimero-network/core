@@ -34,9 +34,9 @@
 //! performs shows up in gas as the cost of borsh-decoding what those reads
 //! returned. Eventually one `insert_text` call exceeds `max_gas` and traps —
 //! and every later call traps too, because the cost only grows from there. The
-//! document is permanently unwritable from that point (core#3602 was exactly
-//! this shape, in a different collection). The write wall is the length of the
-//! document after the last character that landed.
+//! document is permanently unwritable from that point - this shape has frozen
+//! a collection before, in a different CRDT. The write wall is the length of
+//! the document after the last character that landed.
 //!
 //! `get_text()` performs the SAME linearisation to answer a read — it is the
 //! only read `ReplicatedGrowableArray` has — so it has its own wall, measured
@@ -46,55 +46,38 @@
 //! and the two walls are not assumed to be the same distance out — that is
 //! exactly what this probe checks.
 //!
-//! # Measured results (2026-08-31, against this tree)
+//! # Measured results (2026-09-19, against this tree)
 //!
-//! * **Write wall (typing, one keystroke at a time)** — EXTRAPOLATED. Largest
-//!   executed point: a single `insert_text` call at document length 8,400
-//!   characters costs 696,466,208 gas (70% of the 1,000,000,000 ceiling); at
-//!   1,000 characters it costs 102,870,342. That pair fits a line
-//!   (slope ≈80,216 gas/character, intercept ≈22.7M) that crosses
-//!   1,000,000,000 gas at **≈12,190 characters**. No call in the executed
-//!   range (100 through 8,400) actually returned `GasExhausted` — the sweep
-//!   was stopped short of the wall to keep this probe's `#[ignore]`d run
-//!   inside a few minutes; see `typing_and_reading_walls` for how to push the
-//!   ceiling higher and turn this into an executed number.
+//! Every number below moved when master's storage work landed on this branch:
+//! rows touched per entry are unchanged (`rga_insert_interleaved_sync` is
+//! within 1%), so what got cheaper is gas per row, not the access pattern.
+//!
+//! * **Write wall (typing, one keystroke at a time)** - EXTRAPOLATED, from a
+//!   170-point sweep run with `RGA_WALL_CEILING=17000`. At 17,000 characters
+//!   one `insert_text` costs 984,904,855 gas, 98% of the 1,000,000,000
+//!   ceiling; the fit crosses it at **≈17,100 characters**. The sweep stops
+//!   just short because a run to the wall costs half an hour; raise the
+//!   ceiling to turn this into an executed number.
+//!
+//! * **Mid-document write wall** - EXTRAPOLATED the same way, and no cheaper
+//!   than appending: 938,136,772 gas at 17,000 characters, crossing at
+//!   **≈17,900**. RGA re-linearises the whole document whichever end you type
+//!   at, so position buys nothing.
 //!
 //! * **Bulk `insert_str`, one call, empty document** — EXECUTED, by binary
-//!   search: a single call pasting 491 characters into an empty document
-//!   lands (998,651,983 gas); 492 characters returns `GasExhausted`. Cost is
-//!   almost exactly linear with zero fixed overhead — ≈2,038,000 gas per
-//!   NEW character in that one call (811,689,272 gas / 400 characters ≈
-//!   2,029,223 gas/char; 997,206,303 gas / 490 characters ≈ 2,035,115
-//!   gas/char — the same slope within noise) — because the call pays a
-//!   `48 reads/char` flat-insert cost with a
-//!   MUCH higher gas-per-read than the per-keystroke path below (see the
-//!   reconciliation note in `typing_and_reading_walls`'s doc comment).
+//!   search: 742 characters land in one call (998,820,734 gas); 743 returns
+//!   `GasExhausted`.
 //!
-//!   This is not the escape hatch it looks like. A single `insert_str` call
-//!   is capped at ~491 NEW characters no matter how empty the document is —
-//!   so any document longer than that has to be built from more than one
-//!   call regardless, and every call after the first still pays the SAME
-//!   `O(current document length)` linearisation the per-keystroke path pays.
-//!   Batching buys you fewer, chunkier calls; it does not buy you a
-//!   different asymptotic wall. "RGA is fine if you never call it the way an
-//!   editor would" is not what this measures — there is no way to call it
-//!   that stays flat past a few hundred characters per call.
+//!   This is not the escape hatch it looks like. One call is capped at ~742
+//!   NEW characters no matter how empty the document is, so any longer
+//!   document is built from several calls, and every call after the first
+//!   still pays the same `O(current document length)` linearisation. Batching
+//!   buys fewer, chunkier calls, not a different asymptotic wall.
 //!
-//! * **Read wall (`get_text`)** — EXTRAPOLATED, from the SAME sweep that
-//!   produced the write wall (one `get_text` call every 100 characters, on
-//!   the same growing document). Largest executed point: at 8,400 characters
-//!   `get_text` costs 692,379,273 gas; at 1,000 characters it costs
-//!   98,367,475. That line crosses 1,000,000,000 gas at **≈12,230
-//!   characters** — inside a few hundred characters of the write wall above,
-//!   not far from it. An earlier estimate put the read wall near 9,200
-//!   characters by extrapolating from a single `get_text` call against a
-//!   document built with ONE bulk `insert_str` (400 characters, 43,554,113
-//!   gas). That single point was a weaker basis than the swept curve here:
-//!   it could not distinguish an early, not-yet-converged per-character rate
-//!   from the true asymptotic slope, and it measured `get_text` against a
-//!   document built the one way `insert_str` cannot build past ~491
-//!   characters. The 18-point swept fit above supersedes it: write and read
-//!   die within measurement noise of each other, not "far apart".
+//! * **Read wall (`get_text`)** - EXTRAPOLATED, from the SAME sweep as the
+//!   write wall (one `get_text` every 100 characters on the same growing
+//!   document): 984,009,818 gas at 17,000 characters, crossing at **≈17,100**.
+//!   Write and read die within measurement noise of each other.
 //!
 //! # It can no longer rot quietly
 //!
@@ -645,6 +628,7 @@ fn single_call_paste_wall() {
         }
     }
 
+    let mut lo_gas: Option<u64> = None;
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
         let mut storage = InMemoryStorage::default();
@@ -660,7 +644,10 @@ fn single_call_paste_wall() {
             &serde_json::json!({"position": 0_usize, "text": text}),
         );
         match &outcome.returns {
-            Ok(_) => lo = mid,
+            Ok(_) => {
+                lo = mid;
+                lo_gas = outcome.gas_used;
+            }
             Err(error) => match classify("insert_text", error) {
                 Verdict::Wall { .. } => hi = mid,
                 Verdict::Drift(detail) => drift(&detail),
@@ -668,7 +655,7 @@ fn single_call_paste_wall() {
         }
     }
 
-    println!("single-call paste wall: {lo} characters land, {hi} exhausts gas");
+    println!("single-call paste wall: {lo} characters land ({lo_gas:?} gas), {hi} exhausts gas");
     assert!(
         lo >= 10,
         "the single-call paste wall landed at only {lo} characters — investigate \

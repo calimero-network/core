@@ -31,15 +31,16 @@
 //! `ReplicatedGrowableArray` has exactly one read — `get_text()`, which
 //! materialises the whole document — so `rga_wall.rs` has exactly one read
 //! wall to find. `FugueText` also answers `char_at` and `text_range`, so this
-//! probe sweeps all three: a positional read that keeps working after the
-//! whole-document read has died is the capability difference, expressed as a
-//! wall rather than as a row count.
+//! probe sweeps all three. They do not separate: all three rebuild the tree
+//! from every stored block, so their gas is that rebuild rather than the
+//! characters returned, and the three walls land on top of each other. A
+//! positional read is not a way to keep reading a document `get_text` can no
+//! longer open.
 //!
 //! # Measured results
 //!
-//! Recorded in `.superpowers/sdd/2026-09-02-rga-fugue-rework/stack6-report.md`
-//! alongside RGA's, rather than transcribed here, so the pair is read
-//! together. Run it yourself with:
+//! Not transcribed here: a Fugue wall only means something beside RGA's, so
+//! run this and `rga_wall.rs` as a pair.
 //!
 //!   cargo test -p calimero-runtime --test fugue_wall -- --ignored --nocapture
 //!
@@ -576,8 +577,14 @@ fn mid_document_typing_wall() {
 /// The single-call ceiling of `insert_str`'s BULK path: the largest string that
 /// can be pasted into an EMPTY document in ONE `insert_text` call before that
 /// one call itself exhausts gas. `rga_wall.rs`'s `single_call_paste_wall`
-/// measured 491 characters for `ReplicatedGrowableArray`; this is the same
+/// measured 742 characters for `ReplicatedGrowableArray`; this is the same
 /// question asked of `FugueText`.
+///
+/// Currently unanswerable through this guest: 16,000 characters land, and a
+/// larger paste fails with `log size overflow` rather than `GasExhausted`,
+/// because `fugue-editor::insert_text` logs the string it inserts. So the
+/// ceiling is known only as "> 16,000", and the probe drifts rather than
+/// reporting a number it did not measure.
 #[test]
 #[ignore = "slow: builds the compiled fugue-editor app. Fast to execute once \
             built, unlike the sweep above."]
@@ -590,7 +597,7 @@ fn single_call_paste_wall() {
 
     preflight(&module);
 
-    let paste = |n: usize| -> Result<(), ()> {
+    let paste = |n: usize| -> Result<Option<u64>, ()> {
         let mut storage = InMemoryStorage::default();
         expect_ok(
             &call(&module, &mut storage, "init", &serde_json::json!({})),
@@ -604,7 +611,7 @@ fn single_call_paste_wall() {
             &serde_json::json!({"position": 0_usize, "text": text}),
         );
         match &outcome.returns {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(outcome.gas_used),
             Err(error) => match classify("insert_text", error) {
                 Verdict::Wall { .. } => Err(()),
                 Verdict::Drift(detail) => drift(&detail),
@@ -612,30 +619,33 @@ fn single_call_paste_wall() {
         }
     };
 
-    // `lo` is known to land, `hi` is known to wall. 8,192 is the same seed
-    // rga_wall uses: comfortably below the 16 KiB `app::log!` line-length limit
-    // that a much larger seed would trip first, misreporting a log overflow as
-    // if it bracketed the gas wall.
+    // `lo` is known to land, `hi` is known to wall. `hi` cannot simply be raised
+    // until it walls: fugue-editor logs the string it inserts, so a paste past
+    // the 16 KiB `app::log!` line-length limit trips that before gas does.
     let mut lo = 1_usize;
-    let mut hi = 8_192;
+    let mut hi = 16_000;
     if paste(hi).is_ok() {
         drift(&format!(
             "a single insert_text call of {hi} characters into an EMPTY document \
-             succeeded. The seeded upper bound for this search is no longer past the \
-             wall — raise it in this file."
+             succeeded, and the seed cannot be raised past the app's log-line limit. \
+             FugueText's single-call paste ceiling is no longer reachable through \
+             fugue-editor; shorten what its insert_text logs before re-seeding."
         ));
     }
 
+    let mut lo_gas: Option<u64> = None;
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
-        if paste(mid).is_ok() {
-            lo = mid;
-        } else {
-            hi = mid;
+        match paste(mid) {
+            Ok(gas) => {
+                lo = mid;
+                lo_gas = gas;
+            }
+            Err(()) => hi = mid,
         }
     }
 
-    println!("single-call paste wall: {lo} characters land, {hi} exhausts gas");
+    println!("single-call paste wall: {lo} characters land ({lo_gas:?} gas), {hi} exhausts gas");
     assert!(
         lo >= 10,
         "the single-call paste wall landed at only {lo} characters — investigate \

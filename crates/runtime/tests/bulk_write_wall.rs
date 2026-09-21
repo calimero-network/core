@@ -1,4 +1,4 @@
-//! Is the ~491-character single-call ceiling `rga_wall.rs` found for
+//! Is the single-call paste ceiling `rga_wall.rs` found for
 //! `ReplicatedGrowableArray::insert_str` an RGA defect, or a property of the
 //! whole storage layer?
 //!
@@ -6,7 +6,7 @@
 //! entry across collections at n=10,000 (`unordered_map_insert` 66,
 //! `unordered_set_insert` 66, `rga_insert` 66, `vector_push` 64,
 //! `lww_register_set` 46). If gas is roughly proportional to rows touched,
-//! then a per-call gas ceiling near ~500 entries should show up for EVERY
+//! then a per-call gas ceiling in the same range should show up for EVERY
 //! collection, not just RGA. This probe answers that directly, the same way
 //! `rga_wall.rs::single_call_paste_wall` did: binary search, against a real
 //! compiled guest, to an EXECUTED `GasExhausted`, not a projected one.
@@ -24,12 +24,12 @@
 //!
 //!   cargo test -p calimero-runtime --test bulk_write_wall -- --ignored --nocapture
 //!
-//! # Measured results (2026-09-01, against this tree)
+//! # Measured results (2026-09-19, against this tree)
 //!
-//! See `.superpowers/sdd/2026-08-31-core-benchmark-suite/fidelity-3-report.md`
-//! for the full table and the direct answer to the question above; the
-//! short version is that all three walls land within a small multiple of
-//! RGA's 491, so the ~500-entry ceiling is NOT RGA-specific.
+//! `UnorderedMap` 681, `Vector` 696, `UnorderedSet` 693, against RGA's 742
+//! from `rga_wall.rs`: all four within 9% of each other, so the ceiling is a
+//! property of the storage layer and not of any one collection. Re-run the
+//! command above rather than trusting these numbers.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -270,7 +270,7 @@ fn find_wall(module: &calimero_runtime::Module, method: &str) -> (usize, u64, u6
 
 /// Executed (not extrapolated) single-call write walls for all three
 /// collections `bulk-write-bench` exposes, answering directly whether RGA's
-/// ~491-character wall is RGA-specific or platform-wide.
+/// single-call wall is RGA-specific or platform-wide.
 #[test]
 #[ignore = "slow: builds the compiled bulk-write-bench app and binary-searches three \
             single-call gas walls. Fast to execute once built (well under a second \
