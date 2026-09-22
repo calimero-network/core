@@ -565,6 +565,22 @@ jobs:
           - workflow: delegated-session
             file: workflows/delegated-session.yml
             app: scaffolding-e2e
+          # What a device-key session can OBSERVE, which nothing covered at any
+          # layer: no scenario beside this one mentions websocket, `/ws`,
+          # `text/event-stream` or subscribe. `delegated-session` above proves
+          # the session reads and writes; for a CRDT system, subscription is the
+          # operation applications depend on most.
+          #
+          # Both transports, because they authenticate differently -- WebSocket
+          # by `?token=` (a browser cannot set a header on a WebSocket), SSE by
+          # an `Authorization` header -- so one working proves nothing about the
+          # other. Each subscribes, WAITS for the ack, then writes, then asserts
+          # a StateMutation arrives: an accepted subscription is not a delivered
+          # event, and a node that acks and sends nothing would pass a check
+          # that stopped at the ack.
+          - workflow: delegated-subscribe
+            file: workflows/delegated-subscribe.yml
+            app: scaffolding-e2e
           # A node holding NO account root joins and writes, under a certificate
           # its root signed on another machine — the cold-storage posture the
           # account/device split exists for (#3430).
