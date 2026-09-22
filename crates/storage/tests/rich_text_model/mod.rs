@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_storage::collections::fugue::{FugueTree, RawId};
+use calimero_storage::collections::fugue::{FugueNode, FugueTree, RawId};
 use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange};
 use calimero_storage::collections::{Expand, Mark, MarkId, MarkSchema, Span};
 
@@ -124,7 +124,10 @@ impl Model {
         if start >= end || end > self.len() {
             return None;
         }
-        if (start..end).all(|index| self.attrs_at(index).get(key).map(String::as_str) == value) {
+        let resolved = self.resolved();
+        if (start..end)
+            .all(|index| attrs_from(&resolved, index).get(key).map(String::as_str) == value)
+        {
             return None;
         }
 
@@ -151,9 +154,10 @@ impl Model {
     /// The document as attributed runs, built one character at a time.
     #[must_use]
     pub fn spans(&self) -> Vec<Span> {
+        let resolved = self.resolved();
         let mut out: Vec<Span> = Vec::new();
         for (index, content) in self.text().chars().enumerate() {
-            let attributes = self.attrs_at(index);
+            let attributes = attrs_from(&resolved, index);
             match out.last_mut() {
                 Some(last) if last.attributes == attributes => last.text.push(content),
                 _ => out.push(Span {
@@ -165,26 +169,21 @@ impl Model {
         out
     }
 
-    /// Per key, the covering mark with the greatest id wins; `None` removes.
-    fn attrs_at(&self, index: usize) -> BTreeMap<String, String> {
-        let mut best: BTreeMap<&str, (MarkId, Option<&str>)> = BTreeMap::new();
-        for mark in &self.marks {
-            let (Some(start), Some(end)) = (self.resolve(&mark.start), self.resolve(&mark.end))
-            else {
-                continue;
-            };
-            if index < start || index >= end {
-                continue;
-            }
-            let winner = best
-                .entry(mark.key.as_str())
-                .or_insert((mark.id, mark.value.as_deref()));
-            if mark.id > winner.0 {
-                *winner = (mark.id, mark.value.as_deref());
-            }
-        }
-        best.into_iter()
-            .filter_map(|(key, (_, value))| value.map(|value| (key.to_owned(), value.to_owned())))
+    #[must_use]
+    pub fn attributes_at(&self, index: usize) -> BTreeMap<String, String> {
+        attrs_from(&self.resolved(), index)
+    }
+
+    /// Each mark placed by its own linear scan. One scan per mark, not one per
+    /// (character, mark) pair, which is the difference between naive and unusable.
+    fn resolved(&self) -> Vec<(usize, usize, &Mark)> {
+        self.marks
+            .iter()
+            .filter_map(|mark| {
+                let start = self.resolve(&mark.start)?;
+                let end = self.resolve(&mark.end)?;
+                Some((start, end, mark))
+            })
             .collect()
     }
 
@@ -269,6 +268,119 @@ impl Model {
         last
     }
 
+    // ---- deltas, for driving several replicas ----
+
+    /// The nodes and mark rows an edit added or tombstoned, which is what one
+    /// delta carries. Mirrors what the storage layer puts on the wire.
+    #[must_use]
+    pub fn diff(before: &Self, after: &Self) -> ModelDelta {
+        let old: BTreeMap<RawId, FugueNode> = before.nodes();
+        let held: BTreeSet<MarkId> = before.marks.iter().map(|mark| mark.id).collect();
+        ModelDelta {
+            nodes: after
+                .nodes()
+                .into_iter()
+                .filter(|(id, node)| old.get(id).is_none_or(|was| was.value != node.value))
+                .map(|(_, node)| node)
+                .collect(),
+            marks: after
+                .marks
+                .iter()
+                .filter(|mark| !held.contains(&mark.id))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub fn integrate(&mut self, delta: &ModelDelta) {
+        for node in &delta.nodes {
+            self.tree.integrate(*node);
+        }
+        // Delete wins, so a tombstone that arrived before its node re-applies.
+        for node in &delta.nodes {
+            if node.value.is_none() {
+                self.tree.integrate(*node);
+            }
+        }
+        let held: BTreeSet<MarkId> = self.marks.iter().map(|mark| mark.id).collect();
+        for mark in &delta.marks {
+            if !held.contains(&mark.id) {
+                self.marks.push(mark.clone());
+            }
+        }
+    }
+
+    fn nodes(&self) -> BTreeMap<RawId, FugueNode> {
+        self.tree.nodes().map(|node| (node.id, *node)).collect()
+    }
+
+    // ---- what a coverage guard needs to see ----
+
+    /// Every mark that resolves here, as `(start, end, key)`.
+    #[must_use]
+    pub fn active_ranges(&self) -> Vec<(usize, usize, String)> {
+        self.resolved()
+            .into_iter()
+            .filter(|(start, end, _)| start < end)
+            .map(|(start, end, mark)| (start, end, mark.key.clone()))
+            .collect()
+    }
+
+    /// Marks this replica stores but cannot place, which a read must skip.
+    #[must_use]
+    pub fn inactive_marks(&self) -> usize {
+        self.marks.len() - self.active_ranges().len()
+    }
+
+    /// Whether the gap at `pos` holds at least one tombstone.
+    #[must_use]
+    pub fn has_tombstones_at(&self, pos: usize) -> bool {
+        let mut live = 0_usize;
+        for id in self.tree.order().into_iter().flatten() {
+            let Some(node) = self.tree.node(id) else {
+                continue;
+            };
+            if node.value.is_some() {
+                if live == pos {
+                    return false;
+                }
+                live += 1;
+            } else if live == pos {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The biases of every active mark edge sitting exactly at `pos`: `true`
+    /// where the edge grows over an insert there, `false` where it does not.
+    #[must_use]
+    pub fn edges_at(&self, pos: usize) -> Vec<bool> {
+        let mut out = Vec::new();
+        for mark in &self.marks {
+            for (anchor, is_end) in [(mark.start, false), (mark.end, true)] {
+                let Some(at) = self.resolve(&anchor) else {
+                    continue;
+                };
+                if at != pos {
+                    continue;
+                }
+                let grows = match anchor {
+                    Anchor::Start | Anchor::End => true,
+                    Anchor::Char { bias, .. } => {
+                        if is_end {
+                            bias == Bias::Before
+                        } else {
+                            bias == Bias::After
+                        }
+                    }
+                };
+                out.push(grows);
+            }
+        }
+        out
+    }
+
     // ---- merge ----
 
     /// The state-based join: every node, delete-wins, plus the union of the mark
@@ -301,6 +413,32 @@ impl Model {
         *slot += 1;
         counter
     }
+}
+
+/// Per key, the covering mark with the greatest id wins; `None` removes the key.
+fn attrs_from(resolved: &[(usize, usize, &Mark)], index: usize) -> BTreeMap<String, String> {
+    let mut best: BTreeMap<&str, (MarkId, Option<&str>)> = BTreeMap::new();
+    for (start, end, mark) in resolved {
+        if index < *start || index >= *end {
+            continue;
+        }
+        let winner = best
+            .entry(mark.key.as_str())
+            .or_insert((mark.id, mark.value.as_deref()));
+        if mark.id > winner.0 {
+            *winner = (mark.id, mark.value.as_deref());
+        }
+    }
+    best.into_iter()
+        .filter_map(|(key, (_, value))| value.map(|value| (key.to_owned(), value.to_owned())))
+        .collect()
+}
+
+/// What one edit added or tombstoned.
+#[derive(Clone, Debug, Default)]
+pub struct ModelDelta {
+    pub nodes: Vec<FugueNode>,
+    pub marks: Vec<Mark>,
 }
 
 /// A growing edge is anchored across the gap so a later insert lands inside it;

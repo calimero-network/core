@@ -819,10 +819,15 @@ fn active_marks<'a>(index: &PositionIndex, marks: &'a [Mark]) -> Vec<Active<'a>>
         .collect()
 }
 
-/// The sweep. Events sort by position with Closes before Opens, so between two
-/// event positions the open set is exactly the marks covering those characters.
+/// The sweep: between two event positions the open set is exactly the marks
+/// covering those characters.
+///
+/// A run is emitted BEFORE the batch at its right edge is applied, and an active
+/// mark covers at least one character, so no slot opens and closes at one
+/// position. Intra-batch order therefore cannot change the result; it is fixed
+/// only so the sort is total.
 fn runs_of(index: &PositionIndex, marks: &[Mark], len: usize) -> Vec<Run> {
-    const CLOSE: u8 = 0; // sorts before OPEN at one position
+    const CLOSE: u8 = 0;
     const OPEN: u8 = 1;
 
     let active = active_marks(index, marks);
@@ -846,8 +851,7 @@ fn runs_of(index: &PositionIndex, marks: &[Mark], len: usize) -> Vec<Run> {
             });
             cursor = pos;
         }
-        while let Some(&(next, kind, slot)) = events.get(at).filter(|e| e.0 == pos) {
-            let _ignored = next;
+        while let Some(&(_, kind, slot)) = events.get(at).filter(|event| event.0 == pos) {
             if kind == CLOSE {
                 let _ignored = open.remove(&slot);
             } else {
