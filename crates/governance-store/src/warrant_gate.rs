@@ -356,6 +356,54 @@ fn next_nonce_state(
     }
 }
 
+/// What this node has recorded about one author device's warrant nonces in one
+/// context, or `None` when it has admitted no warrant from that device here.
+///
+/// **A read, and only a read.** It spends nothing and advances nothing, so a
+/// caller may ask as often as it likes; the ledger only ever moves in
+/// [`spend_warrant_nonce`].
+///
+/// # Why this is exposed at all
+///
+/// The nonce is the one input to a warrant that is *stateful on the client*.
+/// Every other field an author needs it either holds (its own keys, the method,
+/// the args) or can read from the relay (`GET .../intents` gives the executor
+/// account and the grant). The nonce alone lives in the author's own memory —
+/// so an author that loses that memory cannot mint a warrant it is sure will be
+/// accepted, and the only alternative is to guess upward and burn a refusal per
+/// wrong guess. For a browser keyholder in partitioned or periodically-cleared
+/// storage, losing it is the normal case, not the exceptional one.
+///
+/// # What a caller may conclude from it
+///
+/// [`types::ContextWarrantNonce::high_water`] is *always* a member of the
+/// accepted set, and nothing strictly above it has been accepted. So
+/// `high_water + 1` is the smallest nonce this node is guaranteed to accept
+/// next, and that is the whole contract. The window bitmap below the mark says
+/// which older nonces are still free; it is deliberately **not** part of this
+/// answer, because filling a gap buys an author nothing it cannot get by going
+/// forward, and a caller that misreads a bitmap burns nonces for real.
+///
+/// # This is one node's view
+///
+/// Nonce state is folded per peer from the deltas that peer has applied, so a
+/// peer that has seen warrants this node has not holds a *higher* mark. An
+/// answer from here is authoritative for the relay that gave it — which is the
+/// relay the warrant will be presented to — and safe on any peer that is behind
+/// it, since a nonce above this mark is above theirs too. An author that uses
+/// several relays must take the highest answer across them.
+///
+/// # Errors
+/// Propagates the store read failure. A device with no row is not an error.
+pub fn warrant_nonce_state(
+    store: &Store,
+    context_id: &ContextId,
+    author_device_key: calimero_primitives::identity::PublicKey,
+) -> EyreResult<Option<types::ContextWarrantNonce>> {
+    let key = key::ContextWarrantNonce::new(*context_id, author_device_key);
+    Ok(store.handle().get(&key)?)
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_context_config::MemberCapabilities;
@@ -365,7 +413,7 @@ mod tests {
 
     use super::{
         account_may_author, authorship_grant_source, check_delegated_delta, spend_warrant_nonce,
-        WarrantRefusal,
+        warrant_nonce_state, WarrantRefusal,
     };
     use crate::test_fixtures::{
         enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
@@ -958,5 +1006,165 @@ mod tests {
 
         check_delegated_delta(&first.store, &first.context, &next)
             .expect("the next warrant in the sequence must still be admitted");
+    }
+
+    // -----------------------------------------------------------------------
+    // Nonce discovery
+    // -----------------------------------------------------------------------
+
+    /// The key the author's warrants are actually signed by, which is what the
+    /// nonce ledger is keyed on — not the account key the member was enrolled
+    /// under.
+    fn author_device_key() -> PublicKey {
+        PrivateKey::from(AUTHOR_KEY).public_key()
+    }
+
+    /// Another warrant from the same author in the same world, at `nonce`.
+    fn at_nonce(w: &World, nonce: u64) -> Delegation {
+        let warrant = Warrant::sign(
+            &PrivateKey::from(AUTHOR_KEY),
+            WarrantTerms {
+                context: w.context,
+                author_account: w.delegation.warrant.author_account,
+                executor: w.delegation.warrant.executor,
+                app_version: ApplicationId::from([0u8; 32]),
+                method: "send_message".to_owned(),
+                intent_hash: Warrant::intent_hash("send_message", nonce.to_string().as_bytes()),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce,
+                not_after: u64::MAX,
+            },
+        )
+        .expect("warrant must sign");
+        Delegation {
+            warrant: Box::new(warrant),
+            ..w.delegation.clone()
+        }
+    }
+
+    /// The honest answer for a device that has never written here: nothing, so
+    /// the client is free to start wherever it likes. Reporting a zero state
+    /// instead would be a lie a client could not distinguish from "nonce 0 was
+    /// spent".
+    #[test]
+    fn a_device_that_has_never_written_here_has_no_nonce_state() {
+        let w = seed(7);
+
+        let state = warrant_nonce_state(&w.store, &w.context, author_device_key())
+            .expect("the read must succeed");
+        assert!(
+            state.is_none(),
+            "no warrant has been spent yet, so there is nothing to report"
+        );
+    }
+
+    /// Reading must not move the ledger — a client polling this endpoint would
+    /// otherwise invalidate its own next warrant.
+    #[test]
+    fn reading_the_nonce_state_spends_nothing() {
+        let w = seed(7);
+        spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("spend 7");
+
+        for _ in 0..3 {
+            let state = warrant_nonce_state(&w.store, &w.context, author_device_key())
+                .expect("read")
+                .expect("a spent warrant leaves a row");
+            assert_eq!(state.high_water, 7);
+        }
+
+        check_delegated_delta(&w.store, &w.context, &at_nonce(&w, 8))
+            .expect("the next nonce is still spendable after three reads");
+    }
+
+    /// The whole point of the surface: a client that has forgotten its counter
+    /// reads `high_water`, mints at `high_water + 1`, and is accepted first try.
+    #[test]
+    fn a_client_that_lost_its_state_recovers_from_the_high_water_mark() {
+        let w = seed(7);
+
+        // A few warrants land, in an order the client no longer remembers.
+        for nonce in [7, 9, 8, 12] {
+            let d = at_nonce(&w, nonce);
+            check_delegated_delta(&w.store, &w.context, &d).expect("check");
+            spend_warrant_nonce(&w.store, &w.context, &d).expect("spend");
+        }
+
+        // The client's storage is cleared. All it has left is its device key.
+        let state = warrant_nonce_state(&w.store, &w.context, author_device_key())
+            .expect("read")
+            .expect("this device has written here");
+        assert_eq!(
+            state.high_water, 12,
+            "the mark is the highest ever accepted"
+        );
+
+        let recovered = state.high_water + 1;
+        let d = at_nonce(&w, recovered);
+        check_delegated_delta(&w.store, &w.context, &d)
+            .expect("high_water + 1 must be accepted on the first attempt");
+        spend_warrant_nonce(&w.store, &w.context, &d).expect("spend");
+
+        // And the recovered client keeps going from there.
+        let next = at_nonce(&w, recovered + 1);
+        check_delegated_delta(&w.store, &w.context, &next)
+            .expect("the sequence continues from the recovered position");
+    }
+
+    /// The guarantee stated on `warrant_nonce_state`, exercised rather than
+    /// asserted: whatever the window below the mark looks like, `high_water + 1`
+    /// is spendable. A client is told one rule, so the one rule must always hold.
+    #[test]
+    fn high_water_plus_one_is_spendable_whatever_the_window_holds() {
+        let w = seed(7);
+
+        // A ragged history: gaps the relay never filled, plus back-fills.
+        for nonce in [40, 41, 45, 42, 100, 99, 60] {
+            let d = at_nonce(&w, nonce);
+            if check_delegated_delta(&w.store, &w.context, &d).is_ok() {
+                spend_warrant_nonce(&w.store, &w.context, &d).expect("spend");
+            }
+
+            let state = warrant_nonce_state(&w.store, &w.context, author_device_key())
+                .expect("read")
+                .expect("a row exists once anything has been spent");
+            check_delegated_delta(&w.store, &w.context, &at_nonce(&w, state.high_water + 1))
+                .expect("high_water + 1 must be spendable at every point in the history");
+        }
+    }
+
+    /// The state is per device: one device's writes must not move another's
+    /// position, or a recovering client would be handed a mark it never set.
+    #[test]
+    fn nonce_state_is_scoped_to_the_author_device() {
+        let w = seed(7);
+        spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("spend");
+
+        assert!(
+            warrant_nonce_state(
+                &w.store,
+                &w.context,
+                PrivateKey::from(RELAY_KEY).public_key()
+            )
+            .expect("read")
+            .is_none(),
+            "a different device key must have its own, still-empty, position"
+        );
+    }
+
+    /// And per context: the same device writing in two contexts keeps two
+    /// independent sequences.
+    #[test]
+    fn nonce_state_is_scoped_to_the_context() {
+        let w = seed(7);
+        spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("spend");
+
+        let elsewhere = ContextId::from([0xC2; 32]);
+        assert!(
+            warrant_nonce_state(&w.store, &elsewhere, author_device_key())
+                .expect("read")
+                .is_none(),
+            "another context is another sequence"
+        );
     }
 }
