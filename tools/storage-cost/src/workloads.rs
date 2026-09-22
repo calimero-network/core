@@ -14,8 +14,8 @@ use std::rc::Rc;
 use calimero_storage::action::Action;
 use calimero_storage::collections::fugue_text::TextOp;
 use calimero_storage::collections::{
-    DefaultMarks, DeltaOp, FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, RichText,
-    Root, UnorderedMap, Vector,
+    BlockId, DefaultMarks, DeltaOp, FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray,
+    RichDocument, RichText, Root, UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -365,6 +365,87 @@ fn rich_text_to_delta_many_marks(n: usize) {
     assert!(!spans.is_empty(), "the measured read returned nothing");
 }
 
+type BlockDoc = RichDocument<DefaultMarks, MainStorage>;
+
+/// A document of `n` blocks, each holding one character, so what a block
+/// workload measures is the block count rather than the text inside it.
+///
+/// Built by FIELD NAME, not by `new()`: a random collection id moves where a
+/// block's children land in the child trie, and the row counts wobble by one
+/// with it - the same reason `nested_map_insert` fixes its parent id.
+fn build_rich_document(n: usize) -> (Root<BlockDoc>, Vec<BlockId>) {
+    let mut doc = Root::new(|| BlockDoc::new_with_field_name("blocks"));
+    let mut ids = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = doc
+            .insert_block(ids.last().copied(), "paragraph", 0)
+            .expect("insert_block should succeed");
+        let _undo = doc
+            .apply_delta(id, &[one_char()])
+            .expect("seed typing should succeed");
+        ids.push(id);
+    }
+    (doc, ids)
+}
+
+fn one_char() -> DeltaOp {
+    DeltaOp::Insert {
+        insert: "a".to_owned(),
+        attributes: None,
+    }
+}
+
+/// The document read: one spine rebuild plus one render per block, so linear in
+/// blocks and never quadratic.
+fn rich_document_blocks(n: usize) {
+    let (doc, _ids) = build_rich_document(n);
+    reset_counters();
+    let blocks = doc.blocks().expect("blocks should succeed");
+    assert_eq!(blocks.len(), n, "the measured read lost a block");
+}
+
+/// One more block on a document that already holds `n`. What it WRITES must not
+/// grow with `n`; the snapshot pins that exactly.
+fn rich_document_insert_block(n: usize) {
+    let (mut doc, ids) = build_rich_document(n);
+    reset_counters();
+    let _id = doc
+        .insert_block(ids.last().copied(), "paragraph", 0)
+        .expect("insert_block should succeed");
+}
+
+/// Moving a block mints one spine slot and rewrites one property row, whatever
+/// the document holds.
+fn rich_document_move_block(n: usize) {
+    let (mut doc, ids) = build_rich_document(n);
+    let first = *ids.first().expect("the document holds a block");
+    reset_counters();
+    doc.move_block(first, ids.last().copied())
+        .expect("move_block should succeed");
+}
+
+/// Splitting one block of `n` characters in half: the tail's text and its
+/// formatting are re-minted in the new block, so the cost is in the tail.
+fn rich_document_split_block(n: usize) {
+    let mut doc = Root::new(|| BlockDoc::new_with_field_name("blocks"));
+    let block = doc
+        .insert_block(None, "paragraph", 0)
+        .expect("insert_block should succeed");
+    let _undo = doc
+        .apply_delta(
+            block,
+            &[DeltaOp::Insert {
+                insert: "a".repeat(n),
+                attributes: None,
+            }],
+        )
+        .expect("seed typing should succeed");
+    reset_counters();
+    let _new = doc
+        .split_block(block, n / 2)
+        .expect("split_block should succeed");
+}
+
 fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     text.insert_str(0, &"a".repeat(n))
@@ -454,7 +535,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 17] = [
+    const REGISTRY: [Entry; 18] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -500,11 +581,22 @@ pub fn all() -> Vec<Workload> {
             rich_text_redundant_mark,
         ),
         ("rich_text_to_delta", KnownLinearInN, 0, rich_text_to_delta),
+        // Linear in the CHARACTERS a split carries, not in the block count, so
+        // it belongs beside the other text-sized reads. Reads reproduce
+        // exactly; writes and removes trade one for one as the index trie
+        // rebalances around the new block, and their SUM is what is stable, so
+        // the band covers that split rather than any movement in real cost.
+        (
+            "rich_document_split_block",
+            KnownLinearInN,
+            22,
+            rich_document_split_block,
+        ),
     ];
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because
     /// `REGISTRY` is crossed with `SIZES` unconditionally.
-    const QUADRATIC_REGISTRY: [Entry; 6] = [
+    const QUADRATIC_REGISTRY: [Entry; 9] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
@@ -543,6 +635,34 @@ pub fn all() -> Vec<Workload> {
             KnownLinearInN,
             0,
             rich_text_to_delta_many_marks,
+        ),
+        // Every block operation rebuilds the spine from stored rows, so a build
+        // of n blocks is quadratic and these are measured at the smaller sizes.
+        //
+        // `rich_document_blocks` is the one point workload declared
+        // `FlatPerEntry`: that shape divides by `n`, which is exactly the
+        // assertion "reading a document costs a bounded number of rows PER
+        // BLOCK", i.e. that the read stays linear in blocks. A `KnownLinearInN`
+        // ceiling is stated as a multiple of `n` and cannot carry this read's
+        // real per-block constant.
+        (
+            "rich_document_blocks",
+            FlatPerEntry,
+            0,
+            rich_document_blocks,
+        ),
+        // Same written-versus-removed split as `rich_document_split_block`.
+        (
+            "rich_document_insert_block",
+            ConstantPerCall,
+            22,
+            rich_document_insert_block,
+        ),
+        (
+            "rich_document_move_block",
+            ConstantPerCall,
+            0,
+            rich_document_move_block,
         ),
     ];
 
