@@ -361,13 +361,29 @@ the target context's group — a relay serves several tenants, so a session must
 carry a standing right to read.
 
 <Aside type="caution" title="What a session grants today">
-By default a session from this provider carries `context:intent` **and nothing
-else** — the delegated-write path, which is already gated by the warrant and by
-`CAN_AUTHOR_ON_BEHALF`, so the session adds no authority the warrant did not already
-prove. Reads are deliberately excluded until the per-request membership check lands
-with [#3931](https://github.com/calimero-network/core/issues/3931); without it a
-broader default would let any account with a device key read every context on a
-shared relay. Operators widen it with `auth.account_proof.session_permissions`.
+By default a session from this provider carries exactly five scopes and nothing
+above them:
+
+| Scope | Route | Gated again by |
+| --- | --- | --- |
+| `context:intent` | `POST /admin-api/contexts/{id}/intents` | the warrant + `CAN_AUTHOR_ON_BEHALF` |
+| `context:query` | `POST /admin-api/contexts/{id}/query` | per-call membership |
+| `context:subscribe` | `/ws`, `/sse` | per-subscription membership |
+| `context:list-own` | `GET /admin-api/contexts`, `GET /admin-api/contexts/{id}` | the caller's groups, resolved per request |
+| `namespace:list-own` | `GET /admin-api/namespaces` | the caller's groups, resolved per request |
+
+None of them is authority the session confers by itself — each is re-decided at
+the node, so the token only decides who may **ask**.
+
+The two `-own` scopes are deliberately narrower than the node-wide
+`context:list` / `namespace:list`, which would additionally reach
+`/contexts/{id}/identities`, `/storage`, `/group`, the `for-application`
+listings and the per-namespace reads. Those are not caller-scoped, and on a
+shared relay that is one tenant reading another's roster.
+
+Operators change the set with `auth.account_proof.session_permissions`. The
+default only applies where the field is absent, so a node whose `config.toml`
+was written before a scope existed keeps its old list until an operator adds it.
 </Aside>
 
 <Aside type="danger" title="A session is not a warrant">
@@ -438,24 +454,62 @@ would invite a client to watch it for changes that can never come.
 The read route is gated on `context:query[<context_id>]`, its own permission —
 not `context:execute` (which also covers join, leave and resync) and not
 `context:intent` (which submits writes). A session minted by the `account_proof`
-provider carries `context:intent` and `context:query` and nothing else, which is
-the delegated client's whole surface. Both are gated again below the token: a
-write by the warrant and `CAN_AUTHOR_ON_BEHALF`, a read by the per-call membership
-check above. The token decides who may **ask**.
+provider carries it alongside `context:intent`, `context:subscribe` and the two
+`-own` listing scopes, which is the delegated client's whole surface. Every one
+is gated again below the token: a write by the warrant and
+`CAN_AUTHOR_ON_BEHALF`, a read by the per-call membership check above, a listing
+by the caller's groups resolved per request. The token decides who may **ask**.
 </Aside>
 
-## 5. End to end
+## 5. Inventory — what this account can reach
+
+A client that runs no node still has to find out **which** namespaces and
+contexts it may read or write, or every id has to be handed to it out of band.
+Three routes answer that, all with the session token and nothing else:
+
+```
+GET /admin-api/namespaces        → the namespaces this account is a member of
+GET /admin-api/contexts          → the contexts inside them (each with its groupId)
+GET /admin-api/contexts/{ctx}    → one context, if this account is a member
+```
+
+All three resolve the caller's groups **from the store on every request** and
+return only what those admit. Membership is never read off the session: a
+namespace or context disappears from the listing when the removal op lands, not
+when the token expires. A context whose owning group cannot be resolved is
+excluded, not included — the listings fail closed.
+
+`GET /admin-api/contexts/{ctx}` applies the same rule to a named id, so a context
+the listing hides cannot be reached by guessing its id: the answer is `403`, and
+`404` means the node genuinely does not hold it.
+
+Node-owner sessions, and nodes running with no auth guard at all, keep the
+node-wide view of all three — narrowing there would empty the endpoints on every
+single-tenant node without closing anything.
+
+:::caution[Blob enumeration is not part of this]
+`GET /admin-api/blobs` is **not** caller-scoped: `BlobMeta` carries no owner and
+blobs are deduplicated by content hash, so ownership is many-to-many and needs a
+model rather than a filter ([#4019](https://github.com/calimero-network/core/issues/4019)).
+It still requires the node-wide `blob:list`, so a delegated session is refused.
+Fetching a blob **by id** (`GET /admin-api/blobs/{id}`) is a different route with
+its own scope.
+:::
+
+## 6. End to end
 
 ```
 1.  GET  /api/cloud/me/namespaces/{ns}/relays      → relay_url, executor_account
 2.  GET  /auth/challenge                           → challenge
 3.  sign LoginStatement with the DEVICE key
 4.  POST /auth/token  (auth_method=account_proof)  → session token
-5.  GET  /admin-api/contexts/{ctx}/intents         → canAuthorOnBehalf?
+5.  GET  /admin-api/namespaces                     → my namespaces
+    GET  /admin-api/contexts                       → my contexts, with groupId
+6.  GET  /admin-api/contexts/{ctx}/intents         → canAuthorOnBehalf?
     ├── false → stop; ask an admin of groupId for the grant
     └── true  → continue
-6.  READ   POST /admin-api/contexts/{ctx}/query    (token; no warrant)
-7.  WRITE  sign a Warrant with the DEVICE key
+7.  READ   POST /admin-api/contexts/{ctx}/query    (token; no warrant)
+8.  WRITE  sign a Warrant with the DEVICE key
            POST /admin-api/contexts/{ctx}/intents  (token + warrant + authorProof)
 ```
 

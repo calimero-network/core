@@ -202,6 +202,41 @@ mod tests {
         assert!(!account_scope(&[[0xa1; 32]]).admits(None));
     }
 
+    /// Two accounts on one relay, over the same set of ids.
+    ///
+    /// This is the predicate `/admin-api/namespaces` filters through — a
+    /// namespace IS a root group, so its id is a group id and the listing calls
+    /// `admits` on it directly. `/admin-api/contexts` enumerates rather than
+    /// filters, and has its own disjointness test next to that code; this is the
+    /// filtering half.
+    #[test]
+    fn two_account_scopes_admit_disjoint_and_complete_sets() {
+        let a = account_scope(&[[0xa1; 32], [0xa2; 32]]);
+        let b = ListScope::Account {
+            account: AccountId::from([0x02; 32]),
+            groups: [[0xb1; 32]]
+                .into_iter()
+                .map(ContextGroupId::from)
+                .collect::<BTreeSet<_>>(),
+        };
+
+        let all = [[0xa1; 32], [0xa2; 32], [0xb1; 32]].map(ContextGroupId::from);
+        let admitted = |scope: &ListScope| {
+            all.iter()
+                .filter(|g| scope.admits(Some(g)))
+                .copied()
+                .collect::<Vec<_>>()
+        };
+
+        let (seen_by_a, seen_by_b) = (admitted(&a), admitted(&b));
+        assert_eq!(seen_by_a, all[..2].to_vec(), "each sees all of its own");
+        assert_eq!(seen_by_b, all[2..].to_vec(), "each sees all of its own");
+        assert!(
+            seen_by_a.iter().all(|g| !seen_by_b.contains(g)),
+            "one tenant's listing must share no row with another's"
+        );
+    }
+
     /// An account in no groups sees nothing, rather than falling through to
     /// everything. The empty set is a real answer here, not a missing one.
     #[test]

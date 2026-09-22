@@ -141,7 +141,19 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let Some(ctx_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                // `list-own`, not `list`: the handler narrows this read to what
+                // the caller's groups admit (`admin/caller_scope.rs`), so the
+                // weaker scope is the honest requirement and it is the one a
+                // delegated session carries. `context:list[<id>]` still
+                // satisfies it at exactly the ids it names, so every token that
+                // reached this route before still does, and no further.
+                //
+                // The regex is anchored to a single segment, so this arm is
+                // `GET /admin-api/contexts/{id}` alone. Its siblings
+                // (`/identities`, `/identities-owned`, `/storage`, `/group`,
+                // and the `for-application` listings) are matched by their own
+                // patterns and keep requiring `context:list`.
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::ListOwn(scope))],
                 HttpMethod::DELETE => vec![Permission::Context(ContextPermission::Delete(scope))],
                 _ => vec![],
             };
@@ -547,8 +559,14 @@ impl PermissionValidator {
             )],
 
             // Admin API - Contexts
+            //
+            // Caller-scoped since #3941: the handler resolves the caller's
+            // groups per request and enumerates from them, so what comes back
+            // is already "the caller's contexts" and `list-own` is what the
+            // route actually needs. `context:list` satisfies it, so an operator
+            // or client token that reached this before is unaffected.
             ("/admin-api/contexts", HttpMethod::GET) => vec![Permission::Context(
-                ContextPermission::List(ResourceScope::Global),
+                ContextPermission::ListOwn(ResourceScope::Global),
             )],
             ("/admin-api/contexts", HttpMethod::POST) => vec![Permission::Context(
                 ContextPermission::Create(ResourceScope::Global),
@@ -574,8 +592,13 @@ impl PermissionValidator {
             // self-field, so this is the only answer to "which member am I".
 
             // Admin API - Namespaces
+            //
+            // Caller-scoped since #3941, same as `/admin-api/contexts` above,
+            // and mapped on the same terms. The per-namespace reads below
+            // (`/namespaces/:id`, `/:id/identity`, `/:id/groups`) are NOT
+            // caller-scoped and deliberately keep requiring `namespace:list`.
             ("/admin-api/namespaces", HttpMethod::GET) => vec![Permission::Namespace(
-                NamespacePermission::List(ResourceScope::Global),
+                NamespacePermission::ListOwn(ResourceScope::Global),
             )],
             ("/admin-api/namespaces", HttpMethod::POST) => vec![Permission::Namespace(
                 NamespacePermission::Create(ResourceScope::Global),
@@ -1664,5 +1687,231 @@ mod tests {
                 "client token must NOT reach {method} {path}",
             );
         }
+    }
+
+    /// The delegated session, verbatim: what `account_proof` mints by default.
+    ///
+    /// Written out rather than imported so a change to that default has to be
+    /// made deliberately here too — this is the set the three route assertions
+    /// below are about.
+    fn delegated_session() -> Vec<String> {
+        vec![
+            "context:intent".to_owned(),
+            "context:list-own".to_owned(),
+            "context:query".to_owned(),
+            "context:subscribe".to_owned(),
+            "namespace:list-own".to_owned(),
+        ]
+    }
+
+    /// The criterion: a delegated client can find out what it may act on.
+    ///
+    /// All three narrow the answer to the caller's own groups in the handler
+    /// (`admin/caller_scope.rs`), so what this pins is that the permission layer
+    /// lets the request reach them at all. Before `list-own` existed they
+    /// required the node-wide `context:list` / `namespace:list`, so a session
+    /// scoped to one account was refused outright and the client had to be
+    /// handed ids out of band.
+    #[test]
+    fn a_delegated_session_reaches_the_caller_scoped_listings() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for (method, path) in [
+            (Method::GET, "/admin-api/namespaces"),
+            (Method::GET, "/admin-api/contexts"),
+            (Method::GET, "/admin-api/contexts/ctx-1"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !required.contains(&Permission::Admin(AdminPermission)),
+                "{method} {path} must not fall to the admin default-deny, got {required:?}",
+            );
+            assert!(
+                validator.validate_permissions(&session, &required),
+                "a delegated session must reach {method} {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// The node owner's view is unchanged, and so is every token that already
+    /// held the wide scope: `list` satisfies `list-own`.
+    ///
+    /// Without this the change would be a silent 403 for every operator tool and
+    /// client key provisioned before the narrow scope existed.
+    #[test]
+    fn the_wide_list_scopes_still_reach_the_listings() {
+        let validator = PermissionValidator::new();
+
+        for (method, path, token) in [
+            (Method::GET, "/admin-api/namespaces", "namespace:list"),
+            (Method::GET, "/admin-api/contexts", "context:list"),
+            (
+                Method::GET,
+                "/admin-api/contexts/ctx-1",
+                "context:list[ctx-1]",
+            ),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                validator.validate_permissions(&[token.to_owned()], &required),
+                "`{token}` must still reach {method} {path} (required: {required:?})",
+            );
+            assert!(
+                validator.validate_permissions(&["admin".to_owned()], &required),
+                "admin must still reach {method} {path}",
+            );
+        }
+    }
+
+    /// The direction that must NOT hold.
+    ///
+    /// `context:list[<id>]` is also what `/contexts/:id/identities`,
+    /// `/identities-owned`, `/storage`, `/group` and the two `for-application`
+    /// listings require, and none of those narrows its answer to the caller.
+    /// Had `list-own` been folded into `list` — or made to satisfy it — opening
+    /// the listings would have opened all of those too, which on a relay is one
+    /// tenant reading another's roster and state.
+    #[test]
+    fn list_own_does_not_reach_the_unscoped_context_siblings() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for path in [
+            "/admin-api/contexts/ctx-1/identities",
+            "/admin-api/contexts/ctx-1/identities-owned",
+            "/admin-api/contexts/ctx-1/storage",
+            "/admin-api/contexts/ctx-1/group",
+            "/admin-api/contexts/for-application/app-1",
+            "/admin-api/contexts/with-executors/for-application/app-1",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&session, &required),
+                "a delegated session must NOT reach GET {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// The same audit for the namespace family: `namespace:list-own` opens the
+    /// collection listing and nothing under an individual namespace, none of
+    /// which is caller-scoped.
+    #[test]
+    fn list_own_does_not_reach_the_unscoped_namespace_siblings() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for path in [
+            "/admin-api/namespaces/ns-1",
+            "/admin-api/namespaces/ns-1/identity",
+            "/admin-api/namespaces/ns-1/groups",
+            "/admin-api/namespaces/for-application/app-1",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&session, &required),
+                "a delegated session must NOT reach GET {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// Blob enumeration stays shut (core #4019).
+    ///
+    /// `GET /admin-api/blobs` takes no caller extension and returns every blob
+    /// the node holds — it was missed by #3941 and has no owner model to scope
+    /// it with. Opening it alongside the other two listings would hand every
+    /// tenant the blob ids of every other one, so it keeps requiring the
+    /// node-wide `blob:list` and this pins that it does.
+    #[test]
+    fn a_delegated_session_cannot_enumerate_blobs() {
+        let validator = PermissionValidator::new();
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin-api/blobs")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&req);
+
+        assert!(
+            !validator.validate_permissions(&delegated_session(), &required),
+            "blob enumeration is unscoped; a delegated session must not reach it",
+        );
+        assert!(
+            !validator.validate_permissions(&["context:list-own".to_owned()], &required),
+            "nor may the context listing scope be mistaken for it",
+        );
+    }
+
+    /// The narrow scope confers nothing beyond the listings: not writes, not
+    /// deletes, not membership operations.
+    #[test]
+    fn list_own_is_read_only_and_does_not_substitute_for_the_other_verbs() {
+        let validator = PermissionValidator::new();
+        let token = [
+            "context:list-own".to_owned(),
+            "namespace:list-own".to_owned(),
+        ];
+
+        for (method, path) in [
+            (Method::DELETE, "/admin-api/contexts/ctx-1"),
+            (Method::POST, "/admin-api/contexts"),
+            (Method::POST, "/admin-api/contexts/ctx-1/join"),
+            (Method::POST, "/admin-api/contexts/ctx-1/query"),
+            (Method::POST, "/admin-api/contexts/ctx-1/intents"),
+            (Method::POST, "/admin-api/namespaces"),
+            (Method::DELETE, "/admin-api/namespaces/ns-1"),
+            (Method::POST, "/admin-api/namespaces/ns-1/invite"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&token, &required),
+                "`list-own` must NOT authorize {method} {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// The scope on the single-context read is load-bearing in the same way the
+    /// query route's is: a wide token narrowed to one context must not reach
+    /// another by naming it in the path.
+    #[test]
+    fn a_context_scoped_list_token_is_confined_to_its_context() {
+        let validator = PermissionValidator::new();
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin-api/contexts/ctx-2")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&req);
+
+        assert!(!validator.validate_permissions(&["context:list[ctx-1]".to_owned()], &required));
+        assert!(!validator.validate_permissions(&["context:list-own[ctx-1]".to_owned()], &required));
+        assert!(validator.validate_permissions(&["context:list-own[ctx-2]".to_owned()], &required));
     }
 }

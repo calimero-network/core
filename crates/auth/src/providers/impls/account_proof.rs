@@ -40,9 +40,12 @@
 //! cut, which this service does not see. It must be answered per request, at the
 //! node, against the target context's group — never cached at login, because one
 //! relay serves several tenants and a session must not carry a standing right to
-//! read. That check does not exist yet, which is why
-//! [`AccountProofConfig::session_permissions`] defaults to the delegated-write
-//! path alone.
+//! read. Every scope in [`AccountProofConfig::session_permissions`] is therefore
+//! gated a second time at the node: a write by the warrant and
+//! `CAN_AUTHOR_ON_BEHALF`, a read and a subscription by a per-call membership
+//! check, and the two caller-scoped listings by the caller's groups resolved per
+//! request in `calimero-server`'s `admin/caller_scope.rs`. A session from here
+//! decides who may ASK, never what the answer contains.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -656,8 +659,10 @@ mod tests {
             response.permissions,
             vec![
                 "context:intent".to_owned(),
+                "context:list-own".to_owned(),
                 "context:query".to_owned(),
-                "context:subscribe".to_owned()
+                "context:subscribe".to_owned(),
+                "namespace:list-own".to_owned()
             ]
         );
     }
@@ -1022,7 +1027,7 @@ mod tests {
         .is_err());
     }
 
-    /// The default session grants the delegated pair and nothing else.
+    /// The default session grants the delegated surface and nothing else.
     ///
     /// This test used to be `the_default_session_does_not_grant_reads`, and the
     /// reason it no longer is, is the whole point of #3931: reads were withheld
@@ -1034,12 +1039,15 @@ mod tests {
     /// that said "do not add reads until (#3931)" has been satisfied rather than
     /// overruled.
     ///
-    /// What still has to hold is the ceiling: both halves of the delegated
-    /// surface and nothing above it. Each is separately gated — a write by the
-    /// warrant and `CAN_AUTHOR_ON_BEHALF`, a read by the per-call membership
-    /// check — so neither is authority this token confers on its own. An
-    /// `admin`, `context:execute` or alias scope here would be, which is why
-    /// this asserts the exact set rather than `contains`.
+    /// What still has to hold is the ceiling: the delegated surface and nothing
+    /// above it. Every entry is separately gated — a write by the warrant and
+    /// `CAN_AUTHOR_ON_BEHALF`, a read and a subscription by the per-call
+    /// membership check, and the two `-own` listings by the caller's groups
+    /// resolved per request in `admin/caller_scope.rs` — so none of them is
+    /// authority this token confers on its own. `admin`, `context:execute`, an
+    /// alias scope, or the wide `context:list` / `namespace:list` (which also
+    /// reach un-scoped sibling reads) would be, which is why this asserts the
+    /// exact set rather than `contains`.
     #[test]
     fn the_default_session_grants_the_delegated_surface_and_no_more() {
         let perms = AccountProofConfig::default().session_permissions;
@@ -1047,8 +1055,10 @@ mod tests {
             perms,
             vec![
                 "context:intent".to_owned(),
+                "context:list-own".to_owned(),
                 "context:query".to_owned(),
-                "context:subscribe".to_owned()
+                "context:subscribe".to_owned(),
+                "namespace:list-own".to_owned()
             ]
         );
     }
