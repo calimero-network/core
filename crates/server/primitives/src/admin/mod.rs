@@ -3285,10 +3285,20 @@ pub struct SetTeeAdmissionPolicyApiRequest {
 impl Validate for SetTeeAdmissionPolicyApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        if self.allowed_mrtd.is_empty() && !self.accept_mock {
+        // No `accept_mock` carve-out. `accept_mock` gates whether a MOCK QUOTE
+        // is entertained at all, not whether its measurements are checked --
+        // `create_mock_quote` reports the all-zero 48 bytes for every register,
+        // so a mock fleet names that value here exactly as it already names it
+        // for RTMR3. Accepting an empty list for a mock-accepting policy stored
+        // a policy `admit_tee_node` refuses unconditionally, so the write
+        // succeeded and every admission against it then failed.
+        if self.allowed_mrtd.is_empty() {
             errors.push(ValidationError::InvalidFormat {
                 field: "allowed_mrtd",
-                reason: "at least one MRTD must be specified when accept_mock is false".to_owned(),
+                reason: "at least one MRTD must be specified. An empty allowlist is not a \
+                         wildcard: admission refuses it. A mock-accepting policy names the \
+                         all-zero measurement that create_mock_quote reports"
+                    .to_owned(),
             });
         }
         // RTMR3 is required unconditionally, including for a mock-accepting
@@ -3372,6 +3382,50 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The write path must not accept a policy admission will always refuse.
+    ///
+    /// The validator used to waive `allowed_mrtd` whenever `accept_mock` was
+    /// set, while `admit_tee_node` refuses an empty `allowed_mrtd`
+    /// unconditionally. So a mock fleet could `PUT` a policy, get a `200`, and
+    /// then have every admission fail against a field the API had just
+    /// accepted.
+    #[test]
+    fn a_mock_accepting_policy_still_has_to_name_its_mrtd() {
+        let req = SetTeeAdmissionPolicyApiRequest {
+            allowed_mrtd: vec![],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec!["74".to_owned()],
+            allowed_tcb_statuses: vec![],
+            accept_mock: true,
+        };
+        let errors = req.validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidFormat { field, .. } if *field == "allowed_mrtd"
+            )),
+            "an empty allowed_mrtd must be refused at write time even for a \
+             mock-accepting policy; got {errors:?}"
+        );
+    }
+
+    /// And a fully-named policy still validates, mock or not.
+    #[test]
+    fn a_policy_naming_both_measurements_is_accepted() {
+        let req = SetTeeAdmissionPolicyApiRequest {
+            allowed_mrtd: vec!["c1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec!["74".to_owned()],
+            allowed_tcb_statuses: vec![],
+            accept_mock: true,
+        };
+        assert!(req.validate().is_empty());
+    }
 
     /// The two shapes the route accepts. An empty `only` is refused by the
     /// handler, which answers `ScopeReplacementEmpty` as a `400`.
