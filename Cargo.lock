@@ -8154,6 +8154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rich-collab"
+version = "0.0.0"
+dependencies = [
+ "bs58",
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

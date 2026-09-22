@@ -140,10 +140,11 @@ pub struct Span {
 }
 
 /// The inverse of one [`RichText::apply_delta`], in the order it must be replayed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Borsh too: an app hands this back to its client as one opaque token.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct DeltaUndo(pub Vec<UndoStep>);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UndoStep {
     /// Delete the characters this delta minted. By id, not by index, so a peer's
@@ -166,7 +167,7 @@ pub enum UndoStep {
 }
 
 /// One maximal run over which every attribute was constant.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct AttrRun {
     pub start: usize,
     pub end: usize,

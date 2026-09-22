@@ -434,6 +434,15 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         self.row(block)?.body.apply_delta(ops)
     }
 
+    /// Replay a block's [`DeltaUndo`], returning the undo of the undo.
+    pub fn apply_undo(
+        &mut self,
+        block: BlockId,
+        undo: &DeltaUndo,
+    ) -> Result<DeltaUndo, StoreError> {
+        self.row(block)?.body.apply_undo(undo)
+    }
+
     /// Set `key` over visible positions `start..end` of a block's body.
     pub fn mark(
         &mut self,
@@ -486,6 +495,12 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
     /// does on every keystroke.
     pub fn block_delta(&self, block: BlockId) -> Result<Vec<Span>, StoreError> {
         self.row(block)?.body.to_delta()
+    }
+
+    /// A block's body, for the text, length and anchor reads an editor drives
+    /// directly. Deleted or not: a tombstoned block is still addressable.
+    pub fn block_body(&self, block: BlockId) -> Result<RichText<Sc, S>, StoreError> {
+        Ok(self.row(block)?.body)
     }
 
     // ---- internals ----
