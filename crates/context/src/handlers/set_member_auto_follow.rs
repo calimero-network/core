@@ -37,9 +37,16 @@ impl Handler<SetMemberAutoFollowRequest> for ContextManager {
             .flatten()
             .is_none()
         {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "target is not a member of group '{group_id:?}'"
-            )));
+            // The member the CALLER named, not this node. 404 matches
+            // `get_member_capabilities`: the caller asked about somebody
+            // who is not in this group.
+            return ActorResponse::reply(Err(
+                calimero_governance_store::MembershipError::MemberNotFound {
+                    group_id: format!("{group_id:?}"),
+                    member: target.to_string(),
+                }
+                .into(),
+            ));
         }
 
         let datastore = preflight.datastore.clone();

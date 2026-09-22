@@ -102,9 +102,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
             let parent_meta = match MetaRepository::new(&self.datastore).load(parent_id) {
                 Ok(Some(m)) => m,
                 _ => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "parent group '{parent_id:?}' not found"
-                    )));
+                    return ActorResponse::reply(Err(crate::error::ContextError::GroupNotFound {
+                        group_id: format!("{parent_id:?}"),
+                    }
+                    .into()));
                 }
             };
             // Authorization. Namespace-root admins may create a subgroup at

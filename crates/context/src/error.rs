@@ -98,6 +98,26 @@ pub enum ContextError {
         namespace_id: String,
     },
 
+    /// A caller-supplied identity is not a member of the group it named.
+    ///
+    /// Distinct from [`Self::NotAGroupMember`], which is about THIS NODE's own
+    /// standing. `create_context` takes an `identity_secret` straight from the
+    /// request body, so the identity it checks is frequently not the node's --
+    /// and a message saying "node is not a member" would name the wrong
+    /// principal entirely.
+    ///
+    /// `403` rather than `404`: the caller holds this key and is acting AS this
+    /// identity, so the refusal is about standing, not about a thing being
+    /// absent. It also keeps company with the capability check immediately
+    /// after it, which refuses the same call for the same shape of reason.
+    #[error("identity '{identity}' is not a member of group '{group_id}'")]
+    IdentityNotAGroupMember {
+        /// Debug rendering of the target group id (for the message only).
+        group_id: String,
+        /// Rendering of the identity that was checked (for the message only).
+        identity: String,
+    },
+
     /// The named group has no meta row on this node.
     ///
     /// Typed so it can answer `404`. As an untyped `bail!` it fell through to

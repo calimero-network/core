@@ -894,6 +894,11 @@ pub fn parse_api_error(err: Report) -> ApiError {
     if let Some(
         calimero_context::error::ContextError::NotAGroupMember { .. }
         | calimero_context::error::ContextError::NotANamespaceMember { .. }
+        // A caller-supplied identity without standing in the group. 403 like
+        // its neighbours, and never 404: the caller holds this key and is
+        // acting AS this identity, so the refusal is about standing rather
+        // than about something being absent.
+        | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -1740,6 +1745,35 @@ mod parse_api_error_tests {
             let api = parse_api_error(eyre::eyre!("group 'ContextGroupId(f72d)' not found"));
             assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(api.message, "Internal server error");
+        }
+
+        /// A caller-supplied identity is not this node, and the message must
+        /// not claim it is.
+        ///
+        /// `create_context` takes `identity_secret` straight from the request
+        /// body, so the identity it checks is routinely somebody else's.
+        /// Reusing `NotAGroupMember` there answered "node is not a member of
+        /// group X" about a principal that was never the node.
+        #[test]
+        fn a_caller_supplied_identity_is_403_and_names_the_identity_not_the_node() {
+            let api = parse_api_error(
+                ContextError::IdentityNotAGroupMember {
+                    group_id: "g".to_owned(),
+                    identity: "ed25519:caller".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("ed25519:caller"),
+                "the refusal must name the identity that was checked; got: {}",
+                api.message
+            );
+            assert!(
+                !api.message.contains("node is not a member"),
+                "and must not claim the NODE is the one without standing; got: {}",
+                api.message
+            );
         }
 
         /// The log-level split rides on this, and an ERROR per poll on a fleet

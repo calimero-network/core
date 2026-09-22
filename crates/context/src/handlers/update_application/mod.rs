@@ -566,10 +566,9 @@ fn verify_signer_continuity(
     // Get new application's metadata
     let new_bytecode_id = key::ApplicationMeta::new(*new_application_id);
     let Some(new_app_meta) = handle.get(&new_bytecode_id)? else {
-        bail!(
-            "new application with id '{}' not found in database",
-            new_application_id
-        );
+        bail!(crate::error::ContextError::ApplicationNotFound {
+            application_id: new_application_id.to_string(),
+        });
     };
 
     // Check signerId continuity.
