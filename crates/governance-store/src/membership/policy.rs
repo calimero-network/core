@@ -5,7 +5,9 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::super::{read_tee_admission_policy, MembershipError, TeeAdmissionPolicy};
+use super::super::{
+    read_tee_admission_policy, MembershipError, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
+};
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
     TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR2,
@@ -125,8 +127,15 @@ impl<'a> MembershipPolicy<'a> {
     }
 
     pub fn read_required_tee_admission_policy(&self) -> EyreResult<TeeAdmissionPolicy> {
-        read_tee_admission_policy(self.store, &self.group_id)?
-            .ok_or_else(|| MembershipError::NoTeeAdmissionPolicy.into())
+        match read_tee_admission_policy(self.store, &self.group_id)? {
+            TeeAdmissionPolicyRead::Set(policy) => Ok(policy),
+            TeeAdmissionPolicyRead::NotSet => bail!(MembershipError::NoTeeAdmissionPolicy),
+            TeeAdmissionPolicyRead::Unreadable { undecodable } => {
+                bail!(MembershipError::TeeAdmissionPolicyUnreadable(
+                    undecodable.len()
+                ))
+            }
+        }
     }
 
     pub fn validate_tee_attestation_allowlists(
