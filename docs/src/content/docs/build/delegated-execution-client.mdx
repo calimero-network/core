@@ -519,6 +519,40 @@ check above. The token decides who may **ask**.
 
 Every step works today.
 
+### Two refusals that are about the group, not your bytes
+
+Both arrive as a `403` from step 7 with a correct warrant, so they read like a
+signing bug and are not one. Neither is something a client can fix on its own —
+each needs an admin of the owning group.
+
+`the author's account is not a member of the group owning this context`
+: Your **account** has to be a member, and a certified device is not the same
+  thing. The certificate proves the device belongs to the account; membership is
+  a separate fact the group records. An admin adds it with
+  `POST /admin-api/groups/{group_id}/members`, naming the **account id** as the
+  identity.
+
+`canAuthorOnBehalf: false`
+: The *executor* lacks `CAN_AUTHOR_ON_BEHALF` on the owning group — nothing
+  implies that capability, including being the group's creator. A namespace
+  hands its creator no capabilities at all, so a freshly created one reports
+  `false` until an admin grants it.
+
+### A write that changes nothing spends nothing
+
+Re-sending an intent whose `(method, args)` produce the same state is not an
+error and not a replay: it returns the same `rootHash`, leaves your nonce
+**unspent**, and emits no `StateMutation`.
+
+The nonce is spent only once the delta it authorizes is persisted, and an
+identical write produces no delta — deliberate, so that a write which never
+happened cannot burn a nonce. Two consequences worth designing around:
+
+* "every accepted intent advances my nonce" is false. Re-read `nextNonce` rather
+  than assuming.
+* a test that writes the same value twice and waits for a second event will hang.
+  Vary the payload.
+
 ## Test vectors
 
 Check your implementation against these before pointing it at a node. They are
