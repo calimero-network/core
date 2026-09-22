@@ -60,6 +60,8 @@ pub const TEE_REJECT_RTMR2: &str = "rtmr2_not_allowed";
 pub const TEE_REJECT_RTMR3: &str = "rtmr3_not_allowed";
 /// The POLICY names no RTMR3 — an incomplete policy, not a refused node.
 pub const TEE_REJECT_RTMR3_EMPTY: &str = "rtmr3_allowlist_empty";
+/// The POLICY names no MRTD — likewise the policy, not the node.
+pub const TEE_REJECT_MRTD_EMPTY: &str = "mrtd_allowlist_empty";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Each variant names the specific attestation field a policy rejected; the
@@ -70,6 +72,14 @@ pub const TEE_REJECT_RTMR3_EMPTY: &str = "rtmr3_allowlist_empty";
 )]
 pub enum MembershipPolicyRejection {
     MrtdNotAllowed,
+    /// The policy names no MRTD at all.
+    ///
+    /// Same shape as [`Self::Rtmr3AllowlistEmpty`], and for the same reason:
+    /// an empty allowlist used to mean "do not check", so the weakest possible
+    /// policy was the one that looked merely unfilled. `admit_tee_node` has
+    /// always refused this; the op-apply path skipped it, so the two disagreed
+    /// about what the same stored policy meant.
+    MrtdAllowlistEmpty,
     /// The policy names no RTMR3 at all.
     ///
     /// Distinct from `Rtmr3NotAllowed` because the remedy is the opposite: the
@@ -115,6 +125,12 @@ impl std::fmt::Display for MembershipPolicyValidationError {
             MembershipPolicyRejection::Rtmr3NotAllowed => {
                 "MemberJoinedViaTeeAttestation rejected: RTMR3 not in policy allowlist"
             }
+            MembershipPolicyRejection::MrtdAllowlistEmpty => {
+                "MemberJoinedViaTeeAttestation rejected: the group's TEE admission policy names \
+                 no MRTD. An empty allowlist is not a wildcard -- set allowed_mrtd from the \
+                 release's published-mrtds.json. A mock fleet names the all-zero measurement \
+                 that create_mock_quote reports, exactly as it already does for RTMR3"
+            }
             MembershipPolicyRejection::Rtmr3AllowlistEmpty => {
                 "MemberJoinedViaTeeAttestation rejected: the group's TEE admission policy names \
                  no RTMR3. MRTD identifies the firmware, not the image -- it is the same for \
@@ -154,7 +170,17 @@ pub fn validate_tee_attestation_allowlists(
     policy: &TeeAllowlistPolicy,
     fields: &TeeAttestationClaims<'_>,
 ) -> Result<(), MembershipPolicyValidationError> {
-    if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == fields.mrtd) {
+    // Empty is a refusal, not a skip -- the same rule as RTMR3 below, which
+    // this check predated. `admit_tee_node` has always refused an empty
+    // `allowed_mrtd`, so leaving a skip here meant the requesting node and the
+    // peers replicating its op disagreed about what the stored policy meant:
+    // the admitter would not issue, but any peer would accept any firmware.
+    if policy.allowed_mrtd.is_empty() {
+        return Err(MembershipPolicyValidationError {
+            reason: MembershipPolicyRejection::MrtdAllowlistEmpty,
+        });
+    }
+    if !policy.allowed_mrtd.iter().any(|a| a == fields.mrtd) {
         return Err(MembershipPolicyValidationError {
             reason: MembershipPolicyRejection::MrtdNotAllowed,
         });
@@ -272,6 +298,53 @@ mod rtmr3_is_mandatory {
             rtmr3,
             tcb_status: "UpToDate",
         }
+    }
+
+    /// An empty `allowed_mrtd` refuses, rather than admitting every firmware.
+    ///
+    /// This check sat three lines above the RTMR3 rule that spells out why an
+    /// empty allowlist must refuse rather than skip, and kept the old
+    /// skip-on-empty shape. The consequence was a disagreement rather than a
+    /// hole: `admit_tee_node` refuses an empty `allowed_mrtd` unconditionally,
+    /// so the node that asked would not issue the op -- while any peer
+    /// replicating one would have accepted any firmware at all.
+    #[test]
+    fn a_policy_naming_no_mrtd_admits_nobody() {
+        let mut p = policy(vec![RTMR3_LOCKED.to_owned()]);
+        p.allowed_mrtd = vec![];
+        let mut c = claims(RTMR3_LOCKED);
+        c.mrtd = "a-firmware-this-policy-never-named";
+
+        let err = validate_tee_attestation_allowlists(&p, &c)
+            .expect_err("an empty allowed_mrtd must refuse, not admit anything");
+        assert_eq!(err.reason(), MembershipPolicyRejection::MrtdAllowlistEmpty);
+    }
+
+    /// The remedy is to fix the POLICY, not to go read the node's firmware --
+    /// so this must not be reported as a mismatch.
+    #[test]
+    fn the_empty_mrtd_case_is_not_reported_as_a_mismatch() {
+        let mut p = policy(vec![RTMR3_LOCKED.to_owned()]);
+        p.allowed_mrtd = vec![];
+        let err = validate_tee_attestation_allowlists(&p, &claims(RTMR3_LOCKED)).unwrap_err();
+        assert_ne!(err.reason(), MembershipPolicyRejection::MrtdNotAllowed);
+        assert!(
+            err.to_string().contains("no MRTD"),
+            "the message must say the policy is incomplete; got: {err}"
+        );
+    }
+
+    /// `accept_mock` does not exempt a policy from naming its measurements.
+    /// It decides whether a mock quote is entertained at all -- and a mock
+    /// quote still has measurements, all zero, which a mock fleet names.
+    #[test]
+    fn accept_mock_does_not_waive_the_mrtd_allowlist() {
+        let mut p = policy(vec![RTMR3_LOCKED.to_owned()]);
+        p.allowed_mrtd = vec![];
+        p.accept_mock = true;
+        let err = validate_tee_attestation_allowlists(&p, &claims(RTMR3_LOCKED))
+            .expect_err("accept_mock must not turn an empty allowlist into a wildcard");
+        assert_eq!(err.reason(), MembershipPolicyRejection::MrtdAllowlistEmpty);
     }
 
     #[test]

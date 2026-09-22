@@ -10,8 +10,9 @@ use super::super::{
 };
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
-    TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR2,
-    TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY, TEE_REJECT_TCB_STATUS,
+    TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_MRTD_EMPTY, TEE_REJECT_RTMR0,
+    TEE_REJECT_RTMR1, TEE_REJECT_RTMR2, TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY,
+    TEE_REJECT_TCB_STATUS,
 };
 use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
@@ -163,6 +164,7 @@ impl<'a> MembershipPolicy<'a> {
         if let Err(err) = validate_tee_attestation_allowlists(&normalized_policy, fields) {
             let reason = match err.reason() {
                 MembershipPolicyRejection::MrtdNotAllowed => TEE_REJECT_MRTD,
+                MembershipPolicyRejection::MrtdAllowlistEmpty => TEE_REJECT_MRTD_EMPTY,
                 MembershipPolicyRejection::TcbStatusNotAllowed => TEE_REJECT_TCB_STATUS,
                 MembershipPolicyRejection::Rtmr0NotAllowed => TEE_REJECT_RTMR0,
                 MembershipPolicyRejection::Rtmr1NotAllowed => TEE_REJECT_RTMR1,
