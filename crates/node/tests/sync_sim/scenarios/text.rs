@@ -27,28 +27,28 @@ use crate::sync_sim::protocol::{execute_hash_comparison_sync, execute_level_wise
 use crate::sync_sim::runtime::SimRng;
 
 /// The single-document state these scenarios drive.
-type Text = FugueText<MainStorage>;
+pub(crate) type Text = FugueText<MainStorage>;
 
-const FIELD: &str = "sim_text_doc";
-const CHAR_BASE: u32 = 0xE000; // private-use area, so every inserted character is unique
-const CHAR_STRIDE: u32 = 0x400; // per-replica slice, so a stray character names its author
-const PASSAGE_LEN: usize = 260; // longer than FugueText's 256-node run cap
-const LOSS_RATE: f64 = 0.3;
-const DUPLICATE_RATE: f64 = 0.25;
-const EDIT_ROUNDS: usize = 4;
-const SYNC_ROUNDS: usize = 8;
-const DELIVERY_PASSES: usize = 64;
-const HOSTILE_REPLICA: u64 = 7;
+pub(crate) const FIELD: &str = "sim_text_doc";
+pub(crate) const CHAR_BASE: u32 = 0xE000; // private-use area, so every inserted character is unique
+pub(crate) const CHAR_STRIDE: u32 = 0x400; // per-replica slice, so a stray character names its author
+pub(crate) const PASSAGE_LEN: usize = 260; // longer than FugueText's 256-node run cap
+pub(crate) const LOSS_RATE: f64 = 0.3;
+pub(crate) const DUPLICATE_RATE: f64 = 0.25;
+pub(crate) const EDIT_ROUNDS: usize = 4;
+pub(crate) const SYNC_ROUNDS: usize = 8;
+pub(crate) const DELIVERY_PASSES: usize = 64;
+pub(crate) const HOSTILE_REPLICA: u64 = 7;
 
 /// A pure-`FugueTree` mirror of one replica, minting ids as `FugueText` does.
-struct Oracle {
+pub(crate) struct Oracle {
     tree: FugueTree,
     replica: u64,
     next: u32,
 }
 
 impl Oracle {
-    fn new(replica: u64) -> Self {
+    pub(crate) fn new(replica: u64) -> Self {
         Self {
             tree: FugueTree::new(),
             replica,
@@ -56,7 +56,7 @@ impl Oracle {
         }
     }
 
-    fn insert_str(&mut self, pos: usize, s: &str) {
+    pub(crate) fn insert_str(&mut self, pos: usize, s: &str) {
         for (offset, content) in s.chars().enumerate() {
             let id = (self.replica, self.next);
             self.next += 1;
@@ -67,7 +67,7 @@ impl Oracle {
         }
     }
 
-    fn delete_range(&mut self, start: usize, end: usize) {
+    pub(crate) fn delete_range(&mut self, start: usize, end: usize) {
         let count = end.min(self.tree.len()).saturating_sub(start);
         for _ in 0..count {
             if self.tree.delete(start).is_err() {
@@ -76,31 +76,52 @@ impl Oracle {
         }
     }
 
-    fn snapshot(&self) -> BTreeMap<RawId, FugueNode> {
+    pub(crate) fn snapshot(&self) -> BTreeMap<RawId, FugueNode> {
         self.tree.nodes().map(|node| (node.id, *node)).collect()
     }
 
-    fn nodes(&self) -> Vec<FugueNode> {
+    pub(crate) fn nodes(&self) -> Vec<FugueNode> {
         self.tree.nodes().copied().collect()
     }
 
-    fn integrate_all(&mut self, nodes: &[FugueNode]) {
+    pub(crate) fn integrate_all(&mut self, nodes: &[FugueNode]) {
         for node in nodes {
             self.tree.integrate(*node);
         }
     }
 
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.tree.values()
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.tree.len()
+    }
+
+    /// The gap `anchor` names now, or `None` for a character this replica has
+    /// not received. By linear scan: the oracle never borrows an index.
+    pub(crate) fn resolve(&self, anchor: &Anchor) -> Option<usize> {
+        let (wanted, bias) = match *anchor {
+            Anchor::Start => return Some(0),
+            Anchor::End => return Some(self.tree.len()),
+            Anchor::Char { id, bias } => (id, bias),
+        };
+        let mut live = 0_usize;
+        for id in self.tree.order().into_iter().flatten() {
+            let Some(node) = self.tree.node(id) else {
+                continue;
+            };
+            if id == wanted {
+                return Some(live + usize::from(node.value.is_some() && bias == Bias::After));
+            }
+            live += usize::from(node.value.is_some());
+        }
+        None
     }
 }
 
 /// The oracle's model of one delta: nodes `after` added, plus ones it tombstoned.
-fn changed(
+pub(crate) fn changed(
     before: &BTreeMap<RawId, FugueNode>,
     after: &BTreeMap<RawId, FugueNode>,
 ) -> Vec<FugueNode> {
@@ -112,7 +133,7 @@ fn changed(
 }
 
 /// Materialise the empty document, the way production `init` does.
-fn seed_doc(node: &SimNode) {
+pub(crate) fn seed_doc(node: &SimNode) {
     clear_pending_delta();
     node.storage().with_index(|| {
         let doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FIELD));
@@ -132,7 +153,7 @@ fn seed_doc(node: &SimNode) {
     );
 }
 
-fn edit<T: BorshSerialize + BorshDeserialize>(
+pub(crate) fn edit<T: BorshSerialize + BorshDeserialize>(
     node: &SimNode,
     f: impl FnOnce(&mut Root<T>),
 ) -> Vec<u8> {
@@ -146,7 +167,7 @@ fn edit<T: BorshSerialize + BorshDeserialize>(
 }
 
 /// Land `delta` the way the receive path does, action by action.
-fn land(node: &SimNode, delta: &[u8]) {
+pub(crate) fn land(node: &SimNode, delta: &[u8]) {
     let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
         StorageDelta::Actions(actions) => actions,
         StorageDelta::CausalActions { actions, .. } => actions,
@@ -162,7 +183,7 @@ fn land(node: &SimNode, delta: &[u8]) {
     });
 }
 
-fn text_of(node: &SimNode) -> String {
+pub(crate) fn text_of(node: &SimNode) -> String {
     node.storage().with_index(|| {
         Root::<FugueText<MainStorage>>::fetch()
             .expect("document root should exist")
@@ -171,7 +192,7 @@ fn text_of(node: &SimNode) -> String {
     })
 }
 
-fn len_of(node: &SimNode) -> usize {
+pub(crate) fn len_of(node: &SimNode) -> usize {
     node.storage().with_index(|| {
         Root::<FugueText<MainStorage>>::fetch()
             .expect("document root should exist")
@@ -180,7 +201,7 @@ fn len_of(node: &SimNode) -> usize {
     })
 }
 
-fn read<T: BorshSerialize + BorshDeserialize, R>(
+pub(crate) fn read<T: BorshSerialize + BorshDeserialize, R>(
     node: &SimNode,
     f: impl FnOnce(&Root<T>) -> R,
 ) -> R {
@@ -189,7 +210,7 @@ fn read<T: BorshSerialize + BorshDeserialize, R>(
 }
 
 /// Every document's block collection: nested `FugueText`s hang off the context root too.
-fn blocks_collection_ids(node: &SimNode) -> Vec<Id> {
+pub(crate) fn blocks_collection_ids(node: &SimNode) -> Vec<Id> {
     let root = node.storage().root_id();
     let ids: Vec<Id> = node
         .storage()
@@ -211,21 +232,21 @@ fn blocks_collection_ids(node: &SimNode) -> Vec<Id> {
     ids
 }
 
-fn block_count(node: &SimNode) -> usize {
+pub(crate) fn block_count(node: &SimNode) -> usize {
     blocks_collection_ids(node)
         .into_iter()
         .map(|id| node.storage().get_children(id).len())
         .sum()
 }
 
-fn replica_of(node: &SimNode) -> u64 {
+pub(crate) fn replica_of(node: &SimNode) -> u64 {
     let executor: [u8; 32] = *node.storage().executor_id().as_ref();
     let mut head = [0_u8; 8];
     head.copy_from_slice(&executor[..8]);
     u64::from_be_bytes(head)
 }
 
-fn unique_chars(index: usize, from: usize, count: usize) -> String {
+pub(crate) fn unique_chars(index: usize, from: usize, count: usize) -> String {
     let base = CHAR_BASE + CHAR_STRIDE * u32::try_from(index).expect("replica index fits u32");
     (0..count)
         .map(|i| {
@@ -241,7 +262,7 @@ fn unique_chars(index: usize, from: usize, count: usize) -> String {
 
 /// A row that lost its `FugueTextBlock` tag is reconciled last-writer-wins,
 /// which drops one side's edit silently rather than erroring.
-fn assert_blocks_tagged(label: &str, node: &SimNode) {
+pub(crate) fn assert_blocks_tagged(label: &str, node: &SimNode) {
     let blocks: Vec<_> = blocks_collection_ids(node)
         .into_iter()
         .flat_map(|id| node.storage().get_children(id))
@@ -266,7 +287,12 @@ fn assert_blocks_tagged(label: &str, node: &SimNode) {
     }
 }
 
-fn assert_text_properties(label: &str, nodes: &[&SimNode], expected: &str, passages: &[String]) {
+pub(crate) fn assert_text_properties(
+    label: &str,
+    nodes: &[&SimNode],
+    expected: &str,
+    passages: &[String],
+) {
     let first = nodes.first().expect("at least one replica");
     for node in nodes {
         let text = text_of(node);
@@ -323,12 +349,12 @@ fn assert_text_properties(label: &str, nodes: &[&SimNode], expected: &str, passa
     }
 }
 
-fn context() -> ContextId {
+pub(crate) fn context() -> ContextId {
     ContextId::from(SimNode::DEFAULT_CONTEXT_ID)
 }
 
 /// HashComparison is bidirectional, so both ends hold the union afterwards.
-async fn pull(nodes: &mut [SimNode], i: usize, j: usize) {
+pub(crate) async fn pull(nodes: &mut [SimNode], i: usize, j: usize) {
     if i == j {
         return;
     }
@@ -345,7 +371,7 @@ async fn pull(nodes: &mut [SimNode], i: usize, j: usize) {
     }
 }
 
-async fn converge_group(nodes: &mut [SimNode], group: &[usize]) -> bool {
+pub(crate) async fn converge_group(nodes: &mut [SimNode], group: &[usize]) -> bool {
     let equal = |nodes: &[SimNode]| {
         group
             .iter()
@@ -364,24 +390,24 @@ async fn converge_group(nodes: &mut [SimNode], group: &[usize]) -> bool {
     equal(nodes)
 }
 
-fn union_oracles(oracles: &mut [Oracle], group: &[usize]) {
+pub(crate) fn union_oracles(oracles: &mut [Oracle], group: &[usize]) {
     let all: Vec<FugueNode> = group.iter().flat_map(|&i| oracles[i].nodes()).collect();
     for &i in group {
         oracles[i].integrate_all(&all);
     }
 }
 
-struct Pending {
-    key: (usize, usize),
+pub(crate) struct Pending {
+    pub(crate) key: (usize, usize),
     /// Which document the delta edited; always 0 where the state holds one.
-    doc: usize,
-    bytes: Vec<u8>,
-    nodes: Vec<FugueNode>,
-    deps: HashSet<(usize, usize)>,
+    pub(crate) doc: usize,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) nodes: Vec<FugueNode>,
+    pub(crate) deps: HashSet<(usize, usize)>,
 }
 
 /// Drops stay queued for retry, so loss reorders delivery but never loses it.
-fn delivery_pass(
+pub(crate) fn delivery_pass(
     nodes: &[SimNode],
     integrate: &mut impl FnMut(usize, &Pending),
     deltas: &[Pending],
@@ -407,7 +433,7 @@ fn delivery_pass(
     *queue = retry;
 }
 
-fn random_edit(
+pub(crate) fn random_edit(
     node: &SimNode,
     oracle: &mut Oracle,
     index: usize,
@@ -856,7 +882,7 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
 /// One document, hand-wired the way `#[derive(Mergeable)]` generates it - the
 /// derive lives in `calimero-sdk-macros`, which this crate does not depend on.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
-struct SimDoc {
+pub(crate) struct SimDoc {
     title: LwwRegister<String>,
     body: FugueText,
 }
@@ -881,7 +907,7 @@ impl RekeyTarget for SimDoc {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Default)]
-struct SimDocs {
+pub(crate) struct SimDocs {
     docs: UnorderedMap<String, SimDoc>,
 }
 
@@ -902,12 +928,12 @@ impl RekeyTarget for SimDocs {
     }
 }
 
-const DOC_KEYS: [&str; 3] = ["notes", "draft", "todo"];
-const AUTHORS: usize = 3;
+pub(crate) const DOC_KEYS: [&str; 3] = ["notes", "draft", "todo"];
+pub(crate) const AUTHORS: usize = 3;
 
 /// The `docs` map is re-keyed the way `#[app::state]` re-keys a top-level field,
 /// so every replica addresses the same entry for the same document name.
-fn seed_docs(node: &SimNode) {
+pub(crate) fn seed_docs(node: &SimNode) {
     register_rekey_if_supported!(SimDoc);
     clear_pending_delta();
     node.storage().with_index(|| {
@@ -921,7 +947,7 @@ fn seed_docs(node: &SimNode) {
     });
 }
 
-fn doc_text(node: &SimNode, key: &str) -> String {
+pub(crate) fn doc_text(node: &SimNode, key: &str) -> String {
     read::<SimDocs, _>(node, |app| {
         app.docs
             .get(key)
@@ -933,7 +959,7 @@ fn doc_text(node: &SimNode, key: &str) -> String {
 }
 
 /// One random edit in one document, mirrored into that document's oracle.
-fn random_doc_edit(
+pub(crate) fn random_doc_edit(
     node: &SimNode,
     oracle: &mut Oracle,
     index: usize,
@@ -978,7 +1004,7 @@ fn random_doc_edit(
 
 /// `names[..AUTHORS]` edit three nested documents under lossy, reordered
 /// delivery; any further name is a replica that has heard nothing yet.
-fn edited_document_mesh(
+pub(crate) fn edited_document_mesh(
     label: &str,
     names: &[&str],
     seed: u64,
@@ -1091,7 +1117,11 @@ fn edited_document_mesh(
 
 /// Equal Merkle roots, one tagged block collection per document, and each
 /// document's text equal to the union of every replica's oracle for it.
-fn assert_documents_converged(label: &str, nodes: &[SimNode], oracles: &mut [Vec<Oracle>]) {
+pub(crate) fn assert_documents_converged(
+    label: &str,
+    nodes: &[SimNode],
+    oracles: &mut [Vec<Oracle>],
+) {
     let root = nodes[0].root_hash();
     for node in nodes {
         assert_eq!(
@@ -1136,7 +1166,7 @@ async fn nested_text_documents_converge_under_lossy_delta_delivery() {
     assert_documents_converged(&label, &nodes, &mut oracles);
 }
 
-const JOINER_SEED: u64 = 0x_4E_57_ED;
+pub(crate) const JOINER_SEED: u64 = 0x_4E_57_ED;
 
 /// A replica that learns the documents from a peer instead of authoring them
 /// reaches the same Merkle root. See `nested_collection_entity_data_reaches_a_joiner`
@@ -1186,7 +1216,7 @@ async fn nested_text_documents_reach_a_level_wise_joiner() {
 
 /// An entity the Merkle index lists but whose `Key::Entry` row is absent hashes
 /// off a stale `own_hash` and is dropped from any snapshot this node serves.
-fn assert_every_indexed_entity_has_data(label: &str, node: &SimNode) {
+pub(crate) fn assert_every_indexed_entity_has_data(label: &str, node: &SimNode) {
     let mut pending = vec![node.storage().root_id()];
     while let Some(id) = pending.pop() {
         assert!(
@@ -1204,7 +1234,7 @@ fn assert_every_indexed_entity_has_data(label: &str, node: &SimNode) {
 /// `parent_id` links with NO entity data row. Its own hash, and therefore the
 /// context root hash, could then never match the author's.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
-struct NestedCounters {
+pub(crate) struct NestedCounters {
     tallies: UnorderedMap<String, Counter>,
 }
 
@@ -1228,7 +1258,7 @@ impl RekeyTarget for NestedCounters {
 /// An author and a peer that only ever receives, with one nested `Counter`
 /// under a map - the smallest state that puts a collection container below the
 /// context root without the receiver ever creating it locally.
-fn nested_counter_pair(names: [&str; 2]) -> Vec<SimNode> {
+pub(crate) fn nested_counter_pair(names: [&str; 2]) -> Vec<SimNode> {
     let nodes: Vec<SimNode> = names
         .into_iter()
         .map(|name| SimNode::new_in_context(name, context()))
