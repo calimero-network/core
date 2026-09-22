@@ -170,13 +170,17 @@ The responder (`crates/node/src/sync/level_sync.rs`) returns `LevelWiseResponse`
 ```rust
 LevelWiseResponse {
   level: u32,
-  nodes: Vec<LevelNode>,              // id, hash, parent_id, leaf_data if leaf
+  nodes: Vec<LevelNode>,              // id, hash, parent_id, leaf_data, has_children
   has_more_levels: bool,
   deleted_children: Vec<EntityDeletion>, // authenticated tombstones
 }
 ```
 
-`has_more_levels` tells the initiator whether to request the next level. `deleted_children` is the LevelWise analogue of HashComparison's explicit deletions: without it a responder that has cleared an entity returns no node for it, and the initiator's loop would exit before ever learning of the deletion. Leaf nodes carry full entity data so the initiator can CRDT-merge directly; pushed entities pass the same authorization gate as HashComparison.
+`has_more_levels` tells the initiator whether to request the next level. `deleted_children` is the LevelWise analogue of HashComparison's explicit deletions: without it a responder that has cleared an entity returns no node for it, and the initiator's loop would exit before ever learning of the deletion. Nodes carry full entity data so the initiator can CRDT-merge directly; pushed entities pass the same authorization gate as HashComparison.
+
+`leaf_data` and `has_children` are independent: a collection container carries both, because its own `Key::Entry` row is the only source of its `own_hash` and its children still have to be walked. A receiver that treats "carries a row" as "is a leaf" stops descending at the first container; one that never sends a container's row leaves that container with an index row and no bytes, whose `own_hash` is then a stale copy of the sender's `full_hash`, and the two nodes' roots can never agree.
+
+LevelWise is otherwise initiator-pull, so a peer that reached the row-less state through some other path could never ask for the bytes it is missing. When a node appears on both sides with different hashes and reports `has_children`, the initiator pushes its own row for it through `EntityPush` - the same message and apply path HashComparison uses - once per entity per session.
 
 ## Snapshot
 

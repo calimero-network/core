@@ -466,6 +466,18 @@ impl SimStorage {
         });
     }
 
+    /// Drop an entity's data row while leaving its index in place - the state a
+    /// node lands in when a leaf-only apply path materialises a container out of
+    /// its children's ancestor chain.
+    pub fn drop_entity_data(&self, id: Id) {
+        self.with_index(|| {
+            let removed = <MainStorage as calimero_storage::store::StorageAdaptor>::storage_remove(
+                Key::Entry(id),
+            );
+            assert!(removed, "{id} had no data row to drop");
+        });
+    }
+
     /// Remove an entity by marking it as deleted (creates tombstone).
     pub fn remove_entity(&self, id: Id) {
         self.with_index(|| {

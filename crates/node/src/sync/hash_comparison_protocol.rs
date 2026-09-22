@@ -1408,9 +1408,8 @@ async fn push_local_subtrees<T: SyncTransport>(
     Ok(total)
 }
 
-/// Send entities to the peer via `EntityPush` messages (batched).
-///
-/// Sends in batches of `MAX_ENTITIES_PER_PUSH` to avoid overly large messages.
+/// Send entities to the peer via `EntityPush` messages (batched), folding the
+/// batch count and applied count into this session's stats.
 async fn push_entities<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
@@ -1418,49 +1417,11 @@ async fn push_entities<T: SyncTransport>(
     leaves: &[TreeLeafData],
     stats: &mut HashComparisonStats,
 ) -> Result<u64> {
-    let mut total_pushed = 0u64;
-
-    for chunk in leaves.chunks(MAX_ENTITIES_PER_PUSH) {
-        let push_msg = StreamMessage::Init {
-            context_id,
-            party_id: identity,
-            payload: InitPayload::EntityPush {
-                context_id,
-                entities: chunk.to_vec(),
-            },
-            next_nonce: generate_nonce(),
-            // Pushes are writes: each entity is authorized by its own action
-            // path on apply, not by the sender's `party_id`, so no read-gating
-            // proof is attached (or required by the responder) here.
-            pop: None,
-        };
-
-        transport.send(&push_msg).await?;
-        stats.requests_sent += 1;
-
-        // Wait for acknowledgment
-        let ack = transport
-            .recv()
-            .await?
-            .ok_or_else(|| eyre::eyre!("stream closed while waiting for EntityPushAck"))?;
-
-        match ack {
-            StreamMessage::Message {
-                payload: MessagePayload::EntityPushAck { applied_count },
-                ..
-            } => {
-                total_pushed += u64::from(applied_count);
-            }
-            _ => {
-                bail!(
-                    "Unexpected response to EntityPush (peer may not support bidirectional sync)"
-                );
-            }
-        }
-    }
-
-    stats.entities_pushed += total_pushed;
-    Ok(total_pushed)
+    let (applied, batches) =
+        crate::sync::helpers::push_entities(transport, context_id, identity, leaves).await?;
+    stats.requests_sent += batches;
+    stats.entities_pushed += applied;
+    Ok(applied)
 }
 
 /// Push tombstones to the peer via `EntityDeletePush` messages (batched).
@@ -1599,7 +1560,10 @@ pub(crate) fn get_local_tree_node(
 /// `None` when the entity has no `Key::Entry` row. The ancestor chain is
 /// unsigned on purpose: this protocol repairs drifted tree shapes, so a
 /// commitment to one shape would reject every legitimate repair.
-fn entity_wire_row(
+///
+/// Shared with the level-wise emitter: both protocols hand a receiver the same
+/// row, and a second copy would be a second place for the two to drift.
+pub(crate) fn entity_wire_row(
     entity_id: Id,
     index: &EntityIndex,
     schema_bytecode_id: Option<[u8; 32]>,
@@ -1635,7 +1599,7 @@ fn entity_wire_row(
 
 /// [`entity_wire_row`] for an entity named by the DFS, `None` when this node
 /// holds no index or no data row for it.
-fn local_entity_wire_row(
+pub(crate) fn local_entity_wire_row(
     node_id: &[u8; 32],
     schema_bytecode_id: Option<[u8; 32]>,
 ) -> Option<TreeLeafData> {
