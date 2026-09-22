@@ -90,9 +90,11 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let app_meta_for_contract = match (|| {
             let handle = self.datastore.handle();
             let key = key::ApplicationMeta::new(target_application_id);
-            handle
-                .get(&key)?
-                .ok_or_else(|| eyre::eyre!("target application not found"))
+            handle.get(&key)?.ok_or_else(|| {
+                eyre::Report::from(crate::error::ContextError::ApplicationNotFound {
+                    application_id: target_application_id.to_string(),
+                })
+            })
         })() {
             Ok(meta) => Some(meta),
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -137,9 +139,11 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 // installed intermediates so the group moves rung by rung
                 // and behind members replay the same sequence.
                 let (rungs, target_state_version) = {
-                    let target_meta = app_meta_for_contract
-                        .as_ref()
-                        .ok_or_else(|| eyre::eyre!("target application not found"))?;
+                    let target_meta = app_meta_for_contract.as_ref().ok_or_else(|| {
+                        crate::error::ContextError::ApplicationNotFound {
+                            application_id: target_application_id.to_string(),
+                        }
+                    })?;
                     plan_emit_ladder(
                         &node_client,
                         &target_application_id,
@@ -222,7 +226,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                 let mut meta = MetaRepository::new(&datastore)
                     .load(&group_id)?
-                    .ok_or_else(|| eyre::eyre!("group not found"))?;
+                    .ok_or_else(|| crate::error::ContextError::GroupNotFound {
+                        group_id: format!("{group_id:?}"),
+                    })?;
                 meta.target.application_id = target_application_id;
                 meta.migration = migration_bytes.clone();
                 MetaRepository::new(&datastore).save(&group_id, &meta)?;
@@ -901,7 +907,9 @@ fn validate_upgrade(
     // 1. Group must exist
     let meta = MetaRepository::new(datastore)
         .load(group_id)?
-        .ok_or_else(|| eyre::eyre!("group not found"))?;
+        .ok_or_else(|| crate::error::ContextError::GroupNotFound {
+            group_id: format!("{group_id:?}"),
+        })?;
 
     // 2. Requester must be admin
     let signer_account = crate::member_account::require(datastore, group_id, signer)?;
@@ -1013,7 +1021,9 @@ pub(crate) async fn resolve_resumed_migration(
         .handle()
         .get(&key::ApplicationMeta::new(*target_application_id))?
         .map(|app| *app.bytecode.blob_id().as_ref())
-        .ok_or_else(|| eyre::eyre!("target application not found"))?;
+        .ok_or_else(|| crate::error::ContextError::ApplicationNotFound {
+            application_id: target_application_id.to_string(),
+        })?;
 
     let mut resolved: Option<Option<String>> = None;
     for context_id in
@@ -1348,7 +1358,10 @@ fn dispatch_cascade(
     let meta = match MetaRepository::new(&actor.datastore).load(&group_id) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return ActorResponse::reply(Err(eyre::eyre!("group not found")));
+            return ActorResponse::reply(Err(crate::error::ContextError::GroupNotFound {
+                group_id: format!("{group_id:?}"),
+            }
+            .into()));
         }
         Err(err) => return ActorResponse::reply(Err(err)),
     };
@@ -1402,7 +1415,12 @@ fn dispatch_cascade(
         match handle.get(&key) {
             Ok(Some(m)) => m,
             Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!("target application not found")));
+                return ActorResponse::reply(Err(
+                    crate::error::ContextError::ApplicationNotFound {
+                        application_id: target_application_id.to_string(),
+                    }
+                    .into(),
+                ));
             }
             Err(err) => return ActorResponse::reply(Err(err.into())),
         }

@@ -252,7 +252,9 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // `Restricted` subgroups still require an explicit
                 // `add_group_members` call by an admin.
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
-                    bail!("group not found");
+                    bail!(crate::error::ContextError::GroupNotFound {
+                        group_id: format!("{group_id:?}"),
+                    });
                 }
                 let joiner_account =
                     await_joiner_account(&datastore, &node_client, &group_id, &joiner_identity)
