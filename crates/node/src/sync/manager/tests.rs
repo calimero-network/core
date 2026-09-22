@@ -521,6 +521,89 @@ mod key_recovery_trigger {
             "the purge removed the account binding and the membership row, so this node \
              is not a keyless MEMBER of anything -- it is not a member at all"
         );
+
+        // ...and the third worklist is what stops that being the end of it.
+        // The identity the purge deliberately spared is enough to EMIT a
+        // request; the acceptance gate still decides whether any answer may be
+        // adopted.
+        assert_eq!(
+            calimero_governance_store::namespace_root_participating_but_unbootstrapped(
+                &store,
+                namespace_id.into()
+            )
+            .unwrap(),
+            vec![namespace_id],
+            "a participating replica holding an identity and no key must now ask"
+        );
+    }
+
+    /// The new worklist stays quiet for every node that was already fine.
+    ///
+    /// It fires only when the identity resolves to NO account -- the purged
+    /// shape. A node that can resolve itself is already answered by
+    /// `groups_member_but_keyless`, and one holding the key needs nothing, so
+    /// neither starts emitting a request it did not emit before.
+    #[test]
+    fn the_unbootstrapped_worklist_does_not_fire_for_healthy_nodes() {
+        use calimero_governance_store::{
+            namespace_root_participating_but_unbootstrapped, MembershipRepository,
+            NamespaceRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+
+        let store = fresh_store();
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
+
+        let namespace_id = [0xF4u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
+        let my_id = PrivateKey::from(sk_bytes).public_key();
+
+        // No identity at all: nothing to recover, and nothing to recover AS.
+        assert!(
+            namespace_root_participating_but_unbootstrapped(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "no identity must stay silent"
+        );
+
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &my_id, &sk_bytes)
+            .unwrap();
+
+        // Holding an identity IS participating — `store_identity` writes the
+        // participation row — so this is now the purged shape and it asks.
+        assert_eq!(
+            namespace_root_participating_but_unbootstrapped(&store, namespace_id.into()).unwrap(),
+            vec![namespace_id],
+            "identity with no resolvable account and no key is exactly the purged shape"
+        );
+
+        // A resolvable member is `groups_member_but_keyless`'s business.
+        MembershipRepository::new(&store)
+            .add_member(
+                &ns_gid,
+                &calimero_context::test_support::enrol(&store, &ns_gid, &my_id),
+                GroupMemberRole::ReadOnlyTee,
+            )
+            .unwrap();
+        assert!(
+            namespace_root_participating_but_unbootstrapped(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "resolvable to an account: the existing worklist owns it, so stay silent"
+        );
+
+        // And holding the key ends it for both.
+        GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x22; 32])
+            .unwrap();
+        assert!(
+            namespace_root_participating_but_unbootstrapped(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "holding the key leaves nothing to recover"
+        );
     }
 
     /// ...and restoring just the binding and the row is enough to make the
