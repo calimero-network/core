@@ -22,6 +22,7 @@
   "GET /admin-api/contexts/{context_id}/identities-owned",
   "GET /admin-api/contexts/{context_id}/intents",
   "GET /admin-api/contexts/{context_id}/storage",
+  "GET /admin-api/contexts/{context_id}/warrant-nonce/{author_device_key}",
   "GET /admin-api/groups/{group_id}",
   "GET /admin-api/groups/{group_id}/contexts",
   "GET /admin-api/groups/{group_id}/contexts/{context_id}/metadata",

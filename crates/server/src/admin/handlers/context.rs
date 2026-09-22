@@ -15,3 +15,4 @@ pub mod query_context;
 pub mod resync_context;
 pub mod sync;
 pub mod update_context_application;
+pub mod warrant_nonce;

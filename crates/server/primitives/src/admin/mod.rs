@@ -1494,6 +1494,104 @@ pub struct IntentRelayApiResponse {
     pub data: IntentRelayApiResponseData,
 }
 
+/// Where one author device stands in its warrant-nonce sequence for one context.
+///
+/// # Why this surface exists
+///
+/// The nonce is the only input to a warrant that lives in the author's own
+/// memory. Keys it holds, the method and args it chose, the executor account and
+/// the grant it reads from `GET .../intents` — every other field is either the
+/// author's or the relay's to supply. So an author that loses local state loses
+/// the one thing it cannot re-derive, and without this read its only recourse is
+/// to guess upward, spending a refused round trip per wrong guess, with no bound
+/// on how many. A browser keyholder in partitioned or periodically-cleared
+/// storage loses that state as a matter of course, so this is the ordinary path
+/// back, not a repair tool.
+///
+/// # What a client must do with it
+///
+/// **Mint the next warrant at `nextNonce`, and treat nothing else here as
+/// actionable.** `highWaterNonce` is reported so the answer is auditable — and
+/// is the number the relay's ledger actually holds — but the arithmetic on it is
+/// the node's to do, not the client's.
+///
+/// A client that keeps its own counter should take `max(own_next, nextNonce)`
+/// rather than replacing one with the other: this node's view can only be behind
+/// a client that has already sent warrants this node has not yet applied.
+///
+/// # This is one node's view, and that bounds what it promises
+///
+/// Nonce state is folded per peer from the deltas that peer applied. A peer that
+/// has seen warrants this node has not holds a higher mark. So `nextNonce` is
+/// guaranteed against **the relay that answered**, which is the relay the
+/// warrant is about to be presented to, and safe on every peer behind it. An
+/// author that spreads its warrants across several relays must ask each and take
+/// the highest `nextNonce` it is offered.
+///
+/// # Disclosure
+///
+/// This is an **authenticated admin read** and it is not mounted on the public
+/// delegated-execution routes. It also discloses nothing new to anyone entitled
+/// to ask: a warrant carries its nonce in the clear and rides in the delta that
+/// applied it, so any peer replicating this context can already fold exactly
+/// this number out of its own copy of the log. The one thing the endpoint adds
+/// is convenience — and an oracle for "has *this* device ever authored here",
+/// answerable only by a caller that already holds the 32-byte key to ask about
+/// and already holds an admin credential on this node. There is no listing and
+/// no enumeration: the device key is an input, never an output.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WarrantNonceApiResponseData {
+    /// The context asked about, echoed so a cached answer cannot be read against
+    /// the wrong context.
+    pub context_id: ContextId,
+    /// The author device asked about, echoed for the same reason.
+    ///
+    /// This is the SIGNING KEY that signs the warrant, which is what the ledger
+    /// is keyed by — not the author's account and not its `DeviceId`. Two devices
+    /// of one account hold two independent sequences, and a re-keyed device
+    /// starts a fresh one.
+    pub author_device_key: PublicKey,
+    /// Whether this node has admitted any warrant from this device in this
+    /// context.
+    ///
+    /// `false` is the ordinary state of a device that has not written here yet,
+    /// not an error and not a missing row worth retrying. It is reported
+    /// explicitly rather than as a zero, because "nonce 0 was spent" and "nothing
+    /// has been spent" are different facts a client must not have to guess apart.
+    pub seen: bool,
+    /// The highest nonce this node has accepted from this device here, absent
+    /// when `seen` is `false`.
+    ///
+    /// Always a member of the accepted set, and nothing strictly above it has
+    /// been accepted — which is exactly why `nextNonce` is one more than it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_water_nonce: Option<u64>,
+    /// The nonce to put in the next warrant. **This is the field to act on.**
+    ///
+    /// Absent only in the one case where no next nonce exists: this device has
+    /// already spent `u64::MAX` here, and must re-key to keep writing. A client
+    /// that finds this absent must not fall back to a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_nonce: Option<u64>,
+    /// How far below `highWaterNonce` a warrant may still be accepted.
+    ///
+    /// Constant, and reported so a client can size its own in-flight window: a
+    /// warrant this author minted but has not yet had executed is refused once
+    /// this many of its later warrants have landed ahead of it. It is not a
+    /// number to compute a nonce from — the window below the mark is partly
+    /// spent, and which parts is deliberately not reported, since back-filling a
+    /// gap buys an author nothing that going forward does not.
+    pub window_width: u64,
+}
+
+/// Wrapped in `data` like every neighbouring response.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WarrantNonceApiResponse {
+    pub data: WarrantNonceApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddGroupMembersApiRequest {

@@ -28,7 +28,7 @@ use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, intent_relay, join_context, leave_context,
-    perform_intent, query_context, resync_context, sync, update_context_application,
+    perform_intent, query_context, resync_context, sync, update_context_application, warrant_nonce,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -215,6 +215,17 @@ pub(crate) fn setup(
         .route(
             "/contexts/{context_id}/group",
             get(get_context_group::handler),
+        )
+        // Where an author device stands in its warrant-nonce sequence here.
+        //
+        // Not part of `delegated_execution_routes` even though it serves the
+        // same client: that pair is about this relay and answers the same for
+        // everyone, while this takes another principal's device key and reports
+        // that principal's activity. See the handler for why the narrower
+        // posture was chosen.
+        .route(
+            "/contexts/{context_id}/warrant-nonce/{author_device_key}",
+            get(warrant_nonce::handler),
         )
         // A delegated read: an account-authenticated caller reads a context it
         // is a member of. Protected rather than public, unlike the intent pair
