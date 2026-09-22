@@ -1,0 +1,298 @@
+name: Nested CRDT Offline Catch-Up
+description: >
+  A three-node context on nested-crdt-test. Node-3 is stopped, node-1 creates
+  many nested Counter collections, and node-3 restarts with the gossip window
+  for those writes already closed, so it has to catch up over HashComparison.
+  A nested collection's container row is what that path has to carry: without
+  it node-3 holds the container's index with no data row and its context state
+  hash never matches the other two.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+# Defined individually so every port is pinned. `start_node` re-derives a
+# count-based node's port from `base_rpc_port`, which reconnects the restarted
+# node on the first node's port.
+nodes:
+  nested-offline-1:
+    port: 3900
+    rpc_port: 3901
+  nested-offline-2:
+    port: 3902
+    rpc_port: 3903
+  nested-offline-3:
+    port: 3904
+    rpc_port: 3905
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: nested-offline-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: nested-offline-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: nested-offline-3
+    username: dev
+    password: dev-password
+
+  # Installed on every node up front so no node ever has to fetch bytecode
+  # while it catches up; the only thing under test is state sync.
+  - name: Install application on node-1
+    type: install_application
+    node: nested-offline-1
+    path: ../../dist/com.calimero.nested-crdt-test-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: nested-offline-2
+    path: ../../dist/com.calimero.nested-crdt-test-0.0.0.mpk
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: nested-offline-3
+    path: ../../dist/com.calimero.nested-crdt-test-0.0.0.mpk
+    dev: true
+
+  - name: Create the mesh - namespace, context and both joiners
+    type: create_mesh
+    context_node: nested-offline-1
+    application_id: "{{app_id}}"
+    nodes:
+      - nested-offline-2
+      - nested-offline-3
+    outputs:
+      ctx_id: contextId
+
+  - name: Baseline nested counter on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: baseline
+
+  - name: All three converge on the baseline
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - nested-offline-1
+      - nested-offline-2
+      - nested-offline-3
+    timeout: 120
+    trigger_sync: true
+
+  - name: Take node-3 offline
+    type: stop_node
+    nodes:
+      - nested-offline-3
+
+  - name: Let the remaining two notice node-3 is gone
+    type: wait
+    seconds: 5
+
+  - name: Nested counter k01 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k01
+
+  - name: Nested counter k02 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k02
+
+  - name: Nested counter k03 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k03
+
+  - name: Nested counter k04 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k04
+
+  - name: Nested counter k05 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k05
+
+  - name: Nested counter k06 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k06
+
+  - name: Nested counter k07 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k07
+
+  - name: Nested counter k08 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k08
+
+  - name: Nested counter k09 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k09
+
+  - name: Nested counter k10 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k10
+
+  - name: Nested counter k11 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k11
+
+  - name: Nested counter k12 on node-1
+    type: call
+    node: nested-offline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    args:
+      key: k12
+
+  - name: The two live nodes converge on the twelve new collections
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - nested-offline-1
+      - nested-offline-2
+    timeout: 120
+    trigger_sync: true
+
+  # Node-3 must still be down when the gossip window for those twelve deltas
+  # closes, or it catches up over deltas, which carry the container rows.
+  - name: Let the gossip window close while node-3 is still down
+    type: wait
+    seconds: 20
+
+  - name: Bring node-3 back
+    type: start_node
+    nodes:
+      - nested-offline-3
+    wait_for_ready: true
+    wait_timeout: 120
+
+  # The convergence gate: wait_for_sync polls contextStateHash on all three and
+  # passes only when they are equal, so a timeout here is a divergent root.
+  - name: All three converge on one context state hash
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - nested-offline-1
+      - nested-offline-2
+      - nested-offline-3
+    timeout: 240
+    trigger_sync: true
+
+  - name: Read nested counter k01 on node-3
+    type: call
+    node: nested-offline-3
+    context_id: "{{ctx_id}}"
+    method: get_counter
+    args:
+      key: k01
+    outputs:
+      k01_n3: result
+
+  - name: Read nested counter k12 on node-3
+    type: call
+    node: nested-offline-3
+    context_id: "{{ctx_id}}"
+    method: get_counter
+    args:
+      key: k12
+    outputs:
+      k12_n3: result
+
+  - name: Assert node-3 holds both nested counters
+    type: json_assert
+    statements:
+      - 'json_equal({{k01_n3}}, {"output": 1})'
+      - 'json_equal({{k12_n3}}, {"output": 1})'
+
+  - name: Node-3 caught up over HashComparison, not another protocol
+    type: assert_log_present
+    nodes:
+      - nested-offline-3
+    regex: true
+    # merod colours its log fields, so ANSI codes sit between `protocol` and
+    # `=HashComparison`; only the message and the value itself are contiguous.
+    patterns:
+      - "Protocol selected.*HashComparison"
+      - "Starting HashComparison sync \\(initiator\\)"
+
+  # The repair rides an EntityPush from whichever peer initiates towards
+  # node-3, so a peer-side session has to have happened too.
+  - name: A peer also ran a HashComparison session
+    type: assert_log_present
+    nodes:
+      - nested-offline-1
+      - nested-offline-2
+    patterns:
+      - "HashComparison responder complete"
+
+  - name: Let a few sync intervals pass on the converged cluster
+    type: wait
+    seconds: 20
+
+  # The gate above already proved the roots match; this pins that they stay
+  # matched, since a container row still missing makes every later session
+  # end in this warning.
+  - name: Node-3 stops reporting non-convergence
+    type: assert_log_absent
+    nodes:
+      - nested-offline-3
+    tail_lines: 150
+    patterns:
+      - "HashComparison sync did not converge"
+
+stop_all_nodes: false

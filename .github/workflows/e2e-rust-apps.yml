@@ -1064,6 +1064,11 @@ jobs:
           - workflow: nested-crdt
             file: workflows/nested-crdt-test.yml
             app: nested-crdt-test
+          # Installs the bundle on every node itself - nothing to acquire.
+          - workflow: nested-crdt-offline-catchup
+            file: workflows/nested-crdt-offline-catchup.yml
+            app: nested-crdt-test
+            registry_fetch: "false"
           - workflow: private-data-example
             file: workflows/example.yml
             app: private_data
