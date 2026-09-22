@@ -152,12 +152,23 @@ impl<Sc: MarkSchema, S: StorageAdaptor> super::rekey::RekeyTarget for Block<Sc, 
 }
 
 impl<Sc: MarkSchema, S: StorageAdaptor> Block<Sc, S> {
-    fn new(id: BlockId) -> Self {
+    /// `entry_id` is where the block row will be stored. Building the children
+    /// under it directly keeps every id deterministic without a re-key, which
+    /// would link each of them to the root under a random id and unlink it again.
+    fn new(id: BlockId, entry_id: crate::address::Id) -> Self {
         let block = Self {
             id,
-            props: UnorderedMap::new_internal(),
-            attrs: UnorderedMap::new_internal(),
-            body: RichText::new_internal(),
+            props: UnorderedMap::new_with_field_name_and_crdt_type(
+                Some(entry_id),
+                PROPS_FIELD,
+                CrdtType::UnorderedMap,
+            ),
+            attrs: UnorderedMap::new_with_field_name_and_crdt_type(
+                Some(entry_id),
+                ATTRS_FIELD,
+                CrdtType::UnorderedMap,
+            ),
+            body: RichText::new_under(entry_id),
         };
         let _ignored = super::rekey::register_rekey::<Self>();
         block
@@ -310,10 +321,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
 
         let id = BlockId(minted.start);
         let key = BlockKey::new(id);
-        let mut block = Block::new(id);
-        // Re-key first, so the property rows below land under the entry id the
-        // map is about to store the block at rather than under a random one.
-        super::rekey::RekeyTarget::rekey_relative_to(&mut block, self.blocks.entry_id(&key));
+        let mut block = Block::new(id, self.blocks.entry_id(&key));
         block.set(Prop::Kind(kind.to_owned()))?;
         block.set(Prop::Depth(depth))?;
         let _ignored = self.blocks.insert(key, block)?;

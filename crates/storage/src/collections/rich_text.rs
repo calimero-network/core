@@ -233,6 +233,22 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         doc
     }
 
+    /// Create both child collections straight under `parent_id`, so a nested
+    /// body never holds a random id that a later re-key has to move off the root.
+    pub(super) fn new_under(parent_id: crate::address::Id) -> Self {
+        let doc = Self {
+            text: FugueText::new_under(parent_id),
+            marks: UnorderedMap::new_with_field_name_and_crdt_type(
+                Some(parent_id),
+                MARKS_FIELD,
+                CrdtType::UnorderedMap,
+            ),
+            schema: PhantomData,
+        };
+        let _ignored = super::rekey::register_rekey::<Self>();
+        doc
+    }
+
     /// Called by the `#[app::state]` macro after `init()`.
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
         self.text.reassign_deterministic_id(field_name);

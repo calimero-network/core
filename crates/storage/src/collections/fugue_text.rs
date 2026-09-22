@@ -25,6 +25,7 @@ use crate::collections::error::StoreError;
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
 
+const BLOCKS_FIELD: &str = "__fugue_blocks"; // child id namespace for the block map
 const MAX_RUN_LEN: usize = 256; // nodes per block
 const COUNTER_EXHAUSTED: &str = "replica counter space exhausted";
 
@@ -236,11 +237,8 @@ pub struct FugueText<S: StorageAdaptor = MainStorage> {
 /// Re-key the block map under its storage parent so a nested `FugueText` converges.
 impl<S: StorageAdaptor> super::rekey::RekeyTarget for FugueText<S> {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
-        self.blocks.reassign_deterministic_id_under(
-            parent_id,
-            "__fugue_blocks",
-            CrdtType::FugueText,
-        );
+        self.blocks
+            .reassign_deterministic_id_under(parent_id, BLOCKS_FIELD, CrdtType::FugueText);
         self.blocks.set_collection_crdt_type(CrdtType::FugueText);
     }
 }
@@ -270,6 +268,12 @@ impl<S: StorageAdaptor> FugueText<S> {
         Self {
             blocks: UnorderedMap::new_internal(),
         }
+    }
+
+    /// Create the block map straight under `parent_id`, so a nested text never
+    /// holds a random id that a later re-key has to move off the root.
+    pub(super) fn new_under(parent_id: crate::address::Id) -> Self {
+        Self::new_with_field_name_internal(Some(parent_id), BLOCKS_FIELD)
     }
 
     pub(super) fn new_with_field_name_internal(

@@ -582,14 +582,11 @@ pub fn all() -> Vec<Workload> {
         ),
         ("rich_text_to_delta", KnownLinearInN, 0, rich_text_to_delta),
         // Linear in the CHARACTERS a split carries, not in the block count, so
-        // it belongs beside the other text-sized reads. Reads reproduce
-        // exactly; writes and removes trade one for one as the index trie
-        // rebalances around the new block, and their SUM is what is stable, so
-        // the band covers that split rather than any movement in real cost.
+        // it belongs beside the other text-sized reads.
         (
             "rich_document_split_block",
             KnownLinearInN,
-            22,
+            0,
             rich_document_split_block,
         ),
     ];
@@ -651,11 +648,10 @@ pub fn all() -> Vec<Workload> {
             0,
             rich_document_blocks,
         ),
-        // Same written-versus-removed split as `rich_document_split_block`.
         (
             "rich_document_insert_block",
             ConstantPerCall,
-            22,
+            0,
             rich_document_insert_block,
         ),
         (
