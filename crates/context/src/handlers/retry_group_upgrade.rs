@@ -43,7 +43,9 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
             let meta = MetaRepository::new(&self.datastore)
                 .load(&group_id)?
-                .ok_or_else(|| eyre::eyre!("group not found"))?;
+                .ok_or_else(|| crate::error::ContextError::GroupNotFound {
+                    group_id: format!("{group_id:?}"),
+                })?;
 
             // Use current context count rather than stored total which may be stale
             let current_total =

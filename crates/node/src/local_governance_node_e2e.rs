@@ -187,8 +187,10 @@ async fn set_member_auto_follow_handler_error_paths() {
         })
         .await
         .expect_err("unknown group should fail preflight");
+    // Names the GROUP. Both refusals in this test now say "not found", so
+    // asserting that alone would no longer tell them apart.
     assert!(
-        err.to_string().contains("not found"),
+        err.to_string().contains("not found") && err.to_string().contains("group"),
         "unexpected error: {err}"
     );
 
@@ -205,9 +207,18 @@ async fn set_member_auto_follow_handler_error_paths() {
         })
         .await
         .expect_err("stranger is not a member");
+    // Names the MEMBER the caller asked about, which is the whole reason the
+    // handler checks here rather than leaving it to the apply path's bail.
+    // `MembershipError::MemberNotFound` also carries a 404 to the admin API,
+    // where this used to surface as a scrubbed 500.
+    let rendered = err.to_string();
     assert!(
-        err.to_string().contains("not a member"),
+        rendered.contains("not found") && rendered.contains("member"),
         "unexpected error: {err}"
+    );
+    assert!(
+        rendered.contains(&calimero_context::test_support::account_for(&stranger).to_string()),
+        "the refusal must name the member that was checked: {err}"
     );
 
     // Alice's flags remain at the default produced by `add_group_member`

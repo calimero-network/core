@@ -8,7 +8,7 @@ use calimero_server_primitives::admin::{
     CreateGroupInvitationApiRequest, CreateGroupInvitationApiResponse,
     CreateGroupInvitationApiResponseData,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::parse_group_id;
 use axum::http::StatusCode;
@@ -73,7 +73,14 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, error=?err, "Failed to create group invitation");
+            // A 4xx is the caller naming something absent or not theirs, not a
+            // fault of this node. On a fleet node these journals ship to a
+            // central store, where an `ERROR` per poll buries real faults.
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, error=?err, "Failed to create group invitation");
+            } else {
+                error!(group_id=%group_id_str, error=?err, "Failed to create group invitation");
+            }
             err.into_response()
         }
     }

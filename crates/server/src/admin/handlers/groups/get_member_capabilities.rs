@@ -48,7 +48,14 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, identity=%account_str, error=?err, "Failed to get member capabilities");
+            // A 4xx is the caller naming something absent or not theirs, not a
+            // fault of this node. On a fleet node these journals ship to a
+            // central store, where an `ERROR` per poll buries real faults.
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, identity=%account_str, error=?err, "Failed to get member capabilities");
+            } else {
+                error!(group_id=%group_id_str, identity=%account_str, error=?err, "Failed to get member capabilities");
+            }
             err.into_response()
         }
     }

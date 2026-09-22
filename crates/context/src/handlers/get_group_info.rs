@@ -19,7 +19,9 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
     ) -> Self::Result {
         let result = (|| {
             let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
-                bail!("group '{group_id:?}' not found");
+                bail!(crate::error::ContextError::GroupNotFound {
+                    group_id: format!("{group_id:?}"),
+                });
             };
 
             let Some((node_identity, _)) = self.node_signing_key(&group_id) else {
@@ -44,7 +46,9 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 }
             };
             if !is_member {
-                bail!("node is not a member of group '{group_id:?}'");
+                bail!(crate::error::ContextError::NotAGroupMember {
+                    group_id: format!("{group_id:?}"),
+                });
             }
 
             // Effective member count = stored rows + inherited members,
