@@ -211,8 +211,10 @@ pub struct InitCommand {
     /// It signs a statement naming this node, this session's ephemeral key and
     /// the surface it is for, and presents it with the certificate proving the
     /// device belongs to its account. The node checks both and mints a session
-    /// scoped to `context:intent`, `context:query` and `context:subscribe` --
-    /// the delegated surface, and deliberately nothing above it.
+    /// scoped to `context:intent`, `context:query`, `context:subscribe`,
+    /// `context:list-own` and `namespace:list-own` -- the delegated surface
+    /// (write, read, events, and the two caller-scoped listings that let a
+    /// client discover what it may act on), and deliberately nothing above it.
     ///
     /// Off unless asked for, and that is the posture rather than an oversight: a
     /// node answers device-key logins only because its operator decided it
