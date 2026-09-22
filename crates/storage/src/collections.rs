@@ -30,6 +30,8 @@ pub mod fugue;
 pub use fugue::{FugueError, FugueNode, FugueTree, Side};
 pub mod fugue_text;
 pub use fugue_text::FugueText;
+pub mod mark_schema;
+pub use mark_schema::{DefaultMarks, Expand, MarkSchema};
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod blob_ref;
