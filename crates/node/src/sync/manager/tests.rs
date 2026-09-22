@@ -466,6 +466,115 @@ mod key_recovery_trigger {
                 .is_empty()
         );
     }
+
+    /// A self-purged TEE replica asks NO peer for a key, because both
+    /// worklists that drive `recover_missing_group_keys` are empty.
+    ///
+    /// Disabling fleet HA is a `ReadOnlyTee` self-leave, and the self-purge
+    /// listener then hard-purges the namespace subtree locally: membership,
+    /// account bindings, group keys, gov-op log and DAG head. Re-enabling
+    /// rewrites the participation marker and the node key, so the replica ends
+    /// up subscribed and participating while holding none of that.
+    ///
+    /// `recover_missing_group_keys` unions two worklists and returns early on
+    /// `requests.is_empty()`:
+    ///
+    ///   - op-driven (`namespace_groups_awaiting_key`) needs a BUFFERED
+    ///     undecryptable op; the purge deleted the log.
+    ///   - membership-driven (`namespace_groups_member_but_keyless`) resolves
+    ///     this node's identity to an account first, and the purge deleted the
+    ///     binding — which is the incident's "identity … is bound to no account
+    ///     in the namespace" line, seen from the other end.
+    ///
+    /// So the replica never reaches the gate that would refuse it. The
+    /// distinction matters for the fix: "asked and was refused" points at
+    /// `key_server_accepted`, "never asked" points here.
+    #[test]
+    fn a_purged_replica_emits_no_key_request_at_all() {
+        use calimero_governance_store::{namespace_groups_member_but_keyless, NamespaceRepository};
+
+        let store = fresh_store();
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
+
+        let namespace_id = [0xF2u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+
+        // Everything re-enable restores, and nothing the purge removed: the
+        // node key and namespace identity, no membership row, no account
+        // binding, no buffered op, no key.
+        let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
+        let my_id = PrivateKey::from(sk_bytes).public_key();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &my_id, &sk_bytes)
+            .unwrap();
+
+        assert!(
+            namespace_groups_awaiting_key(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "the purge removed the op log, so nothing is buffered to drive a request"
+        );
+        assert!(
+            namespace_groups_member_but_keyless(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "the purge removed the account binding and the membership row, so this node \
+             is not a keyless MEMBER of anything -- it is not a member at all"
+        );
+    }
+
+    /// ...and restoring just the binding and the row is enough to make the
+    /// replica ask again.
+    ///
+    /// The contrast is the point: the same node, in the same namespace, with
+    /// the same keyless state, differs only by being resolvable as a member.
+    /// Whatever fixes the re-admission has to put this node back into one of
+    /// the two worklists -- either by restoring its membership (this test) or
+    /// by leaving the re-admission op buffered for it.
+    #[test]
+    fn restoring_the_membership_row_is_what_makes_it_ask() {
+        use calimero_governance_store::{
+            namespace_groups_member_but_keyless, MembershipRepository, NamespaceRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+
+        let store = fresh_store();
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
+
+        let namespace_id = [0xF3u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+
+        let sk_bytes = rand::RngExt::random::<[u8; 32]>(&mut rng);
+        let my_id = PrivateKey::from(sk_bytes).public_key();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &my_id, &sk_bytes)
+            .unwrap();
+
+        assert!(
+            namespace_groups_member_but_keyless(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "precondition: stranded exactly as the purged replica is"
+        );
+
+        // `enrol` writes the account binding the purge removed; `add_member`
+        // the direct row. A ReadOnlyTee row, because that is what admission
+        // writes for a fleet replica.
+        MembershipRepository::new(&store)
+            .add_member(
+                &ns_gid,
+                &calimero_context::test_support::enrol(&store, &ns_gid, &my_id),
+                GroupMemberRole::ReadOnlyTee,
+            )
+            .unwrap();
+
+        assert_eq!(
+            namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+            vec![namespace_id],
+            "with the binding and row back, the replica surfaces as a keyless member and \
+             recovery emits a request for it"
+        );
+    }
 }
 
 // `should_stop_peer_retry` stops `perform_interval_sync` only for the
