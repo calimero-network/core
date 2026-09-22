@@ -20,6 +20,7 @@ on:
       - "apps/abi_conformance/**"
       - "apps/collaborative-editor/**"
       - "apps/fugue-collab/**"
+      - "apps/rich-collab/**"
       - "apps/kv-store-init/**"
       - "apps/kv-store-with-handlers/**"
       - "apps/kv-store-with-user-and-frozen-storage/**"
@@ -48,6 +49,7 @@ on:
       - "apps/abi_conformance/**"
       - "apps/collaborative-editor/**"
       - "apps/fugue-collab/**"
+      - "apps/rich-collab/**"
       - "apps/kv-store-init/**"
       - "apps/kv-store-with-handlers/**"
       - "apps/kv-store-with-user-and-frozen-storage/**"
@@ -379,6 +381,12 @@ jobs:
       - name: Build fugue-collab bundle
         run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
 
+      - name: Build rich-collab app
+        run: cargo mero build --manifest-path apps/rich-collab/Cargo.toml
+
+      - name: Build rich-collab bundle
+        run: (cd apps/rich-collab && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-init app
         run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
@@ -452,6 +460,7 @@ jobs:
             apps/abi_conformance/res/*
             apps/collaborative-editor/res/*
             apps/fugue-collab/res/*
+            apps/rich-collab/res/*
             apps/kv-store-init/res/*
             apps/kv-store-with-handlers/res/*
             apps/kv-store-with-user-and-frozen-storage/res/*
@@ -863,6 +872,18 @@ jobs:
           - workflow: fugue-collab-undo
             file: workflows/fugue-collab-undo.yml
             app: fugue-collab
+            registry_fetch: "false"
+          - workflow: rich-marks
+            file: workflows/rich-marks.yml
+            app: rich-collab
+            registry_fetch: "false"
+          - workflow: rich-blocks
+            file: workflows/rich-blocks.yml
+            app: rich-collab
+            registry_fetch: "false"
+          - workflow: rich-catchup
+            file: workflows/rich-catchup.yml
+            app: rich-collab
             registry_fetch: "false"
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml

@@ -1,0 +1,388 @@
+description: >
+  The two fault shapes that need their own boot: a node that was offline while a
+  formatted multi-block document was written and has to catch up over
+  HashComparison, and a node that is replaced mid-edit and has to rejoin the
+  document its peers went on building. Both use stop_node, which is real under
+  Docker and under --no-docker alike.
+name: Rich Collab Catchup
+
+# Defined individually so every port is pinned: the count form lets --e2e-mode
+# allocate ports dynamically, and start_node would then reconnect on base_port.
+nodes:
+  image: ghcr.io/calimero-network/merod:edge
+  rich-node-1:
+    port: 2800
+    rpc_port: 2900
+  rich-node-2:
+    port: 2801
+    rpc_port: 2901
+  rich-node-3:
+    port: 2802
+    rpc_port: 2902
+
+steps:
+  - name: Install rich-collab on Node 1
+    type: install_application
+    node: rich-node-1
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
+  - name: Install rich-collab on Node 2
+    type: install_application
+    node: rich-node-2
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+
+  - name: Install rich-collab on Node 3
+    type: install_application
+    node: rich-node-3
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: rich-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - rich-node-2
+      - rich-node-3
+    outputs:
+      context_id: contextId
+
+  - name: Create the restart document
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: create_doc
+    args:
+      doc: catchup-restart
+
+  - name: Add the restart block
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: insert_block
+    args:
+      doc: catchup-restart
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      restart_block: result.output
+
+  - name: Type the seed into the restart block
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-restart
+      block: "{{restart_block}}"
+      ops:
+        - insert: SEED
+
+  - name: Wait for the seed to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    timeout: 90
+    trigger_sync: true
+
+
+  # ── restart mid-edit ───────────────────────────────────────────────────
+
+  - name: Node 3 bolds its own passage onto the seed
+    type: call
+    node: rich-node-3
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-restart
+      block: "{{restart_block}}"
+      ops:
+        - retain: 4
+        - insert: "-THREE"
+          attributes:
+            bold: "true"
+
+  - name: Wait for Node 3's passage to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Stop Node 3 mid-edit
+    type: stop_node
+    nodes: [rich-node-3]
+
+  - name: Let the stop on Node 3 take effect
+    type: wait
+    seconds: 8
+
+  - name: Node 1 types in front of the seed while Node 3 is down
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-restart
+      block: "{{restart_block}}"
+      ops:
+        - insert: "ONE-"
+
+  - name: Bring Node 3 back
+    type: start_node
+    nodes: [rich-node-3]
+    wait_for_ready: true
+    wait_timeout: 90
+
+  - name: Read the restart block straight out of Node 3's restored store
+    type: call
+    node: rich-node-3
+    context_id: "{{context_id}}"
+    method: get_state_digest
+    args:
+      doc: catchup-restart
+    outputs:
+      restored_node3: result
+
+  - name: Assert the block rows survived the restart
+    type: json_assert
+    statements:
+      - 'json_equal({{restored_node3}}, {"output": "paragraph/0{:SEED}{bold=true:-THREE};"})'
+
+  - name: Let Node 3 rejoin the mesh
+    type: wait
+    seconds: 20
+
+  - name: The restarted node rejoined the document its peers kept building
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    timeout: 180
+    trigger_sync: true
+    expect:
+      method: get_state_digest
+      args:
+        doc: catchup-restart
+      equals:
+        output: 'paragraph/0{:ONE-SEED}{bold=true:-THREE};'
+
+
+  # ── a late joiner catching up over HashComparison ──────────────────────
+
+  - name: Take Node 3 offline before the formatted document is written
+    type: stop_node
+    nodes: [rich-node-3]
+
+  - name: Let the remaining two notice Node 3 is gone
+    type: wait
+    seconds: 8
+
+  - name: Create the late-joiner document
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: create_doc
+    args:
+      doc: catchup-joiner
+
+  - name: Add the late-joiner heading
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: insert_block
+    args:
+      doc: catchup-joiner
+      after: null
+      kind: heading
+      depth: 0
+    outputs:
+      joiner_heading: result.output
+
+  - name: Type the heading text
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-joiner
+      block: "{{joiner_heading}}"
+      ops:
+        - insert: Minutes
+
+  - name: Add the late-joiner first paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: insert_block
+    args:
+      doc: catchup-joiner
+      after: "{{joiner_heading}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      joiner_first: result.output
+
+  - name: Type a bolded first paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-joiner
+      block: "{{joiner_first}}"
+      ops:
+        - insert: Agreed
+          attributes:
+            bold: "true"
+
+  - name: Add the late-joiner second paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: insert_block
+    args:
+      doc: catchup-joiner
+      after: "{{joiner_first}}"
+      kind: paragraph
+      depth: 1
+    outputs:
+      joiner_second: result.output
+
+  - name: Type a linked second paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-joiner
+      block: "{{joiner_second}}"
+      ops:
+        - insert: Detail
+          attributes:
+            link: https://example.test
+
+  - name: Add the late-joiner third paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: insert_block
+    args:
+      doc: catchup-joiner
+      after: "{{joiner_second}}"
+      kind: paragraph
+      depth: 1
+    outputs:
+      joiner_third: result.output
+
+  - name: Type and comment the third paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-joiner
+      block: "{{joiner_third}}"
+      ops:
+        - insert: Action
+
+  - name: Comment the third paragraph
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: mark
+    args:
+      doc: catchup-joiner
+      block: "{{joiner_third}}"
+      start: 0
+      end: 6
+      key: comment:chair
+      value: follow up
+
+  - name: Add the late-joiner closing block
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: insert_block
+    args:
+      doc: catchup-joiner
+      after: "{{joiner_third}}"
+      kind: quote
+      depth: 0
+    outputs:
+      joiner_closing: result.output
+
+  - name: Type the closing block
+    type: call
+    node: rich-node-1
+    context_id: "{{context_id}}"
+    method: apply_delta
+    args:
+      doc: catchup-joiner
+      block: "{{joiner_closing}}"
+      ops:
+        - insert: Adjourned
+
+  # Each block is its own nested collection, so five blocks plus their mark and
+  # property rows put the Merkle root well past the two children below which
+  # protocol selection would not reach HashComparison.
+  - name: The two live nodes converge on the formatted document
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rich-node-1, rich-node-2]
+    timeout: 120
+    trigger_sync: true
+
+  # Node 3 must still be down when the gossip window for those deltas closes,
+  # or it catches up over deltas and never reaches HashComparison.
+  - name: Let the gossip window close while Node 3 is still down
+    type: wait
+    seconds: 20
+
+  - name: Bring Node 3 back to catch up
+    type: start_node
+    nodes: [rich-node-3]
+    wait_for_ready: true
+    wait_timeout: 90
+
+  - name: Let Node 3 rejoin the gossipsub mesh and run its catch-up sync
+    type: wait
+    seconds: 45
+
+  - name: The late joiner reached the formatted document byte for byte
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    timeout: 240
+    trigger_sync: true
+    expect:
+      method: get_state_digest
+      args:
+        doc: catchup-joiner
+      equals:
+        output: 'heading/0{:Minutes};paragraph/0{bold=true:Agreed};paragraph/1{link=https://example.test:Detail};paragraph/1{comment:chair=follow up:Action};quote/0{:Adjourned};'
+
+  # merod colours its log fields, so ANSI codes sit between `protocol` and its
+  # value; only the message and the value itself are contiguous.
+  - name: Node 3 caught up over HashComparison, not another protocol
+    type: assert_log_present
+    nodes: [rich-node-3]
+    regex: true
+    patterns:
+      - "Protocol selected.*HashComparison"
+      - "Starting HashComparison sync"
+
+  - name: No node reported a stuck root-hash divergence
+    type: assert_log_absent
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    patterns:
+      - "DIVERGENCE DETECTED"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
