@@ -41,10 +41,8 @@ const DEPTH: &str = "depth"; // property row key
 const PLACE: &str = "place"; // property row key
 const DELETED: &str = "deleted"; // property row key
 
-/// A block's identity: the id of the spine character minted when it was
-/// created. Unique, deterministic, and stable across moves.
-///
-/// JSON: the two-element array `[replica, counter]`, like every other id here.
+/// A block's identity: the spine character minted when it was created, stable
+/// across every later move. JSON: the `[replica, counter]` pair.
 #[derive(
     Clone,
     Copy,
@@ -296,9 +294,8 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
 
     // ---- structure writes ----
 
-    /// Create a block directly after `after`, or at the top of the document when
-    /// `after` is `None`. Panics inside a state migration, because it mints a
-    /// spine id from the node-local device id.
+    /// Create a block after `after`, or at the top when `after` is `None`. Panics
+    /// inside a state migration: it mints a spine id from the device id.
     pub fn insert_block(
         &mut self,
         after: Option<BlockId>,
@@ -331,12 +328,8 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         Ok(was)
     }
 
-    /// Move `block` directly after `after`, or to the top when `after` is `None`.
-    ///
-    /// Mints a NEW spine slot and last-write-wins on `place`, so the block id is
-    /// unchanged and two concurrent moves settle on one placement. The old slot
-    /// is left live and unreferenced: the read enumerates blocks, never spine
-    /// characters, so a slot no block names is invisible.
+    /// Mints a NEW spine slot and last-writes `place`, so two concurrent moves
+    /// settle on one placement; the old slot is left unreferenced and invisible.
     pub fn move_block(&mut self, block: BlockId, after: Option<BlockId>) -> Result<(), StoreError> {
         let mut row = self.row(block)?;
         let at = self.slot_for(after)?;
@@ -373,13 +366,8 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         Ok(())
     }
 
-    /// Split `block` at visible position `at`, moving the tail's text AND its
-    /// formatting into a new block placed immediately after.
-    ///
-    /// Marks anchored to the old characters cannot follow them, so the tail's
-    /// resolved attributes are re-asserted as new mark rows over the new
-    /// characters. A peer typing in the tail while this runs keeps its text in
-    /// the FIRST block: this deletes only the characters that existed here.
+    /// Moves the tail's text and its resolved formatting into a new block after
+    /// this one. A peer typing in the tail keeps its text in the FIRST block.
     pub fn split_block(&mut self, block: BlockId, at: usize) -> Result<BlockId, StoreError> {
         let mut row = self.row(block)?;
         let len = row.body.len()?;
@@ -403,9 +391,8 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         Ok(new)
     }
 
-    /// Append `second`'s body, text and formatting, to `first` and tombstone
-    /// `second`. The tombstoned body's rows survive, so the two halves are still
-    /// addressable afterwards.
+    /// Append `second`'s body to `first` and tombstone `second`. The tombstoned
+    /// body's rows survive, so both halves stay addressable.
     pub fn merge_blocks(&mut self, first: BlockId, second: BlockId) -> Result<(), StoreError> {
         if first == second {
             return Err(invalid("a block cannot merge into itself"));
@@ -513,8 +500,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
     }
 
     /// The spine position a slot placed after `after` takes. A block whose own
-    /// slot has not arrived renders at the end, so a block placed after it does
-    /// too, which keeps the two reads agreeing.
+    /// slot has not arrived renders at the end, so one placed after it does too.
     fn slot_for(&self, after: Option<BlockId>) -> Result<usize, StoreError> {
         let Some(after) = after else { return Ok(0) };
         let place = self.row(after)?.structure()?.place;
@@ -597,9 +583,8 @@ fn slice_spans(spans: &[Span], start: usize, end: usize) -> Vec<Span> {
     out
 }
 
-/// Carrying spans into another body re-asserts their attributes as the COMPLETE
-/// desired set, so a key the previous span left inherited is stripped and a key
-/// the two share costs one mark row rather than one per span.
+/// Carried spans re-assert their attributes as the COMPLETE desired set, so an
+/// inherited key is stripped and a shared key costs one mark row, not one each.
 fn carry(spans: &[Span]) -> Vec<DeltaOp> {
     spans
         .iter()

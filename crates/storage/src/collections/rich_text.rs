@@ -32,11 +32,8 @@ use crate::store::{MainStorage, StorageAdaptor};
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
 const LAMPORT_EXHAUSTED: &str = "mark lamport space exhausted";
 
-/// A Lamport-ordered, globally unique mark identity.
-///
-/// `lamport` is one greater than the greatest this replica can see at write
-/// time; ties break on `replica`. Field order is the comparator, so the derived
-/// `Ord` IS the rule "greater counter wins, greater node id breaks the tie".
+/// A Lamport-ordered, globally unique mark identity. Field order IS the
+/// comparator: greater lamport wins, greater replica breaks the tie.
 #[derive(
     Clone,
     Copy,
@@ -150,9 +147,8 @@ pub enum UndoStep {
     /// Delete the characters this delta minted. By id, not by index, so a peer's
     /// concurrent edit inside the range cannot misdirect it.
     Delete(IdRange),
-    /// Re-insert text this delta deleted, then re-apply the attribute runs it
-    /// carried. `attrs` offsets are char offsets INTO `removed.text`, so they
-    /// name the newly minted characters rather than the tombstoned originals.
+    /// Re-insert text this delta deleted. `attrs` offsets index `removed.text`,
+    /// so they name the newly minted characters, not the tombstoned originals.
     Insert {
         removed: Removed,
         attrs: Vec<AttrRun>,
@@ -247,19 +243,14 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
 
     // ---- writes ----
 
-    /// Apply one editor transaction, text and formatting together, and return
-    /// the steps that undo it in replay order.
-    ///
-    /// Every fallible check runs before the first write, so a delta that cannot
-    /// complete stores nothing at all.
+    /// One editor transaction, text and formatting together, returning the steps
+    /// that undo it. Every check runs first, so a rejected delta stores nothing.
     pub fn apply_delta(&mut self, ops: &[DeltaOp]) -> Result<DeltaUndo, StoreError> {
         self.apply_delta_with_replica(ops, minting_replica("apply_delta"))
     }
 
-    /// Set `key` to `value` over visible positions `start..end`.
-    ///
-    /// `Ok(None)` means the write was SKIPPED as redundant: every character in
-    /// the range already resolves to `value` for `key`.
+    /// Set `key` to `value` over visible positions `start..end`. `Ok(None)` means
+    /// the write was skipped: the range already resolves to `value` for `key`.
     pub fn mark(
         &mut self,
         start: usize,
@@ -281,9 +272,8 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         self.mark(start, end, key, None)
     }
 
-    /// For a caller that already holds anchors: an undo, a stored comment range,
-    /// a split carrying formatting. Bypasses the schema, whose only job is to
-    /// choose biases that are already decided here.
+    /// For a caller that already holds anchors. Bypasses the schema, whose only
+    /// job is to choose biases this caller has already decided.
     pub fn mark_at(
         &mut self,
         start: Anchor,
@@ -414,9 +404,8 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         self.text.anchor_at(pos, bias)
     }
 
-    /// The only resolver: one tree rebuild for the whole slice. Resolving a mark
-    /// at a time is `O(N * m)`, which is a trap at document scale, so the fast
-    /// path is the only path. `None` is an anchor this replica cannot place yet.
+    /// One tree rebuild for the whole slice: resolving a mark at a time is
+    /// `O(N * m)`. `None` is an anchor this replica cannot place yet.
     pub fn resolve_many(&self, anchors: &[Anchor]) -> Result<Vec<Option<usize>>, StoreError> {
         let index = PositionIndex::build(&self.text.tree()?);
         Ok(anchors.iter().map(|anchor| index.resolve(anchor)).collect())
@@ -470,8 +459,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     }
 
     /// Everything a delta can fail on, against a pure length walk. Writing only
-    /// after this is what lets a rejected delta leave zero rows behind, across
-    /// two collections that share no draft.
+    /// after this leaves zero rows behind across two collections sharing no draft.
     fn validate(&self, ops: &[DeltaOp]) -> Result<(), StoreError> {
         let mut len = self.text.len()?;
         let mut pos = 0_usize;
@@ -582,8 +570,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     }
 
     /// Re-apply the attribute runs a delete carried, over the characters the undo
-    /// just minted. The originals stay tombstoned forever, so restoring by run is
-    /// explicit rather than a bet on where Fugue placed the new nodes.
+    /// just minted: the originals stay tombstoned, so restoring by run is explicit.
     fn restore_runs(
         &mut self,
         minted: &IdRange,
@@ -797,12 +784,8 @@ struct Run {
     attributes: BTreeMap<String, String>,
 }
 
-/// Marks whose anchors both resolve here and that cover at least one character.
-///
-/// A row that resolves nowhere is RETAINED and skipped for this read: dropping
-/// it would diverge from a replica that already holds the text, and it becomes
-/// active, with the same outcome, the moment that text arrives. A row whose
-/// start lands at or after its end is hostile input and covers nothing.
+/// Marks that resolve here and cover at least one character. A row resolving
+/// nowhere is RETAINED and skipped, so it activates when its text arrives.
 fn active_marks<'a>(index: &PositionIndex, marks: &'a [Mark]) -> Vec<Active<'a>> {
     marks
         .iter()
@@ -820,13 +803,8 @@ fn active_marks<'a>(index: &PositionIndex, marks: &'a [Mark]) -> Vec<Active<'a>>
         .collect()
 }
 
-/// The sweep: between two event positions the open set is exactly the marks
-/// covering those characters.
-///
-/// A run is emitted BEFORE the batch at its right edge is applied, and an active
-/// mark covers at least one character, so no slot opens and closes at one
-/// position. Intra-batch order therefore cannot change the result; it is fixed
-/// only so the sort is total.
+/// Between two event positions the open set is exactly the marks covering those
+/// characters, so the order within one position's batch cannot change the result.
 fn runs_of(index: &PositionIndex, marks: &[Mark], len: usize) -> Vec<Run> {
     const CLOSE: u8 = 0;
     const OPEN: u8 = 1;
@@ -872,9 +850,7 @@ fn runs_of(index: &PositionIndex, marks: &[Mark], len: usize) -> Vec<Run> {
 }
 
 /// Per key, the covering mark with the greatest `MarkId` wins, independently of
-/// every other key. That independence is what makes bold and italic coexist
-/// while two colours do not, and it is what makes `comment:a` and `comment:b`
-/// both survive with no allow-multiple flag anywhere.
+/// every other key. That is why `comment:a` and `comment:b` both survive.
 fn attrs_of(open: &BTreeSet<usize>, active: &[Active<'_>]) -> BTreeMap<String, String> {
     let mut best: BTreeMap<&str, (MarkId, Option<&str>)> = BTreeMap::new();
     for slot in open {
@@ -921,13 +897,8 @@ fn key_runs(
     out
 }
 
-/// Expand IS the pair of biases, and nothing else.
-///
-/// A growing start is anchored AFTER the character before the range, so a later
-/// insert at that gap resolves inside it; a non-growing start is anchored BEFORE
-/// the range's first character, so the same insert resolves outside. The end is
-/// the mirror. `anchor_at_in` already collapses both document edges, which
-/// always grow, to `Anchor::Start` / `Anchor::End`.
+/// Expand IS the pair of biases: a growing edge anchors across the gap a later
+/// insert lands in, a non-growing edge anchors inside the range.
 fn anchor_pair(
     tree: &FugueTree,
     start: usize,
@@ -950,12 +921,8 @@ fn anchor_pair(
     ))
 }
 
-/// The node a boundary insert at `pos` must directly follow, if any.
-///
-/// Peritext: scan the tombstones at this position, and if any carries the `After`
-/// anchor of a formatting operation, insert after the LAST such tombstone. That
-/// is what keeps typing at the end of a deleted link out of the link while the
-/// same edit at the end of a deleted bold run stays bold.
+/// The LAST tombstone at `pos` carrying a formatting `After` anchor, if any:
+/// typing at the end of a deleted link must land outside the link.
 fn boundary_left_origin(tree: &FugueTree, marks: &[Mark], pos: usize) -> Option<RawId> {
     let anchored: BTreeSet<RawId> = marks
         .iter()
@@ -985,9 +952,8 @@ fn boundary_left_origin(tree: &FugueTree, marks: &[Mark], pos: usize) -> Option<
     last
 }
 
-/// Appends `text` to the last span when the attributes match, which is what
-/// makes `to_delta` a function of the rendered document rather than of which
-/// losing marks a replica happens to hold.
+/// Appends to the last span when the attributes match, which makes `to_delta` a
+/// function of the rendered document, not of which losing marks a replica holds.
 fn push_span(out: &mut Vec<Span>, text: String, attributes: BTreeMap<String, String>) {
     if text.is_empty() {
         return;

@@ -22,9 +22,7 @@ pub enum Expand {
 }
 
 impl Expand {
-    /// The expand a REMOVAL of this key uses.
-    ///
-    /// Peritext states the inversion for `removeMark`; Loro ships the same table.
+    /// The expand a REMOVAL of this key uses; Peritext and Loro ship this table.
     #[must_use]
     pub const fn inverted(self) -> Self {
         match self {
@@ -44,9 +42,8 @@ impl Expand {
     }
 }
 
-/// The boundary table an app declares, looked up by the part of a key BEFORE
-/// the first `:`, so `comment:alice` and `comment:bob` are one policy and two
-/// independent keys.
+/// The boundary table an app declares, keyed on the part of a key BEFORE the
+/// first `:`, so `comment:alice` and `comment:bob` are one policy, two keys.
 pub trait MarkSchema: 'static {
     /// `None` rejects the key at write time; it never affects a read.
     fn expand(prefix: &str) -> Option<Expand>;

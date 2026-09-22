@@ -30,7 +30,7 @@ use rich_text_model::readable;
 const ALICE: u8 = 1;
 const BOB: u8 = 2;
 const SENTENCE: &str = "The fox jumped.";
-const TOGGLES: usize = 1_000; // E.3.4: make unbounded mark growth visible, not acceptable
+const TOGGLES: usize = 1_000; // enough to make unbounded mark growth visible
 const WIDE_RANGE: usize = 5_000; // one mark over a large range is still one row
 
 type Doc = RichText<DefaultMarks, MainStorage>;
@@ -140,7 +140,7 @@ fn type_at(
     })
 }
 
-// ── E.1: the rules ──────────────────────────────────────────────────────
+// ── the rules ───────────────────────────────────────────────────────────
 
 #[test]
 fn mark__renders_the_range_it_names() {
@@ -368,7 +368,7 @@ fn apply_delta__a_delete_past_the_end_clamps_like_the_text_layer_does() {
     assert_eq!(text_of(&store), "a");
 }
 
-// ── E.1.16-E.1.25: boundaries ───────────────────────────────────────────
+// ── boundaries ──────────────────────────────────────────────────────────
 
 /// `(span text, whether that span carries `key`)` for the character at `at`.
 fn attr_at(store: &Store, at: usize, key: &str) -> Option<String> {
@@ -556,7 +556,7 @@ fn astral_characters_count_as_one_position_each() {
     );
 }
 
-// ── E.1.26-E.1.29: undo ─────────────────────────────────────────────────
+// ── undo ────────────────────────────────────────────────────────────────
 
 #[test]
 fn undo__removes_the_characters_it_minted_and_leaves_a_peer_typing_inside() {
@@ -656,7 +656,7 @@ fn apply_delta__a_change_that_changes_nothing_has_an_empty_undo() {
     assert!(marks_of(&store).is_empty());
 }
 
-// ── E.2: merge laws ─────────────────────────────────────────────────────
+// ── merge laws ──────────────────────────────────────────────────────────
 
 /// The same set of mark writes, minted once by independent authors, must land
 /// in ANY delivery order to identical spans, identical stored bytes and an
@@ -889,7 +889,7 @@ fn merge__two_marks_sharing_an_id_converge_on_one_row() {
     assert_eq!(root_hash(&left, ALICE), root_hash(&right, BOB));
 }
 
-// ── E.3.4: growth is visible, not acceptable ────────────────────────────
+// ── growth is visible, not acceptable ───────────────────────────────────
 
 #[test]
 fn toggling_one_range_writes_one_row_per_toggle_and_still_reads() {
@@ -907,7 +907,7 @@ fn toggling_one_range_writes_one_row_per_toggle_and_still_reads() {
     expect(&spans_of(&store), &[(SENTENCE, NONE)]);
 }
 
-// ── E.1.6: a document nested in a map ───────────────────────────────────
+// ── a document nested in a map ──────────────────────────────────────────
 
 #[derive(BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
