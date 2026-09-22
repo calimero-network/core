@@ -1001,9 +1001,19 @@ async fn a_fleet_replica_quote_is_recorded_as_spent_when_it_admits() {
         "the replica must be admitted"
     );
 
-    assert!(
+    // Waits for the OP-LOG entry, not for the membership row asserted above.
+    // The admission runs inside the handler's async block, and the membership
+    // write and the namespace op-log append are separate steps: observing one
+    // does not make the other visible yet. Asserting the second immediately
+    // after waiting for the first passed locally and flaked under CI load,
+    // which is a race in the test, not in the guard.
+    let recorded = wait_until(|| {
         calimero_governance_store::is_quote_hash_used(&node.store, &gid, &quote_hash)
-            .expect("is_quote_hash_used"),
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        recorded,
         "the quote that just admitted a member must be recorded as used -- no leave \
          involved, so this is about whether the guard can see the admission at all"
     );
@@ -1036,6 +1046,7 @@ async fn a_replayed_quote_is_still_refused_after_the_replica_leaves() {
     let pk_hash: [u8; 32] = Sha256::digest(*replica_pk).into();
     let topic = format!("ns/{}", hex::encode(gid.to_bytes()));
     let nonce = [0x33u8; 32];
+    let quote_hash: [u8; 32] = Sha256::digest(mock_quote_bytes(&nonce, &pk_hash)).into();
 
     node.node_addr
         .send(announce_network_event(
@@ -1085,7 +1096,22 @@ async fn a_replayed_quote_is_still_refused_after_the_replica_leaves() {
         .await
         .expect("deliver the replayed announce");
 
-    sleep(Duration::from_millis(400)).await;
+    // The refusal is the ABSENCE of a re-admission, which no amount of waiting
+    // can prove on its own. So wait on something positive first: the quote is
+    // recorded as spent, which is the state the guard consults. Once that is
+    // true the guard can only refuse, and a short settle is enough to catch a
+    // re-admission that was going to happen anyway.
+    assert!(
+        wait_until(|| {
+            calimero_governance_store::is_quote_hash_used(&node.store, &gid, &quote_hash)
+                .unwrap_or(false)
+        })
+        .await,
+        "precondition: the first admission's quote must be on record, or this test \
+         would pass simply because nothing had happened yet"
+    );
+
+    sleep(Duration::from_millis(500)).await;
     assert!(
         MembershipRepository::new(&node.store)
             .role_of(&gid, &replica_account)
