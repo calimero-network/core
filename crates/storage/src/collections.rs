@@ -34,6 +34,8 @@ pub mod mark_schema;
 pub use mark_schema::{DefaultMarks, Expand, MarkSchema};
 pub mod rich_text;
 pub use rich_text::{AttrRun, Attrs, DeltaOp, DeltaUndo, Mark, MarkId, RichText, Span, UndoStep};
+pub mod rich_document;
+pub use rich_document::{Block, BlockId, BlockView, RichDocument};
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod blob_ref;

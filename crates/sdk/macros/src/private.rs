@@ -116,6 +116,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "is a collaborative rich-text CRDT; use a `String` field for private notes.",
     ),
     (
+        "RichDocument",
+        "is a collaborative rich-text CRDT; use a `String` field for private notes.",
+    ),
+    (
         "SharedStorage",
         "models single-signature shared/causal reconciliation; pointless with one writer.",
     ),
@@ -655,6 +659,7 @@ mod tests {
         "ReplicatedGrowableArray<String>",
         "FugueText",
         "RichText<DefaultMarks>",
+        "RichDocument<DefaultMarks>",
     ];
 
     const EXCLUDED_ACCESS_CONTROL_TYPES: &[&str] = &[

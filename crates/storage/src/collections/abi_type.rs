@@ -16,11 +16,13 @@ use calimero_wasm_abi::schema::{
 };
 
 use super::crdt_meta::Mergeable;
+use super::fugue::RawId;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, FugueText,
-    LwwRegister, MarkSchema, ReplicatedGrowableArray, RichText, SortedMap, SortedSet, Span,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredVector, BlockId, BlockView, Counter, FrozenStorage,
+    FrozenValue, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray, RichDocument,
+    RichText, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet, UserStorage, Vector,
+    WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -55,6 +57,15 @@ fn cell_ref<T: AbiType>(reg: &mut TypeRegistry, crdt: CrdtCollectionType) -> Typ
         collection: CollectionType::Record { fields: vec![] },
         crdt_type: Some(crdt),
         inner_type: Some(Box::new(<T as AbiType>::type_ref(reg))),
+    }
+}
+
+/// One always-present record field.
+fn field(name: &str, type_: TypeRef) -> Field {
+    Field {
+        name: name.to_owned(),
+        type_,
+        nullable: None,
     }
 }
 
@@ -230,16 +241,11 @@ impl AbiType for Span {
     fn register(reg: &mut TypeRegistry) {
         reg.define("Span", |reg| TypeDef::Record {
             fields: vec![
-                Field {
-                    name: "text".to_owned(),
-                    type_: <String as AbiType>::type_ref(reg),
-                    nullable: None,
-                },
-                Field {
-                    name: "attributes".to_owned(),
-                    type_: <BTreeMap<String, String> as AbiType>::type_ref(reg),
-                    nullable: None,
-                },
+                field("text", <String as AbiType>::type_ref(reg)),
+                field(
+                    "attributes",
+                    <BTreeMap<String, String> as AbiType>::type_ref(reg),
+                ),
             ],
         });
     }
@@ -255,6 +261,52 @@ impl<Sc: MarkSchema, S: StorageAdaptor> AbiType for RichText<Sc, S> {
 
     fn register(reg: &mut TypeRegistry) {
         <Span as AbiType>::register(reg);
+    }
+}
+
+/// The spine character id a block is named by, which is what it is on the wire.
+impl AbiType for BlockId {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <RawId as AbiType>::type_ref(reg)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <RawId as AbiType>::register(reg);
+    }
+}
+
+/// One rendered block, for the same reason `Span` is named: a client receives
+/// views, never the stored block row.
+impl AbiType for BlockView {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <Self as AbiType>::register(reg);
+        TypeRef::reference("BlockView")
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        reg.define("BlockView", |reg| TypeDef::Record {
+            fields: vec![
+                field("id", <BlockId as AbiType>::type_ref(reg)),
+                field("kind", <String as AbiType>::type_ref(reg)),
+                field("depth", <u8 as AbiType>::type_ref(reg)),
+                field(
+                    "attrs",
+                    <BTreeMap<String, String> as AbiType>::type_ref(reg),
+                ),
+                field("spans", <Vec<Span> as AbiType>::type_ref(reg)),
+            ],
+        });
+    }
+}
+
+/// `crdt_type: None` like [`RichText`], and the value is the rendered view.
+impl<Sc: MarkSchema, S: StorageAdaptor> AbiType for RichDocument<Sc, S> {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<BlockView>(reg, None)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <BlockView as AbiType>::register(reg);
     }
 }
 

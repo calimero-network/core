@@ -6,6 +6,7 @@
 //! - ReplicatedGrowableArray (RGA)
 //! - FugueText (Tree-Fugue collaborative text)
 //! - RichText (FugueText plus write-once formatting marks)
+//! - RichDocument (an ordered list of RichText blocks)
 //! - UnorderedMap
 //! - SortedMap
 //! - UnorderedSet
@@ -17,8 +18,8 @@
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
-    Counter, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray, RichText, SortedMap,
-    SortedSet, UnorderedMap, UnorderedSet, ValueRef, Vector,
+    Counter, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray, RichDocument, RichText,
+    SortedMap, SortedSet, UnorderedMap, UnorderedSet, ValueRef, Vector,
 };
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -316,6 +317,24 @@ impl Mergeable for FugueText {
 /// collections own carry their own tags.
 #[diagnostic::do_not_recommend]
 impl<Sc: MarkSchema> Mergeable for RichText<Sc> {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.merge_from(other)?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// RichDocument (an ordered list of RichText blocks)
+// ============================================================================
+
+/// No `CrdtMeta`, for the same reason `RichText` has none: the value serializes
+/// to its two inner collections' ids and nothing else.
+///
+/// `Block` deliberately has no `Mergeable` of its own. It is an internal row
+/// type with no ABI story, exactly like `TextBlock`, and keeping the rule here
+/// leaves one readable function instead of three.
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> Mergeable for RichDocument<Sc> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.merge_from(other)?;
         Ok(())
@@ -1266,6 +1285,11 @@ impl MergeStrategy for FugueText {
 
 #[diagnostic::do_not_recommend]
 impl<Sc: MarkSchema> MergeStrategy for RichText<Sc> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> MergeStrategy for RichDocument<Sc> {
     const DISPATCHED: bool = false;
 }
 

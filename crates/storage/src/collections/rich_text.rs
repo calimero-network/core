@@ -226,7 +226,7 @@ impl<Sc: MarkSchema> Default for RichText<Sc, MainStorage> {
 }
 
 impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
-    fn new_internal() -> Self {
+    pub(super) fn new_internal() -> Self {
         let doc = Self {
             text: FugueText::new_internal(),
             marks: UnorderedMap::new_internal(),
@@ -1022,11 +1022,11 @@ fn minting_replica(method: &str) -> u64 {
     local_replica()
 }
 
-fn invalid(message: &str) -> StoreError {
+pub(super) fn invalid(message: &str) -> StoreError {
     StoreError::StorageError(crate::interface::StorageError::InvalidData(message.into()))
 }
 
-fn out_of_bounds(pos: usize) -> StoreError {
+pub(super) fn out_of_bounds(pos: usize) -> StoreError {
     invalid(&format!("position {pos} out of bounds"))
 }
 
