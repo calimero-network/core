@@ -35,6 +35,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
 | `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
 | `RichText<Sc>`             | Text plus formatting marks| Composite: text union + mark union| Structured |
+| `RichDocument<Sc>`         | Ordered list of rich-text blocks| Composite: spine union + per-field LWW| Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -87,6 +88,19 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - Redundant-write suppression is the only defence against unbounded row growth before a compaction rule exists: re-asserting formatting already in effect writes zero rows. Toggling one range `n` times still writes `n` rows, which `rich_text_marks.rs` makes visible rather than acceptable.
 - `apply_delta` runs every fallible check against a pure length walk before the first write, because it spans two collections and cannot share one draft. A rejected delta therefore stores nothing at all. A delete past the end still clamps silently, matching `FugueText`.
 - `mark`, `unmark`, `mark_at`, `apply_delta` and `apply_undo` panic in merge mode: they mint ids from the node-local device id. A migration seeds formatting with `mark_with_replica`.
+
+### `RichDocument` constraints
+
+- A composite of a spine `FugueText`, an `UnorderedMap` of block rows and, per block, one property map, one attribute map and a `RichText` body. Like `RichText` it has **no `CrdtType` of its own** and reports `crdt_type: None` in the ABI, advertising the rendered `BlockView`.
+- Block order is the spine: creating a block mints one `U+FFFC` placeholder, and the block's id IS that character's id, so it survives every later move.
+- **A block's mutable structure is one row per field, never one row per block.** A map entry carries no `crdt_type`, so an entry holding four registers in one blob would reconcile last-writer-wins as a whole: a concurrent `set_depth` would lose to a `set_kind`, and a `set_kind` racing a delete could resurrect the block. One row per field makes the storage layer's per-row last-write-wins exactly per-field last-write-wins, which is why the composite still needs no `CrdtType`.
+- The read rule is: a block renders at the position its `place` anchor resolves to, ties break on `BlockId`, and a block whose spine slot has NOT arrived renders at the END rather than disappearing - content that exists must never be invisible, and the state self-heals when the slot lands. A spine character no block names is invisible, because the read enumerates blocks and never spine characters.
+- Deleting is a tombstone row, never `UnorderedMap::remove`: it reclaims exactly as much storage (none, since the body rows survive either way) and it makes an undelete an ordinary last write instead of a race against an index tombstone.
+- A move mints a NEW spine slot and last-write-wins on `place`, leaving the old slot live and unreferenced. The block id never changes, so two concurrent moves settle on one placement and can never duplicate a block.
+- `split_block` and `merge_blocks` carry the tail's text AND its formatting, because a mark is anchored to the characters it was written over and cannot follow them: the tail's resolved spans are re-asserted as the complete desired attribute set on the insert, which writes one mark row per carried key rather than one per span. Both validate every carried key before the first write.
+- **The split anomaly is specified behaviour, not a defect.** A peer typing in the tail while another replica splits keeps its text in the FIRST block: the split deletes only the characters that existed when it ran, and the snapshot it copied did not contain the peer's. It is pinned by `rich_document_blocks.rs` and by a `sync_sim` scenario rather than discovered.
+- Nesting is a `depth` number on a flat list. Two adjacent lists of one kind at one depth render as a single list; a renderer synthesises the container from `(depth, kind)`.
+- `insert_block`, `move_block` and `split_block` mint spine ids, so they panic inside a state migration exactly as `FugueText::insert_str` does, and for the same reason.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
