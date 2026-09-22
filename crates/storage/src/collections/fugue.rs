@@ -234,6 +234,27 @@ impl FugueTree {
                     })?,
             )
         };
+        self.insert_after_in(order, left_origin, value, id)
+    }
+
+    /// [`Self::insert_in`] with the left origin named directly rather than found
+    /// by visible index, which is the only way to place a character among
+    /// tombstones - where a formatting boundary lives.
+    pub fn insert_after_in(
+        &mut self,
+        order: &mut Vec<NodeId>,
+        left_origin: NodeId,
+        value: char,
+        id: RawId,
+    ) -> Result<FugueNode, FugueError> {
+        if self.nodes.contains_key(&id) {
+            return Err(FugueError::DuplicateId(id));
+        }
+        if let Some(left) = left_origin {
+            if !self.nodes.contains_key(&left) {
+                return Err(FugueError::UnknownNode(left));
+            }
+        }
         let pos = order
             .iter()
             .position(|n| *n == left_origin)

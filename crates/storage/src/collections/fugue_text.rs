@@ -266,7 +266,7 @@ impl Default for FugueText<MainStorage> {
 }
 
 impl<S: StorageAdaptor> FugueText<S> {
-    fn new_internal() -> Self {
+    pub(super) fn new_internal() -> Self {
         Self {
             blocks: UnorderedMap::new_internal(),
         }
@@ -313,7 +313,25 @@ impl<S: StorageAdaptor> FugueText<S> {
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
-        let minted = draft.insert(pos, replica, s, false)?;
+        let minted = draft.insert(Place::Index(pos), replica, s, false)?;
+        self.flush(draft)?;
+        Ok(minted)
+    }
+
+    /// Insert directly after `left` in DOCUMENT order, tombstones included.
+    ///
+    /// The only way to place a character among tombstones, which is what
+    /// Peritext's formatting-boundary rule needs and a visible index cannot say.
+    pub(super) fn insert_str_after(
+        &mut self,
+        left: NodeId,
+        replica: u64,
+        s: &str,
+    ) -> Result<Option<IdRange>, StoreError> {
+        let _ignored = super::rekey::register_rekey::<Self>();
+
+        let mut draft = Draft::open(self)?;
+        let minted = draft.insert(Place::After(left), replica, s, false)?;
         self.flush(draft)?;
         Ok(minted)
     }
@@ -329,7 +347,7 @@ impl<S: StorageAdaptor> FugueText<S> {
 
         let mut draft = Draft::open(self)?;
         let pos = resolve_in(&draft.tree, anchor)?;
-        let minted = draft.insert(pos, replica, s, false)?;
+        let minted = draft.insert(Place::Index(pos), replica, s, false)?;
         self.flush(draft)?;
         Ok(minted)
     }
@@ -361,7 +379,8 @@ impl<S: StorageAdaptor> FugueText<S> {
             match *op {
                 TextOp::Retain(count) => pos = advance(pos, count)?,
                 TextOp::Insert(ref text) => {
-                    let minted = draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    let minted =
+                        draft.insert(Place::Index(pos), replica, text, index + 1 < ops.len())?;
                     steps.extend(minted.map(Undo::Inserted));
                     pos = advance(pos, text.chars().count())?;
                 }
@@ -587,6 +606,12 @@ fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
     }
 }
 
+/// Where an insert hangs: a visible index, or the node it must directly follow.
+enum Place {
+    Index(usize),
+    After(NodeId),
+}
+
 /// A stored block plus its node count.
 struct LoadedBlock {
     id: BlockId,
@@ -618,7 +643,7 @@ impl Draft {
     /// `chain` also grows the tree, which only a later op in the same call reads.
     fn insert(
         &mut self,
-        pos: usize,
+        at: Place,
         replica: u64,
         s: &str,
         chain: bool,
@@ -628,10 +653,12 @@ impl Draft {
             return Ok(None);
         };
         let counter = next_counter(replica, &self.loaded)?;
-        let node = self
-            .tree
-            .insert_in(&mut self.order, pos, first, (replica, counter))
-            .map_err(|err| invalid(&err.to_string()))?;
+        let id = (replica, counter);
+        let node = match at {
+            Place::Index(pos) => self.tree.insert_in(&mut self.order, pos, first, id),
+            Place::After(left) => self.tree.insert_after_in(&mut self.order, left, first, id),
+        }
+        .map_err(|err| invalid(&err.to_string()))?;
 
         let id = BlockId::from_raw(node.id);
         let mut at = match coalesce_target(&self.loaded, node, id) {

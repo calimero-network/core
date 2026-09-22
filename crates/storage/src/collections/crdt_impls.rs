@@ -5,6 +5,7 @@
 //! - Counter
 //! - ReplicatedGrowableArray (RGA)
 //! - FugueText (Tree-Fugue collaborative text)
+//! - RichText (FugueText plus write-once formatting marks)
 //! - UnorderedMap
 //! - SortedMap
 //! - UnorderedSet
@@ -16,8 +17,8 @@
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
-    Counter, FugueText, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
-    UnorderedSet, ValueRef, Vector,
+    Counter, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray, RichText, SortedMap,
+    SortedSet, UnorderedMap, UnorderedSet, ValueRef, Vector,
 };
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -302,6 +303,21 @@ impl CrdtMeta for FugueText {
 impl Mergeable for FugueText {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.merge_blocks_from(other)?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// RichText (FugueText plus Peritext marks)
+// ============================================================================
+
+/// No `CrdtMeta`: a `RichText` serializes to nothing but its two inner
+/// collections' ids, so there is no blob for a tag to describe. The rows those
+/// collections own carry their own tags.
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> Mergeable for RichText<Sc> {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.merge_from(other)?;
         Ok(())
     }
 }
@@ -1245,6 +1261,11 @@ impl MergeStrategy for ReplicatedGrowableArray {
 
 #[diagnostic::do_not_recommend]
 impl MergeStrategy for FugueText {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> MergeStrategy for RichText<Sc> {
     const DISPATCHED: bool = false;
 }
 

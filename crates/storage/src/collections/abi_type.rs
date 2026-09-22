@@ -8,15 +8,19 @@
 //! `tests/abi_crdt_shapes.rs`.
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use std::collections::BTreeMap;
+
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
-use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeRef};
+use calimero_wasm_abi::schema::{
+    CollectionType, CrdtCollectionType, Field, ScalarType, TypeDef, TypeRef,
+};
 
 use super::crdt_meta::Mergeable;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
     AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, FugueText,
-    LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
-    UserStorage, Vector, WriterSetCell,
+    LwwRegister, MarkSchema, ReplicatedGrowableArray, RichText, SortedMap, SortedSet, Span,
+    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -212,6 +216,45 @@ impl<S: StorageAdaptor> AbiType for ReplicatedGrowableArray<S> {
 impl<S: StorageAdaptor> AbiType for FugueText<S> {
     fn type_ref(_reg: &mut TypeRegistry) -> TypeRef {
         opaque_ref(CrdtCollectionType::FugueText)
+    }
+}
+
+/// A rendered run. Named, because a client receives spans rather than the
+/// stored mark rows, and the row shape is deliberately not in the ABI.
+impl AbiType for Span {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <Self as AbiType>::register(reg);
+        TypeRef::reference("Span")
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        reg.define("Span", |reg| TypeDef::Record {
+            fields: vec![
+                Field {
+                    name: "text".to_owned(),
+                    type_: <String as AbiType>::type_ref(reg),
+                    nullable: None,
+                },
+                Field {
+                    name: "attributes".to_owned(),
+                    type_: <BTreeMap<String, String> as AbiType>::type_ref(reg),
+                    nullable: None,
+                },
+            ],
+        });
+    }
+}
+
+/// `crdt_type: None`, the `UserStorage`/`FrozenStorage` shape: a composite of
+/// existing collections has no tag a decoder could use, and the value a client
+/// actually receives is the rendered `Span`, not the stored row.
+impl<Sc: MarkSchema, S: StorageAdaptor> AbiType for RichText<Sc, S> {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<Span>(reg, None)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <Span as AbiType>::register(reg);
     }
 }
 
