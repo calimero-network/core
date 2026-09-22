@@ -8,6 +8,7 @@ pub mod hash_comparison;
 pub mod levelwise;
 pub mod nested_container;
 pub mod random;
+pub mod rich_document;
 pub mod rich_text;
 pub mod text;
 
