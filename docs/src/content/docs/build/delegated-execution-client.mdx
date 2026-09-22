@@ -118,6 +118,64 @@ should read this before signing anything and, when it is false, tell the user to
 an admin of `groupId` for the grant rather than minting a warrant that will be
 refused after the nonce is already spent.
 
+**Where your nonce sequence stands**, for one author device in one context:
+
+```http
+GET /admin-api/contexts/{context_id}/warrant-nonce/{author_device_key}
+```
+
+`author_device_key` is the **signing key that signs the warrant** — the ledger is
+keyed by that key, not by the author's account and not by its `DeviceId`. Base58 or
+hex are both accepted; they cannot be confused, since 32 bytes is 43–44 characters of
+base58 and exactly 64 of hex.
+
+```jsonc
+{
+  "contextId": "…",
+  "authorDeviceKey": "…",
+  "seen": true,
+  "highWaterNonce": 41,
+  "nextNonce": 42,
+  "windowWidth": 64
+}
+```
+
+**Mint the next warrant at `nextNonce`.** That is the only actionable field.
+`highWaterNonce` is the number the relay's ledger holds, reported so the answer is
+auditable; the arithmetic on it is the node's, not yours. A device that has never
+written in this context comes back with `"seen": false`, no `highWaterNonce`, and
+`"nextNonce": 0` — a fresh sequence, not an error.
+
+This exists because the nonce is the *only* input to a warrant that is stateful on
+the client. Keys, method, args are yours; the executor account and the grant come
+from the read above. Lose your local counter and, without this, the only recourse is
+to guess upward and burn a refused round trip per wrong guess. For a browser
+keyholder in partitioned or periodically-cleared storage that is the ordinary
+lifecycle, so this is the ordinary way back.
+
+Two rules:
+
+* If you *do* still hold a counter, use `max(own_next, nextNonce)` rather than
+  replacing one with the other. This node can only be **behind** you — it has not
+  necessarily applied every warrant you have already sent.
+* Nonce state is folded per peer, so the answer is a guarantee against **the relay
+  that gave it**, which is the relay you are about to present the warrant to, and is
+  safe on any peer behind it. If you spread warrants across several relays, ask each
+  and take the highest `nextNonce` offered.
+
+`windowWidth` is how far below the mark a warrant may still land: one you minted but
+have not had executed is refused once that many of your later warrants have gone
+ahead of it. It is a bound on in-flight warrants, not a number to compute a nonce
+from — which parts of that window are already spent is deliberately not reported,
+because back-filling a gap buys you nothing that going forward does not.
+
+This route is on the **authenticated** admin surface, unlike the two intent routes,
+which a `public_intents` deployment may serve openly. It discloses nothing new to
+anyone entitled to ask — a warrant carries its nonce in the clear inside the delta
+that applied it, so any peer replicating the context already folds exactly this
+number — but it takes another principal's device key as input, and answering that to
+an anonymous caller is a decision nobody has made.
+
 ## 2. Warrant and delegated write
 
 ### What a warrant commits to
