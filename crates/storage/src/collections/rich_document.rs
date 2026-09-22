@@ -27,8 +27,8 @@ use super::crdt_meta::{MergeError, Mergeable};
 use super::error::StoreError;
 use super::fugue::RawId;
 use super::fugue_text::{Anchor, Bias, FugueText, PositionIndex};
-use super::mark_schema::MarkSchema;
-use super::rich_text::{DeltaOp, DeltaUndo, MarkId, RichText, Span};
+use super::mark_schema::{expand_for, MarkSchema};
+use super::rich_text::{Attrs, DeltaOp, DeltaUndo, MarkId, RichText, Span};
 use super::{CrdtType, LwwRegister, UnorderedMap, ValueRef};
 use crate::store::{MainStorage, StorageAdaptor};
 
@@ -373,6 +373,56 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         Ok(())
     }
 
+    /// Split `block` at visible position `at`, moving the tail's text AND its
+    /// formatting into a new block placed immediately after.
+    ///
+    /// Marks anchored to the old characters cannot follow them, so the tail's
+    /// resolved attributes are re-asserted as new mark rows over the new
+    /// characters. A peer typing in the tail while this runs keeps its text in
+    /// the FIRST block: this deletes only the characters that existed here.
+    pub fn split_block(&mut self, block: BlockId, at: usize) -> Result<BlockId, StoreError> {
+        let mut row = self.row(block)?;
+        let len = row.body.len()?;
+        if at > len {
+            return Err(out_of_bounds(at));
+        }
+        let tail = slice_spans(&row.body.to_delta()?, at, len);
+        declared_keys::<Sc>(&tail)?;
+        let structure = row.structure()?;
+
+        let new = self.insert_block(Some(block), &structure.kind, structure.depth)?;
+        for (key, value) in row.attributes()? {
+            self.set_attr(new, &key, Some(&value))?;
+        }
+        if at < len {
+            let _undo = self.row(new)?.body.apply_delta(&carry(&tail))?;
+            let _undo = row
+                .body
+                .apply_delta(&[retain(at), DeltaOp::Delete { delete: len - at }])?;
+        }
+        Ok(new)
+    }
+
+    /// Append `second`'s body, text and formatting, to `first` and tombstone
+    /// `second`. The tombstoned body's rows survive, so the two halves are still
+    /// addressable afterwards.
+    pub fn merge_blocks(&mut self, first: BlockId, second: BlockId) -> Result<(), StoreError> {
+        if first == second {
+            return Err(invalid("a block cannot merge into itself"));
+        }
+        let mut head = self.row(first)?;
+        let mut tail_row = self.row(second)?;
+        let tail = tail_row.body.to_delta()?;
+        declared_keys::<Sc>(&tail)?;
+
+        if !tail.is_empty() {
+            let mut ops = vec![retain(head.body.len()?)];
+            ops.extend(carry(&tail));
+            let _undo = head.body.apply_delta(&ops)?;
+        }
+        tail_row.set(Prop::Deleted(true))
+    }
+
     // ---- body writes ----
 
     /// Apply one editor transaction to a block's body.
@@ -513,8 +563,67 @@ fn view_of<Sc: MarkSchema, S: StorageAdaptor>(
     })
 }
 
+/// The part of `spans` covering visible positions `start..end`.
+fn slice_spans(spans: &[Span], start: usize, end: usize) -> Vec<Span> {
+    let mut out = Vec::new();
+    let mut at = 0_usize;
+    for span in spans {
+        let len = span.text.chars().count();
+        let from = at.max(start);
+        let to = (at + len).min(end);
+        if from < to {
+            out.push(Span {
+                text: span.text.chars().skip(from - at).take(to - from).collect(),
+                attributes: span.attributes.clone(),
+            });
+        }
+        at += len;
+    }
+    out
+}
+
+/// Carrying spans into another body re-asserts their attributes as the COMPLETE
+/// desired set, so a key the previous span left inherited is stripped and a key
+/// the two share costs one mark row rather than one per span.
+fn carry(spans: &[Span]) -> Vec<DeltaOp> {
+    spans
+        .iter()
+        .map(|span| DeltaOp::Insert {
+            insert: span.text.clone(),
+            attributes: Some(
+                span.attributes
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Some(value.clone())))
+                    .collect::<Attrs>(),
+            ),
+        })
+        .collect()
+}
+
+/// Every key the carried spans hold, checked against the schema before the
+/// first write, so a split or a merge that cannot complete stores nothing.
+fn declared_keys<Sc: MarkSchema>(spans: &[Span]) -> Result<(), StoreError> {
+    for span in spans {
+        for key in span.attributes.keys() {
+            let _ignored = expand_for::<Sc>(key, false)?;
+        }
+    }
+    Ok(())
+}
+
+const fn retain(count: usize) -> DeltaOp {
+    DeltaOp::Retain {
+        retain: count,
+        attributes: None,
+    }
+}
+
 fn invalid(message: &str) -> StoreError {
     StoreError::StorageError(crate::interface::StorageError::InvalidData(message.into()))
+}
+
+fn out_of_bounds(pos: usize) -> StoreError {
+    invalid(&format!("position {pos} out of bounds"))
 }
 
 fn unknown_block(block: BlockId) -> StoreError {

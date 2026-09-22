@@ -78,6 +78,22 @@ pub fn edit<T: BorshSerialize + BorshDeserialize>(
     })
 }
 
+/// [`edit`] for a transaction that may legitimately change nothing, which is
+/// what every rejected-write assertion needs.
+pub fn try_edit<T: BorshSerialize + BorshDeserialize>(
+    store: &Store,
+    device: [u8; 32],
+    f: impl FnOnce(&mut Root<T>),
+) -> Option<Vec<u8>> {
+    clear_pending_delta();
+    env::with_runtime_env(env_for(store, device), || {
+        let mut doc = Root::<T>::fetch().expect("document root should exist");
+        f(&mut doc);
+        doc.commit();
+        env::take_last_artifact()
+    })
+}
+
 /// Lands `delta` the way the sync path does, through `Interface::apply_action`.
 pub fn land(store: &Store, device: [u8; 32], delta: &[u8]) {
     let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
