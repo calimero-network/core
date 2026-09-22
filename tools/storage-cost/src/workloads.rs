@@ -14,7 +14,8 @@ use std::rc::Rc;
 use calimero_storage::action::Action;
 use calimero_storage::collections::fugue_text::TextOp;
 use calimero_storage::collections::{
-    FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap, Vector,
+    DefaultMarks, DeltaOp, FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, RichText,
+    Root, UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -293,6 +294,77 @@ fn build_fugue_text_fragmented(n: usize) -> Root<FugueText<MainStorage>> {
     text
 }
 
+/// The document `rich_text_to_delta_many_marks` holds fixed while its mark
+/// count varies, so the curve it draws is in marks and not in characters.
+const RICH_DOC_CHARS: usize = 64;
+
+type RichDoc = RichText<DefaultMarks, MainStorage>;
+
+fn build_rich_text(n: usize) -> Root<RichDoc> {
+    let mut doc = Root::new(RichDoc::new);
+    doc.apply_delta(&[DeltaOp::Insert {
+        insert: "a".repeat(n),
+        attributes: None,
+    }])
+    .expect("seed insert should succeed");
+    doc
+}
+
+/// One mark over the whole document. An earlier mark pays for the map's own
+/// rows, so what is measured is the marginal cost of adding one entry - which
+/// must not grow with the number of characters the mark covers.
+fn rich_text_mark(n: usize) {
+    let mut doc = build_rich_text(n);
+    let _first = doc
+        .mark(0, 1, "italic", Some("true"))
+        .expect("mark should succeed");
+    reset_counters();
+    let id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    assert!(id.is_some(), "the measured mark was suppressed");
+}
+
+/// Re-asserting formatting that is already in effect: zero rows written at
+/// every `n`, which is the only defence against unbounded row growth.
+fn rich_text_redundant_mark(n: usize) {
+    let mut doc = build_rich_text(n);
+    let _id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    reset_counters();
+    let id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    assert!(id.is_none(), "the redundant mark was not suppressed");
+}
+
+/// The read, over `n` characters carrying one mark.
+fn rich_text_to_delta(n: usize) {
+    let mut doc = build_rich_text(n);
+    let _id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    reset_counters();
+    let spans = doc.to_delta().expect("to_delta should succeed");
+    assert!(!spans.is_empty(), "the measured read returned nothing");
+}
+
+/// The read, over a fixed document carrying `n` marks. Distinct keys, so none
+/// is suppressed and the mark set really does grow.
+fn rich_text_to_delta_many_marks(n: usize) {
+    let mut doc = build_rich_text(RICH_DOC_CHARS);
+    for index in 0..n {
+        let start = index % (RICH_DOC_CHARS - 1);
+        let _id = doc
+            .mark(start, start + 1, &format!("comment:{index}"), Some("x"))
+            .expect("mark should succeed");
+    }
+    reset_counters();
+    let spans = doc.to_delta().expect("to_delta should succeed");
+    assert!(!spans.is_empty(), "the measured read returned nothing");
+}
+
 fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     text.insert_str(0, &"a".repeat(n))
@@ -382,7 +454,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 14] = [
+    const REGISTRY: [Entry; 17] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -417,11 +489,22 @@ pub fn all() -> Vec<Workload> {
             0,
             fugue_text_apply_delta,
         ),
+        // All three load the whole document, so the asserted curve is their
+        // READ. What they write - one entry for a mark, nothing at all for a
+        // redundant one - is pinned exactly by the snapshot.
+        ("rich_text_mark", KnownLinearInN, 0, rich_text_mark),
+        (
+            "rich_text_redundant_mark",
+            KnownLinearInN,
+            0,
+            rich_text_redundant_mark,
+        ),
+        ("rich_text_to_delta", KnownLinearInN, 0, rich_text_to_delta),
     ];
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because
     /// `REGISTRY` is crossed with `SIZES` unconditionally.
-    const QUADRATIC_REGISTRY: [Entry; 5] = [
+    const QUADRATIC_REGISTRY: [Entry; 6] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
@@ -452,6 +535,14 @@ pub fn all() -> Vec<Workload> {
             QuadraticBuild,
             0,
             fugue_text_insert_interleaved_sync,
+        ),
+        // Linear in MARKS, not characters; the build of n marks is quadratic,
+        // which is why it is measured at the smaller sizes.
+        (
+            "rich_text_to_delta_many_marks",
+            KnownLinearInN,
+            0,
+            rich_text_to_delta_many_marks,
         ),
     ];
 
