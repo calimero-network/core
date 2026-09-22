@@ -77,6 +77,12 @@ static CONTEXT_INTENTS_REGEX: LazyLock<Regex> =
 static CONTEXT_QUERY_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/query$").unwrap());
 
+/// The self-service nonce read only. The admin form carries the device key as a
+/// further path segment and must keep falling through to the default-deny, so
+/// this is anchored with no trailing segment rather than `(?:/.*)?`.
+static CONTEXT_WARRANT_NONCE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/warrant-nonce$").unwrap());
+
 static CONTEXT_SYNC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/sync/([^/]+)$").unwrap());
 
@@ -413,6 +419,45 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match method {
                 HttpMethod::POST => vec![Permission::Context(ContextPermission::Query(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Self-service warrant-nonce recovery: an author reads where ITS OWN device
+    // stands before minting the next warrant.
+    //
+    // Scoped to the context and mapped onto `PerformIntent`, because the nonce
+    // is an input to minting a warrant and nothing else — a token that may
+    // submit an intent here is exactly the token that needs to know which nonce
+    // to put in it. That also means a delegated session as already issued
+    // (`context:intent`, `context:query`, `context:subscribe`) reaches this
+    // without a new scope, so the client this exists for keeps working.
+    //
+    // What this admits, stated plainly: any token carrying
+    // `context:intent[this ctx]` may POST this one path. It does NOT let such a
+    // token read an arbitrary device key — the handler serves only the device in
+    // a root-signed certificate the caller presents, verified against the
+    // ACCOUNT its session is authenticated as, and a client-key token carries no
+    // account at all and is refused there. So the widening the mapping alone
+    // would be is closed by the handler, and the two have to be read together.
+    //
+    // The admin form with the device key in the path is deliberately NOT matched
+    // here: it keeps falling to the default-deny below and keeps requiring
+    // `admin`, since it answers about a principal the caller has proved nothing
+    // about.
+    //
+    // A dedicated `ContextPermission` variant was considered and rejected: it
+    // would be narrower on paper, but every already-issued delegated token would
+    // lack it, so the recovery path would stay unreachable for exactly the
+    // clients already deployed — which is the bug being fixed.
+    if let Some(captures) = CONTEXT_WARRANT_NONCE_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => {
+                    vec![Permission::Context(ContextPermission::PerformIntent(scope))]
+                }
                 _ => vec![],
             };
         }
@@ -923,6 +968,137 @@ mod tests {
             vec![Permission::Context(ContextPermission::Alias(
                 AliasPermission::List(AliasType::Device, ResourceScope::Global)
             ))]
+        );
+    }
+
+    /// The exact scopes a delegated-execution session is issued with, measured
+    /// off a live one. Written out rather than abbreviated because the point of
+    /// these tests is that *this* set reaches the recovery route.
+    fn delegated_session() -> Vec<String> {
+        vec![
+            "context:intent".to_owned(),
+            "context:query".to_owned(),
+            "context:subscribe".to_owned(),
+        ]
+    }
+
+    const NONCE_CTX: &str = "805c25d95ae7634d38998a01f6f0f1b3859a63b61158a4c5acc604498015ff10";
+    const NONCE_DEVICE: &str = "11111111111111111111111111111111111111111111111111111111111111ff";
+
+    /// The bug this mapping fixes: unmapped, the self-service nonce read fell to
+    /// the `/admin-api/*` default-deny, so the only client that needs it — a
+    /// delegated author that lost its counter — was refused before the handler
+    /// ran.
+    #[test]
+    fn a_delegated_session_may_post_its_own_warrant_nonce_read() {
+        let validator = PermissionValidator::new();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/admin-api/contexts/{NONCE_CTX}/warrant-nonce"))
+            .body(Body::empty())
+            .unwrap();
+
+        let required = validator.determine_required_permissions(&req);
+        assert_eq!(
+            required,
+            vec![Permission::Context(ContextPermission::PerformIntent(
+                ResourceScope::Specific(vec![NONCE_CTX.to_owned()])
+            ))]
+        );
+        assert!(
+            validator.validate_permissions(&delegated_session(), &required),
+            "the session that writes through this node must be able to ask where \
+             its own nonce sequence stands"
+        );
+    }
+
+    /// The admin form is untouched. It names a principal the caller has proved
+    /// nothing about, so it keeps falling to the default-deny and keeps needing
+    /// node credentials — which is what stops the new mapping from being a way
+    /// to read somebody else's device key.
+    #[test]
+    fn the_admin_warrant_nonce_read_still_requires_admin() {
+        let validator = PermissionValidator::new();
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(format!(
+                "/admin-api/contexts/{NONCE_CTX}/warrant-nonce/{NONCE_DEVICE}"
+            ))
+            .body(Body::empty())
+            .unwrap();
+
+        let required = validator.determine_required_permissions(&req);
+        assert_eq!(required, vec![Permission::Admin(AdminPermission)]);
+        assert!(
+            !validator.validate_permissions(&delegated_session(), &required),
+            "a delegated session must not read an arbitrary device key"
+        );
+        assert!(
+            validator.validate_permissions(&["admin".to_owned()], &required),
+            "a node owner's read is unchanged"
+        );
+    }
+
+    /// The new mapping is one path and one method wide. Any other verb on it
+    /// falls through to the default-deny rather than inheriting the `POST` rule.
+    #[test]
+    fn the_self_service_nonce_route_is_mapped_for_post_only() {
+        let validator = PermissionValidator::new();
+
+        for method in [Method::GET, Method::DELETE, Method::PUT] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(format!("/admin-api/contexts/{NONCE_CTX}/warrant-nonce"))
+                .body(Body::empty())
+                .unwrap();
+
+            assert_eq!(
+                validator.determine_required_permissions(&req),
+                vec![Permission::Admin(AdminPermission)],
+                "{method} on the nonce route should fail closed"
+            );
+        }
+    }
+
+    /// Mapping the route must not make it public. The `401` a tokenless caller
+    /// gets is the middleware's, and this route inherits it by being mounted on
+    /// the protected router — but the requirement set is what guarantees there
+    /// is nothing to inherit *past*: a caller carrying no permissions at all
+    /// satisfies none of it.
+    #[test]
+    fn a_caller_with_no_permissions_does_not_reach_the_nonce_route() {
+        let validator = PermissionValidator::new();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/admin-api/contexts/{NONCE_CTX}/warrant-nonce"))
+            .body(Body::empty())
+            .unwrap();
+
+        let required = validator.determine_required_permissions(&req);
+        assert!(!required.is_empty(), "an empty requirement is a free pass");
+        assert!(!validator.validate_permissions(&[], &required));
+    }
+
+    /// Scoped to the context named in the path, so a token minted for one
+    /// context cannot recover a nonce in another.
+    #[test]
+    fn the_self_service_nonce_route_is_scoped_to_its_context() {
+        let validator = PermissionValidator::new();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/admin-api/contexts/{NONCE_CTX}/warrant-nonce"))
+            .body(Body::empty())
+            .unwrap();
+
+        let required = validator.determine_required_permissions(&req);
+        assert!(
+            !validator
+                .validate_permissions(&["context:intent[somewhere-else]".to_owned()], &required),
+            "an intent token for another context must not reach this one"
         );
     }
 

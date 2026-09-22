@@ -1592,6 +1592,51 @@ pub struct WarrantNonceApiResponse {
     pub data: WarrantNonceApiResponseData,
 }
 
+/// A delegated author's request to read **its own** warrant-nonce state.
+///
+/// # Why the credential is in the body rather than the path
+///
+/// The admin read next door names the device in the path, because an admin may
+/// ask about any device. This one may only answer about the caller's own, and
+/// the session cannot say which device that is: an `account_proof` login
+/// deliberately subjects the token to the ACCOUNT, so a handler on the protected
+/// router learns the caller's account and nothing finer.
+///
+/// So the caller presents the credential that settles it — the same
+/// `AccountProof<DeviceCert>` it already sends on every write, which the node
+/// verifies against the account the session is authenticated as. The device key
+/// served is the one in the verified certificate, so asking about somebody
+/// else's device means forging their root signature.
+///
+/// # No device key field, deliberately
+///
+/// There is nothing here to name a device with, and unknown fields are refused,
+/// so a client that sends one is told rather than quietly served the
+/// certificate's key instead. The alternative — accept a device key, verify the
+/// certificate, and refuse on mismatch — was rejected: it is a second input that
+/// can only ever agree with the first or be an error, and its only effect on a
+/// correct client is one more way to be wrong.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WarrantNonceApiRequest {
+    /// Hex-encoded borsh of the caller's `AccountProof<DeviceCert>` — the same
+    /// bytes `PerformIntentApiRequest::author_proof` carries, so a client that
+    /// can write already holds this and needs no new credential to recover.
+    pub author_proof: String,
+}
+
+impl Validate for WarrantNonceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.author_proof.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "authorProof",
+            });
+        }
+        errors
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddGroupMembersApiRequest {

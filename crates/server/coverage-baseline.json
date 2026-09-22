@@ -14,6 +14,7 @@
   "POST /admin-api/account/sign-with-root",
   "POST /admin-api/contexts/{context_id}/intents",
   "POST /admin-api/contexts/{context_id}/query",
+  "POST /admin-api/contexts/{context_id}/warrant-nonce",
   "POST /admin-api/groups/join",
   "POST /admin-api/groups/{group_id}/accounts/{account}/seal",
   "POST /admin-api/groups/{group_id}/leave",

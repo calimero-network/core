@@ -227,6 +227,18 @@ pub(crate) fn setup(
             "/contexts/{context_id}/warrant-nonce/{author_device_key}",
             get(warrant_nonce::handler),
         )
+        // The same read for a delegated author asking about ITSELF, which is the
+        // client the feature was built for and the one the admin-only route
+        // locked out. No device key in the path: the caller presents the
+        // `AccountProof<DeviceCert>` it already sends on every write, and the
+        // node takes the device key from the verified certificate.
+        //
+        // `POST` rather than `GET` because the credential is ~237 bytes, and
+        // because this is how the intent route beside it already takes one.
+        .route(
+            "/contexts/{context_id}/warrant-nonce",
+            post(warrant_nonce::delegated_handler),
+        )
         // A delegated read: an account-authenticated caller reads a context it
         // is a member of. Protected rather than public, unlike the intent pair
         // — an intent carries a warrant that stands on its own, while this

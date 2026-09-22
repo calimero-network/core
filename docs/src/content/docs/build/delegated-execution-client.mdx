@@ -169,12 +169,35 @@ ahead of it. It is a bound on in-flight warrants, not a number to compute a nonc
 from — which parts of that window are already spent is deliberately not reported,
 because back-filling a gap buys you nothing that going forward does not.
 
-This route is on the **authenticated** admin surface, unlike the two intent routes,
-which a `public_intents` deployment may serve openly. It discloses nothing new to
-anyone entitled to ask — a warrant carries its nonce in the clear inside the delta
-that applied it, so any peer replicating the context already folds exactly this
-number — but it takes another principal's device key as input, and answering that to
-an anonymous caller is a decision nobody has made.
+That route is **admin-only**, because it takes another principal's device key as
+input and answers about that principal. If you are a delegated client — a session
+scoped `context:intent`, `context:query`, `context:subscribe` — you will get `403`
+from it. Use the self-service form instead:
+
+```http
+POST /admin-api/contexts/{context_id}/warrant-nonce
+```
+
+```jsonc
+{ "authorProof": "<hex borsh AccountProof<DeviceCert>>" }
+```
+
+`authorProof` is byte-for-byte the same credential you already send as `authorProof`
+on `POST .../intents`, so if you can write here you can already recover here — there
+is no second credential to obtain. **The response is identical to the `GET` above**,
+field for field, so one client can read either.
+
+There is no device key in the request, and sending one is an error rather than a
+field that is ignored. The node serves the device in the certificate it just
+verified, and verifies it against the account **your session** is authenticated as —
+so you read your own sequence and no one else's, and asking about somebody else's
+device would mean forging their account's root signature.
+
+Every bad credential comes back as one `403` with one message: malformed hex, bytes
+that are not a proof, and a perfectly valid proof for another account are
+deliberately indistinguishable, so the route cannot be used to test whether a
+captured credential is genuine. A request with no account-anchored session at all is
+`401`.
 
 ## 2. Warrant and delegated write
 
