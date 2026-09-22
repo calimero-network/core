@@ -34,6 +34,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
 | `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
 | `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
+| `RichText<Sc>`             | Text plus formatting marks| Composite: text union + mark union| Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -71,6 +72,21 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - `Anchor`, `Bias`, `IdRange`, `Removed` and `Undo` carry borsh AND serde. Borsh is the persisted format; the JSON is the JSON-RPC shape, with a `RawId` as the two-element array `[replica, counter]`. Both are pinned as formats.
   They have no `AbiType`, so a guest method still cannot take or return one directly - `cargo mero build` rejects it - and the reference app ships them as bs58-encoded borsh.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
+
+### `RichText` constraints
+
+- A composite of `FugueText` and an `UnorderedMap` of mark rows, with **no `CrdtType` of its own**, no arm in `merge_by_crdt_type` and no `CrdtCollectionType` in the ABI (it reports `crdt_type: None` like `UserStorage`, and the value it advertises is the rendered `Span`).
+  That is sound for exactly one reason: a mark row is written ONCE and never rewritten, so two replicas holding one `MarkId` hold byte-identical values, and the last-writer-wins that an untagged entry falls back to cannot pick wrong.
+  Removing formatting is a NEW row with a greater id and `value: None`, never an edit or a delete. Stamping a mark row with a converging type would route it through the wrong arm; `sync_sim`'s `rich_text` scenarios pin that it stays opaque.
+- The read rule is the whole format contract: per character, per key, the covering mark with the greatest `MarkId` wins, and a `None` value means the key is absent. A future compaction may replace any set of marks by an equivalent one as long as that rule still renders the same spans.
+- `MarkId` is `(lamport, replica)` with `lamport = 1 + the greatest this replica can see`, NOT an HLC. The WASM clock is quantised to about 15 microseconds and re-seeded per instance, so two marks minted in one call would share a timestamp - harmless for a register's value, silent data loss for a map KEY.
+- Where a mark grows when text is typed at its edge is decided ONCE, at write time, as the two stored anchor biases; `MarkSchema` is consulted on the write side only. A replica running an older schema therefore renders identical spans, and a removal uses `Expand::inverted()` so turning bold off keeps growing the way turning it on did.
+- A boundary insert follows Peritext: scan the tombstones in the gap, and if one carries the `After` anchor of any mark, insert after the last such tombstone. It reads stored anchor sides, never the schema, which is what makes it identical on every replica. `FugueTree::insert_after_in` exists for it, because a visible index cannot name a position among tombstones.
+- A mark naming a character this replica has not received is RETAINED and skipped for the read; dropping it would diverge from a replica that has the text. A mark whose start resolves at or after its end covers nothing.
+- `to_delta` merges adjacent runs with equal attributes. That is load-bearing, not cosmetic: without it a replica holding a mark that loses everywhere still emits a span boundary, and two replicas would render different span lists for the same document.
+- Redundant-write suppression is the only defence against unbounded row growth before a compaction rule exists: re-asserting formatting already in effect writes zero rows. Toggling one range `n` times still writes `n` rows, which `rich_text_marks.rs` makes visible rather than acceptable.
+- `apply_delta` runs every fallible check against a pure length walk before the first write, because it spans two collections and cannot share one draft. A rejected delta therefore stores nothing at all. A delete past the end still clamps silently, matching `FugueText`.
+- `mark`, `unmark`, `mark_at`, `apply_delta` and `apply_undo` panic in merge mode: they mint ids from the node-local device id. A migration seeds formatting with `mark_with_replica`.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
