@@ -14,7 +14,7 @@
 //! so a grapheme cluster spans several. A browser counts UTF-16 code units, where
 //! every astral character is two, so a TypeScript binding converts on both edges.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
@@ -440,34 +440,27 @@ impl<S: StorageAdaptor> FugueText<S> {
 
     /// The anchor for the gap at `pos`: `After` holds the character on its left, `Before` its right.
     pub fn anchor_at(&self, pos: usize, bias: Bias) -> Result<Anchor, StoreError> {
-        let tree = build_tree(&self.load()?)?;
-        let len = tree.len();
-        if pos > len {
-            return Err(out_of_bounds(pos));
-        }
-        let index = match bias {
-            Bias::After if pos == 0 => return Ok(Anchor::Start),
-            Bias::Before if pos == len => return Ok(Anchor::End),
-            Bias::After => pos - 1,
-            Bias::Before => pos,
-        };
-        let id = tree.id_at(index).ok_or_else(|| out_of_bounds(pos))?;
-        Ok(Anchor::Char { id, bias })
+        anchor_at_in(&self.tree()?, pos, bias)
     }
 
     /// The gap `anchor` names now; a deleted character resolves to the gap it left.
     pub fn resolve(&self, anchor: &Anchor) -> Result<usize, StoreError> {
-        resolve_in(&build_tree(&self.load()?)?, anchor)
+        resolve_in(&self.tree()?, anchor)
     }
 
     /// [`Self::resolve`] for many anchors against ONE rebuild of the tree, which is
     /// what makes rendering a document's cursors and marks affordable.
     pub fn resolve_many(&self, anchors: &[Anchor]) -> Result<Vec<usize>, StoreError> {
-        let tree = build_tree(&self.load()?)?;
+        let index = PositionIndex::build(&self.tree()?);
         anchors
             .iter()
-            .map(|anchor| resolve_in(&tree, anchor))
+            .map(|anchor| index.resolve(anchor).ok_or_else(unknown_anchor))
             .collect()
+    }
+
+    /// The stored blocks expanded into one tree: the single rebuild every read owes.
+    pub(super) fn tree(&self) -> Result<FugueTree, StoreError> {
+        build_tree(&self.load()?)
     }
 
     /// The number of visible characters.
@@ -765,6 +758,57 @@ fn id_runs(picked: &[(RawId, char)]) -> Vec<IdRange> {
     runs
 }
 
+/// The anchor for the gap at `pos` in `tree`, the held-tree form of [`FugueText::anchor_at`].
+pub(super) fn anchor_at_in(tree: &FugueTree, pos: usize, bias: Bias) -> Result<Anchor, StoreError> {
+    let len = tree.len();
+    if pos > len {
+        return Err(out_of_bounds(pos));
+    }
+    let index = match bias {
+        Bias::After if pos == 0 => return Ok(Anchor::Start),
+        Bias::Before if pos == len => return Ok(Anchor::End),
+        Bias::After => pos - 1,
+        Bias::Before => pos,
+    };
+    let id = tree.id_at(index).ok_or_else(|| out_of_bounds(pos))?;
+    Ok(Anchor::Char { id, bias })
+}
+
+/// Every node's live-predecessor count and liveness, from ONE traversal.
+///
+/// Resolving `m` anchors one at a time is `O(N * m)`, which at document scale is
+/// millions of tree steps inside a gas-metered call; this makes it `O(N + m)`.
+pub(super) struct PositionIndex {
+    of: BTreeMap<RawId, (usize, bool)>,
+    len: usize,
+}
+
+impl PositionIndex {
+    pub(super) fn build(tree: &FugueTree) -> Self {
+        let mut of = BTreeMap::new();
+        let mut live = 0_usize;
+        for id in tree.order().into_iter().flatten() {
+            let alive = tree.node(id).is_some_and(|node| node.value.is_some());
+            let _ignored = of.insert(id, (live, alive));
+            live += usize::from(alive);
+        }
+        Self { of, len: live }
+    }
+
+    /// [`resolve_in`]'s rule, minus the tree walk. `None` is a character this
+    /// replica has not received, which a caller rendering many anchors must
+    /// skip rather than fail on.
+    pub(super) fn resolve(&self, anchor: &Anchor) -> Option<usize> {
+        let (id, bias) = match *anchor {
+            Anchor::Start => return Some(0),
+            Anchor::End => return Some(self.len),
+            Anchor::Char { id, bias } => (id, bias),
+        };
+        let (before, live) = *self.of.get(&id)?;
+        Some(before + usize::from(live && bias == Bias::After))
+    }
+}
+
 /// The gap `anchor` names in `tree`; a deleted character names the gap it left.
 fn resolve_in(tree: &FugueTree, anchor: &Anchor) -> Result<usize, StoreError> {
     let (id, bias) = match *anchor {
@@ -772,11 +816,13 @@ fn resolve_in(tree: &FugueTree, anchor: &Anchor) -> Result<usize, StoreError> {
         Anchor::End => return Ok(tree.len()),
         Anchor::Char { id, bias } => (id, bias),
     };
-    let before = tree
-        .live_before(id)
-        .ok_or_else(|| invalid("anchor names an unknown character"))?;
+    let before = tree.live_before(id).ok_or_else(unknown_anchor)?;
     let live = tree.node(id).is_some_and(|node| node.value.is_some());
     Ok(before + usize::from(live && bias == Bias::After))
+}
+
+fn unknown_anchor() -> StoreError {
+    invalid("anchor names an unknown character")
 }
 
 fn advance(pos: usize, count: usize) -> Result<usize, StoreError> {
@@ -877,7 +923,7 @@ fn minting_replica(method: &str) -> u64 {
 }
 
 /// The replica id is the first 8 bytes of the device id: a stamp, not a gate.
-fn local_replica() -> u64 {
+pub(super) fn local_replica() -> u64 {
     let device = env::device_id();
     let mut head = [0_u8; 8];
     head.copy_from_slice(&device[..8]);
@@ -1802,6 +1848,104 @@ mod model_tests {
             );
         }
         assert_eq!(doc.get_text().unwrap(), "k");
+    }
+}
+
+/// The batched resolver must answer exactly what the per-anchor walk answers,
+/// because every rich-text read trusts it instead of [`FugueText::resolve`].
+#[cfg(test)]
+mod position_index_tests {
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
+    use super::{anchor_at_in, doc_in, Anchor, Bias, FugueText, PositionIndex};
+    use crate::env;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    const INDEX_SEED: u64 = 0x_1d_e4_5e_ed;
+    const INDEX_DOCS: usize = 20; // documents built, each with tombstones and several writers
+
+    fn random_doc<S: StorageAdaptor>(doc: &mut FugueText<S>, rng: &mut StdRng) {
+        const WORDS: [&str; 4] = ["a", "bc", "déf", "日本"];
+        for _ in 0..10 {
+            let len = doc.len().unwrap();
+            if len > 0 && rng.random_range(..3_usize) == 0 {
+                let start = rng.random_range(..len);
+                doc.delete_range(start, start + 1 + rng.random_range(..2_usize))
+                    .unwrap();
+            } else {
+                let pos = rng.random_range(..len + 1);
+                let replica = 1 + rng.random_range(..3_usize) as u64;
+                doc.insert_str_with_replica(pos, replica, WORDS[rng.random_range(..WORDS.len())])
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn resolve__index_and_tree_walk_agree_on_every_anchor() {
+        env::reset_for_testing();
+        type S = MockedStorage<884>;
+        let mut rng = StdRng::seed_from_u64(INDEX_SEED);
+        let mut checked = 0_usize;
+
+        for seed in 0..INDEX_DOCS {
+            let mut doc = doc_in::<S>(&format!("pidx{seed}"));
+            random_doc(&mut doc, &mut rng);
+
+            let tree = doc.tree().unwrap();
+            let index = PositionIndex::build(&tree);
+            let len = doc.len().unwrap();
+            assert_eq!(index.resolve(&Anchor::End), Some(len));
+
+            let mut anchors = vec![Anchor::Start, Anchor::End];
+            for pos in 0..=len {
+                for bias in [Bias::Before, Bias::After] {
+                    anchors.push(anchor_at_in(&tree, pos, bias).unwrap());
+                }
+            }
+            // Every node, tombstoned ones included: a mark outlives its characters.
+            for node in tree.nodes() {
+                for bias in [Bias::Before, Bias::After] {
+                    anchors.push(Anchor::Char { id: node.id, bias });
+                }
+            }
+
+            for anchor in &anchors {
+                assert_eq!(
+                    index.resolve(anchor),
+                    Some(doc.resolve(anchor).unwrap()),
+                    "seed {seed:#x}: index and walk disagree on {anchor:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 500,
+            "the sweep resolved almost nothing: {checked}"
+        );
+    }
+
+    #[test]
+    fn resolve__an_unknown_character_is_none_where_the_walk_errors() {
+        env::reset_for_testing();
+        type S = MockedStorage<885>;
+        let mut doc = doc_in::<S>("pidx-unknown");
+        doc.insert_str_with_replica(0, 1, "hello").unwrap();
+
+        let absent = Anchor::Char {
+            id: (0x_dead_beef, 7),
+            bias: Bias::Before,
+        };
+        let tree = doc.tree().unwrap();
+        assert_eq!(PositionIndex::build(&tree).resolve(&absent), None);
+        assert!(
+            doc.resolve(&absent)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown character"),
+            "the walk must still be the erroring resolver"
+        );
     }
 }
 
