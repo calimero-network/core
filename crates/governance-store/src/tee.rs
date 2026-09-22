@@ -191,6 +191,41 @@ pub fn is_quote_hash_used(
         }
     }
 
+    // ...and the NAMESPACE log, where a fleet replica's admission actually
+    // lives. Without this the guard was inert for exactly the case it exists
+    // to protect.
+    //
+    // `admit_tee_node` publishes two different ops. An already-bound namespace
+    // member moving inward gets a `GroupOp` on the per-group log, which the
+    // scan above sees. A FLEET REPLICA is an outsider joining the namespace,
+    // so its admission is a SEALED `RootOp` on the namespace log -- and this
+    // function never looked there, so `is_quote_hash_used` answered `false`
+    // for every replica quote ever presented, including one it had just
+    // admitted.
+    //
+    // `tee_admission_record` in this same module already scans both, which is
+    // what the fan-in relies on; this one was left behind.
+    //
+    // Opening the sealed ops is best-effort, exactly as it is there: a node
+    // without the namespace key reads nothing. That is the right shape here,
+    // because the node that runs this check is the ADMITTER, which holds the
+    // namespace key by definition.
+    for root in root_ops_for(store, group_id)? {
+        if let RootOp::MemberJoinedViaTeeAttestation {
+            group_id: op_group,
+            quote_hash: ref existing_hash,
+            ..
+        } = root
+        {
+            // The root form names its group explicitly, so a quote spent
+            // admitting into a DIFFERENT group of this namespace must not read
+            // as spent here.
+            if op_group == *group_id && existing_hash == quote_hash {
+                return Ok(true);
+            }
+        }
+    }
+
     Ok(false)
 }
 
