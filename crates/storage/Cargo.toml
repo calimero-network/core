@@ -35,6 +35,8 @@ rand.workspace = true
 claims.workspace = true
 criterion.workspace = true
 hex.workspace = true
+# Test-only: the rich-text wire shapes are pinned as exact JSON strings.
+serde_json.workspace = true
 serial_test.workspace = true
 trybuild.workspace = true
 velcro.workspace = true
