@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
     - big-machine
+    - ubuntu-24.04-8cpu
