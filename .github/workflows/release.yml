@@ -185,11 +185,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # arm64 is evicted before its next build ever restores it, and its size evicts the caches PRs read.
       - name: Setup rust cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
 
       - name: Install libclang (Linux)
         if: runner.os == 'Linux'
