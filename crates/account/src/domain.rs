@@ -71,6 +71,23 @@ pub(crate) const WARRANT_INTENT_DOMAIN: &[u8] = b"calimero.warrant.intent.v1";
 /// exactly why they must not collide.
 pub(crate) const AUTH_LOGIN_SIGN_DOMAIN: &[u8] = b"calimero.auth.login.v1";
 
+/// Domain for a signature over one HTTP request.
+///
+/// Three domains in this file are now signed by a **device** key —
+/// [`WARRANT_SIGN_DOMAIN`], [`AUTH_LOGIN_SIGN_DOMAIN`] and this one — because
+/// the short chain lets a device sign a request directly rather than delegating
+/// to a session key first. That makes a collision between any two of them a way
+/// to present a login as a write, or a read as either.
+pub(crate) const REQUEST_SIGN_DOMAIN: &[u8] = b"calimero.auth.request.v1";
+
+/// Domain for the hash a request signature commits to instead of the body.
+///
+/// Distinct from [`REQUEST_SIGN_DOMAIN`] for the same reason
+/// [`WARRANT_INTENT_DOMAIN`] is distinct from [`WARRANT_SIGN_DOMAIN`]: one
+/// produces the commitment and the other signs over it, and sharing a domain
+/// would make the commitment a truncated disclosure of bytes something signs.
+pub(crate) const REQUEST_BODY_DOMAIN: &[u8] = b"calimero.auth.request.body.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -89,4 +106,6 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     WARRANT_SIGN_DOMAIN,
     WARRANT_INTENT_DOMAIN,
     AUTH_LOGIN_SIGN_DOMAIN,
+    REQUEST_SIGN_DOMAIN,
+    REQUEST_BODY_DOMAIN,
 ];
