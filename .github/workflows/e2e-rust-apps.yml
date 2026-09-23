@@ -213,6 +213,7 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: windows-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # librocksdb-sys is pulled with `bindgen-runtime`, and aws-lc-sys
       # assembles its x86_64 primitives with NASM. Same pair the release build
@@ -288,6 +289,7 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: windows-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Point bindgen at the image's LLVM
         shell: bash

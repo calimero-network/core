@@ -55,7 +55,7 @@ jobs:
   # the node can be stopped -- the three things that have no unix equivalent to
   # borrow confidence from.
   #
-  # Costs one Windows runner (~15 min with a warm cache) per pull request. That
+  # Costs one Windows runner (~4 min with a warm cache) per pull request. That
   # is deliberate: a merod.exe that cannot start is shipped to users by the
   # release workflow, which only builds it.
   windows-node-smoke:
@@ -75,6 +75,7 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: windows-node-smoke
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Same two the release build needs: librocksdb-sys is pulled with
       # `bindgen-runtime`, and aws-lc-sys assembles its x86_64 primitives with NASM.
