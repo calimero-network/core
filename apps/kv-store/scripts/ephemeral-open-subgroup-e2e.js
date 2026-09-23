@@ -7,7 +7,7 @@
 // Each direction is asserted on both transports (WS and SSE) against the exact
 // slice and author that were published.
 
-import { check, die, ok, rpc, subscribe, subscribeSse, summarize } from './ephemeral-lib.js';
+import { check, die, rpc, subscribe, subscribeSse, summarize } from './ephemeral-lib.js';
 
 const [NODE1_URL, NODE2_URL, CONTEXT_ID, NODE1_KEY, NODE2_KEY] = process.argv.slice(2);
 
@@ -59,5 +59,4 @@ async function assertDelivered(label, publisherUrl, receiverUrl, slice, author) 
 console.log('=== ephemeral-open-subgroup-e2e ===');
 await assertDelivered('node 1 -> node 2 (inherited member)', NODE1_URL, NODE2_URL, SLICE_FROM_NODE1, NODE1_KEY);
 await assertDelivered('node 2 (inherited member) -> node 1', NODE2_URL, NODE1_URL, SLICE_FROM_NODE2, NODE2_KEY);
-ok('both directions evaluated');
 summarize();

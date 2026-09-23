@@ -1098,8 +1098,6 @@ jobs:
           - workflow: ephemeral-presence-e2e
             file: workflows/ephemeral-presence-e2e.yml
             app: kv-store
-          # Presence between a context's creator and a namespace member who
-          # reaches its Open subgroup only by inheritance, in both directions.
           - workflow: ephemeral-open-subgroup-e2e
             file: workflows/ephemeral-open-subgroup-e2e.yml
             app: kv-store

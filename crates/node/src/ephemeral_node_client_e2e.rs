@@ -34,14 +34,13 @@
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_crypto::{Nonce, SharedKey};
-use calimero_governance_store::{
-    register_context_in_group, CapabilitiesRepository, GroupKeyring, NamespaceRepository,
-};
+use calimero_governance_store::{register_context_in_group, GroupKeyring};
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
 use serial_test::serial;
 
+use crate::ephemeral_dispatch_e2e::nest;
 use crate::handlers::ephemeral::EPHEMERAL_MAX_BYTES;
 use crate::test_node_harness::{boot_test_node, TestNode};
 
@@ -261,16 +260,6 @@ async fn no_group_key_error_reaches_the_caller_and_nothing_is_echoed() {
 // Test 5: presence is sealed under the keyring that covers the context
 // -------------------------------------------------------------------------
 
-/// Nest `child` under `parent` with the given visibility.
-fn nest(node: &TestNode, parent: &ContextGroupId, child: &ContextGroupId, mode: VisibilityMode) {
-    NamespaceRepository::new(&node.store)
-        .nest(parent, child)
-        .expect("nest");
-    CapabilitiesRepository::new(&node.store)
-        .set_subgroup_visibility(child, mode)
-        .expect("set visibility");
-}
-
 /// Publish `slice` as `author_sk` on `context_id` and return the `key_id`,
 /// nonce and ciphertext of the envelope that went out on the wire.
 async fn publish_and_capture(
@@ -321,7 +310,7 @@ async fn inherited_member_publishes_presence_on_an_open_subgroup() {
     let ns = ContextGroupId::from([0x51u8; 32]);
     let sub = ContextGroupId::from([0x52u8; 32]);
     let context_id = ContextId::from([0x53u8; 32]);
-    nest(&node, &ns, &sub, VisibilityMode::Open);
+    nest(&node.store, &ns, &sub, VisibilityMode::Open);
     register_context_in_group(&node.store, &sub, &context_id).expect("register context");
     let ns_key = [0x54u8; 32];
     let ns_key_id = GroupKeyring::new(&node.store, ns)
@@ -351,9 +340,9 @@ async fn presence_behind_a_restricted_wall_is_not_sealed_for_the_namespace() {
         .store_key(&[0x57u8; 32])
         .expect("store namespace key");
     let restricted = ContextGroupId::from([0x58u8; 32]);
-    nest(&node, &ns, &restricted, VisibilityMode::Restricted);
+    nest(&node.store, &ns, &restricted, VisibilityMode::Restricted);
     let walled_open = ContextGroupId::from([0x59u8; 32]);
-    nest(&node, &restricted, &walled_open, VisibilityMode::Open);
+    nest(&node.store, &restricted, &walled_open, VisibilityMode::Open);
 
     for (seed, group) in [(0x5Au8, restricted), (0x5Bu8, walled_open)] {
         let context_id = ContextId::from([seed; 32]);

@@ -19,7 +19,7 @@ use std::time::Duration;
 use calimero_context_client::group::RemoveGroupMembersRequest;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
-use calimero_crypto::{SharedKey, NONCE_LEN};
+use calimero_crypto::SharedKey;
 use calimero_governance_store::{
     register_context_in_group, CapabilitiesRepository, GroupKeyring, MembershipRepository,
     MetaRepository, NamespaceRepository,
@@ -101,102 +101,32 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     let node = boot_test_node().await;
 
     let context_id = ContextId::from([0xE1u8; 32]);
-    let author_sk = PrivateKey::from([0xE2u8; 32]);
-    let author = author_sk.public_key();
-    let seq = 1u64;
-    // The receive path checks `sent_at_ms` against its own wall clock, so a
-    // routing test has to stamp a real "now" — a fixed literal would age out
-    // of the freshness window and turn this into a silent no-event failure.
-    let sent_at_ms = now_ms();
-
-    // Seed the group key into the SAME store the actor's context_client reads,
-    // and register the context into the group so `get_group_for_context`
-    // resolves the group id inside the inbound handler.
     let group_id = ContextGroupId::from([0xE3u8; 32]);
     register_context_in_group(&node.store, &group_id, &context_id)
         .expect("register_context_in_group");
-    let group_key_bytes = [0x42u8; 32];
+    let group_key = [0x42u8; 32];
     let key_id = GroupKeyring::new(&node.store, group_id)
-        .store_key(&group_key_bytes)
+        .store_key(&group_key)
         .expect("store_key");
 
-    // Encrypt a known slice under the seeded group key.
+    let author_sk = PrivateKey::from([0xE2u8; 32]);
     let slice = b"cursor={x:7,y:3}";
-    let nonce = [0x11u8; NONCE_LEN];
-    let sk = PrivateKey::from(group_key_bytes);
-    let ciphertext = SharedKey::from_sk(&sk)
-        .encrypt_with_nonce(slice.to_vec(), nonce)
-        .expect("encrypt");
-
-    // Sign the envelope over the ciphertext that will actually go on the
-    // wire, the same way the outbound path does — a literal signature would
-    // fail verification now that the receive path checks it.
-    let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
-        crate::handlers::ephemeral::auth::SignedEnvelope {
-            context_id,
-            author,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext: &ciphertext,
-        },
+    let received = dispatch_presence(
+        &node,
+        signed_envelope(context_id, &author_sk, group_key, key_id, slice),
+        Duration::from_secs(5),
     )
-    .expect("signature payload");
-    let signature = author_sk.sign(&signature_payload).expect("sign").to_bytes();
-
-    // Subscribe to the node event sink BEFORE dispatching, so the emit from
-    // the (async, ctx.spawn'd) handler is observed. `receive_events()`
-    // subscribes eagerly at call time.
-    let mut events = Box::pin(node.node_client.receive_events());
-
-    // Deliver the Ephemeral broadcast through the production dispatch.
-    let topic = format!("context/{}", hex::encode(context_id.as_ref()));
-    let event = ephemeral_network_event(
-        libp2p::PeerId::random(),
-        &topic,
-        EphemeralEnvelope {
-            context_id,
-            author,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext,
-            signature,
-        },
-    );
-    node.node_addr
-        .send(event)
-        .await
-        .expect("deliver Ephemeral NetworkEvent to node actor");
-
-    // Await the decrypted presence event on the sink. If the routing arm is
-    // missing, nothing is emitted and this times out → the test fails.
-    let received = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match events.next().await {
-                Some(NodeEvent::Context(ctx_event)) => {
-                    if let ContextEventPayload::Ephemeral(payload) = ctx_event.payload {
-                        assert_eq!(ctx_event.context_id, context_id);
-                        break payload;
-                    }
-                    // Ignore any unrelated context events.
-                }
-                // Non-context events (e.g. GroupMembership) are not this
-                // test's concern — keep waiting for the presence event.
-                Some(_) => {}
-                None => panic!("event stream closed before an Ephemeral event arrived"),
-            }
-        }
-    })
     .await
     .expect(
         "expected a ContextEventPayload::Ephemeral on the sink within 5s — \
          the BroadcastMessage::Ephemeral match arm routed to handle_ephemeral_broadcast",
     );
 
-    assert_eq!(received.author, author, "author must match the sender");
+    assert_eq!(
+        received.author,
+        author_sk.public_key(),
+        "author must match the sender"
+    );
     assert_eq!(
         received.state.as_deref(),
         Some(slice.as_ref()),
@@ -220,80 +150,20 @@ async fn forged_author_produces_no_presence_event() {
     let group_id = ContextGroupId::from([0xF3u8; 32]);
     register_context_in_group(&node.store, &group_id, &context_id)
         .expect("register_context_in_group");
-    let group_key_bytes = [0x42u8; 32];
+    let group_key = [0x42u8; 32];
     let key_id = GroupKeyring::new(&node.store, group_id)
-        .store_key(&group_key_bytes)
+        .store_key(&group_key)
         .expect("store_key");
 
-    // Ciphertext decrypts cleanly under the current group key — the only
-    // thing wrong with this message is the authorship claim.
-    let slice = b"cursor={x:1,y:1}";
-    let nonce = [0x11u8; NONCE_LEN];
-    let sk = PrivateKey::from(group_key_bytes);
-    let ciphertext = SharedKey::from_sk(&sk)
-        .encrypt_with_nonce(slice.to_vec(), nonce)
-        .expect("encrypt");
-
-    // Attacker signs with their own key but claims the victim as author.
+    // Decrypts cleanly under the current group key; the only thing wrong is
+    // the authorship claim, which the attacker's signature does not back.
     let attacker = PrivateKey::from([0xF4u8; 32]);
-    let victim = PrivateKey::from([0xF5u8; 32]).public_key();
-    let seq = 1u64;
-    let sent_at_ms = now_ms();
-    let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
-        crate::handlers::ephemeral::auth::SignedEnvelope {
-            context_id,
-            author: victim,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext: &ciphertext,
-        },
-    )
-    .expect("payload");
-    let signature = attacker.sign(&payload).expect("sign").to_bytes();
+    let mut envelope = signed_envelope(context_id, &attacker, group_key, key_id, b"cursor");
+    envelope.author = PrivateKey::from([0xF5u8; 32]).public_key();
 
-    let mut events = Box::pin(node.node_client.receive_events());
-
-    let topic = format!("context/{}", hex::encode(context_id.as_ref()));
-    let event = ephemeral_network_event(
-        libp2p::PeerId::random(),
-        &topic,
-        EphemeralEnvelope {
-            context_id,
-            author: victim,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext,
-            signature,
-        },
-    );
-    node.node_addr
-        .send(event)
-        .await
-        .expect("deliver Ephemeral NetworkEvent to node actor");
-
-    // No presence event must arrive. A short window is enough: the positive
-    // test above observes its event well within this budget.
-    let got = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match events.next().await {
-                Some(NodeEvent::Context(ctx_event)) => {
-                    if let ContextEventPayload::Ephemeral(payload) = ctx_event.payload {
-                        break payload;
-                    }
-                }
-                Some(_) => {}
-                None => panic!("event stream closed"),
-            }
-        }
-    })
-    .await;
-
+    let got = dispatch_presence(&node, envelope, Duration::from_secs(2)).await;
     assert!(
-        got.is_err(),
+        got.is_none(),
         "a forged author must not produce a presence event, got {got:?}"
     );
 }
@@ -374,7 +244,12 @@ async fn dispatch_presence(
 }
 
 /// Nest `child` under `parent` with the given visibility.
-fn nest(store: &Store, parent: &ContextGroupId, child: &ContextGroupId, mode: VisibilityMode) {
+pub(super) fn nest(
+    store: &Store,
+    parent: &ContextGroupId,
+    child: &ContextGroupId,
+    mode: VisibilityMode,
+) {
     NamespaceRepository::new(store)
         .nest(parent, child)
         .expect("nest");

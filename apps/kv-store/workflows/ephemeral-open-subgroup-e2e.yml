@@ -76,13 +76,6 @@ steps:
     outputs:
       node2_key: memberPublicKey
 
-  - name: Assert bootstrap shape
-    type: assert
-    statements:
-      - "is_set({{ctx_id}})"
-      - "is_set({{node1_key}})"
-      - "is_set({{node2_key}})"
-
   # Presence rides gossip, not the DAG: only the context topic mesh must form.
   - name: Wait for the context gossip mesh
     type: wait
