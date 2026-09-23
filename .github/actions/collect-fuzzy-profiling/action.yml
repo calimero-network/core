@@ -31,22 +31,14 @@ runs:
           "profiling-data/${{ inputs.suite }}" \
           "profiling-reports/${{ inputs.suite }}"
 
-    # merobox#233 (merged 2026-05-12): with `stop_all_nodes: false` in the
-    # fuzzy workflow YAML (already set), the merobox bootstrap process exits
-    # but leaves containers running. We send each merod container an explicit
-    # `docker stop --time=120`, giving the in-container SIGTERM trap up to
-    # 120s to finish `stop_profiling` → `preserve_to_host_mount` (perf+memory
-    # flamegraph render → bind mount). Pre-#233 / pre-this-step, merobox's
-    # `atexit` handler stopped containers with Docker's default ~10s timeout
-    # — SIGKILL arrived before the trap finished and `reports/` never got
-    # created on any node.
+    # stop_all_nodes:false leaves containers running; --time=120 gives the SIGTERM trap
+    # time to render flamegraphs before Docker's default ~10s SIGKILL.
     - name: Graceful merod container shutdown (let trap render flamegraphs)
       if: always()
       shell: bash
       run: |
         mkdir -p "fuzzy-test-logs/${{ inputs.suite }}"
-        # Filter to merobox-started merod containers, exclude short-lived
-        # `*-init` (already long gone, not useful for trap-driven preserve).
+        # Exclude short-lived *-init containers; already gone, nothing to preserve.
         containers=$(docker ps --filter "label=calimero.node=true" \
                                --format '{{.Names}}' 2>/dev/null \
                      | grep -v -- '-init$' || true)

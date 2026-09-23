@@ -1,21 +1,7 @@
 name: Build merod image (reusable)
 
-# Reusable workflow: builds the merod:local Docker image once and uploads it
-# as the `merod-image` artifact (zstd tarball). Called as a job by both
-# e2e-rust-apps.yml and app-migration-e2e.yml so the identical merod build is
-# defined in exactly one place. Artifacts are per-run, so each caller's run
-# gets its own copy of the artifact under the same name — no cross-run
-# collision — while the duplicated build code is unified and the second suite's
-# build rides the same warm cache.
-#
-# Cache discipline: this job is the sole master-time writer of the shared
-# `e2e-rust-apps` rust-cache bucket. The read-only sibling jobs in the callers
-# (app-migration's build-wasms / schema-downgrade-guard) use the same
-# shared-key with save-if:false, so single-writer discipline is preserved. The
-# env below deliberately mirrors those callers' build env (including RUST_LOG)
-# so rust-cache computes the SAME env-hash for all of them and they keep
-# sharing this job's cache; do not add cargo/rust-prefixed env here that the
-# sibling jobs don't also set, or the keys diverge and the siblings go cold.
+# Reusable workflow, called by e2e-rust-apps.yml and app-migration-e2e.yml. Sole writer of
+# the "e2e-rust-apps" rust-cache; callers must set the SAME env (incl. RUST_LOG) or keys diverge.
 
 on:
   workflow_call:
@@ -36,8 +22,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  # Mirrors app-migration-e2e.yml's top-level env for rust-cache env-hash
-  # parity with its read-only build-wasms / schema-guard jobs (see header).
+  # Must mirror app-migration-e2e.yml's env for cache-key parity (see header).
   RUST_LOG: info,calimero_=debug
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
@@ -59,15 +44,8 @@ jobs:
           shared-key: e2e-rust-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # Faster e2e image: the production [profile.release] uses fat LTO +
-      # codegen-units=1, whose serial whole-program link is the single biggest
-      # slice of this build and cannot be shortcut by any compiler cache. The
-      # e2e image doesn't need the production size-optimization, so override
-      # just those two flags for the merod compile below. Set AFTER the
-      # rust-cache step (via $GITHUB_ENV) on purpose: rust-cache hashes
-      # CARGO_*/RUST_* env into its key, so setting these earlier would fork the
-      # cache key away from the read-only sibling jobs. Output still lands in
-      # target/.../release, so the shared cache stays warm.
+      # Fat LTO + codegen-units=1 (prod profile) is the slow part, skipped for e2e.
+      # Set via $GITHUB_ENV AFTER rust-cache: it hashes these into its cache key.
       - name: Configure fast e2e build profile
         run: |
           echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
@@ -90,13 +68,8 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-      # A second image for mock-TEE scenarios only. `merod run --mock-tee`
-      # refuses to start unless the binary was built with `mock-attestation`,
-      # and that feature must NOT be on for the rest of the matrix: those
-      # scenarios should exercise the same feature set a release binary has.
-      # Hence a separate image rather than adding the feature to the shared one.
-      # It rides the warm target dir above, so only the crates whose features
-      # changed are recompiled.
+      # mock-attestation must stay out of the shared image so it matches the
+      # production feature set; built separately, reusing the warm target dir.
       - name: Build mock-attestation merod binary
         if: inputs.with-mock-tee-image
         env:

@@ -123,54 +123,51 @@ workflows, building a local `merod:local` image plus the WASM apps under
 
 ## The pre-PR gate
 
-These are the exact checks CI enforces in `.github/workflows/ci-checks.yml`. Run
-them locally before pushing — they are the same commands, in the same order.
+These are the exact checks CI enforces in `.github/workflows/ci-checks.yml`.
+CI runs them as parallel jobs behind the one required `Rust` check: lint, tests, feature-gated tests, the app build, and supply-chain checks.
+Run them all locally with `./scripts/check-like-ci.py`, which reads that workflow instead of keeping its own copy; `--list` shows what it will run.
+The steps below are the same commands, grouped by job.
 
 <Steps>
 
-1. **Build the apps, then the workspace.** Several workspace tests load compiled
-   WASM artifacts, so the apps build first.
-
-   ```sh
-   ./scripts/build-all-apps.sh
-   cargo build --workspace --all-targets --tests
-   ```
-
-2. **Check formatting.**
+1. **Check formatting and lint with the no-warnings gate.**
+   The `--features calimero-storage/testing` flag pulls the storage `testing` harness into the same single pass so it is linted too.
 
    ```sh
    cargo fmt --check
-   ```
-
-3. **Lint with the no-warnings gate.** The `--features calimero-storage/testing`
-   flag pulls the storage `testing` harness into the same single pass so it is
-   linted too.
-
-   ```sh
    cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
    ```
 
-4. **Run the tests.** CI runs with output shown and a `TEST_HOSTS` env var
-   (some networking tests bind real interfaces); set it locally if host-dependent
-   tests fail.
+2. **Run the tests.**
+   CI runs them under [cargo-nextest](https://nexte.st/), which runs every test binary in parallel, plus the doctests nextest does not cover.
+   Some networking tests bind real interfaces through a `TEST_HOSTS` env var; set it locally if host-dependent tests fail.
+   Tests that execute an app's WASM build it themselves when it is missing or stale, so no app build is needed first.
 
    ```sh
-   TEST_HOSTS=127.0.0.1,0.0.0.0 cargo test -- --nocapture
+   TEST_HOSTS=127.0.0.1,0.0.0.0 cargo nextest run --workspace
+   cargo test --workspace --doc
    ```
 
-5. **Run the narrow target checks** CI keeps green: the no-chain context-config
-   build and the local-only `merod` init binary.
+3. **Build every app.**
+   CI builds and bundles all in-repo apps in its own job.
+
+   ```sh
+   ./scripts/build-all-apps.sh
+   ```
+
+4. **Run the narrow target checks** CI keeps green: the no-chain context-config build and the local-only `merod` init binary.
 
    ```sh
    cargo check -p calimero-context-config
    cargo check -p merod --no-default-features
    ```
 
-6. **Check the dependency policy** — only needed if you changed dependencies. CI
-   pins `cargo-deny` to `0.16.3` for toolchain compatibility.
+5. **Check the dependency policy** - only needed if you changed dependencies.
+   CI pins `cargo-deny` to `0.19.9` and also runs `cargo machete` for unused dependencies.
 
    ```sh
-   cargo deny check licenses sources
+   cargo deny check advisories bans licenses sources
+   cargo machete
    ```
 
 </Steps>

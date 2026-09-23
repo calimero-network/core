@@ -1,16 +1,7 @@
 name: App migration e2e
 
-# End-to-end coverage for the per-context application migration
-# pipeline and its namespace-cascade extensions. Two parallel build
-# jobs compile the merod:local image and the migration WASM fixtures
-# (independent builds, so the build phase is max() not sum()); the
-# `scenario` matrix fans those artifacts out across one job per workflow
-# under workflows/app-migration/ so every scenario runs in parallel and
-# reports its own pass/fail.
-#
-# Triggers on any crates/** change (like e2e-rust-apps.yml) rather than a
-# narrow subset of paths: the narrow filter previously let master
-# regressions land without running this suite.
+# E2E coverage for the per-context application migration pipeline. Triggers on
+# any crates/** change - a narrow filter previously let regressions land unrun.
 
 permissions:
   contents: read
@@ -51,16 +42,8 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  # The merod:local image and the WASM fixtures are independent builds, so
-  # they run as two parallel jobs — the e2e build phase is now max(merod,
-  # wasms) instead of their sum. Each uploads the artifact the `scenario`
-  # matrix consumes, so the matrix jobs never re-compile Rust.
-  #
-  # The merod image build is the reusable build-merod-image.yml workflow, shared
-  # verbatim with e2e-rust-apps.yml so the identical build is defined once. That
-  # job remains the sole master-time writer of the shared `e2e-rust-apps`
-  # rust-cache bucket; build-wasms below reads it but never SAVEs, so the two
-  # jobs never race a second writer for one key.
+  # merod:local and the WASM fixtures build as two parallel jobs; each uploads the
+  # artifact the `scenario` matrix downloads instead of recompiling.
   build-merod:
     name: Build merod image
     uses: ./.github/workflows/build-merod-image.yml
@@ -102,12 +85,8 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Static migration-safety guard (no merobox / no runtime): build the
-  # deliberate identity-downgrade scenario, emit both versions' state schemas,
-  # and assert `calimero-abi diff` catches the AuthoredMap -> UnorderedMap
-  # downgrade (UNSAFE_IDENTITY_DOWNGRADE, exit 1). This proves the L2 lint fires
-  # on a real, app-produced schema pair — the downgrade pair is intentionally
-  # NOT in the merobox matrix because a downgrade migration is unsafe at runtime.
+  # Static guard (no merobox): asserts `calimero-abi diff` flags the deliberate
+  # identity downgrade. Excluded from the live matrix since it's unsafe at runtime.
   schema-downgrade-guard:
     name: Schema downgrade guard
     runs-on: ubuntu-24.04-8cpu
@@ -124,8 +103,7 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
           # Read the warm e2e-rust-apps dependency cache, but never SAVE under that
-          # key: the `build` job owns it, and a second writer for the same key only
-          # races / wastes a save. This guard is read-only on the shared cache.
+          # key - build-merod owns it, and a second writer only races.
           shared-key: e2e-rust-apps
           save-if: false
 
@@ -143,9 +121,8 @@ jobs:
       - name: calimero-abi diff must flag the identity downgrade
         run: |
           set +e
-          # Capture stderr too (2>&1): on a compile/runtime failure the diagnostic
-          # would otherwise be lost and the assertion below would print a confusing
-          # "expected exit 1" against empty output instead of the real error.
+          # Capture stderr too (2>&1): on a compile/runtime failure the diagnostic would
+          # otherwise be lost, printing a confusing "expected exit 1" against empty output.
           OUT=$(cargo run -q -p mero-abi -- diff \
             apps/migrations/scenario-identity-downgrade-v2/res/state-schema.json \
             apps/migrations/scenario-identity-downgrade-v1/res/state-schema.json 2>&1)
@@ -161,10 +138,8 @@ jobs:
           }
           echo "✓ identity downgrade correctly flagged and failed CI"
 
-  # Fan-out: one matrix entry per workflow YAML. Each entry downloads
-  # the pre-built image + fixtures, then runs exactly one merobox
-  # workflow. fail-fast disabled so a flaky scenario doesn't mask
-  # other failures in the same run.
+  # Fan-out: one matrix entry per workflow YAML, each downloading the pre-built
+  # image + fixtures. fail-fast disabled so a flaky scenario doesn't mask others.
   scenario:
     name: ${{ matrix.workflow }} (${{ matrix.mode }})
     needs: [build-merod, build-wasms]
@@ -207,15 +182,13 @@ jobs:
           - 33-authored-remaining-count
           - 35-two-namespaces-coexist
           - 36-chained-catchup
-          # Stages the strand with merobox's `delete_blob` step (admin API,
-          # cascades parent+chunks+metadata — merobox#285, 0.6.39); the old
-          # `delete_blob_on_disk` rm was a no-op for chunked blobs.
+          # Stages the strand with merobox's admin-API `delete_blob` step, which
+          # cascades parent+chunks+metadata.
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
-        # The only suite that advances a group's target, so the only place
-        # registry coordinates are ever resolved. dht ignores them, so without
-        # an http lane that resolution never runs against a real registry.
+        # The only suite that advances a group's target, so the only place registry
+        # coordinates resolve; dht ignores them, so this needs an http lane to exercise it.
         include:
           - workflow: 01-namespace-cascade-migration
             mode: http
@@ -259,10 +232,8 @@ jobs:
         run: |
           mkdir -p docker-logs
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
-          # merobox 0.6.34+ persists per-container logs natively to
-          # data/container-logs/<name>.log on every `bootstrap run`,
-          # regardless of `stop_all_nodes` (calimero-network/merobox#207).
-          # This replaces the old background `docker logs -f` watcher.
+          # merobox persists per-container logs to data/container-logs/<name>.log
+          # on every bootstrap run, regardless of stop_all_nodes.
 
           [ "$MODE" = dht ] && IMAGE_SUFFIX=-dht || IMAGE_SUFFIX=
 
@@ -275,7 +246,6 @@ jobs:
           wf_exit=${PIPESTATUS[0]}
           set +o pipefail
 
-          # Collect merobox's native per-container logs into the artifact dir.
           for f in data/container-logs/*.log; do
               [ -e "$f" ] || continue
               cp -f "$f" "$LOGDIR/$(basename "$f")"

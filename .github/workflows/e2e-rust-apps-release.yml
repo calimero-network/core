@@ -1,12 +1,7 @@
 name: E2E - Rust Apps (Released Image)
 
-# Tests scaffolding-e2e and xcall-example apps using the released Docker image from GHCR.
-# Validates that released images work correctly on master merges.
-# For fast PR testing with locally-built images, see e2e-rust-apps.yml
-#
-# Triggered after the Release workflow completes (not on push) to avoid a race
-# where this workflow pulls a stale `edge` image before Release publishes the
-# new one.
+# Tests scaffolding-e2e and xcall-example against the released image; see
+# e2e-rust-apps.yml for the PR version. Runs on workflow_run, not push, to avoid a stale `edge` image.
 
 permissions:
   contents: read
@@ -27,22 +22,18 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  # Admin credentials for embedded-auth scenarios, matching the
-  # dev/dev-password `login` steps in the workflow YAMLs. merobox ≥0.6.43
-  # forwards these into node containers so `merod init` mints the admin root
-  # key up front. See the matching comment in e2e-rust-apps.yml.
+  # Must match the dev/dev-password login steps in the workflow YAMLs; merobox
+  # forwards these into containers so merod mints the admin root key up front.
   MERO_AUTH_ADMIN_USER: dev
   MERO_AUTH_ADMIN_PASSWORD: dev-password
-  # Transitional (remove after 0.11.0-rc.17 ships): this workflow runs
-  # against RELEASED binaries, and releases up to rc.16 still gate the first
-  # login on the bootstrap secret. Inert on rc.17+ (the field is ignored).
+  # This workflow runs against released binaries; releases before rc.17 still
+  # gate first login on this secret (ignored on rc.17+).
   MERO_AUTH_BOOTSTRAP_SECRET: merobox-e2e-bootstrap
 
 jobs:
   build-apps:
     name: Build Apps
-    # Only run if Release succeeded (workflow_run fires on both success and failure)
-    # Always run for manual workflow_dispatch triggers
+    # workflow_run fires on both success and failure, so gate explicitly.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04-8cpu
     steps:
@@ -129,8 +120,8 @@ jobs:
               "${{ github.head_ref }}" \
               "$GH_TOKEN"
 
-      # Smoke-tests the released image itself, so its nodes stay on the
-      # peer-to-peer source rather than on a registry this job would have to run.
+      # Smoke-tests the released image over the DHT, so this job doesn't need
+      # to run a registry.
       - name: Select the application source
         run: |
           image=ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}
@@ -143,12 +134,8 @@ jobs:
       - name: Run scaffolding-e2e Workflow
         id: run_scaffolding_e2e
         run: |
-          # Phase 11.3 (#2237): single attempt, fail loud. The retry loop +
-          # `merobox nuke --force` between attempts existed to mask
-          # cold-start governance flakes (#2198, #2225). With the
-          # three-phase contract in place (publish_and_await_ack +
-          # readiness FSM + parent_pull single-peer fallback), a flake
-          # here is a real bug worth surfacing rather than retrying past.
+          # Single attempt, fail loud: a flake here is a real bug worth
+          # surfacing, not something to retry past.
           mkdir -p docker-logs
           cd apps/scaffolding-e2e
           if merobox bootstrap run \
@@ -160,7 +147,6 @@ jobs:
               failed=true
           fi
 
-          # Collect logs
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
                   docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/scaffolding-e2e-${container}.log" 2>&1 || true
@@ -185,7 +171,6 @@ jobs:
               failed=true
           fi
 
-          # Collect logs
           echo "Collecting Docker logs for groups workflow"
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -355,7 +340,6 @@ jobs:
               failed=true
           fi
 
-          # Collect logs
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
                   docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-${container}.log" 2>&1 || true
@@ -370,11 +354,8 @@ jobs:
       - name: Run kv-store-joiner-cold Workflow
         id: run_joiner_cold
         run: |
-          # Phase 12.2 (#2237): regression guard for the cold-join →
-          # first-execute window. Verifies that join_context returns with
-          # the group key locally stored, so the joiner's first call to
-          # `set` does not hit the strict "group key not yet delivered"
-          # error path in execute/mod.rs.
+          # Regression guard: join_context must return with the group key
+          # already stored, or the joiner's first `set` hits the "not yet delivered" error path.
           cd apps/scaffolding-e2e
           if merobox bootstrap run \
               "workflows/kv-store-joiner-cold.yml" \

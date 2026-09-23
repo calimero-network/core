@@ -84,14 +84,14 @@ runs:
       id: prepare
       run: |
         MASTER_SCOPE="${{ github.repository_owner }}-docker-master-profiling"
-        DEV_SCOPE="${{ github.repository_owner }}-docker-dev-profiling"
 
+        # Only master writes: a branch's layers serve nobody else and evict
+        # master's shared Rust caches from the 10 GB budget.
+        echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
         if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-          echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
           echo "cache_to=type=gha,scope=${MASTER_SCOPE},mode=max" >> $GITHUB_OUTPUT
         else
-          echo "cache_from=type=gha,scope=${MASTER_SCOPE} type=gha,scope=${DEV_SCOPE}" >> $GITHUB_OUTPUT
-          echo "cache_to=type=gha,scope=${DEV_SCOPE},mode=max" >> $GITHUB_OUTPUT
+          echo "cache_to=" >> $GITHUB_OUTPUT
         fi
 
         if [ "${{ github.event_name }}" == "pull_request" ]; then
@@ -114,7 +114,6 @@ runs:
         DOCKER_METADATA_PR_HEAD_SHA: true
       with:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
-        # Use -profiling suffix for all tags to distinguish from regular images
         tags: |
           type=raw,value=edge-profiling,enable=${{ github.ref == 'refs/heads/master' }}
           type=ref,prefix=pr-,suffix=-profiling,event=pr

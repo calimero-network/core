@@ -2,12 +2,16 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion, SamplingMode, Throughput};
 use storage_cost::measure;
 use storage_cost::workloads::all;
 
+const SAMPLE_SIZE: usize = 10; // criterion's floor; the top sizes run for seconds per iteration
+
 fn collections(c: &mut Criterion) {
     let mut group = c.benchmark_group("collections");
+    let _ignored = group.sample_size(SAMPLE_SIZE);
+    let _ignored = group.sampling_mode(SamplingMode::Flat);
 
     for workload in all() {
         let _ignored = group.throughput(Throughput::Elements(workload.n as u64));
