@@ -30,6 +30,7 @@
 
 use axum::http::HeaderName;
 use calimero_account::{AccountId, CallerProof};
+use calimero_primitives::identity::DeviceId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tracing::{info, warn};
@@ -121,6 +122,10 @@ impl ProofPolicy {
 
     /// Decode and check a chain, then decide whether this node serves it.
     ///
+    /// Returns the device as well as the account. Revocation is a per-device,
+    /// per-group row, so the check that consults it happens where the group is
+    /// known — and it cannot get the device back from the account.
+    ///
     /// `now` is supplied rather than read, so the one time-dependent rule here
     /// is testable without moving a clock — the same reason the intent handler
     /// separates its own.
@@ -131,7 +136,7 @@ impl ProofPolicy {
         path: &str,
         body: &[u8],
         now: u64,
-    ) -> Result<AccountId, Refusal> {
+    ) -> Result<(AccountId, DeviceId), Refusal> {
         let bytes = hex::decode(header).map_err(|_ignored| Refusal::Malformed)?;
         let proof: CallerProof =
             borsh::from_slice(&bytes).map_err(|_ignored| Refusal::Malformed)?;
@@ -148,7 +153,7 @@ impl ProofPolicy {
             return Err(Refusal::NotServed);
         }
 
-        Ok(caller.account)
+        Ok((caller.account, caller.device))
     }
 }
 
@@ -237,7 +242,7 @@ mod tests {
         let admitted = policy(&node, account, false)
             .admit(encoded(&proof).as_bytes(), METHOD, PATH, b"", NOW)
             .expect("own account is served");
-        assert_eq!(admitted, account);
+        assert_eq!(admitted.0, account);
     }
 
     /// And a stranger is not, by the same default.
@@ -271,7 +276,7 @@ mod tests {
         let admitted = policy(&node, own_account, true)
             .admit(encoded(&proof).as_bytes(), METHOD, PATH, b"", NOW)
             .expect("the flag serves strangers");
-        assert_eq!(admitted, stranger);
+        assert_eq!(admitted.0, stranger);
     }
 
     /// A chain minted for another node must not be usable here whatever the

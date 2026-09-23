@@ -89,6 +89,24 @@ pub struct AuthenticatedNodeOwner;
 #[derive(Clone, Debug)]
 pub struct AuthenticatedAccount(pub calimero_account::AccountId);
 
+/// The device whose key signed this request, when the caller proved it on the
+/// request itself.
+///
+/// Separate from [`AuthenticatedAccount`] rather than a field on it, because
+/// the two are known on different paths and collapsing them would hide that. A
+/// request-carried proof names a device — the certificate says which one. A
+/// session does not: `account_proof` mints a token whose subject is the
+/// ACCOUNT, and the device that logged in is discarded at that point.
+///
+/// That asymmetry is load-bearing downstream. Device revocation is a
+/// per-device, per-group governance row, so a caller whose device is unknown
+/// cannot be filtered by it — which is a real gap for sessions, not a property
+/// of the design. Making it a separate extension keeps the gap visible at every
+/// call site instead of hiding an `Option` inside a struct everyone
+/// destructures.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedDevice(pub calimero_primitives::identity::DeviceId);
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -377,14 +395,14 @@ where
                                     .get::<OriginalUri>()
                                     .map_or_else(|| uri.clone(), |original| original.0.clone());
 
-                                let account = match policy.admit(
+                                let (account, device) = match policy.admit(
                                     header.as_bytes(),
                                     method.as_str(),
                                     full_uri.path(),
                                     &bytes,
                                     now_secs(),
                                 ) {
-                                    Ok(account) => account,
+                                    Ok(admitted) => admitted,
                                     Err(refusal) => {
                                         debug!(?refusal, "proof refused");
                                         let mut resp = match refusal {
@@ -423,6 +441,10 @@ where
                                 // node-owner marker is unreachable from here by
                                 // construction rather than by a check.
                                 parts.extensions.insert(AuthenticatedAccount(account));
+                                // The device too, so the revocation check that
+                                // runs where the group is known has something
+                                // to check. A session cannot supply this.
+                                parts.extensions.insert(AuthenticatedDevice(device));
 
                                 let req = Request::from_parts(parts, Body::from(bytes));
                                 return inner.call(req).await;
