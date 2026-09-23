@@ -439,13 +439,14 @@ steps:
     type: call
     node: rich-node-1
     context_id: "{{context_id}}"
-    method: unmark
+    method: mark
     args:
       doc: marks-bold-vs-unbold
       block: "{{contested_block}}"
       start: 4
       end: 15
       key: bold
+      value: null
 
   - name: Node 2 bolds the tail of the same sentence
     type: call

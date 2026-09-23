@@ -10,7 +10,7 @@ use std::ops::DerefMut;
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange};
+use calimero_storage::collections::fugue_text::IdRange;
 use calimero_storage::collections::rich_text::{Attrs, DeltaOp, DeltaUndo, UndoStep};
 use calimero_storage::collections::{
     BlockId, BlockView, DefaultMarks, MarkId, RichDocument, Span, UnorderedMap, ValueRef,
@@ -348,19 +348,6 @@ impl RichCollabState {
         self.emit_mark(doc, block, minted)
     }
 
-    pub fn unmark(
-        &mut self,
-        doc: String,
-        block: String,
-        start: usize,
-        end: usize,
-        key: String,
-    ) -> app::Result<Option<String>> {
-        let id = decode_token(&block)?;
-        let minted = self.write(&doc)?.mark(id, start, end, &key, None)?;
-        self.emit_mark(doc, block, minted)
-    }
-
     // ---- reads ----
 
     pub fn get_document(&self, doc: String) -> app::Result<Vec<Block>> {
@@ -371,31 +358,11 @@ impl RichCollabState {
             .collect()
     }
 
-    pub fn get_block(&self, doc: String, block: String) -> app::Result<Option<Block>> {
-        self.read(&doc)?
-            .block(decode_token(&block)?)?
-            .map(Block::new)
-            .transpose()
-    }
-
-    /// One block's rendered spans: the read a binding does on every keystroke.
-    pub fn get_block_delta(&self, doc: String, block: String) -> app::Result<Vec<Span>> {
-        Ok(self.read(&doc)?.block_delta(decode_token(&block)?)?)
-    }
-
     pub fn get_text(&self, doc: String, block: String) -> app::Result<String> {
         Ok(self
             .read(&doc)?
             .block_body(decode_token(&block)?)?
             .get_text()?)
-    }
-
-    pub fn list_blocks(&self, doc: String) -> app::Result<Vec<String>> {
-        self.read(&doc)?
-            .blocks()?
-            .iter()
-            .map(|view| encode_token(&view.id))
-            .collect()
     }
 
     /// The ordered document as one canonical line, so three nodes are compared
@@ -417,41 +384,6 @@ impl RichCollabState {
             .block_body(decode_token(&block)?)?
             .get_text()?;
         Ok(text.matches(&needle).count())
-    }
-
-    /// A cursor for the gap at `position`, as an opaque token any member resolves.
-    pub fn anchor_at(
-        &self,
-        doc: String,
-        block: String,
-        position: usize,
-        before: bool,
-    ) -> app::Result<String> {
-        let bias = if before { Bias::Before } else { Bias::After };
-        encode_token(
-            &self
-                .read(&doc)?
-                .block_body(decode_token(&block)?)?
-                .anchor_at(position, bias)?,
-        )
-    }
-
-    /// Where anchors sit in THIS replica's block, one tree rebuild for the lot.
-    /// `null` is an anchor this replica cannot place yet.
-    pub fn resolve_ids(
-        &self,
-        doc: String,
-        block: String,
-        anchors: Vec<String>,
-    ) -> app::Result<Vec<Option<usize>>> {
-        let anchors = anchors
-            .iter()
-            .map(|token| decode_token::<Anchor>(token))
-            .collect::<app::Result<Vec<Anchor>>>()?;
-        Ok(self
-            .read(&doc)?
-            .block_body(decode_token(&block)?)?
-            .resolve_many(&anchors)?)
     }
 
     // ---- internals ----
