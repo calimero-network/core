@@ -900,6 +900,23 @@ async fn a_tee_replica_is_re_admitted_after_it_leaves_and_announces_again() {
     );
 
     // ---- Disable: the replica self-leaves, exactly as `leave_namespace` does. ----
+    // The leave's validity is decided by the BINDING, not the membership row
+    // waited on above: `MemberLeft`'s apply resolves the signer through
+    // `member_account_in_namespace` and refuses if it does not name the
+    // leaving member. Admission writes the row and the binding as separate
+    // steps, so signing as soon as the row appears raced the binding and
+    // failed under CI load with "MemberLeft is self-leave only".
+    assert!(
+        wait_until(|| {
+            calimero_governance_store::member_account_in_namespace(&node.store, &gid, &replica_pk)
+                .ok()
+                .flatten()
+                == Some(replica_account)
+        })
+        .await,
+        "the replica's account binding must resolve before it can sign its own leave"
+    );
+
     let leave = SignedGroupOp::sign(
         &replica_sk,
         gid.to_bytes().into(),
@@ -1068,6 +1085,23 @@ async fn a_replayed_quote_is_still_refused_after_the_replica_leaves() {
         })
         .await,
         "precondition: the first announce must admit, or the replay case proves nothing"
+    );
+
+    // The leave's validity is decided by the BINDING, not the membership row
+    // waited on above: `MemberLeft`'s apply resolves the signer through
+    // `member_account_in_namespace` and refuses if it does not name the
+    // leaving member. Admission writes the row and the binding as separate
+    // steps, so signing as soon as the row appears raced the binding and
+    // failed under CI load with "MemberLeft is self-leave only".
+    assert!(
+        wait_until(|| {
+            calimero_governance_store::member_account_in_namespace(&node.store, &gid, &replica_pk)
+                .ok()
+                .flatten()
+                == Some(replica_account)
+        })
+        .await,
+        "the replica's account binding must resolve before it can sign its own leave"
     );
 
     let leave = SignedGroupOp::sign(
