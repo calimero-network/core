@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::fugue::{FugueNode, FugueTree, Side};
+use super::fugue::{FugueNode, FugueTree, RawId, Side};
 use super::{CrdtType, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::env;
@@ -156,6 +156,21 @@ fn tomb_trim(bits: &mut Vec<u8>) {
     while bits.last() == Some(&0) {
         let _ignored = bits.pop();
     }
+}
+
+/// Which side of its character an [`Anchor`] sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Bias {
+    Before,
+    After,
+}
+
+/// A cursor that survives concurrent edits: the gap beside a character, or a document edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Anchor {
+    Start,
+    End,
+    Char { id: RawId, bias: Bias },
 }
 
 /// A storage-backed collaborative text collection with Tree-Fugue ordering.
@@ -341,6 +356,38 @@ impl<S: StorageAdaptor> FugueText<S> {
     pub fn char_at(&self, pos: usize) -> Result<Option<char>, StoreError> {
         let loaded = self.load()?;
         Ok(build_tree(&loaded)?.values().chars().nth(pos))
+    }
+
+    /// The anchor for the gap at `pos`: `After` holds the character on its left, `Before` its right.
+    pub fn anchor_at(&self, pos: usize, bias: Bias) -> Result<Anchor, StoreError> {
+        let tree = build_tree(&self.load()?)?;
+        let len = tree.len();
+        if pos > len {
+            return Err(out_of_bounds(pos));
+        }
+        let index = match bias {
+            Bias::After if pos == 0 => return Ok(Anchor::Start),
+            Bias::Before if pos == len => return Ok(Anchor::End),
+            Bias::After => pos - 1,
+            Bias::Before => pos,
+        };
+        let id = tree.id_at(index).ok_or_else(|| out_of_bounds(pos))?;
+        Ok(Anchor::Char { id, bias })
+    }
+
+    /// The gap `anchor` names now; a deleted character resolves to the gap it left.
+    pub fn resolve(&self, anchor: &Anchor) -> Result<usize, StoreError> {
+        let (id, bias) = match *anchor {
+            Anchor::Start => return Ok(0),
+            Anchor::End => return self.len(),
+            Anchor::Char { id, bias } => (id, bias),
+        };
+        let tree = build_tree(&self.load()?)?;
+        let before = tree
+            .live_before(id)
+            .ok_or_else(|| invalid("anchor names an unknown character"))?;
+        let live = tree.node(id).is_some_and(|node| node.value.is_some());
+        Ok(before + usize::from(live && bias == Bias::After))
     }
 
     /// The number of visible characters.

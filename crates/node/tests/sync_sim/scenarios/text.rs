@@ -9,6 +9,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_storage::address::Id;
 use calimero_storage::collections::fugue::{FugueNode, FugueTree, RawId};
+use calimero_storage::collections::fugue_text::{Anchor, Bias};
 use calimero_storage::collections::{FugueText, Root};
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::take_last_artifact;
@@ -164,6 +165,12 @@ fn len_of(node: &SimNode) -> usize {
             .expect("document root should exist")
             .len()
             .expect("len should succeed")
+    })
+}
+
+fn read<R>(node: &SimNode, f: impl FnOnce(&Root<FugueText<MainStorage>>) -> R) -> R {
+    node.storage().with_index(|| {
+        f(&Root::<FugueText<MainStorage>>::fetch().expect("document root should exist"))
     })
 }
 
@@ -765,4 +772,44 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
 
     let winner = if q_text > p_text { q_text } else { p_text };
     assert_text_properties(label, &[&p, &q], &winner, slice::from_ref(&winner));
+}
+
+#[tokio::test]
+async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
+    let mut nodes: Vec<SimNode> = (0..2)
+        .map(|i| SimNode::new_in_context(format!("a{i}"), context()))
+        .collect();
+    for node in &nodes {
+        seed_doc(node);
+    }
+    let _typed = edit(&nodes[0], |doc| {
+        doc.insert_str(0, "hello world").expect("seed text")
+    });
+    assert!(converge_group(&mut nodes, &[0, 1]).await);
+
+    let anchors: Vec<Vec<u8>> = [(6, Bias::Before), (5, Bias::After), (1, Bias::Before)]
+        .into_iter()
+        .map(|(pos, bias)| {
+            let anchor = read(&nodes[0], |doc| doc.anchor_at(pos, bias).expect("anchor"));
+            borsh::to_vec(&anchor).expect("anchor should encode")
+        })
+        .collect();
+
+    let _a = edit(&nodes[0], |doc| doc.insert_str(0, "AA").expect("insert"));
+    let _b = edit(&nodes[1], |doc| doc.insert_str(11, "BB").expect("insert"));
+    let _d = edit(&nodes[1], |doc| doc.delete_range(1, 2).expect("delete"));
+    assert!(converge_group(&mut nodes, &[0, 1]).await);
+
+    for node in &nodes {
+        assert_eq!(text_of(node), "AAhllo worldBB", "{}", node.id());
+        assert_blocks_tagged("anchor", node);
+        let resolved: Vec<usize> = anchors
+            .iter()
+            .map(|bytes| {
+                let anchor: Anchor = borsh::from_slice(bytes).expect("anchor should decode");
+                read(node, |doc| doc.resolve(&anchor).expect("resolve"))
+            })
+            .collect();
+        assert_eq!(resolved, [7, 6, 3], "{}", node.id());
+    }
 }

@@ -5,6 +5,7 @@
 #![allow(clippy::len_without_is_empty)]
 
 use calimero_sdk::{app, env};
+use calimero_storage::collections::fugue_text::{Anchor, Bias};
 use calimero_storage::collections::FugueText;
 
 #[app::state(emits = FugueCollabEvent)]
@@ -78,5 +79,18 @@ impl FugueCollabState {
     /// The characters in the half-open range `[start, end)`.
     pub fn text_range(&self, start: usize, end: usize) -> app::Result<String> {
         Ok(self.document.text_range(start, end)?)
+    }
+
+    /// A cursor for the gap at `position`, as an opaque token any member can resolve.
+    pub fn anchor_at(&self, position: usize, before: bool) -> app::Result<String> {
+        let bias = if before { Bias::Before } else { Bias::After };
+        let anchor = self.document.anchor_at(position, bias)?;
+        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&anchor)?).into_string())
+    }
+
+    pub fn resolve_anchor(&self, anchor: String) -> app::Result<usize> {
+        let bytes = bs58::decode(anchor).into_vec()?;
+        let anchor: Anchor = calimero_sdk::borsh::from_slice(&bytes)?;
+        Ok(self.document.resolve(&anchor)?)
     }
 }

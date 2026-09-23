@@ -1,0 +1,164 @@
+description: >
+  A cursor minted on one node, passed around as an opaque token, must name the same
+  place on every node after edits before it, after it, and a delete of its character.
+name: Fugue Collab Anchors
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fugue-node
+  base_port: 2800
+  base_rpc_port: 2900
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: fugue-node-1
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 2-node mesh
+    type: create_mesh
+    context_node: fugue-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - fugue-node-2
+    outputs:
+      context_id: contextId
+
+  - name: Node 1 types the document
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "hello world"
+
+  - name: Wait for the document to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 1 anchors the gap before "w"
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: anchor_at
+    args:
+      position: 6
+      before: true
+    outputs:
+      anchor_w: result.output
+
+  - name: Node 1 anchors the gap before "e"
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: anchor_at
+    args:
+      position: 1
+      before: true
+    outputs:
+      anchor_e: result.output
+
+  - name: Node 2 appends after the anchors
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 11
+      text: "BB"
+
+  - name: Node 2 deletes the anchored "e"
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: delete_range
+    args:
+      start: 1
+      end: 2
+
+  # Position 0 means the same place whether or not Node 2's edits have arrived.
+  - name: Node 1 inserts before the anchors
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "AA"
+
+  - name: Wait for both nodes to hold every edit
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "AAhllo worldBB"
+
+  - name: Node 1 resolves the "w" anchor
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: resolve_anchor
+    args:
+      anchor: "{{anchor_w}}"
+    outputs:
+      w_on_1: result.output
+
+  - name: Node 2 resolves the "w" anchor
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: resolve_anchor
+    args:
+      anchor: "{{anchor_w}}"
+    outputs:
+      w_on_2: result.output
+
+  - name: Node 1 resolves the deleted "e" anchor
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: resolve_anchor
+    args:
+      anchor: "{{anchor_e}}"
+    outputs:
+      e_on_1: result.output
+
+  - name: Node 2 resolves the deleted "e" anchor
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: resolve_anchor
+    args:
+      anchor: "{{anchor_e}}"
+    outputs:
+      e_on_2: result.output
+
+  - name: Every node resolves each anchor to the same place
+    type: assert
+    statements:
+      - "{{w_on_1}} == 7"
+      - "{{w_on_2}} == 7"
+      - "{{e_on_1}} == 3"
+      - "{{e_on_2}} == 3"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
