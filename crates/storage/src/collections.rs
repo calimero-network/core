@@ -30,11 +30,6 @@ pub mod fugue;
 pub use fugue::{FugueError, FugueNode, FugueTree, Side};
 pub mod fugue_text;
 pub use fugue_text::FugueText;
-// Benchmark control for `FugueText`: one storage entity per Fugue node.
-#[cfg(any(test, feature = "fugue-simple"))]
-pub mod fugue_text_simple;
-#[cfg(any(test, feature = "fugue-simple"))]
-pub use fugue_text_simple::FugueTextSimple;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod blob_ref;

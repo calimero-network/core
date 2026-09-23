@@ -57,11 +57,6 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - Plain Fugue, not FugueMax; the residual ordering case is pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin`.
 - `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
 
-`FugueTextSimple` is absent from that table on purpose: it has **no `CrdtType`** and is a
-**measurement control, not a product collection**, behind the off-by-default `fugue-simple`
-feature and used only to split the `FugueText` win into Fugue's ordering and run-length
-blocks. Do not build on it, do not give it a `CrdtType`, do not grow it.
-
 ## AI Agent Mental Model: CRDT Merge Architecture
 
 ### Two Merge Contexts (Critical for Understanding)
@@ -212,7 +207,6 @@ src/
 │   ├── rga.rs                # RGA (replicated growable array)
 │   ├── fugue.rs              # Pure Tree-Fugue algorithm (no storage)
 │   ├── fugue_text.rs         # Storage-backed Fugue text, run-length blocks
-│   ├── fugue_text_simple.rs  # Cost control: one entity per node (feature `fugue-simple`)
 │   ├── root.rs               # Root collection
 │   ├── nested.rs             # Nested CRDTs
 │   ├── nested_map.rs         # Nested map

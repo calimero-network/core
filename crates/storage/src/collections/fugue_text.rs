@@ -1,11 +1,8 @@
-//! `FugueText` - a storage-backed, run-length-blocked Tree-Fugue text CRDT.
+//! `FugueText` - storage for the Tree-Fugue algorithm in [`fugue`](super::fugue).
 //!
-//! One entity is one RUN, not one character: a `TextBlock` holds consecutive nodes, the
-//! first hanging off the stored `(parent, side)` and every later one the right child of
-//! its predecessor. A run stops growing at `MAX_RUN_LEN` and is then never rewritten or
-//! split; the character that overflows it opens a block parented on its last node.
-//! No node-local derived state: every operation expands the stored blocks into a
-//! [`FugueTree`] and asks it for the order, because gas must be equal on every replica.
+//! One entity is one run of up to `MAX_RUN_LEN` nodes, each after the first the right
+//! child of the one before; a full run is never rewritten. Order is recomputed from the
+//! stored blocks through a [`FugueTree`] on every call, so gas is equal on every replica.
 
 use std::collections::BTreeMap;
 
@@ -637,10 +634,11 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
+    use super::model_tests::Model;
     use super::{
         doc_in, join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, MAX_RUN_LEN,
     };
-    use crate::collections::{FugueTextSimple, Root};
+    use crate::collections::Root;
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
 
@@ -651,7 +649,7 @@ mod tests {
     const CAP_POOL: [char; 4] = ['a', 'é', '日', 'z']; // mixed widths: bytes != nodes
     const DIFFERENTIAL_SEED: u64 = 0x_d1_ff_5e_ed;
     const DIFFERENTIAL_ROUNDS: usize = 200;
-    const DIFFERENTIAL_MAX_NODES: usize = 800; // the control is quadratic in this
+    const DIFFERENTIAL_MAX_NODES: usize = 800; // the model is quadratic in this
 
     /// Sorted by id: the canonical form for equality assertions.
     fn stored<S: StorageAdaptor>(doc: &FugueText<S>) -> Vec<(BlockId, TextBlock)> {
@@ -1213,15 +1211,12 @@ mod tests {
         );
     }
 
-    /// The blockless control has no runs, so it is an oracle for the whole block layer.
+    /// The model has no runs, so it is an oracle for the whole block layer.
     #[test]
-    fn random_scripts_agree_with_the_blockless_control() {
+    fn random_scripts_agree_with_the_model() {
         env::reset_for_testing();
         let mut blocked = doc_in::<MockedStorage<878>>("differential");
-        let mut simple = FugueTextSimple::<MockedStorage<879>>::new_with_field_name_internal(
-            None,
-            "differential",
-        );
+        let mut model = Model::default();
 
         let mut rng = StdRng::seed_from_u64(DIFFERENTIAL_SEED);
         let mut length = 0_usize;
@@ -1241,7 +1236,7 @@ mod tests {
                         1 + rng.random_range(..64_usize)
                     };
                     blocked.delete_range(pos, pos + span).unwrap();
-                    simple.delete_range(pos, pos + span).unwrap();
+                    model.delete_range(pos, pos + span);
                     String::new()
                 }
             };
@@ -1249,15 +1244,14 @@ mod tests {
                 blocked
                     .insert_str_with_replica(pos, replica, &text)
                     .unwrap();
-                simple.insert_str_with_replica(pos, replica, &text).unwrap();
+                model.insert_str(pos, replica, &text);
                 minted += text.chars().count();
             }
             let observed = blocked.get_text().unwrap();
             assert_eq!(
                 observed,
-                simple.get_text().unwrap(),
-                "round {round} of seed {DIFFERENTIAL_SEED:#x} diverged from the \
-                 blockless control"
+                model.text(),
+                "round {round} of seed {DIFFERENTIAL_SEED:#x} diverged from the model"
             );
             length = observed.chars().count();
         }

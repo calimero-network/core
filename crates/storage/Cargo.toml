@@ -50,9 +50,6 @@ default = []
 # crate boundaries so dependent crates' DAG-causal tests can share one
 # canonical copy instead of mirroring it.
 testing = []
-# Exposes the measurement control for `FugueText` to out-of-crate cost
-# benchmarks; the in-crate differential test reaches it under `cfg(test)`.
-fugue-simple = []
 
 # Registry tests live in `tests/` as separate integration binaries
 # rather than `src/tests/` unit modules so they exercise the production
