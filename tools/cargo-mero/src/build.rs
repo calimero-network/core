@@ -265,8 +265,10 @@ fn emit_abi(
         return Ok(None);
     };
 
-    std::fs::write(&abi_json, serde_json::to_string_pretty(&manifest)?)
-        .wrap_err_with(|| format!("failed to write {abi_json}"))?;
+    let contents = serde_json::to_string_pretty(&manifest)?;
+    publish(&abi_json, |staged| {
+        std::fs::write(staged, contents).wrap_err_with(|| format!("failed to write {abi_json}"))
+    })?;
     println!("• emitted {abi_json}");
 
     write_state_schema(crate_dir, res_dir, &manifest)?;
@@ -302,13 +304,33 @@ fn write_state_schema(crate_dir: &Utf8Path, res_dir: &Utf8Path, manifest: &Manif
         }
         Ok(mut state_schema) => {
             state_schema.schema_version = "wasm-abi/1".to_owned();
-            std::fs::write(&schema_path, serde_json::to_string_pretty(&state_schema)?)
-                .wrap_err_with(|| format!("failed to write {schema_path}"))?;
+            let contents = serde_json::to_string_pretty(&state_schema)?;
+            publish(&schema_path, |staged| {
+                std::fs::write(staged, contents)
+                    .wrap_err_with(|| format!("failed to write {schema_path}"))
+            })?;
             println!("• emitted {schema_path}");
         }
     }
 
     Ok(())
+}
+
+/// Produce `path` in a sibling staging file and rename it into place, so a
+/// concurrent build or reader of the same app never sees a half-written file.
+fn publish(path: &Utf8Path, stage: impl FnOnce(&Utf8Path) -> Result<()>) -> Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| eyre!("{path} has no file name"))?;
+    let staged = path.with_file_name(format!(".{}.{name}", std::process::id()));
+    let result = stage(&staged).and_then(|()| {
+        std::fs::rename(&staged, path)
+            .wrap_err_with(|| format!("failed to move {staged} to {path}"))
+    });
+    if result.is_err() {
+        let _ignored = std::fs::remove_file(&staged);
+    }
+    result
 }
 
 fn build_one(
@@ -342,26 +364,29 @@ fn build_one(
     };
 
     let wasm_path = res_dir.join(format!("{underscored}.wasm"));
-    std::fs::copy(&artifact, &wasm_path)
-        .wrap_err_with(|| format!("failed to copy {artifact} -> {wasm_path}"))?;
-    println!("• copied wasm to {wasm_path}");
+    publish(&wasm_path, |staged| {
+        std::fs::copy(&artifact, staged)
+            .wrap_err_with(|| format!("failed to copy {artifact} -> {staged}"))?;
+        println!("• copied wasm to {wasm_path}");
 
-    if optimize {
-        println!("• optimizing {wasm_path} (wasm-opt -Oz)");
-        OptimizationOptions::new_optimize_for_size_aggressively()
-            .enable_feature(Feature::BulkMemory)
-            .run(&wasm_path, &wasm_path)
-            .map_err(|e| eyre!("wasm-opt failed on {wasm_path}: {e}"))?;
-    } else {
-        println!("• skipping wasm-opt (profiling build)");
-    }
+        if optimize {
+            println!("• optimizing {wasm_path} (wasm-opt -Oz)");
+            OptimizationOptions::new_optimize_for_size_aggressively()
+                .enable_feature(Feature::BulkMemory)
+                .run(staged, staged)
+                .map_err(|e| eyre!("wasm-opt failed on {wasm_path}: {e}"))?;
+        } else {
+            println!("• skipping wasm-opt (profiling build)");
+        }
 
-    // Embed the full abi.json: it carries the per-method flags the node's xcall
-    // gate reads, which a state schema alone would drop.
-    if let Some(abi_json) = &abi_json {
-        println!("• embedding {abi_json} into {wasm_path}");
-        mero_abi::run_embed(wasm_path.as_std_path(), abi_json.as_std_path())?;
-    }
+        // Embed the full abi.json: it carries the per-method flags the node's xcall
+        // gate reads, which a state schema alone would drop.
+        if let Some(abi_json) = &abi_json {
+            println!("• embedding {abi_json} into {wasm_path}");
+            mero_abi::run_embed(staged.as_std_path(), abi_json.as_std_path())?;
+        }
+        Ok(())
+    })?;
 
     Ok(BuiltWasm {
         crate_name: crate_name.clone(),
@@ -484,7 +509,7 @@ strip = false"#;
 mod tests {
     use camino::Utf8PathBuf;
 
-    use super::{compose_rustflags, dedup, select_service_builds, write_state_schema};
+    use super::{compose_rustflags, dedup, publish, select_service_builds, write_state_schema};
 
     /// res/ is not cleaned between builds, so a schema left by an earlier build
     /// must not survive a build that can extract none - `bundle` ships res/ as-is,
@@ -507,6 +532,35 @@ mod tests {
             !stale.exists(),
             "a stale state-schema.json must not survive a failed extraction"
         );
+    }
+
+    /// Tests build the same app from many processes at once; one of them must
+    /// never read a wasm another is still writing.
+    #[test]
+    fn a_reader_never_sees_a_half_published_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(tmp.path().join("app.wasm")).unwrap();
+        let versions = [vec![b'a'; 4 << 20], vec![b'b'; 4 << 20]];
+        publish(&path, |staged| Ok(std::fs::write(staged, &versions[0])?)).unwrap();
+
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                for version in versions.iter().cycle().take(40) {
+                    publish(&path, |staged| Ok(std::fs::write(staged, version)?)).unwrap();
+                }
+            });
+            while !writer.is_finished() {
+                let seen = std::fs::read(&path).unwrap();
+                assert!(
+                    versions.contains(&seen),
+                    "read a partial file of {} bytes",
+                    seen.len()
+                );
+            }
+        });
+
+        let entries = std::fs::read_dir(tmp.path()).unwrap().count();
+        assert_eq!(entries, 1, "a staging file was left behind");
     }
 
     /// Every part is optional, and a missing `$HOME` must not take the caller's
