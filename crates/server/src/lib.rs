@@ -29,6 +29,7 @@ mod ephemeral_replay;
 mod execute;
 pub mod jsonrpc;
 mod metrics;
+mod proof_auth;
 mod service_mounts;
 pub mod sse;
 mod subscription_grants;

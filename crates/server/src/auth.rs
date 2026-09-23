@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use crate::proof_auth::{ProofPolicy, Refusal, MAX_PROVEN_BODY, PROOF_HEADER};
 use axum::body::Body;
 use axum::extract::OriginalUri;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
@@ -177,18 +178,83 @@ pub async fn initialise(server_config: &ServerConfig, datastore: &Store) -> Resu
 }
 
 #[must_use]
-pub fn guard_layer(service: Arc<AuthService>) -> AuthGuardLayer {
-    AuthGuardLayer::new(service)
+/// Seconds since the Unix epoch, for the one rule on this path that needs a
+/// clock: whether a caller's proof is inside its window.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Run the permission check both admission paths share.
+///
+/// Extracted so the token path and the proof path cannot drift: they authorize
+/// against the same table, and a second copy of this is how one of them ends up
+/// a route behind the other.
+/// Returns the refusal when there is one, so the polarity is visible at every
+/// call site: `Some` is a rejection, and there is no success value to discard.
+fn authorization_refusal(
+    method: &Method,
+    full_uri: axum::http::Uri,
+    permissions: &[String],
+    subject: &str,
+) -> Option<Response> {
+    let perm_request = Request::builder()
+        .method(method.clone())
+        .uri(full_uri)
+        .body(Body::empty())
+        .expect("request built from an already-validated method and URI");
+
+    let validator = PermissionValidator::new();
+    let required = validator.determine_required_permissions(&perm_request);
+    if validator.validate_permissions(permissions, &required) {
+        return None;
+    }
+
+    warn!(
+        %subject,
+        ?required,
+        granted = ?permissions,
+        "permission denied: caller lacks the permissions this route requires",
+    );
+    let mut resp = StatusCode::FORBIDDEN.into_response();
+    resp.headers_mut().insert(
+        "X-Auth-Error",
+        HeaderValue::from_static("permission_denied"),
+    );
+    Some(resp)
+}
+
+/// The permissions a verified proof confers.
+///
+/// Exactly what an `account_proof` SESSION confers, read from that provider's
+/// own default rather than restated here. Both are the same claim — "this
+/// caller is an account" — arrived at two ways, and giving them different
+/// authority would mean the answer to "what does being an account get you"
+/// depended on how you proved it.
+fn proof_permissions() -> Vec<String> {
+    mero_auth::config::AccountProofConfig::default().session_permissions
+}
+
+pub fn guard_layer(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> AuthGuardLayer {
+    AuthGuardLayer::new(service, proof_policy)
 }
 
 #[derive(Clone)]
 pub struct AuthGuardLayer {
     service: Arc<AuthService>,
+    /// Absent when this node cannot serve proofs at all — it has minted no
+    /// signing key yet, so there is no name for a session statement to be
+    /// addressed to and nothing to compare against.
+    proof_policy: Option<ProofPolicy>,
 }
 
 impl AuthGuardLayer {
-    fn new(service: Arc<AuthService>) -> Self {
-        Self { service }
+    fn new(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> Self {
+        Self {
+            service,
+            proof_policy,
+        }
     }
 }
 
@@ -203,6 +269,7 @@ where
         AuthGuardService {
             inner,
             service: Arc::clone(&self.service),
+            proof_policy: self.proof_policy.clone(),
         }
     }
 }
@@ -211,6 +278,7 @@ where
 pub struct AuthGuardService<S> {
     inner: S,
     service: Arc<AuthService>,
+    proof_policy: Option<ProofPolicy>,
 }
 
 impl<S> Service<Request<Body>> for AuthGuardService<S>
@@ -229,6 +297,7 @@ where
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let mut inner = self.inner.clone();
         let service = Arc::clone(&self.service);
+        let proof_policy = self.proof_policy.clone();
         let (mut parts, body) = req.into_parts();
         let method = parts.method.clone();
         let headers = parts.headers.clone();
@@ -271,8 +340,92 @@ where
                                 }
                             }
                             None => {
-                                debug!("No Authorization header and no ?token= query parameter");
-                                return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                // No token of any kind. Before refusing, the one
+                                // other way a caller can say who it is: a proof
+                                // carried on the request itself.
+                                //
+                                // Deliberately last. A request holding a token is
+                                // decided by that token, so a caller cannot
+                                // present a weak proof alongside a rejected token
+                                // and have the proof answer instead.
+                                let Some(header) = parts.headers.get(&PROOF_HEADER) else {
+                                    debug!("no Authorization header, no ?token= and no proof");
+                                    return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                };
+                                let Some(policy) = proof_policy.as_ref() else {
+                                    debug!("a proof was presented to a node that serves none");
+                                    return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                };
+
+                                // The body is read HERE and nowhere else on this
+                                // path, because a proof commits to it. The token
+                                // path never touches it, so a streaming upload
+                                // authenticated by a token still streams.
+                                let bytes = match axum::body::to_bytes(body, MAX_PROVEN_BODY).await
+                                {
+                                    Ok(bytes) => bytes,
+                                    Err(_ignored) => {
+                                        debug!("a proven request's body exceeded the cap");
+                                        return Ok(
+                                            StatusCode::PAYLOAD_TOO_LARGE.into_response()
+                                        );
+                                    }
+                                };
+
+                                let full_uri = parts
+                                    .extensions
+                                    .get::<OriginalUri>()
+                                    .map_or_else(|| uri.clone(), |original| original.0.clone());
+
+                                let account = match policy.admit(
+                                    header.as_bytes(),
+                                    method.as_str(),
+                                    full_uri.path(),
+                                    &bytes,
+                                    now_secs(),
+                                ) {
+                                    Ok(account) => account,
+                                    Err(refusal) => {
+                                        debug!(?refusal, "proof refused");
+                                        let mut resp = match refusal {
+                                            // A caller this node was never asked
+                                            // to serve is told so, rather than
+                                            // being invited to re-authenticate
+                                            // against a door that will not open
+                                            // for it however it knocks.
+                                            Refusal::NotServed => {
+                                                StatusCode::FORBIDDEN.into_response()
+                                            }
+                                            Refusal::Malformed | Refusal::Unverified => {
+                                                StatusCode::UNAUTHORIZED.into_response()
+                                            }
+                                        };
+                                        resp.headers_mut().insert(
+                                            "X-Auth-Error",
+                                            HeaderValue::from_static("invalid_proof"),
+                                        );
+                                        return Ok(resp);
+                                    }
+                                };
+
+                                if let Some(resp) = authorization_refusal(
+                                    &method,
+                                    full_uri,
+                                    &proof_permissions(),
+                                    &account.to_string(),
+                                ) {
+                                    return Ok(resp);
+                                }
+
+                                // An account, and only ever an account. A proof
+                                // says a device speaks for an account root; it
+                                // says nothing about who owns this node, so the
+                                // node-owner marker is unreachable from here by
+                                // construction rather than by a check.
+                                parts.extensions.insert(AuthenticatedAccount(account));
+
+                                let req = Request::from_parts(parts, Body::from(bytes));
+                                return inner.call(req).await;
                             }
                         }
                     };
@@ -297,24 +450,12 @@ where
                     .get::<OriginalUri>()
                     .map_or_else(|| uri.clone(), |original| original.0.clone());
 
-                let perm_request = Request::builder()
-                    .method(method.clone())
-                    .uri(full_uri)
-                    .body(Body::empty())
-                    .expect("request built from an already-validated method and URI");
-
-                let validator = PermissionValidator::new();
-                let required = validator.determine_required_permissions(&perm_request);
-                if !validator.validate_permissions(&auth_response.permissions, &required) {
-                    warn!(
-                        key_id = %auth_response.key_id,
-                        ?required,
-                        granted = ?auth_response.permissions,
-                        "permission denied: token lacks the permissions this route requires",
-                    );
-                    let mut resp = StatusCode::FORBIDDEN.into_response();
-                    resp.headers_mut()
-                        .insert("X-Auth-Error", HeaderValue::from_static("permission_denied"));
+                if let Some(resp) = authorization_refusal(
+                    &method,
+                    full_uri,
+                    &auth_response.permissions,
+                    &auth_response.key_id,
+                ) {
                     return Ok(resp);
                 }
 
@@ -572,10 +713,12 @@ mod tests {
 
         Router::new()
             .route("/admin-api/applications", get(|| async { "ok" }))
-            .layer(super::guard_layer(Arc::new(AuthService::new(
-                Vec::new(),
-                token_manager,
-            ))))
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                // No proof policy: this test covers the token path, and giving
+                // it one would let a failure there be masked by admission here.
+                None,
+            ))
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
