@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use calimero_storage::action::Action;
+use calimero_storage::collections::fugue_text::TextOp;
 use calimero_storage::collections::{
     FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap, Vector,
 };
@@ -231,6 +232,19 @@ fn fugue_text_char_at(n: usize) {
     let _ignored = text.char_at(n / 2).expect("char_at should succeed");
 }
 
+fn fugue_text_apply_delta(n: usize) {
+    let mut text = build_fugue_text(n);
+    reset_counters();
+    text.apply_delta(&[
+        TextOp::Retain(n / 2),
+        TextOp::Delete(1),
+        TextOp::Insert("ab".to_owned()),
+        TextOp::Retain(1),
+        TextOp::Delete(1),
+    ])
+    .expect("apply_delta should succeed");
+}
+
 fn fugue_text_insert_per_char(n: usize) {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {
@@ -368,7 +382,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 13] = [
+    const REGISTRY: [Entry; 14] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -397,6 +411,12 @@ pub fn all() -> Vec<Workload> {
         ),
         ("fugue_text_insert", FlatPerEntry, 0, fugue_text_insert),
         ("fugue_text_char_at", KnownLinearInN, 0, fugue_text_char_at),
+        (
+            "fugue_text_apply_delta",
+            KnownLinearInN,
+            0,
+            fugue_text_apply_delta,
+        ),
     ];
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because

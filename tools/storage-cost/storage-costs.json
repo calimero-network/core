@@ -1,4 +1,29 @@
 {
+  "fugue_text_apply_delta": {
+    "tolerance_pct": 0,
+    "sizes": {
+      "00000010": {
+        "rows_read": 87,
+        "rows_written": 32,
+        "rows_removed": 0
+      },
+      "00000100": {
+        "rows_read": 87,
+        "rows_written": 32,
+        "rows_removed": 0
+      },
+      "00001000": {
+        "rows_read": 93,
+        "rows_written": 32,
+        "rows_removed": 0
+      },
+      "00010000": {
+        "rows_read": 165,
+        "rows_written": 32,
+        "rows_removed": 0
+      }
+    }
+  },
   "fugue_text_char_at": {
     "tolerance_pct": 0,
     "sizes": {

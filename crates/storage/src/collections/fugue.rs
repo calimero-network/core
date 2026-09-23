@@ -195,9 +195,26 @@ impl FugueTree {
         self.len() == 0
     }
 
+    /// Document order, root and tombstones included, for a caller making several `_in` edits.
+    #[must_use]
+    pub fn order(&self) -> Vec<NodeId> {
+        self.traverse_all()
+    }
+
     /// Insert `value` at `index` under `id`, returning the node to broadcast.
     pub fn insert(
         &mut self,
+        index: usize,
+        value: char,
+        id: RawId,
+    ) -> Result<FugueNode, FugueError> {
+        self.insert_in(&mut self.traverse_all(), index, value, id)
+    }
+
+    /// [`Self::insert`] against a held `order`, which is patched instead of re-traversed.
+    pub fn insert_in(
+        &mut self,
+        order: &mut Vec<NodeId>,
         index: usize,
         value: char,
         id: RawId,
@@ -206,18 +223,21 @@ impl FugueTree {
             return Err(FugueError::DuplicateId(id));
         }
 
-        let order = self.traverse_all();
         let left_origin: NodeId = if index == 0 {
             None
         } else {
             Some(
-                self.nth_live(&order, index - 1)
+                self.nth_live(order, index - 1)
                     .ok_or(FugueError::IndexOutOfBounds {
                         index,
                         len: self.len(),
                     })?,
             )
         };
+        let pos = order
+            .iter()
+            .position(|n| *n == left_origin)
+            .expect("left origin is in the traversal");
 
         let node = if self.children_of(left_origin, Side::R).next().is_none() {
             FugueNode {
@@ -228,34 +248,48 @@ impl FugueTree {
             }
         } else {
             // `left_origin` has a right child, so its successor in the traversal exists.
-            let pos = order
-                .iter()
-                .position(|n| *n == left_origin)
-                .expect("left origin is in the traversal");
-            let right_origin = order[pos + 1];
             FugueNode {
                 id,
                 value: Some(value),
-                parent: right_origin,
+                parent: order[pos + 1],
                 side: Side::L,
             }
         };
 
         self.integrate(node);
+        // Either way the new node directly follows its left origin.
+        order.insert(pos + 1, Some(id));
         Ok(node)
     }
 
     /// Tombstone the character at `index`, returning the id to broadcast.
     pub fn delete(&mut self, index: usize) -> Result<RawId, FugueError> {
         let order = self.traverse_all();
-        let id = self
-            .nth_live(&order, index)
+        self.delete_in(&order, index, 1)
+            .first()
+            .copied()
             .ok_or(FugueError::IndexOutOfBounds {
                 index,
                 len: self.len(),
-            })?;
-        self.tombstone(id)?;
-        Ok(id)
+            })
+    }
+
+    /// Tombstone up to `count` live characters from `index`; tombstones keep their place in `order`.
+    pub fn delete_in(&mut self, order: &[NodeId], index: usize, count: usize) -> Vec<RawId> {
+        let ids: Vec<RawId> = order
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|raw| self.nodes.get(raw).is_some_and(|n| n.value.is_some()))
+            .skip(index)
+            .take(count)
+            .collect();
+        for id in &ids {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.value = None;
+            }
+        }
+        ids
     }
 
     /// The delete effector: tombstone a node by id.
@@ -348,7 +382,7 @@ pub(super) fn figure_3_tree() -> FugueTree {
 mod tests {
     use rand::rngs::StdRng;
     use rand::seq::SliceRandom;
-    use rand::SeedableRng;
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
 
@@ -502,6 +536,34 @@ mod tests {
         assert!(converged.contains("Aaaa"));
         assert!(converged.contains("Bbbb"));
         assert!(converged.contains("Ccc"));
+    }
+
+    /// The `_in` edits patch a held order; it must stay what a fresh traversal would give.
+    #[test]
+    fn held_order_matches_a_fresh_traversal_after_every_edit() {
+        const SEED: u64 = 0x0de7_5eed;
+        let mut rng = StdRng::seed_from_u64(SEED);
+        let mut tree = FugueTree::new();
+        let mut order = tree.order();
+        for step in 0..400_u32 {
+            let len = tree.len();
+            if len > 0 && rng.random_range(..4_u32) == 0 {
+                let index = rng.random_range(..len);
+                let count = 1 + rng.random_range(..3_usize);
+                let _ids = tree.delete_in(&order, index, count);
+            } else {
+                let index = rng.random_range(..len + 1);
+                let replica = rng.random_range(..3_u64);
+                let _node = tree
+                    .insert_in(&mut order, index, 'x', (replica, step))
+                    .unwrap();
+            }
+            assert_eq!(
+                order,
+                tree.order(),
+                "seed {SEED:#x}: drifted at step {step}"
+            );
+        }
     }
 
     #[test]

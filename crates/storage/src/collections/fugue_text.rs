@@ -4,11 +4,11 @@
 //! child of the one before; a full run is never rewritten. Order is recomputed from the
 //! stored blocks through a [`FugueTree`] on every call, so gas is equal on every replica.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::fugue::{FugueNode, FugueTree, RawId, Side};
+use super::fugue::{FugueNode, FugueTree, NodeId, RawId, Side};
 use super::{CrdtType, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::env;
@@ -173,6 +173,14 @@ pub enum Anchor {
     Char { id: RawId, bias: Bias },
 }
 
+/// One step of an editor change, walking the document as it was before the change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextOp {
+    Retain(usize),
+    Insert(String),
+    Delete(usize),
+}
+
 /// A storage-backed collaborative text collection with Tree-Fugue ordering.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct FugueText<S: StorageAdaptor = MainStorage> {
@@ -271,20 +279,36 @@ impl<S: StorageAdaptor> FugueText<S> {
         // Re-key thunk for a document stored as a collection value.
         let _ignored = super::rekey::register_rekey::<Self>();
 
-        // Only the first character needs the insert rule; the rest chain right.
-        let mut rest = s.chars();
-        let Some(first) = rest.next() else {
-            return Ok(());
-        };
+        let mut draft = Draft::open(self)?;
+        draft.insert(pos, replica, s, false)?;
+        self.flush(draft)
+    }
 
-        let loaded = self.load()?;
-        let mut tree = build_tree(&loaded)?;
-        let counter = next_counter(replica, &loaded)?;
-        let node = tree
-            .insert(pos, first, (replica, counter))
-            .map_err(|err| invalid(&err.to_string()))?;
+    /// Apply a whole editor change in one call. Panics inside a state migration.
+    #[expect(clippy::panic, reason = "same guard as `insert_str`")]
+    pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<(), StoreError> {
+        if env::in_merge_mode() {
+            panic!(
+                "FugueText::apply_delta() is non-deterministic during a state migration: it \
+                 mints node ids from the node-local device id, diverging ids across nodes."
+            );
+        }
+        let _ignored = super::rekey::register_rekey::<Self>();
+        let replica = local_replica();
 
-        self.materialize(&loaded, node, rest.as_str())
+        let mut draft = Draft::open(self)?;
+        let mut pos = 0_usize;
+        for (index, op) in ops.iter().enumerate() {
+            match *op {
+                TextOp::Retain(count) => pos = advance(pos, count)?,
+                TextOp::Insert(ref text) => {
+                    draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    pos = advance(pos, text.chars().count())?;
+                }
+                TextOp::Delete(count) => draft.delete(pos, advance(pos, count)?)?,
+            }
+        }
+        self.flush(draft)
     }
 
     /// Delete the character at `pos`.
@@ -297,43 +321,9 @@ impl<S: StorageAdaptor> FugueText<S> {
         if start > end {
             return Err(invalid("start must be <= end"));
         }
-
-        let loaded = self.load()?;
-        let mut tree = build_tree(&loaded)?;
-
-        // Each tombstone removes its character from the live sequence, so `start` stays put.
-        let count = end.min(tree.len()).saturating_sub(start);
-        let mut targets: Vec<(u64, u32)> = Vec::with_capacity(count);
-        for _ in 0..count {
-            match tree.delete(start) {
-                Ok(id) => targets.push(id),
-                Err(_) => break,
-            }
-        }
-        if targets.is_empty() {
-            return Ok(());
-        }
-
-        let mut touched: BTreeMap<usize, TextBlock> = BTreeMap::new();
-        for raw in targets {
-            let id = BlockId::from_raw(raw);
-            let index =
-                find_block(&loaded, id).ok_or_else(|| invalid("deleted node has no block"))?;
-            let block = touched
-                .entry(index)
-                .or_insert_with(|| loaded[index].block.clone());
-            tomb_set(
-                &mut block.tombstones,
-                (id.counter - loaded[index].id.counter) as usize,
-            );
-        }
-
-        for (index, mut block) in touched {
-            tomb_trim(&mut block.tombstones);
-            self.put_block(BlockKey::new(loaded[index].id), block)?;
-        }
-
-        Ok(())
+        let mut draft = Draft::open(self)?;
+        draft.delete(start, end)?;
+        self.flush(draft)
     }
 
     /// The document text, tombstones excluded.
@@ -414,64 +404,13 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(())
     }
 
-    /// Write the minted node and the `rest` it heads, extending a run then chunking at the cap.
-    fn materialize(
-        &mut self,
-        loaded: &[LoadedBlock],
-        node: FugueNode,
-        rest: &str,
-    ) -> Result<(), StoreError> {
-        let id = BlockId::from_raw(node.id);
-
-        // Appended nodes are live and a trailing zero bit is implicit, so the bitmap is untouched.
-        let (mut key, mut block, filled) = match coalesce_target(loaded, node, id) {
-            Some(lb) => (BlockKey::new(lb.id), lb.block.clone(), lb.len),
-            None => (
-                BlockKey::new(id),
-                TextBlock {
-                    start_id: id,
-                    text: String::new(),
-                    parent: node.parent.map(BlockId::from_raw),
-                    side: node.side.into(),
-                    tombstones: Vec::new(),
-                },
-                0,
-            ),
-        };
-        block.text.push(node.value.unwrap_or('\u{fffd}'));
-
-        let mut chars = rest.chars();
-        let mut room = MAX_RUN_LEN - filled - 1;
-        let mut last = id.counter;
-        loop {
-            for content in chars.by_ref().take(room) {
-                block.text.push(content);
-                last = bump(last)?;
+    fn flush(&mut self, draft: Draft) -> Result<(), StoreError> {
+        for lb in draft.loaded {
+            if draft.dirty.contains(&lb.id) {
+                self.put_block(BlockKey::new(lb.id), lb.block)?;
             }
-            self.put_block(key, block)?;
-
-            let Some(content) = chars.next() else {
-                return Ok(());
-            };
-            // Past the cap: parent the new block on the full run's last node, side right.
-            let start = BlockId {
-                replica: id.replica,
-                counter: bump(last)?,
-            };
-            block = TextBlock {
-                start_id: start,
-                text: content.to_string(),
-                parent: Some(BlockId {
-                    replica: id.replica,
-                    counter: last,
-                }),
-                side: BlockSide::R,
-                tombstones: Vec::new(),
-            };
-            key = BlockKey::new(start);
-            last = start.counter;
-            room = MAX_RUN_LEN - 1;
         }
+        Ok(())
     }
 
     /// A block is MUTABLE under one key, so an untagged entity would reconcile last-writer-wins.
@@ -572,6 +511,132 @@ struct LoadedBlock {
     len: usize,
 }
 
+/// One call's blocks and tree, edited in memory so each touched block is written once.
+struct Draft {
+    loaded: Vec<LoadedBlock>,
+    tree: FugueTree,
+    order: Vec<NodeId>,
+    dirty: BTreeSet<BlockId>,
+}
+
+impl Draft {
+    fn open<S: StorageAdaptor>(doc: &FugueText<S>) -> Result<Self, StoreError> {
+        let loaded = doc.load()?;
+        let tree = build_tree(&loaded)?;
+        Ok(Self {
+            order: tree.order(),
+            loaded,
+            tree,
+            dirty: BTreeSet::new(),
+        })
+    }
+
+    /// Only the first character needs the insert rule; the rest chain right.
+    /// `chain` also grows the tree, which only a later op in the same call reads.
+    fn insert(&mut self, pos: usize, replica: u64, s: &str, chain: bool) -> Result<(), StoreError> {
+        let mut rest = s.chars();
+        let Some(first) = rest.next() else {
+            return Ok(());
+        };
+        let counter = next_counter(replica, &self.loaded)?;
+        let node = self
+            .tree
+            .insert_in(&mut self.order, pos, first, (replica, counter))
+            .map_err(|err| invalid(&err.to_string()))?;
+
+        let id = BlockId::from_raw(node.id);
+        let mut at = match coalesce_target(&self.loaded, node, id) {
+            Some(index) => index,
+            None => self.open_block(id, node.parent.map(BlockId::from_raw), node.side.into()),
+        };
+        self.push(at, first);
+
+        let mut chained: Vec<NodeId> = Vec::new();
+        let mut last = counter;
+        for content in rest {
+            let next = bump(last)?;
+            if self.loaded[at].len == MAX_RUN_LEN {
+                // Past the cap: parent the new block on the full run's last node, side right.
+                let (start, parent) = (
+                    BlockId {
+                        replica,
+                        counter: next,
+                    },
+                    BlockId {
+                        replica,
+                        counter: last,
+                    },
+                );
+                at = self.open_block(start, Some(parent), BlockSide::R);
+            }
+            self.push(at, content);
+            if chain {
+                self.tree.integrate(FugueNode {
+                    id: (replica, next),
+                    value: Some(content),
+                    parent: Some((replica, last)),
+                    side: Side::R,
+                });
+                chained.push(Some((replica, next)));
+            }
+            last = next;
+        }
+        // Each chained node is the only right child of the one before it, so they follow `first`.
+        if let Some(head) = self.order.iter().position(|n| *n == Some(node.id)) {
+            let _ignored = self.order.splice(head + 1..head + 1, chained);
+        }
+        Ok(())
+    }
+
+    fn open_block(&mut self, id: BlockId, parent: Option<BlockId>, side: BlockSide) -> usize {
+        let at = self.loaded.partition_point(|lb| lb.id < id);
+        self.loaded.insert(
+            at,
+            LoadedBlock {
+                id,
+                len: 0,
+                block: TextBlock {
+                    start_id: id,
+                    text: String::new(),
+                    parent,
+                    side,
+                    tombstones: Vec::new(),
+                },
+            },
+        );
+        at
+    }
+
+    /// An appended node is live and a trailing zero bit is implicit, so the bitmap is untouched.
+    fn push(&mut self, at: usize, content: char) {
+        let lb = &mut self.loaded[at];
+        lb.block.text.push(content);
+        lb.len += 1;
+        let _ignored = self.dirty.insert(lb.id);
+    }
+
+    fn delete(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
+        let count = end.saturating_sub(start);
+        for raw in self.tree.delete_in(&self.order, start, count) {
+            let id = BlockId::from_raw(raw);
+            let index =
+                find_block(&self.loaded, id).ok_or_else(|| invalid("deleted node has no block"))?;
+            let lb = &mut self.loaded[index];
+            tomb_set(
+                &mut lb.block.tombstones,
+                (id.counter - lb.id.counter) as usize,
+            );
+            tomb_trim(&mut lb.block.tombstones);
+            let _ignored = self.dirty.insert(lb.id);
+        }
+        Ok(())
+    }
+}
+
+fn advance(pos: usize, count: usize) -> Result<usize, StoreError> {
+    pos.checked_add(count).ok_or_else(|| out_of_bounds(pos))
+}
+
 /// Stops at [`MAX_RUN_LEN`], past which a full block's text is frozen.
 fn coalesces_into(lb: &LoadedBlock, id: BlockId) -> bool {
     lb.len < MAX_RUN_LEN
@@ -580,14 +645,15 @@ fn coalesces_into(lb: &LoadedBlock, id: BlockId) -> bool {
 }
 
 /// Only a RIGHT child off the run's LAST node continues it.
-fn coalesce_target(loaded: &[LoadedBlock], node: FugueNode, id: BlockId) -> Option<&LoadedBlock> {
+fn coalesce_target(loaded: &[LoadedBlock], node: FugueNode, id: BlockId) -> Option<usize> {
     if node.side != Side::R {
         return None;
     }
     let parent = BlockId::from_raw(node.parent?);
-    let lb = loaded.get(find_block(loaded, parent)?)?;
+    let index = find_block(loaded, parent)?;
+    let lb = loaded.get(index)?;
     let offset = (parent.counter - lb.id.counter) as usize;
-    (offset + 1 == lb.len && coalesces_into(lb, id)).then_some(lb)
+    (offset + 1 == lb.len && coalesces_into(lb, id)).then_some(index)
 }
 
 fn bump(counter: u32) -> Result<u32, StoreError> {
@@ -683,7 +749,7 @@ mod tests {
 
     use super::model_tests::Model;
     use super::{
-        doc_in, join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, MAX_RUN_LEN,
+        doc_in, join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, TextOp, MAX_RUN_LEN,
     };
     use crate::collections::Root;
     use crate::env;
@@ -1022,6 +1088,47 @@ mod tests {
         env::with_merge_mode(|| {
             let _ = doc.insert_str(0, "Hi");
         });
+    }
+
+    #[test]
+    #[should_panic(expected = "migration")]
+    fn apply_delta_panics_during_migration() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        env::with_merge_mode(|| {
+            let _ignored = doc.apply_delta(&[TextOp::Insert("H".to_owned())]);
+        });
+    }
+
+    #[test]
+    fn apply_delta__replaces_a_word_in_one_call() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str(0, "hello world").unwrap();
+        doc.apply_delta(&[
+            TextOp::Retain(6),
+            TextOp::Delete(5),
+            TextOp::Insert("there".to_owned()),
+        ])
+        .unwrap();
+        assert_eq!(doc.get_text().unwrap(), "hello there");
+    }
+
+    #[test]
+    fn apply_delta__a_failing_op_stores_nothing() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        doc.insert_str(0, "abc").unwrap();
+        let before = stored(&doc);
+
+        let result = doc.apply_delta(&[
+            TextOp::Delete(1),
+            TextOp::Insert("X".to_owned()),
+            TextOp::Retain(9),
+            TextOp::Insert("Y".to_owned()),
+        ]);
+        assert!(result.is_err());
+        assert_eq!(stored(&doc), before);
     }
 
     #[test]
@@ -1718,7 +1825,7 @@ mod apply_path_tests {
     use rand::{RngExt, SeedableRng};
 
     use super::model_tests::{Model, Op, ALPHABET};
-    use super::{BlockId, BlockKey, FugueText, TextBlock, MAX_RUN_LEN};
+    use super::{BlockId, BlockKey, FugueText, TextBlock, TextOp, MAX_RUN_LEN};
     use crate::collections::{CrdtType, Root};
     use crate::delta::{clear_pending_delta, StorageDelta};
     use crate::env::{self, RuntimeEnv};
@@ -1739,6 +1846,11 @@ mod apply_path_tests {
     const PASTE_LEN: usize = 600; // past two run caps
     const PASTE_BYTES_PER_CHAR: usize = 8; // a per-character path blows straight past this
     const EQUIV_SEED: u64 = 0x_ba_7c_1e_d0;
+    const DELTA_SEED: u64 = 0x_de_17_a5_ed;
+    const DELTA_ROUNDS: usize = 30;
+    const DELTA_MAX_OPS: usize = 6;
+    const DELTA_MAX_DELETE: usize = 6;
+    const DELTA_LENGTHS: [usize; 4] = [1, 2, 7, 300]; // the last crosses the run cap
     const EQUIV_ROUNDS: usize = 40;
     const EQUIV_MAX_NODES: usize = 1_400; // the per-character oracle is quadratic in this
     const EQUIV_POOL: [char; 4] = ['a', 'é', '日', 'Z']; // mixed widths: bytes != nodes
@@ -2176,6 +2288,64 @@ mod apply_path_tests {
             start: usize,
             span: usize,
         },
+        Delta(Vec<TextOp>),
+    }
+
+    /// The oracle for `apply_delta`: the same ops, one stored call each.
+    fn apply_ops_one_at_a_time(doc: &mut FugueText<MainStorage>, ops: &[TextOp]) {
+        let mut pos = 0_usize;
+        for op in ops {
+            match *op {
+                TextOp::Retain(count) => pos += count,
+                TextOp::Insert(ref text) => {
+                    doc.insert_str(pos, text).expect("insert should succeed");
+                    pos += text.chars().count();
+                }
+                TextOp::Delete(count) => doc
+                    .delete_range(pos, pos + count)
+                    .expect("delete should succeed"),
+            }
+        }
+    }
+
+    /// Random editor changes, a pure function of the seed; a `Delete` may overrun the end.
+    fn delta_script() -> Vec<Step> {
+        let mut rng = StdRng::seed_from_u64(DELTA_SEED);
+        let mut len = 0_usize;
+        (0..DELTA_ROUNDS)
+            .map(|_| {
+                let mut ops = Vec::new();
+                let (mut cursor, mut next_len) = (0_usize, len);
+                for _ in 0..1 + rng.random_range(..DELTA_MAX_OPS) {
+                    let left = len - cursor;
+                    match rng.random_range(..3_usize) {
+                        0 if left > 0 => {
+                            let count = rng.random_range(..left + 1);
+                            cursor += count;
+                            ops.push(TextOp::Retain(count));
+                        }
+                        1 if left > 0 => {
+                            let count = 1 + rng.random_range(..DELTA_MAX_DELETE);
+                            let removed = count.min(left);
+                            cursor += removed;
+                            next_len -= removed;
+                            ops.push(TextOp::Delete(count));
+                        }
+                        _ => {
+                            let count = DELTA_LENGTHS[rng.random_range(..DELTA_LENGTHS.len())];
+                            next_len += count;
+                            ops.push(TextOp::Insert(
+                                (0..count)
+                                    .map(|_| EQUIV_POOL[rng.random_range(..EQUIV_POOL.len())])
+                                    .collect(),
+                            ));
+                        }
+                    }
+                }
+                len = next_len;
+                Step::Delta(ops)
+            })
+            .collect()
     }
 
     /// A random edit script, a pure function of the seed (the length is tracked
@@ -2254,6 +2424,8 @@ mod apply_path_tests {
                         doc.delete_range(start, start + span)
                             .expect("delete should succeed");
                     }
+                    Step::Delta(ref ops) if per_char => apply_ops_one_at_a_time(&mut doc, ops),
+                    Step::Delta(ref ops) => doc.apply_delta(ops).expect("delta should succeed"),
                 }
             }
             doc.commit();
@@ -2283,6 +2455,27 @@ mod apply_path_tests {
         (blocks, tags, root)
     }
 
+    /// Names the differing block instead of dumping the whole set.
+    fn assert_same_stored(seed: u64, got: &StoredState, want: &StoredState) {
+        let ids = |blocks: &[(BlockId, TextBlock)]| -> Vec<BlockId> {
+            blocks.iter().map(|(id, _)| *id).collect()
+        };
+        assert!(!want.0.is_empty(), "seed {seed:#x} stored nothing");
+        assert_eq!(
+            ids(&got.0),
+            ids(&want.0),
+            "seed {seed:#x}: the batched path stored a different block set"
+        );
+        for ((id, block), (_, expected)) in got.0.iter().zip(&want.0) {
+            assert_eq!(
+                block, expected,
+                "seed {seed:#x}: block {id:?} differs from the unbatched path's"
+            );
+        }
+        assert_eq!(got.1, want.1, "seed {seed:#x}: CRDT tags differ");
+        assert_eq!(got.2, want.2, "seed {seed:#x}: Merkle roots differ");
+    }
+
     /// A multi-character insert must store exactly what the per-character loop
     /// stored: same block keys, same bytes, same CRDT tag, same Merkle root.
     /// Anything else forks state against every replica that has not upgraded.
@@ -2295,7 +2488,7 @@ mod apply_path_tests {
             .iter()
             .filter_map(|step| match *step {
                 Step::Insert { ref text, .. } => Some(text.chars().count()),
-                Step::Delete { .. } => None,
+                Step::Delete { .. } | Step::Delta(_) => None,
             })
             .collect();
         for (what, drawn) in [
@@ -2317,31 +2510,74 @@ mod apply_path_tests {
             assert!(drawn, "seed {EQUIV_SEED:#x} never drew {what}");
         }
 
-        let (want, want_tags, want_root) = replay(&script, true);
-        let (got, got_tags, got_root) = replay(&script, false);
+        assert_same_stored(EQUIV_SEED, &replay(&script, false), &replay(&script, true));
+    }
 
-        let ids = |blocks: &[(BlockId, TextBlock)]| -> Vec<BlockId> {
-            blocks.iter().map(|(id, _)| *id).collect()
+    /// An editor change must store exactly what its ops stored one call at a time.
+    #[test]
+    fn apply_delta_stores_what_the_ops_stored_one_at_a_time() {
+        let script = delta_script();
+        let ops = || {
+            script.iter().flat_map(|step| match *step {
+                Step::Delta(ref ops) => ops.as_slice(),
+                _ => &[],
+            })
         };
-        assert_eq!(
-            ids(&got),
-            ids(&want),
-            "seed {EQUIV_SEED:#x}: the batched path stored a different block set"
-        );
-        for ((id, block), (_, expected)) in got.iter().zip(&want) {
-            assert_eq!(
-                block, expected,
-                "seed {EQUIV_SEED:#x}: block {id:?} differs from the per-character loop's"
-            );
+        for (what, drawn) in [
+            ("a retain", ops().any(|op| matches!(*op, TextOp::Retain(_)))),
+            ("a delete", ops().any(|op| matches!(*op, TextOp::Delete(_)))),
+            (
+                "an insert past the cap",
+                ops().any(
+                    |op| matches!(*op, TextOp::Insert(ref s) if s.chars().count() > MAX_RUN_LEN),
+                ),
+            ),
+            (
+                "a change of several ops",
+                script
+                    .iter()
+                    .any(|step| matches!(*step, Step::Delta(ref ops) if ops.len() > 3)),
+            ),
+        ] {
+            assert!(drawn, "seed {DELTA_SEED:#x} never drew {what}");
         }
-        assert_eq!(
-            got_tags, want_tags,
-            "seed {EQUIV_SEED:#x}: CRDT tags differ"
-        );
-        assert_eq!(
-            got_root, want_root,
-            "seed {EQUIV_SEED:#x}: Merkle roots differ"
-        );
+
+        assert_same_stored(DELTA_SEED, &replay(&script, false), &replay(&script, true));
+    }
+
+    /// One action per touched block, however many ops touch it.
+    #[test]
+    fn one_apply_delta_emits_one_action_per_block_it_touches() {
+        let store = new_store();
+        let dev = device(1);
+        clear_pending_delta();
+        env::with_runtime_env(env_for(&store, dev), || {
+            Root::new(|| FugueText::<MainStorage>::new_with_field_name(FIELD)).commit();
+            let _ignored = env::take_last_artifact();
+        });
+        let _seeded = edit(&store, dev, |doc| {
+            doc.insert_str(0, "hello world").expect("seed text");
+        });
+
+        // Two deletes and a coalescing append all land in the one seeded block.
+        let delta = edit(&store, dev, |doc| {
+            doc.apply_delta(&[
+                TextOp::Delete(1),
+                TextOp::Retain(4),
+                TextOp::Delete(1),
+                TextOp::Retain(5),
+                TextOp::Insert("!".to_owned()),
+            ])
+            .expect("delta should succeed");
+            assert_eq!(doc.get_text().expect("text"), "elloworld!");
+        });
+        let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("delta should decode")
+        {
+            StorageDelta::Actions(actions) => actions,
+            StorageDelta::CausalActions { actions, .. } => actions,
+        };
+        let written = actions.iter().filter(|a| !a.id().is_root()).count();
+        assert_eq!(written, 2, "one block plus the collection's own element");
     }
 
     /// A paste costs one action per block it touches, not one per character: a

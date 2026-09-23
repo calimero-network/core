@@ -56,6 +56,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - A replica id derives from the device id, and a counter is never reused, because `FugueTree::integrate` keeps the first definition of a node.
 - Plain Fugue, not FugueMax; the residual ordering case is pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin`.
 - `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
+- `apply_delta` takes a whole editor change (`TextOp::{Retain, Insert, Delete}`) in one call: one load, one tree build, one traversal, one write per touched block, and nothing written if any op fails.
+  It must store byte for byte what the same ops store one call at a time; `apply_delta_stores_what_the_ops_stored_one_at_a_time` is that gate.
 - A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
 
