@@ -13,6 +13,8 @@ on:
       - "tools/**"
       - "scripts/check-wasm-size.sh"
       - "scripts/check-storage-cost.sh"
+      - "scripts/check-like-ci.py"
+      - "scripts/tests/check-like-ci.test.sh"
       - ".github/workflows/ci-checks.yml"
 
 env:
@@ -20,6 +22,7 @@ env:
   CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only # full debuginfo made the test cache ~7 GB of a 10 GB budget
 
 permissions:
   contents: read
@@ -92,8 +95,21 @@ jobs:
       - name: Drive a real node on Windows
         run: cargo test -p merod --test watchdog_live -- --include-ignored --test-threads 1
 
+  # `Rust` is the required status check; the work is split into the jobs below
+  # so lint, tests and the app build run side by side instead of in one queue.
   rust:
     name: Rust
+    if: ${{ !cancelled() }}
+    needs: [rust-lint, rust-test, rust-features, rust-apps, rust-supply-chain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Rust job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<<"$NEEDS"
+
+  rust-lint:
+    name: Rust lint
     runs-on: big-machine
     steps:
       - name: Checkout code
@@ -107,12 +123,7 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
           shared-key: ci-checks
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Build
-        run: |
-          ./scripts/build-all-apps.sh
-          cargo build --workspace --all-targets --tests
+          save-if: false
 
       - name: Cargo format
         run: cargo fmt --check
@@ -130,60 +141,6 @@ jobs:
       - name: No user data at info level
         run: python3 scripts/check-no-user-data-at-info.py
 
-      # No-warnings gate: every workspace target (libs, bins, tests, examples)
-      # must be clippy- and rustc-warning-free. `--features calimero-storage/testing`
-      # pulls in that crate's feature-gated `testing` harness so it's linted in the
-      # same single pass. Run the same command locally before pushing.
-      - name: Cargo clippy
-        if: ${{ !cancelled() }}
-        run: cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
-
-      - name: Cargo test
-        if: ${{ !cancelled() }}
-        run: |
-          FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
-
-          export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
-          echo "$TEST_HOSTS"
-
-          # bundle_produces_signed_mpk builds a wasm32 fixture and needs the
-          # cargo-mero-e2e job's fixture cache and target-dir isolation; skip
-          # it here so it doesn't build into this job's shared CARGO_TARGET_DIR.
-          cargo test -- --nocapture --skip bundle_produces_signed_mpk
-
-      # The mock TEE attestation path is compiled out by default (the
-      # `mock-attestation` feature is default-OFF so it never reaches a release
-      # binary). The default `cargo test` above therefore does NOT cover it, so
-      # lint + run the mock-only tests explicitly here, otherwise that coverage
-      # silently disappears. Covers: merod KMS mock-attest tests, `merod tee
-      # probe --mock-tee` tests, and the calimero-node mock-fleet governance
-      # harness (`local_governance_node_e2e` + `cascade_dispatch_e2e`).
-      - name: Cargo clippy (mock-attestation)
-        if: ${{ !cancelled() }}
-        run: cargo clippy -p merod -p calimero-node -p calimero-server -p calimero-tee-attestation --all-targets --features mock-attestation -- -D warnings
-
-      - name: Cargo test (mock-attestation)
-        if: ${{ !cancelled() }}
-        run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
-
-      # calimero-store's borsh/serde impls sit behind default-OFF features, so
-      # the workspace `cargo test` above compiles none of the stored-format
-      # tests - the ones that pin what a node can still decode after an upgrade.
-      - name: Cargo test (calimero-store, all features)
-        if: ${{ !cancelled() }}
-        run: cargo test -p calimero-store --all-features
-      # merodb's `gui` feature is default-OFF, and `--all-targets` skips a
-      # feature-gated target rather than failing on it, so the workspace build
-      # above never compiles `src/gui/` or the ~20 `#[cfg(feature = "gui")]`
-      # sites in main.rs/dag.rs/export.rs. Without this step that code is free
-      # to stop compiling unnoticed, which is exactly what happened: a
-      # `CollectionType::Tuple` variant was added to the ABI schema and the
-      # gui-gated match in export.rs was never updated, so `merodb --gui` — a
-      # documented debugging tool — did not build at all.
-      #
-      # This builds rather than clippies: the gui code predates any lint gate
-      # and still carries ~60 `-D warnings` findings. Tighten this to `cargo
-      # clippy … -- -D warnings` once those are cleared.
       # A scenario file that no matrix runs looks maintained and gates nothing.
       # That has happened repeatedly and silently: replacing a glob with an
       # enumeration orphaned fourteen scenarios at once while naming none of
@@ -195,6 +152,34 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-scenario-coverage.py
 
+      - name: Test check-like-ci
+        if: ${{ !cancelled() }}
+        run: bash scripts/tests/check-like-ci.test.sh
+
+      # No-warnings gate: every workspace target (libs, bins, tests, examples)
+      # must be clippy- and rustc-warning-free. `--features calimero-storage/testing`
+      # pulls in that crate's feature-gated `testing` harness so it's linted in the
+      # same single pass. Run the same command locally before pushing.
+      - name: Cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
+
+      - name: Cargo clippy (mock-attestation)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p merod -p calimero-node -p calimero-server -p calimero-tee-attestation --all-targets --features mock-attestation -- -D warnings
+
+      # merodb's `gui` feature is default-OFF, and `--all-targets` skips a
+      # feature-gated target rather than failing on it, so the workspace clippy
+      # above never compiles `src/gui/` or the ~20 `#[cfg(feature = "gui")]`
+      # sites in main.rs/dag.rs/export.rs. Without this step that code is free
+      # to stop compiling unnoticed, which is exactly what happened: a
+      # `CollectionType::Tuple` variant was added to the ABI schema and the
+      # gui-gated match in export.rs was never updated, so `merodb --gui` — a
+      # documented debugging tool — did not build at all.
+      #
+      # This builds rather than clippies: the gui code predates any lint gate
+      # and still carries ~60 `-D warnings` findings. Tighten this to `cargo
+      # clippy … -- -D warnings` once those are cleared.
       - name: Cargo build (merodb gui)
         if: ${{ !cancelled() }}
         run: cargo build -p merodb --features gui
@@ -207,13 +192,123 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo check -p merod --no-default-features
 
+  # The only job that saves `ci-checks`; the others restore it read-only, so one
+  # writer keeps the cache inside the repository's 10 GB budget.
+  rust-test:
+    name: Rust tests
+    runs-on: big-machine
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          # Tests that run an app's wasm build it; parallel processes must not race to add the target.
+          targets: wasm32-unknown-unknown
+          shared-key: ci-checks
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-nextest@0.9.146
+
+      # nextest runs every test binary in parallel; `cargo test` runs them one
+      # after another, so the slowest binaries used to add up end to end.
+      - name: Cargo test
+        run: |
+          FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+
+          export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
+          echo "$TEST_HOSTS"
+
+          # bundle_produces_signed_mpk builds a wasm32 fixture and needs the
+          # cargo-mero-e2e job's fixture cache and target-dir isolation; skip
+          # it here so it doesn't build into this job's shared CARGO_TARGET_DIR.
+          cargo nextest run --workspace --no-fail-fast -E 'not test(=bundle_produces_signed_mpk)'
+
+      - name: Cargo doctests
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --doc
+
+  rust-features:
+    name: Rust feature-gated tests
+    runs-on: big-machine
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: ci-checks
+          save-if: false
+
+      # The mock TEE attestation path is compiled out by default (the
+      # `mock-attestation` feature is default-OFF so it never reaches a release
+      # binary). The default workspace tests therefore do NOT cover it, so
+      # rust-lint lints and this job runs the mock-only tests explicitly,
+      # otherwise that coverage silently disappears. Covers: merod KMS
+      # mock-attest tests, `merod tee probe --mock-tee` tests, and the
+      # calimero-node mock-fleet governance harness (`local_governance_node_e2e` + `cascade_dispatch_e2e`).
+      - name: Cargo test (mock-attestation)
+        if: ${{ !cancelled() }}
+        run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
+
+      # calimero-store's borsh/serde impls sit behind default-OFF features, so
+      # the workspace tests compile none of the stored-format
+      # tests - the ones that pin what a node can still decode after an upgrade.
+      - name: Cargo test (calimero-store, all features)
+        if: ${{ !cancelled() }}
+        run: cargo test -p calimero-store --all-features
+
+  # Builds and bundles every in-repo app; nothing else in this workflow needs
+  # the artifacts, so it runs beside the tests rather than ahead of them.
+  rust-apps:
+    name: Rust apps
+    runs-on: big-machine
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: ci-apps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build every app
+        run: ./scripts/build-all-apps.sh
+
+  rust-supply-chain:
+    name: Rust supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Pin both tools so an upstream release cannot red CI on its own schedule:
+      # cargo-deny 0.19.9 parses modern (CVSS 4.0) advisories, which 0.16.3 could not.
+      - name: Install cargo-deny and cargo-machete
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-deny@0.19.9,cargo-machete@0.9.2
+
       - name: Cargo deny
         if: ${{ !cancelled() }}
-        run: |
-          # Pin cargo-deny to 0.19.9 so an upstream release cannot red CI on its own
-          # schedule: it parses modern (CVSS 4.0) advisories, which 0.16.3 could not.
-          cargo install cargo-deny --version 0.19.9 --locked
-          cargo deny check advisories bans licenses sources
+        run: cargo deny check advisories bans licenses sources
 
       - name: Cargo machete (unused dependencies)
         if: ${{ !cancelled() }}
@@ -224,7 +319,6 @@ jobs:
           #
           # A dep linked only through a feature reads as unused; the escape hatch is
           # `[package.metadata.cargo-machete] ignored`, only once removal really breaks the build.
-          cargo install cargo-machete --version 0.9.2 --locked
           cargo machete
 
   cargo-mero-e2e:

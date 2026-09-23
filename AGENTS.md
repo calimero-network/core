@@ -55,8 +55,8 @@ cargo fmt --check
 # every lint, so it passes locally and then fails in CI.
 cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 
-# Everything CI's `Rust` job runs, read from the workflow rather than copied
-# from it -- so it cannot drift into running less than CI does.
+# Every job behind CI's required `Rust` check, read from the workflow rather
+# than copied from it -- so it cannot drift into running less than CI does.
 ./scripts/check-like-ci.py --list          # what CI runs, in order
 ./scripts/check-like-ci.py                 # run all of it
 ./scripts/check-like-ci.py --only clippy   # or a subset, by name
@@ -268,7 +268,8 @@ Every node in a merobox run is the **same build against fresh state**. So it val
 ## Definition of Done
 
 **Run `./scripts/check-like-ci.py` rather than the list below by hand.** It reads
-`.github/workflows/ci-checks.yml` and runs that job's steps in order, continuing
+`.github/workflows/ci-checks.yml` and runs the steps of every job the required
+`Rust` check waits on (CI runs those jobs in parallel), continuing
 past a failure the way CI's `if: !cancelled()` does, so one pass reports
 everything. The list below is what it will run; keeping a second copy in your
 head is how PRs go red, and the drift is always in the direction of running
@@ -283,7 +284,7 @@ Before creating a PR:
 2. `cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings` passes.
    Run it with `-D`, the way CI does: `-A warnings` allows every lint, so it can only ever pass.
    `merod` also gets a second pass under `--features mock-attestation`, which CI runs separately.
-3. `cargo test` passes
+3. `cargo nextest run --workspace` and `cargo test --workspace --doc` pass (CI runs the tests under nextest)
 4. `cargo deny check licenses sources` passes (if modifying dependencies)
 5. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge
 6. **Prove it works.** For a bug fix, the PR description must show the fix works: the reproduction (command / test / merobox scenario), and before→after evidence (the failing log line or test output before, the passing result after). A fix with no reproduction and no regression test is not done.

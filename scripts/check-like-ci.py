@@ -51,7 +51,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-checks.yml"
-DEFAULT_JOB = "rust"
+AGGREGATE_JOB = "rust"  # the required `Rust` check; its `needs` are the jobs run by default
+INSTALL_ACTION = "taiki-e/install-action"  # steps whose `tool:` binaries CI installs for later steps
 
 # Prerequisites CI has and a workstation may not. Reported once, up front, as
 # warnings rather than errors: a step that needs one will fail on its own and say
@@ -84,7 +85,28 @@ PREREQS = [
 ]
 
 
-def load_steps(workflow: Path, job: str) -> list[tuple[str, str, dict]]:
+def load_workflow(workflow: Path) -> dict:
+    with workflow.open() as handle:
+        return yaml.safe_load(handle)
+
+
+def default_jobs(doc: dict) -> list[str]:
+    """The jobs the aggregate `Rust` check waits on, so a new one is picked up here."""
+    needs = ((doc.get("jobs") or {}).get(AGGREGATE_JOB) or {}).get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def installed_tools(doc: dict, job: str) -> list[str]:
+    """Binaries the job installs through `taiki-e/install-action`, versions stripped."""
+    tools = []
+    for step in doc["jobs"][job].get("steps") or []:
+        if INSTALL_ACTION in (step.get("uses") or ""):
+            spec = (step.get("with") or {}).get("tool") or ""
+            tools += [tool.split("@")[0].strip() for tool in spec.split(",") if tool.strip()]
+    return tools
+
+
+def load_steps(doc: dict, workflow: Path, job: str) -> list[tuple[str, str, dict]]:
     """The named job's `run` steps as (name, script, env), in workflow order.
 
     Steps that use an action (`uses:`) carry no script to run -- checkout and
@@ -92,9 +114,6 @@ def load_steps(workflow: Path, job: str) -> list[tuple[str, str, dict]]:
     dropped here rather than reported as skipped, which would be noise on every
     single run.
     """
-    with workflow.open() as handle:
-        doc = yaml.safe_load(handle)
-
     jobs = doc.get("jobs") or {}
     if job not in jobs:
         raise SystemExit(
@@ -110,7 +129,7 @@ def load_steps(workflow: Path, job: str) -> list[tuple[str, str, dict]]:
         script = step.get("run")
         if not script:
             continue
-        name = step.get("name") or f"step {index}"
+        name = f"{job}: {step.get('name') or f'step {index}'}"
         env = {**workflow_env, **job_env, **(step.get("env") or {})}
         steps.append((name, script, env))
     return steps
@@ -157,7 +176,12 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--workflow", type=Path, default=DEFAULT_WORKFLOW)
-    parser.add_argument("--job", default=DEFAULT_JOB, help=f"default: {DEFAULT_JOB}")
+    parser.add_argument(
+        "--job",
+        action="append",
+        default=[],
+        help=f"repeatable; default: every job the {AGGREGATE_JOB!r} job needs",
+    )
     parser.add_argument("--list", action="store_true", help="print the steps and exit")
     parser.add_argument(
         "--only", action="append", default=[], metavar="PATTERN", help="run only matching steps"
@@ -169,10 +193,12 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print commands, run nothing")
     args = parser.parse_args()
 
-    steps = load_steps(args.workflow, args.job)
+    doc = load_workflow(args.workflow)
+    jobs = args.job or default_jobs(doc)
+    steps = [step for job in jobs for step in load_steps(doc, args.workflow, job)]
 
     if args.list:
-        print(f"{args.workflow.relative_to(REPO_ROOT)} :: job {args.job!r}\n")
+        print(f"{args.workflow.relative_to(REPO_ROOT)} :: jobs {', '.join(jobs)}\n")
         for number, (name, script, _) in enumerate(steps, start=1):
             first = script.strip().splitlines()[0]
             suffix = " …" if len(script.strip().splitlines()) > 1 else ""
@@ -188,7 +214,12 @@ def main() -> int:
         print("no steps selected", file=sys.stderr)
         return 1
 
-    warnings = [message for missing, message in PREREQS if missing()]
+    warnings = [message for missing, message in PREREQS if missing()] + [
+        f"`{tool}` is not on PATH; CI installs it with {INSTALL_ACTION} for the {job} job."
+        for job in dict.fromkeys(name.split(":")[0] for name, _, _ in selected)
+        for tool in installed_tools(doc, job)
+        if shutil.which(tool) is None
+    ]
     if warnings and not args.dry_run:
         print("=== prerequisites CI has that this machine may not ===")
         for message in warnings:
