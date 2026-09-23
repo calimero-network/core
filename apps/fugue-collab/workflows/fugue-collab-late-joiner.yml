@@ -1,0 +1,120 @@
+description: >
+  A node joins a context whose document already runs past the run cap and has a range
+  tombstoned out of the middle, and must arrive at the same text.
+name: Fugue Collab Late Joiner
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fugue-node
+  base_port: 2800
+  base_rpc_port: 2900
+
+steps:
+  - name: Install fugue-collab on Node 1
+    type: install_application
+    node: fugue-node-1
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install fugue-collab on Node 2
+    type: install_application
+    node: fugue-node-2
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 2-node mesh without Node 3
+    type: create_mesh
+    context_node: fugue-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - fugue-node-2
+    outputs:
+      context_id: contextId
+      namespace_id: groupId
+
+  - name: Node 1 pastes 400 characters, crossing the run cap
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"
+
+  - name: Wait for the paste to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 inserts a marker inside the full first block
+    type: call
+    node: fugue-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 200
+      text: "[MID]"
+
+  - name: Wait for the marker to reach Node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 1 deletes ten characters straddling the cap boundary
+    type: call
+    node: fugue-node-1
+    context_id: "{{context_id}}"
+    method: delete_range
+    args:
+      start: 256
+      end: 266
+
+  - name: Wait for the deletion to reach Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2]
+    timeout: 90
+    trigger_sync: true
+
+
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
+  - name: Install fugue-collab on Node 3
+    type: install_application
+    node: fugue-node-3
+    path: ../../dist/com.calimero.fugue-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a namespace invitation for Node 3
+    type: create_namespace_invitation
+    node: fugue-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 3 joins the namespace
+    type: join_namespace
+    node: fugue-node-3
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for Node 3 to catch up to the existing document
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
+    timeout: 180
+    trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ[MID]ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

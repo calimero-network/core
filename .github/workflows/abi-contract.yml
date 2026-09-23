@@ -20,11 +20,14 @@ on:
   push:
     branches: [master]
   pull_request:
+    # edited: a changed `devtools-ref:` line in the PR body must re-resolve the pair.
+    types: [opened, synchronize, reopened, edited]
     paths:
       - "crates/wasm-abi/**"
       - "apps/**"
       - "tools/calimero-abi/**"
       - "scripts/abi-contract-check.sh"
+      - "scripts/resolve-paired-ref.sh"
       - "scripts/build-all-apps.sh"
       - ".github/workflows/abi-contract.yml"
 
@@ -47,11 +50,23 @@ jobs:
           # fall back to the pushed commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Resolve mero-devtools-js ref (paired)
+        id: devtoolsref
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          SDK_REPO: https://github.com/calimero-network/mero-devtools-js.git
+          REF_KEY: devtools-ref
+        run: |
+          REF="$(bash scripts/resolve-paired-ref.sh "$DEVTOOLS_REF")"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Validating against mero-devtools-js@$REF"
+
       - name: Checkout mero-devtools-js
         uses: actions/checkout@v7
         with:
           repository: calimero-network/mero-devtools-js
-          ref: ${{ env.DEVTOOLS_REF }}
+          ref: ${{ steps.devtoolsref.outputs.ref }}
           path: mero-devtools-js
 
       - name: Setup Rust CI

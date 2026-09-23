@@ -168,6 +168,11 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
                                 },
+                                CrdtType::FugueText => TypeRef::Collection {
+                                    collection: CollectionType::Record { fields: Vec::new() },
+                                    crdt_type: Some(CrdtCollectionType::FugueText),
+                                    inner_type: None,
+                                },
                                 CrdtType::UnorderedMap => {
                                     // Default to Map<String, String> - can be refined later
                                     TypeRef::Collection {
@@ -235,11 +240,9 @@ pub fn infer_schema_from_database(
                                     crdt_type: None,
                                     inner_type: None,
                                 },
-                                CrdtType::RotationLog => {
-                                    // Internal SharedStorage writer-set history
-                                    // (core#2716 P3) — a hashed book-keeping
-                                    // child, never a user-facing field. Surface
-                                    // it as an opaque record if it ever appears.
+                                CrdtType::RotationLog | CrdtType::FugueTextBlock => {
+                                    // Internal book-keeping children, never
+                                    // user-facing root fields.
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },
                                         crdt_type: None,

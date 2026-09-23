@@ -1,0 +1,140 @@
+description: >
+  Two-node concurrent editing over RGA: each writer types a passage then a heading,
+  and both replicas must agree.
+name: Collaborative Editor Concurrent Workflow
+
+force_pull_image: true
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: calimero-node
+
+steps:
+  - name: Install Collaborative Editor on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: ../../dist/com.calimero.collaborative-editor-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: calimero-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - calimero-node-2
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Node 2 cannot write into an empty delta log, so the seed must land first.
+  - name: Seed the document from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "existing text. "
+
+  - name: Wait for seed to propagate to Node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Seeded Text (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      seeded_text_node2: result
+
+  - name: Assert Node 2 genuinely has the seeded text
+    type: json_assert
+    statements:
+      - 'json_equal({{seeded_text_node2}}, {"output": "existing text. "})'
+
+  - name: Node 1 types passage
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE1"
+
+  - name: Node 1 goes back and types heading
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD1"
+
+  - name: Node 2 types passage
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "PASSAGE2"
+
+  - name: Node 2 goes back and types heading
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: insert_text
+    args:
+      position: 15
+      text: "HEAD2"
+
+  - name: Wait for interleaving edits to propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Text After Interleaving (Node 1)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      interleave_text_node1: result
+
+  - name: Get Text After Interleaving (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      interleave_text_node2: result
+
+  - name: Assert both nodes converged on interleaving case
+    type: json_assert
+    statements:
+      - 'json_equal({{interleave_text_node1}}, {{interleave_text_node2}})'
+
+  - name: Assert every contribution survived
+    type: assert
+    statements:
+      - "contains({{interleave_text_node1}}, 'HEAD1')"
+      - "contains({{interleave_text_node1}}, 'PASSAGE1')"
+      - "contains({{interleave_text_node1}}, 'HEAD2')"
+      - "contains({{interleave_text_node1}}, 'PASSAGE2')"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 60

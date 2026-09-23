@@ -43,6 +43,7 @@ on:
       - "scripts/resolve-paired-ref.sh"
       - "scripts/check-endpoint-coverage.sh"
       - "scripts/tests/check-endpoint-coverage.test.sh"
+      - "scripts/tests/resolve-paired-ref.test.sh"
   push:
     branches:
       - master
@@ -89,6 +90,9 @@ jobs:
 
       - name: Test check-endpoint-coverage.sh against fixtures
         run: bash scripts/tests/check-endpoint-coverage.test.sh
+
+      - name: Test resolve-paired-ref.sh
+        run: bash scripts/tests/resolve-paired-ref.test.sh
 
   sdk-e2e:
     name: SDK E2E (paired)

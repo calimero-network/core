@@ -344,9 +344,29 @@ where
     pub(crate) fn insert_with_storage_type(
         &mut self,
         key: K,
+        value: V,
+        storage_type: StorageType,
+        custom_id: Option<Id>,
+    ) -> Result<Option<V>, StoreError>
+    where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        self.insert_with_storage_type_and_crdt_type(key, value, storage_type, custom_id, None)
+    }
+
+    /// [`insert_with_storage_type`](Self::insert_with_storage_type), additionally
+    /// stamping each entry element with its own `crdt_type`.
+    ///
+    /// Stamped at creation only; the index row and the wire metadata carry the
+    /// tag forward on every later update.
+    pub(crate) fn insert_with_storage_type_and_crdt_type(
+        &mut self,
+        key: K,
         mut value: V,
         storage_type: StorageType,
         custom_id: Option<Id>,
+        crdt_type: Option<CrdtType>,
     ) -> Result<Option<V>, StoreError>
     where
         K: AsRef<[u8]> + PartialEq + 'static,
@@ -376,7 +396,7 @@ where
             Some(id),
             (value, key),
             storage_type,
-            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+            crdt_type.or_else(|| crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom)),
         )?;
 
         Ok(None)
