@@ -6,6 +6,17 @@ description: >
   Docker and under --no-docker alike.
 name: Rich Collab Catchup
 
+# Fields every call and sync step shares, merged in with `<<:`.
+x-call: &call
+  type: call
+  context_id: "{{context_id}}"
+x-sync: &sync
+  type: wait_for_sync
+  context_id: "{{context_id}}"
+  nodes: [rich-node-1, rich-node-2, rich-node-3]
+  timeout: 90
+  trigger_sync: true
+
 # Defined individually so every port is pinned: the count form lets --e2e-mode
 # allocate ports dynamically, and start_node would then reconnect on base_port.
 nodes:
@@ -53,17 +64,15 @@ steps:
       context_id: contextId
 
   - name: Create the restart document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: catchup-restart
 
   - name: Add the restart block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: catchup-restart
@@ -74,9 +83,8 @@ steps:
       restart_block: result.output
 
   - name: Type the seed into the restart block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-restart
@@ -85,19 +93,14 @@ steps:
         - insert: SEED
 
   - name: Wait for the seed to reach every node
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 90
-    trigger_sync: true
+    <<: *sync
 
 
   # ── restart mid-edit ───────────────────────────────────────────────────
 
   - name: Node 3 bolds its own passage onto the seed
-    type: call
+    <<: *call
     node: rich-node-3
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-restart
@@ -109,11 +112,7 @@ steps:
             bold: "true"
 
   - name: Wait for Node 3's passage to reach every node
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 90
-    trigger_sync: true
+    <<: *sync
 
   - name: Stop Node 3 mid-edit
     type: stop_node
@@ -124,9 +123,8 @@ steps:
     seconds: 8
 
   - name: Node 1 types in front of the seed while Node 3 is down
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-restart
@@ -141,9 +139,8 @@ steps:
     wait_timeout: 90
 
   - name: Read the restart block straight out of Node 3's restored store
-    type: call
+    <<: *call
     node: rich-node-3
-    context_id: "{{context_id}}"
     method: get_state_digest
     args:
       doc: catchup-restart
@@ -160,11 +157,8 @@ steps:
     seconds: 20
 
   - name: The restarted node rejoined the document its peers kept building
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    <<: *sync
     timeout: 180
-    trigger_sync: true
     expect:
       method: get_state_digest
       args:
@@ -184,17 +178,15 @@ steps:
     seconds: 8
 
   - name: Create the late-joiner document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: catchup-joiner
 
   - name: Add the late-joiner heading
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: catchup-joiner
@@ -205,9 +197,8 @@ steps:
       joiner_heading: result.output
 
   - name: Type the heading text
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-joiner
@@ -216,9 +207,8 @@ steps:
         - insert: Minutes
 
   - name: Add the late-joiner first paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: catchup-joiner
@@ -229,9 +219,8 @@ steps:
       joiner_first: result.output
 
   - name: Type a bolded first paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-joiner
@@ -242,9 +231,8 @@ steps:
             bold: "true"
 
   - name: Add the late-joiner second paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: catchup-joiner
@@ -255,9 +243,8 @@ steps:
       joiner_second: result.output
 
   - name: Type a linked second paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-joiner
@@ -268,9 +255,8 @@ steps:
             link: https://example.test
 
   - name: Add the late-joiner third paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: catchup-joiner
@@ -281,9 +267,8 @@ steps:
       joiner_third: result.output
 
   - name: Type and comment the third paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-joiner
@@ -292,9 +277,8 @@ steps:
         - insert: Action
 
   - name: Comment the third paragraph
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: mark
     args:
       doc: catchup-joiner
@@ -305,9 +289,8 @@ steps:
       value: follow up
 
   - name: Add the late-joiner closing block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: catchup-joiner
@@ -318,9 +301,8 @@ steps:
       joiner_closing: result.output
 
   - name: Type the closing block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: catchup-joiner
@@ -332,11 +314,9 @@ steps:
   # property rows put the Merkle root well past the two children below which
   # protocol selection would not reach HashComparison.
   - name: The two live nodes converge on the formatted document
-    type: wait_for_sync
-    context_id: "{{context_id}}"
+    <<: *sync
     nodes: [rich-node-1, rich-node-2]
     timeout: 120
-    trigger_sync: true
 
   # Node 3 must still be down when the gossip window for those deltas closes,
   # or it catches up over deltas and never reaches HashComparison.
@@ -355,11 +335,8 @@ steps:
     seconds: 45
 
   - name: The late joiner reached the formatted document byte for byte
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    <<: *sync
     timeout: 240
-    trigger_sync: true
     expect:
       method: get_state_digest
       args:

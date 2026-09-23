@@ -6,6 +6,17 @@ description: >
   --no-docker.
 name: Rich Collab Blocks
 
+# Fields every call and sync step shares, merged in with `<<:`.
+x-call: &call
+  type: call
+  context_id: "{{context_id}}"
+x-sync: &sync
+  type: wait_for_sync
+  context_id: "{{context_id}}"
+  nodes: [rich-node-1, rich-node-2, rich-node-3]
+  timeout: 180
+  trigger_sync: true
+
 # Defined individually so every port is pinned: the count form lets --e2e-mode
 # allocate ports dynamically, and a later start_node reconnects on base_port.
 nodes:
@@ -56,17 +67,15 @@ steps:
   # ── merge, the one case that needs no second writer ────────────────────
 
   - name: Create the merge document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: blocks-merge
 
   - name: Add the merge head block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-merge
@@ -77,9 +86,8 @@ steps:
       merge_head: result.output
 
   - name: Add the merge tail block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-merge
@@ -90,9 +98,8 @@ steps:
       merge_tail: result.output
 
   - name: Type Left into the merge head block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-merge
@@ -101,9 +108,8 @@ steps:
         - insert: Left
 
   - name: Type a bolded Right into the merge tail block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-merge
@@ -117,17 +123,15 @@ steps:
   # ── the three-block cases, seeded identically ──────────────────────────
 
   - name: Create the move-versus-edit document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: blocks-move-vs-edit
 
   - name: Add the move-versus-edit Alpha block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-move-vs-edit
@@ -138,9 +142,8 @@ steps:
       mve_alpha: result.output
 
   - name: Add the move-versus-edit Beta block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-move-vs-edit
@@ -151,9 +154,8 @@ steps:
       mve_beta: result.output
 
   - name: Add the move-versus-edit Gamma block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-move-vs-edit
@@ -164,9 +166,8 @@ steps:
       mve_gamma: result.output
 
   - name: Type Alpha into the move-versus-edit first block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-edit
@@ -175,9 +176,8 @@ steps:
         - insert: Alpha
 
   - name: Type Beta into the move-versus-edit second block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-edit
@@ -186,9 +186,8 @@ steps:
         - insert: Beta
 
   - name: Type Gamma into the move-versus-edit third block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-edit
@@ -197,17 +196,15 @@ steps:
         - insert: Gamma
 
   - name: Create the move-versus-move document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: blocks-move-vs-move
 
   - name: Add the move-versus-move Alpha block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-move-vs-move
@@ -218,9 +215,8 @@ steps:
       mvm_alpha: result.output
 
   - name: Add the move-versus-move Beta block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-move-vs-move
@@ -231,9 +227,8 @@ steps:
       mvm_beta: result.output
 
   - name: Add the move-versus-move Gamma block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-move-vs-move
@@ -244,9 +239,8 @@ steps:
       mvm_gamma: result.output
 
   - name: Type Alpha into the move-versus-move first block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-move
@@ -255,9 +249,8 @@ steps:
         - insert: Alpha
 
   - name: Type Beta into the move-versus-move second block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-move
@@ -266,9 +259,8 @@ steps:
         - insert: Beta
 
   - name: Type Gamma into the move-versus-move third block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-move
@@ -277,17 +269,15 @@ steps:
         - insert: Gamma
 
   - name: Create the delete-versus-edit document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: blocks-delete-vs-edit
 
   - name: Add the delete-versus-edit Alpha block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-delete-vs-edit
@@ -298,9 +288,8 @@ steps:
       dve_alpha: result.output
 
   - name: Add the delete-versus-edit Beta block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-delete-vs-edit
@@ -311,9 +300,8 @@ steps:
       dve_beta: result.output
 
   - name: Add the delete-versus-edit Gamma block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-delete-vs-edit
@@ -324,9 +312,8 @@ steps:
       dve_gamma: result.output
 
   - name: Type Alpha into the delete-versus-edit first block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-delete-vs-edit
@@ -335,9 +322,8 @@ steps:
         - insert: Alpha
 
   - name: Type Beta into the delete-versus-edit second block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-delete-vs-edit
@@ -346,9 +332,8 @@ steps:
         - insert: Beta
 
   - name: Type Gamma into the delete-versus-edit third block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-delete-vs-edit
@@ -357,17 +342,15 @@ steps:
         - insert: Gamma
 
   - name: Create the kind-versus-depth document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: blocks-kind-vs-depth
 
   - name: Add the kind-versus-depth block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-kind-vs-depth
@@ -378,9 +361,8 @@ steps:
       structure_block: result.output
 
   - name: Type Alpha into the kind-versus-depth block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-kind-vs-depth
@@ -389,17 +371,15 @@ steps:
         - insert: Alpha
 
   - name: Create the split-versus-type document
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: create_doc
     args:
       doc: blocks-split-vs-type
 
   - name: Add the split-versus-type block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: insert_block
     args:
       doc: blocks-split-vs-type
@@ -410,9 +390,8 @@ steps:
       split_block: result.output
 
   - name: Type hello world into the split-versus-type block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-split-vs-type
@@ -421,19 +400,15 @@ steps:
         - insert: hello world
 
   - name: Wait for every seeded document to reach every node
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    <<: *sync
     timeout: 90
-    trigger_sync: true
 
 
   # ── merge carries the tail's formatting into the head ──────────────────
 
   - name: Node 2 merges the tail block into the head block
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: merge_blocks
     args:
       doc: blocks-merge
@@ -441,11 +416,8 @@ steps:
       second: "{{merge_tail}}"
 
   - name: The merged block kept the tail's bold and the tail block is gone
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    <<: *sync
     timeout: 90
-    trigger_sync: true
     expect:
       method: get_state_digest
       args:
@@ -468,9 +440,8 @@ steps:
     seconds: 12
 
   - name: Node 1 moves the third block to the top
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: move_block
     args:
       doc: blocks-move-vs-edit
@@ -478,9 +449,8 @@ steps:
       after: null
 
   - name: Node 2 types into the block Node 1 is moving
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-move-vs-edit
@@ -490,9 +460,8 @@ steps:
         - insert: "ZZ"
 
   - name: Node 1 moves the middle block to the top
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: move_block
     args:
       doc: blocks-move-vs-move
@@ -500,9 +469,8 @@ steps:
       after: null
 
   - name: Node 2 moves the same block to the bottom
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: move_block
     args:
       doc: blocks-move-vs-move
@@ -510,18 +478,16 @@ steps:
       after: "{{mvm_gamma}}"
 
   - name: Node 1 deletes the middle block
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: delete_block
     args:
       doc: blocks-delete-vs-edit
       block: "{{dve_beta}}"
 
   - name: Node 2 types into the block Node 1 is deleting
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-delete-vs-edit
@@ -531,9 +497,8 @@ steps:
         - insert: "ZZ"
 
   - name: Node 1 retypes the block as a heading and aligns it
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: set_kind
     args:
       doc: blocks-kind-vs-depth
@@ -541,9 +506,8 @@ steps:
       kind: heading
 
   - name: Node 1 sets the block's alignment
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: set_attr
     args:
       doc: blocks-kind-vs-depth
@@ -552,9 +516,8 @@ steps:
       value: end
 
   - name: Node 2 indents the same block
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: set_depth
     args:
       doc: blocks-kind-vs-depth
@@ -573,11 +536,7 @@ steps:
     seconds: 12
 
   - name: The moved block leads the document and kept the peer's text
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 180
-    trigger_sync: true
+    <<: *sync
     expect:
       method: get_state_digest
       args:
@@ -586,11 +545,7 @@ steps:
         output: 'paragraph/0{:GammaZZ};paragraph/0{:Alpha};paragraph/0{:Beta};'
 
   - name: The twice-moved block exists exactly once
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 180
-    trigger_sync: true
+    <<: *sync
     expect:
       method: passage_count
       args:
@@ -601,9 +556,8 @@ steps:
         output: 1
 
   - name: Read the twice-moved order on Node 1
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: get_state_digest
     args:
       doc: blocks-move-vs-move
@@ -611,9 +565,8 @@ steps:
       moved_node1: result
 
   - name: Read the twice-moved order on Node 2
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: get_state_digest
     args:
       doc: blocks-move-vs-move
@@ -621,9 +574,8 @@ steps:
       moved_node2: result
 
   - name: Read the twice-moved order on Node 3
-    type: call
+    <<: *call
     node: rich-node-3
-    context_id: "{{context_id}}"
     method: get_state_digest
     args:
       doc: blocks-move-vs-move
@@ -646,11 +598,7 @@ steps:
       - "contains({{moved_node1}}, 'Gamma')"
 
   - name: The deleted block stays deleted despite the peer's edit
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 180
-    trigger_sync: true
+    <<: *sync
     expect:
       method: get_state_digest
       args:
@@ -659,11 +607,7 @@ steps:
         output: 'paragraph/0{:Alpha};paragraph/0{:Gamma};'
 
   - name: Kind, attribute and depth all survived, one row each
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 180
-    trigger_sync: true
+    <<: *sync
     expect:
       method: get_state_digest
       args:
@@ -683,9 +627,8 @@ steps:
     seconds: 8
 
   - name: Node 1 splits the block after hello
-    type: call
+    <<: *call
     node: rich-node-1
-    context_id: "{{context_id}}"
     method: split_block
     args:
       doc: blocks-split-vs-type
@@ -707,9 +650,8 @@ steps:
     wait_timeout: 90
 
   - name: Node 2 types at the end of the block Node 1 split
-    type: call
+    <<: *call
     node: rich-node-2
-    context_id: "{{context_id}}"
     method: apply_delta
     args:
       doc: blocks-split-vs-type
@@ -729,11 +671,7 @@ steps:
     seconds: 20
 
   - name: The peer's text stayed in the first half of the split
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [rich-node-1, rich-node-2, rich-node-3]
-    timeout: 180
-    trigger_sync: true
+    <<: *sync
     expect:
       method: get_state_digest
       args:
