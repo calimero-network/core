@@ -196,4 +196,31 @@ pub enum AccountError {
         /// Which part disagreed: `method`, `path` or `body`.
         part: &'static str,
     },
+    /// A timestamped link in a caller's chain has expired.
+    #[error("the {part} in this proof has expired")]
+    ProofExpired {
+        /// Which link: `request` or `session`.
+        part: &'static str,
+    },
+    /// A timestamped link is dated in the future by more than the tolerated
+    /// skew.
+    ///
+    /// Distinct from expiry, because the two send a reader opposite ways: an
+    /// expired proof is a caller that waited too long, a future-dated one is a
+    /// clock that disagrees, and diagnosing the second as the first is how a
+    /// skew problem gets treated as a session-length problem.
+    #[error("the {part} in this proof is dated in the future")]
+    ProofNotYetValid {
+        /// Which link: `request` or `session`.
+        part: &'static str,
+    },
+    /// The session statement delegates from a key the certificate does not
+    /// certify.
+    ///
+    /// The chain has to be continuous. Without this check a valid statement
+    /// signed by one of the account's *other* devices would carry a session
+    /// key here, and the request would verify against a device the presented
+    /// certificate never covered.
+    #[error("the session was signed by a device this certificate does not certify")]
+    SessionDeviceMismatch,
 }

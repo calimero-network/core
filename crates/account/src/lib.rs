@@ -66,6 +66,7 @@
 //! keeps working regardless of which module it moved to.
 
 mod account;
+mod caller;
 mod device;
 mod domain;
 mod error;
@@ -96,6 +97,7 @@ pub use calimero_primitives::identity::{
 pub use crate::account::{
     AccountGenesis, AccountMemberEndorsement, VerifiedEndorsement, ACCOUNT_GENESIS_VERSION,
 };
+pub use crate::caller::{CallerProof, VerifiedCaller};
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
 pub use crate::external::{sign_external, ExternalSigningDomain};
