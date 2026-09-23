@@ -473,6 +473,26 @@ pub fn readable(spans: &[Span]) -> Vec<(String, Vec<(String, String)>)> {
         .collect()
 }
 
+pub const NONE: &[(&str, &str)] = &[];
+pub const BOLD: &[(&str, &str)] = &[("bold", "true")];
+
+/// `(text, attribute pairs)` per span, which is what an expectation reads as.
+pub fn expect(spans: &[Span], want: &[(&str, &[(&str, &str)])]) {
+    let want: Vec<(String, Vec<(String, String)>)> = want
+        .iter()
+        .map(|(text, pairs)| {
+            (
+                (*text).to_owned(),
+                pairs
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(readable(spans), want);
+}
+
 /// One block of the document model: the structure fields, each stamped with the
 /// write that set it, plus a [`Model`] body.
 ///

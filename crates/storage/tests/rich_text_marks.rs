@@ -23,9 +23,10 @@ mod fugue_harness;
 mod rich_text_model;
 
 use fugue_harness::{
-    device, edit, entry_bytes, env_for, fork, genesis, land, read_with, written_ids, Store,
+    device, edit, entry_bytes, fork, genesis, land, permutations, read_with, root_hash,
+    written_ids, Store,
 };
-use rich_text_model::readable;
+use rich_text_model::{expect, readable, BOLD, NONE};
 
 const ALICE: u8 = 1;
 const BOB: u8 = 2;
@@ -42,24 +43,10 @@ fn seeded(text: &str) -> Store {
         || Doc::new_with_field_name("doc"),
         |doc| {
             if !text.is_empty() {
-                let _undo = doc.apply_delta(&[insert_op(text, None)]).unwrap();
+                let _undo = doc.apply_delta(&[DeltaOp::insert(text)]).unwrap();
             }
         },
     )
-}
-
-fn insert_op(text: &str, attributes: Option<Attrs>) -> DeltaOp {
-    DeltaOp::Insert {
-        insert: text.to_owned(),
-        attributes,
-    }
-}
-
-fn retain(count: usize) -> DeltaOp {
-    DeltaOp::Retain {
-        retain: count,
-        attributes: None,
-    }
 }
 
 fn attrs(pairs: &[(&str, Option<&str>)]) -> Attrs {
@@ -81,37 +68,13 @@ fn marks_of(store: &Store) -> Vec<Mark> {
     read_with::<Doc, _>(store, device(ALICE), |doc| doc.marks().unwrap())
 }
 
-fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
-    env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
-}
-
-/// `(text, attribute pairs)` per span, which is what an expectation reads as.
-fn expect(spans: &[Span], want: &[(&str, &[(&str, &str)])]) {
-    let want: Vec<(String, Vec<(String, String)>)> = want
-        .iter()
-        .map(|(text, pairs)| {
-            (
-                (*text).to_owned(),
-                pairs
-                    .iter()
-                    .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-                    .collect(),
-            )
-        })
-        .collect();
-    assert_eq!(readable(spans), want);
-}
-
-const NONE: &[(&str, &str)] = &[];
-const BOLD: &[(&str, &str)] = &[("bold", "true")];
-
 /// The rows a transaction writes when it changes nothing at all. Every "wrote
 /// no row" assertion is read against this control: taking the document mutably
 /// dirties the state container whether or not a collection changed, so an empty
 /// id set is not what "no row" looks like.
 fn no_op_rows(store: &Store) -> BTreeSet<Id> {
     written_ids(&edit::<Doc>(store, device(ALICE), |doc| {
-        let _undo = doc.apply_delta(&[retain(0)]).unwrap();
+        let _undo = doc.apply_delta(&[DeltaOp::retain(0)]).unwrap();
     }))
     .into_iter()
     .collect()
@@ -135,7 +98,13 @@ fn type_at(
 ) -> Vec<u8> {
     edit::<Doc>(store, device(writer), |doc| {
         let _undo = doc
-            .apply_delta(&[retain(pos), insert_op(text, attributes)])
+            .apply_delta(&[
+                DeltaOp::retain(pos),
+                DeltaOp::Insert {
+                    insert: text.to_owned(),
+                    attributes,
+                },
+            ])
             .unwrap();
     })
 }
@@ -306,7 +275,7 @@ fn apply_delta__panics_during_a_migration() {
     let store = seeded(SENTENCE);
     let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
         env::with_merge_mode(|| {
-            let _ignored = doc.apply_delta(&[insert_op("x", None)]);
+            let _ignored = doc.apply_delta(&[DeltaOp::insert("x")]);
         });
     });
 }
@@ -347,8 +316,8 @@ fn apply_delta__an_insert_past_the_end_stores_nothing_anywhere() {
                 retain: 3,
                 attributes: Some(attrs(&[("italic", Some("true"))])),
             },
-            retain(20),
-            insert_op("Y", None),
+            DeltaOp::retain(20),
+            DeltaOp::insert("Y"),
         ]);
         assert!(result.is_err(), "an insert past the end must fail");
     });
@@ -362,7 +331,7 @@ fn apply_delta__a_delete_past_the_end_clamps_like_the_text_layer_does() {
     let store = seeded("abc");
     let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
         let _undo = doc
-            .apply_delta(&[retain(1), DeltaOp::Delete { delete: 99 }])
+            .apply_delta(&[DeltaOp::retain(1), DeltaOp::Delete { delete: 99 }])
             .unwrap();
     });
     assert_eq!(text_of(&store), "a");
@@ -430,7 +399,7 @@ fn boundary__typing_at_a_deleted_edge_keeps_bold_and_drops_the_link() {
     let store = bolded((1, 4));
     let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
         let _undo = doc
-            .apply_delta(&[retain(3), DeltaOp::Delete { delete: 1 }])
+            .apply_delta(&[DeltaOp::retain(3), DeltaOp::Delete { delete: 1 }])
             .unwrap();
     });
     let _delta = type_at(&store, ALICE, 3, "X", None);
@@ -440,7 +409,7 @@ fn boundary__typing_at_a_deleted_edge_keeps_bold_and_drops_the_link() {
     let store = linked((1, 4));
     let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
         let _undo = doc
-            .apply_delta(&[retain(3), DeltaOp::Delete { delete: 1 }])
+            .apply_delta(&[DeltaOp::retain(3), DeltaOp::Delete { delete: 1 }])
             .unwrap();
     });
     let _delta = type_at(&store, ALICE, 3, "X", None);
@@ -566,12 +535,14 @@ fn undo__removes_the_characters_it_minted_and_leaves_a_peer_typing_inside() {
     let mut token = DeltaUndo(Vec::new());
     let typed = edit::<Doc>(&left, device(ALICE), |doc| {
         token = doc
-            .apply_delta(&[retain(1), insert_op("XYZ", None)])
+            .apply_delta(&[DeltaOp::retain(1), DeltaOp::insert("XYZ")])
             .unwrap();
     });
     land(&right, device(BOB), &typed);
     let peer = edit::<Doc>(&right, device(BOB), |doc| {
-        let _undo = doc.apply_delta(&[retain(3), insert_op("q", None)]).unwrap();
+        let _undo = doc
+            .apply_delta(&[DeltaOp::retain(3), DeltaOp::insert("q")])
+            .unwrap();
     });
     land(&left, device(ALICE), &peer);
     assert_eq!(text_of(&left), "aXYqZb");
@@ -593,7 +564,7 @@ fn undo__of_a_delete_restores_the_text_and_its_formatting() {
     let mut token = DeltaUndo(Vec::new());
     let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
         token = doc
-            .apply_delta(&[retain(6), DeltaOp::Delete { delete: 5 }])
+            .apply_delta(&[DeltaOp::retain(6), DeltaOp::Delete { delete: 5 }])
             .unwrap();
     });
     assert_eq!(text_of(&store), "hello ");
@@ -624,7 +595,7 @@ fn undo__of_an_undo_reproduces_the_original_change() {
                     attributes: Some(attrs(&[("bold", Some("true"))])),
                 },
                 DeltaOp::Delete { delete: 6 },
-                insert_op("!", None),
+                DeltaOp::insert("!"),
             ])
             .unwrap();
     });
@@ -648,7 +619,7 @@ fn apply_delta__a_change_that_changes_nothing_has_an_empty_undo() {
     let store = seeded("abc");
     let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
         assert_eq!(
-            doc.apply_delta(&[retain(3)]).unwrap(),
+            doc.apply_delta(&[DeltaOp::retain(3)]).unwrap(),
             DeltaUndo(Vec::new())
         );
         assert_eq!(doc.apply_delta(&[]).unwrap(), DeltaUndo(Vec::new()));
@@ -729,25 +700,6 @@ struct Converged {
     root: Option<[u8; 32]>,
 }
 
-fn permutations(n: usize) -> Vec<Vec<usize>> {
-    let mut out = Vec::new();
-    let mut current: Vec<usize> = (0..n).collect();
-    permute(&mut current, 0, &mut out);
-    out
-}
-
-fn permute(current: &mut Vec<usize>, at: usize, out: &mut Vec<Vec<usize>>) {
-    if at == current.len() {
-        out.push(current.clone());
-        return;
-    }
-    for index in at..current.len() {
-        current.swap(at, index);
-        permute(current, at + 1, out);
-        current.swap(at, index);
-    }
-}
-
 /// Landing the same delta three times, and an older one after a newer one, must
 /// leave the rows exactly as one delivery did.
 #[test]
@@ -787,7 +739,7 @@ fn merge__formatting_text_a_peer_concurrently_deletes() {
     });
     let deleted = edit::<Doc>(&right, device(BOB), |doc| {
         let _undo = doc
-            .apply_delta(&[retain(4), DeltaOp::Delete { delete: 3 }])
+            .apply_delta(&[DeltaOp::retain(4), DeltaOp::Delete { delete: 3 }])
             .unwrap();
     });
     land(&left, device(ALICE), &deleted);
@@ -809,7 +761,7 @@ fn merge__a_mark_arriving_before_its_text_is_inert_then_correct() {
 
     let typed = edit::<Doc>(&author, device(ALICE), |doc| {
         let _undo = doc
-            .apply_delta(&[retain(4), insert_op("fox", None)])
+            .apply_delta(&[DeltaOp::retain(4), DeltaOp::insert("fox")])
             .unwrap();
     });
     let formatted = edit::<Doc>(&author, device(ALICE), |doc| {
@@ -935,7 +887,7 @@ fn nested__two_replicas_creating_one_key_converge_on_text_and_marks() {
                 .unwrap()
                 .or_default()
                 .unwrap();
-            let _undo = doc.apply_delta(&[insert_op(text, None)]).unwrap();
+            let _undo = doc.apply_delta(&[DeltaOp::insert(text)]).unwrap();
             let _id = doc
                 .mark(0, text.chars().count(), "bold", Some("true"))
                 .unwrap();
@@ -985,7 +937,7 @@ fn json__a_delta_is_quills_shape() {
             insert: "hi".to_owned(),
             attributes: Some(attrs(&[("bold", None), ("link", Some("https://x"))])),
         },
-        retain(5),
+        DeltaOp::retain(5),
     ];
     let json = serde_json::to_string(&ops).unwrap();
     assert_eq!(

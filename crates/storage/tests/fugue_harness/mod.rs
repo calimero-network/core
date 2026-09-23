@@ -177,3 +177,27 @@ pub fn entry_bytes(store: &Store, ids: &BTreeSet<Id>) -> BTreeMap<Id, Option<Vec
         })
         .collect()
 }
+
+pub fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
+    env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
+}
+
+/// Every ordering of `0..n`, for the delivery-order convergence tests.
+pub fn permutations(n: usize) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    let mut current: Vec<usize> = (0..n).collect();
+    permute(&mut current, 0, &mut out);
+    out
+}
+
+fn permute(current: &mut Vec<usize>, at: usize, out: &mut Vec<Vec<usize>>) {
+    if at == current.len() {
+        out.push(current.clone());
+        return;
+    }
+    for index in at..current.len() {
+        current.swap(at, index);
+        permute(current, at + 1, out);
+        current.swap(at, index);
+    }
+}

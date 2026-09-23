@@ -205,13 +205,7 @@ fn apply_to_doc(doc: &mut Doc, op: &Op) {
             let _undo = doc
                 .apply_delta(
                     BlockId(block),
-                    &[
-                        retain(pos),
-                        DeltaOp::Insert {
-                            insert: text.to_owned(),
-                            attributes: None,
-                        },
-                    ],
+                    &[DeltaOp::retain(pos), DeltaOp::insert(text)],
                 )
                 .unwrap();
         }
@@ -219,7 +213,7 @@ fn apply_to_doc(doc: &mut Doc, op: &Op) {
             let _undo = doc
                 .apply_delta(
                     BlockId(block),
-                    &[retain(start), DeltaOp::Delete { delete: count }],
+                    &[DeltaOp::retain(start), DeltaOp::Delete { delete: count }],
                 )
                 .unwrap();
         }
@@ -255,13 +249,6 @@ fn apply_to_model(model: &mut DocModel, op: &Op, replica: u64, stamp: u64) {
                 .body
                 .mark::<DefaultMarks>(start, end, key, value, replica);
         }
-    }
-}
-
-const fn retain(count: usize) -> DeltaOp {
-    DeltaOp::Retain {
-        retain: count,
-        attributes: None,
     }
 }
 

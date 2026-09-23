@@ -24,7 +24,8 @@ use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, TypeDef, Typ
 mod fugue_harness;
 
 use fugue_harness::{
-    device, edit, entry_bytes, env_for, fork, genesis, land, read_with, written_ids, Store,
+    device, edit, entry_bytes, env_for, fork, genesis, land, read_with, root_hash, written_ids,
+    Store,
 };
 
 const ALICE: u8 = 1;
@@ -103,10 +104,6 @@ fn text_of(store: &Store, writer: u8, key: &str) -> Option<String> {
             .unwrap()
             .map(|doc| doc.body.get_text().unwrap())
     })
-}
-
-fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
-    env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
 }
 
 /// Of `ids`, the ones tagged `FugueTextBlock`, mapped to the collection they hang off.

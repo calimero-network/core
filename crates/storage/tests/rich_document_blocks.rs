@@ -13,17 +13,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_storage::address::Id;
 use calimero_storage::collections::{
-    BlockId, BlockView, DefaultMarks, DeltaOp, RichDocument, Span, UnorderedMap,
+    BlockId, BlockView, DefaultMarks, DeltaOp, RichDocument, UnorderedMap,
 };
-use calimero_storage::env;
 use calimero_storage::store::MainStorage;
 
 mod fugue_harness;
+mod rich_text_model;
 
 use fugue_harness::{
-    device, edit, entry_bytes, env_for, fork, genesis, land, read_with, try_edit, written_ids,
-    Store,
+    device, edit, entry_bytes, fork, genesis, land, permutations, read_with, root_hash, try_edit,
+    written_ids, Store,
 };
+use rich_text_model::readable;
 
 const ALICE: u8 = 1;
 const BOB: u8 = 2;
@@ -49,7 +50,7 @@ fn seeded(kinds: &[(&str, &str)]) -> (Store, Vec<BlockId>) {
         let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
             let id = doc.insert_block(previous, kind, 0).unwrap();
             if !text.is_empty() {
-                let _undo = doc.apply_delta(id, &[insert(text)]).unwrap();
+                let _undo = doc.apply_delta(id, &[DeltaOp::insert(text)]).unwrap();
             }
             ids.push(id);
         });
@@ -65,40 +66,6 @@ fn texts_of(store: &Store) -> Vec<String> {
     blocks_of(store)
         .iter()
         .map(|view| view.spans.iter().map(|span| span.text.as_str()).collect())
-        .collect()
-}
-
-fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
-    env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
-}
-
-fn insert(text: &str) -> DeltaOp {
-    DeltaOp::Insert {
-        insert: text.to_owned(),
-        attributes: None,
-    }
-}
-
-fn retain(count: usize) -> DeltaOp {
-    DeltaOp::Retain {
-        retain: count,
-        attributes: None,
-    }
-}
-
-/// `(text, attribute pairs)` per span, which is what an expectation reads as.
-fn readable(spans: &[Span]) -> Vec<(String, Vec<(String, String)>)> {
-    spans
-        .iter()
-        .map(|span| {
-            (
-                span.text.clone(),
-                span.attributes
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            )
-        })
         .collect()
 }
 
@@ -227,7 +194,9 @@ fn set_kind__concurrent_with_a_body_edit_keeps_both() {
         doc.set_kind(ids[0], "code-block").unwrap();
     });
     let from_right = edit::<Doc>(&right, device(BOB), |doc| {
-        let _undo = doc.apply_delta(ids[0], &[retain(5), insert("!")]).unwrap();
+        let _undo = doc
+            .apply_delta(ids[0], &[DeltaOp::retain(5), DeltaOp::insert("!")])
+            .unwrap();
     });
     cross_land(&left, &right, &from_left, &from_right);
 
@@ -256,7 +225,7 @@ fn delete_block__concurrent_with_a_body_edit_deletes_and_keeps_the_rows() {
     });
     let from_right = edit::<Doc>(&right, device(BOB), |doc| {
         let _undo = doc
-            .apply_delta(ids[1], &[retain(4), insert("ped")])
+            .apply_delta(ids[1], &[DeltaOp::retain(4), DeltaOp::insert("ped")])
             .unwrap();
     });
     cross_land(&left, &right, &from_left, &from_right);
@@ -413,7 +382,9 @@ fn split_block__at_the_end_touches_no_row_of_the_original() {
     let touched = rows_written(&store, &delta);
 
     let body_delta = edit::<Doc>(&store, device(ALICE), |doc| {
-        let _undo = doc.apply_delta(ids[0], &[retain(5), insert("!")]).unwrap();
+        let _undo = doc
+            .apply_delta(ids[0], &[DeltaOp::retain(5), DeltaOp::insert("!")])
+            .unwrap();
     });
     let body_rows = rows_written(&store, &body_delta);
     assert!(
@@ -446,7 +417,9 @@ fn split_block__while_a_peer_types_in_the_tail_keeps_that_text_in_the_first_bloc
     let (left, right) = (fork(&base), fork(&base));
 
     let from_right = edit::<Doc>(&right, device(BOB), |doc| {
-        let _undo = doc.apply_delta(ids[0], &[retain(5), insert("X")]).unwrap();
+        let _undo = doc
+            .apply_delta(ids[0], &[DeltaOp::retain(5), DeltaOp::insert("X")])
+            .unwrap();
     });
     let from_left = edit::<Doc>(&left, device(ALICE), |doc| {
         let _new = doc.split_block(ids[0], 3).unwrap();
@@ -524,7 +497,9 @@ fn merge__every_delivery_order_of_a_block_op_set_converges_byte_for_byte() {
         |doc, ids| doc.set_depth(ids[1], 2).unwrap(),
         |doc, ids| doc.move_block(ids[2], None).unwrap(),
         |doc, ids| {
-            let _undo = doc.apply_delta(ids[1], &[retain(3), insert("!")]).unwrap();
+            let _undo = doc
+                .apply_delta(ids[1], &[DeltaOp::retain(3), DeltaOp::insert("!")])
+                .unwrap();
         },
         |doc, ids| doc.set_attr(ids[0], "align", Some("center")).unwrap(),
     ];
@@ -595,25 +570,6 @@ struct Converged {
     root: Option<[u8; 32]>,
 }
 
-fn permutations(n: usize) -> Vec<Vec<usize>> {
-    let mut out = Vec::new();
-    let mut current: Vec<usize> = (0..n).collect();
-    permute(&mut current, 0, &mut out);
-    out
-}
-
-fn permute(current: &mut Vec<usize>, at: usize, out: &mut Vec<Vec<usize>>) {
-    if at == current.len() {
-        out.push(current.clone());
-        return;
-    }
-    for index in at..current.len() {
-        current.swap(at, index);
-        permute(current, at + 1, out);
-        current.swap(at, index);
-    }
-}
-
 // ── the nested shape an app stores ──────────────────────────────────────
 
 fn library() -> Store {
@@ -639,13 +595,13 @@ fn nested__two_replicas_creating_one_doc_key_converge() {
     let from_left = edit::<Library>(&left, device(ALICE), |map| {
         let mut doc = Doc::new();
         let id = doc.insert_block(None, "heading", 0).unwrap();
-        let _undo = doc.apply_delta(id, &[insert("left")]).unwrap();
+        let _undo = doc.apply_delta(id, &[DeltaOp::insert("left")]).unwrap();
         let _old = map.insert(DOC_KEY.to_owned(), doc).unwrap();
     });
     let from_right = edit::<Library>(&right, device(BOB), |map| {
         let mut doc = Doc::new();
         let id = doc.insert_block(None, PARAGRAPH, 1).unwrap();
-        let _undo = doc.apply_delta(id, &[insert("right")]).unwrap();
+        let _undo = doc.apply_delta(id, &[DeltaOp::insert("right")]).unwrap();
         let _old = map.insert(DOC_KEY.to_owned(), doc).unwrap();
     });
     cross_land(&left, &right, &from_left, &from_right);
@@ -678,7 +634,7 @@ fn nested__two_documents_never_bleed_rows() {
         let _delta = edit::<Library>(&store, device(ALICE), |map| {
             let mut doc = Doc::new();
             let id = doc.insert_block(None, PARAGRAPH, 0).unwrap();
-            let _undo = doc.apply_delta(id, &[insert(text)]).unwrap();
+            let _undo = doc.apply_delta(id, &[DeltaOp::insert(text)]).unwrap();
             let _old = map.insert(key.to_owned(), doc).unwrap();
         });
     }
@@ -699,7 +655,7 @@ fn nested__removing_a_doc_entry_while_a_peer_edits_a_block_converges() {
     let _seed = edit::<Library>(&base, device(ALICE), |map| {
         let mut doc = Doc::new();
         block = doc.insert_block(None, PARAGRAPH, 0).unwrap();
-        let _undo = doc.apply_delta(block, &[insert("body")]).unwrap();
+        let _undo = doc.apply_delta(block, &[DeltaOp::insert("body")]).unwrap();
         let _old = map.insert(DOC_KEY.to_owned(), doc).unwrap();
     });
     let (left, right) = (fork(&base), fork(&base));
@@ -709,7 +665,9 @@ fn nested__removing_a_doc_entry_while_a_peer_edits_a_block_converges() {
     });
     let from_right = edit::<Library>(&right, device(BOB), |map| {
         let mut doc = map.get_mut(&DOC_KEY.to_owned()).unwrap().unwrap();
-        let _undo = doc.apply_delta(block, &[retain(4), insert("!")]).unwrap();
+        let _undo = doc
+            .apply_delta(block, &[DeltaOp::retain(4), DeltaOp::insert("!")])
+            .unwrap();
     });
     cross_land(&left, &right, &from_left, &from_right);
 

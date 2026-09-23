@@ -15,16 +15,15 @@ use calimero_storage::address::Id;
 use calimero_storage::collections::{
     DefaultMarks, DeltaOp, Expand, MarkSchema, RichText, Root, Span,
 };
-use calimero_storage::env;
 use calimero_storage::store::MainStorage;
 
 mod fugue_harness;
 mod rich_text_model;
 
 use fugue_harness::{
-    device, edit, entry_bytes, env_for, fork, genesis, land, read_with, written_ids, Store,
+    device, edit, entry_bytes, fork, genesis, land, read_with, root_hash, written_ids, Store,
 };
-use rich_text_model::readable;
+use rich_text_model::{expect, readable, BOLD, NONE};
 
 const ALICE: u8 = 1;
 const BOB: u8 = 2;
@@ -49,22 +48,13 @@ fn seeded(text: &str) -> Store {
     genesis(
         || Doc::new_with_field_name("essay"),
         |doc| {
-            let _undo = doc
-                .apply_delta(&[DeltaOp::Insert {
-                    insert: text.to_owned(),
-                    attributes: None,
-                }])
-                .unwrap();
+            let _undo = doc.apply_delta(&[DeltaOp::insert(text)]).unwrap();
         },
     )
 }
 
 fn spans_of(store: &Store, writer: u8) -> Vec<Span> {
     read_with::<Doc, _>(store, device(writer), |doc| doc.to_delta().unwrap())
-}
-
-fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
-    env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
 }
 
 /// Alice and Bob edit a shared document without seeing each other, then each
@@ -107,41 +97,12 @@ fn merged(
     spans
 }
 
-/// `(text, [(key, value), ...])` per span, which is what an expectation reads as.
-fn expect(spans: &[Span], want: &[(&str, &[(&str, &str)])]) {
-    let got = readable(spans);
-    let want: Vec<(String, Vec<(String, String)>)> = want
-        .iter()
-        .map(|(text, attrs)| {
-            (
-                (*text).to_owned(),
-                attrs
-                    .iter()
-                    .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-                    .collect(),
-            )
-        })
-        .collect();
-    assert_eq!(got, want);
-}
-
-const NONE: &[(&str, &str)] = &[];
-const BOLD: &[(&str, &str)] = &[("bold", "true")];
 const ITALIC: &[(&str, &str)] = &[("italic", "true")];
 const BOLD_ITALIC: &[(&str, &str)] = &[("bold", "true"), ("italic", "true")];
 const LINK: &[(&str, &str)] = &[("link", "https://x")];
 
 fn insert(pos: usize, text: &str) -> Vec<DeltaOp> {
-    vec![
-        DeltaOp::Retain {
-            retain: pos,
-            attributes: None,
-        },
-        DeltaOp::Insert {
-            insert: text.to_owned(),
-            attributes: None,
-        },
-    ]
+    vec![DeltaOp::retain(pos), DeltaOp::insert(text)]
 }
 
 /// "Inserted characters should stay in the same place relative to the context
