@@ -15,7 +15,9 @@ exclude = [
     "./apps/abi_conformance",
     "./apps/abi_conformance_resolved",
     "./apps/blobs",
+    "./apps/bulk-write-bench",
     "./apps/collaborative-editor",
+    "./apps/fugue-editor",
     "./apps/fugue-collab",
     "./apps/kv-store",
     "./apps/custom-key-store",
@@ -187,7 +189,9 @@ members = [
     "./apps/team-metrics-custom",
     "./apps/private_data",
     "./apps/blobs",
+    "./apps/bulk-write-bench",
     "./apps/collaborative-editor",
+    "./apps/fugue-editor",
     "./apps/fugue-collab",
     "./apps/abi_conformance",
     "./apps/abi_conformance_resolved",
@@ -197,6 +201,7 @@ members = [
     "./tools/merodb",
     "./tools/mero-sign",
     "./tools/cargo-mero",
+    "./tools/storage-cost",
 ]
 
 [workspace.dependencies]
@@ -217,6 +222,7 @@ cargo_metadata = "0.23.1"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
 claims = "0.8.0"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 clap = "4.4.18"
 serial_test = "4.0"
 color-eyre = "0.6.2"
@@ -397,6 +403,11 @@ codegen-units = 1
 opt-level = "z"
 strip = "symbols"
 panic = "unwind"
+
+# `cargo bench --workspace` unifies dev-dependency features across every member,
+# so `calimero-storage/testing` leaks in and trips that crate's release guard.
+[profile.bench.package.calimero-storage]
+debug-assertions = true
 
 [profile.app-release]
 inherits = "release"

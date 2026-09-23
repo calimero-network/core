@@ -12,6 +12,7 @@ on:
       - "e2e-tests/**"
       - "tools/**"
       - "scripts/check-wasm-size.sh"
+      - "scripts/check-storage-cost.sh"
       - ".github/workflows/ci-checks.yml"
 
 env:
@@ -292,3 +293,30 @@ jobs:
 
       - name: Check wasm sizes against the runtime module-size limit
         run: ./scripts/check-wasm-size.sh
+
+  # Storage costs are deterministic, so this gates. Wall-clock benchmarks do
+  # not; see benchmarks.yml.
+  storage-cost:
+    name: Storage cost gate
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: storage-cost
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Shape first: it catches a complexity regression even when the snapshot
+      # was regenerated to absorb it. This job is the only place the slow cost
+      # tests run, hence --include-ignored.
+      - name: Assert cost curves keep their declared shape
+        run: cargo test -p storage-cost --release -- --include-ignored
+
+      - name: Check storage costs against the committed snapshot
+        run: ./scripts/check-storage-cost.sh
