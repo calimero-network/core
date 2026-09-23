@@ -343,7 +343,7 @@ fn editor_transaction_wall() {
 
     let mut len = 0_usize;
     let mut landed: Option<(usize, u64, u64)> = None;
-    while len < ceiling() {
+    while len < CEILING {
         let paste: String = std::iter::repeat_n('a', TRANSACTION_GROWTH).collect();
         let grown = call(
             &module,
