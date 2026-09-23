@@ -5,11 +5,14 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::super::{read_tee_admission_policy, MembershipError, TeeAdmissionPolicy};
+use super::super::{
+    read_tee_admission_policy, MembershipError, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
+};
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
-    TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR2,
-    TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY, TEE_REJECT_TCB_STATUS,
+    TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_MRTD_EMPTY, TEE_REJECT_RTMR0,
+    TEE_REJECT_RTMR1, TEE_REJECT_RTMR2, TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY,
+    TEE_REJECT_TCB_STATUS,
 };
 use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
@@ -125,8 +128,15 @@ impl<'a> MembershipPolicy<'a> {
     }
 
     pub fn read_required_tee_admission_policy(&self) -> EyreResult<TeeAdmissionPolicy> {
-        read_tee_admission_policy(self.store, &self.group_id)?
-            .ok_or_else(|| MembershipError::NoTeeAdmissionPolicy.into())
+        match read_tee_admission_policy(self.store, &self.group_id)? {
+            TeeAdmissionPolicyRead::Set(policy) => Ok(policy),
+            TeeAdmissionPolicyRead::NotSet => bail!(MembershipError::NoTeeAdmissionPolicy),
+            TeeAdmissionPolicyRead::Unreadable { undecodable } => {
+                bail!(MembershipError::TeeAdmissionPolicyUnreadable(
+                    undecodable.len()
+                ))
+            }
+        }
     }
 
     pub fn validate_tee_attestation_allowlists(
@@ -154,6 +164,7 @@ impl<'a> MembershipPolicy<'a> {
         if let Err(err) = validate_tee_attestation_allowlists(&normalized_policy, fields) {
             let reason = match err.reason() {
                 MembershipPolicyRejection::MrtdNotAllowed => TEE_REJECT_MRTD,
+                MembershipPolicyRejection::MrtdAllowlistEmpty => TEE_REJECT_MRTD_EMPTY,
                 MembershipPolicyRejection::TcbStatusNotAllowed => TEE_REJECT_TCB_STATUS,
                 MembershipPolicyRejection::Rtmr0NotAllowed => TEE_REJECT_RTMR0,
                 MembershipPolicyRejection::Rtmr1NotAllowed => TEE_REJECT_RTMR1,

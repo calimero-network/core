@@ -761,6 +761,19 @@ impl Display for ApiError {
 
 impl Error for ApiError {}
 
+impl ApiError {
+    /// True when the status blames the caller rather than this node.
+    ///
+    /// Admin handlers log a failed call at `error!`. On a fleet node those
+    /// journals ship to a central log store, so a UI polling an absent group
+    /// every 1.4s turned a routine `404` into a permanent ERROR stream --
+    /// noise in exactly the place someone looks when diagnosing a real fault.
+    /// A handler that can legitimately answer 4xx picks its level with this.
+    pub(crate) fn is_client_fault(&self) -> bool {
+        self.status_code.is_client_error()
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
         let body = json!({ "error": self.message }).to_string();
@@ -853,7 +866,13 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         // parent chain that will not terminate. Fall through to the generic 500,
         // which also keeps their messages (they name internal rows) out of the
         // response.
-        Refusal::MissingMemberValue { .. } | Refusal::DepthExceeded(_) => return None,
+        // `TeeAdmissionPolicyUnreadable` joins them: the op log holds bytes
+        // this binary cannot decode, which is not something the requester did
+        // or can undo. The reason is logged at `error!` where it is actionable;
+        // the response stays generic, like its neighbours here.
+        Refusal::MissingMemberValue { .. }
+        | Refusal::DepthExceeded(_)
+        | Refusal::TeeAdmissionPolicyUnreadable(_) => return None,
     })
 }
 
@@ -880,11 +899,34 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // node's own standing, and a `500` would read as a server fault.
     if let Some(
         calimero_context::error::ContextError::NotAGroupMember { .. }
+        | calimero_context::error::ContextError::NotANamespaceMember { .. }
+        // A caller-supplied identity without standing in the group. 403 like
+        // its neighbours, and never 404: the caller holds this key and is
+        // acting AS this identity, so the refusal is about standing rather
+        // than about something being absent.
+        | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
+            message: err.to_string(),
+        };
+    }
+    // The caller named something this node does not have. `404` rather than
+    // the generic `500`: the two ask opposite things of a client, and a
+    // control-plane script reading a `500` as "already gone" is how a real
+    // failure got walked past during the fleet-HA incident. These messages
+    // carry only the id the caller supplied, so echoing them leaks nothing.
+    if let Some(
+        calimero_context::error::ContextError::GroupNotFound { .. }
+        | calimero_context::error::ContextError::NamespaceNotFound { .. }
+        | calimero_context::error::ContextError::ApplicationNotFound { .. }
+        | calimero_context::error::ContextError::ContextNotFound { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::NOT_FOUND,
             message: err.to_string(),
         };
     }
@@ -1610,6 +1652,150 @@ mod parse_api_error_tests {
                 "the caller must learn that the id is spent for good; got: {}",
                 api.message
             );
+        }
+    }
+
+    /// "The thing you named is not here" must be a `404`.
+    ///
+    /// These were bare `bail!("group '…' not found")`, which `parse_api_error`
+    /// had nothing to match, so they came back as
+    /// `500 {"error":"Internal server error"}`. Two things went wrong with
+    /// that during the fleet-HA incident: a control-plane wrapper around
+    /// namespace-leave read the 500 as "likely already left / not a member"
+    /// and carried on past a real failure, and a dashboard polling an absent
+    /// group every ~1.4s turned a routine miss into a permanent ERROR stream
+    /// in the operator's central log store.
+    mod absent_resources_are_404_not_500 {
+        use calimero_context::error::ContextError;
+
+        use super::*;
+
+        #[test]
+        fn a_missing_group_is_404_and_keeps_its_message() {
+            let api = parse_api_error(
+                ContextError::GroupNotFound {
+                    group_id: "ContextGroupId(f72d)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+            assert!(
+                api.message.contains("f72d"),
+                "the id the caller supplied is what tells them what was missing; got: {}",
+                api.message
+            );
+        }
+
+        #[test]
+        fn missing_namespace_application_and_context_are_404_too() {
+            for err in [
+                ContextError::NamespaceNotFound {
+                    namespace_id: "n".to_owned(),
+                },
+                ContextError::ApplicationNotFound {
+                    application_id: "a".to_owned(),
+                },
+                ContextError::ContextNotFound {
+                    context_id: "c".to_owned(),
+                },
+            ] {
+                let rendered = err.to_string();
+                assert_eq!(
+                    parse_api_error(err.into()).status_code,
+                    StatusCode::NOT_FOUND,
+                    "{rendered}"
+                );
+            }
+        }
+
+        /// The queried identity not being a member is the same category as the
+        /// group being absent: the caller asked about something that is not
+        /// there.
+        #[test]
+        fn a_non_member_identity_is_404() {
+            let api = parse_api_error(
+                MembershipError::MemberNotFound {
+                    group_id: "g".to_owned(),
+                    member: "m".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// Not a member is `403`, not `404`: the group exists, the node just
+        /// has no standing in it, and telling a caller "not found" would send
+        /// them looking for a group that is right there.
+        #[test]
+        fn not_a_member_stays_403_for_groups_and_namespaces() {
+            for err in [
+                ContextError::NotAGroupMember {
+                    group_id: "g".to_owned(),
+                },
+                ContextError::NotANamespaceMember {
+                    namespace_id: "n".to_owned(),
+                },
+            ] {
+                assert_eq!(
+                    parse_api_error(err.into()).status_code,
+                    StatusCode::FORBIDDEN
+                );
+            }
+        }
+
+        /// Why typing was needed at all, pinned: the untyped form these sites
+        /// used still falls through to the generic 500 with its message
+        /// scrubbed. This is what every one of them returned before.
+        #[test]
+        fn an_untyped_not_found_still_falls_through_to_500() {
+            let api = parse_api_error(eyre::eyre!("group 'ContextGroupId(f72d)' not found"));
+            assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(api.message, "Internal server error");
+        }
+
+        /// A caller-supplied identity is not this node, and the message must
+        /// not claim it is.
+        ///
+        /// `create_context` takes `identity_secret` straight from the request
+        /// body, so the identity it checks is routinely somebody else's.
+        /// Reusing `NotAGroupMember` there answered "node is not a member of
+        /// group X" about a principal that was never the node.
+        #[test]
+        fn a_caller_supplied_identity_is_403_and_names_the_identity_not_the_node() {
+            let api = parse_api_error(
+                ContextError::IdentityNotAGroupMember {
+                    group_id: "g".to_owned(),
+                    identity: "ed25519:caller".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("ed25519:caller"),
+                "the refusal must name the identity that was checked; got: {}",
+                api.message
+            );
+            assert!(
+                !api.message.contains("node is not a member"),
+                "and must not claim the NODE is the one without standing; got: {}",
+                api.message
+            );
+        }
+
+        /// The log-level split rides on this, and an ERROR per poll on a fleet
+        /// node is shipped to the operator's log store.
+        #[test]
+        fn client_fault_tracks_the_status_class() {
+            let not_found = parse_api_error(
+                ContextError::GroupNotFound {
+                    group_id: "g".to_owned(),
+                }
+                .into(),
+            );
+            assert!(not_found.is_client_fault());
+
+            let server_fault = parse_api_error(eyre::eyre!("something internal broke"));
+            assert!(!server_fault.is_client_fault());
         }
     }
 }

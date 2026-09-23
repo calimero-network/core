@@ -4,7 +4,11 @@ description: "Install the pinned merobox: release binary on Linux, PyPI on Windo
 runs:
   using: "composite"
   steps:
-    - name: Install merobox
+    # Split out from the install so the cache key can name the version and
+    # architecture. Keeping the pin in one place means the cache key and the
+    # asset URL can never disagree about which build is wanted.
+    - name: Resolve the pinned merobox build
+      id: pin
       shell: bash
       run: |
         set -euo pipefail
@@ -12,31 +16,97 @@ runs:
         # Windows lanes need >= 0.6.75: native process teardown, script steps
         # without a literal `/bin/sh`, and a banner that survives cp1252 stdout.
         MEROBOX_VERSION="0.6.77"
-        TAG="v${MEROBOX_VERSION}"
 
-        # merobox publishes release binaries for linux and darwin only.
-        if [ "${RUNNER_OS}" = "Windows" ]; then
-          pip install "merobox==${MEROBOX_VERSION}"
-        else
+        MEROBOX_ARCH=""
+        if [ "${RUNNER_OS}" != "Windows" ]; then
+          # merobox publishes release binaries for linux and darwin only.
           case "$(uname -m)" in
             x86_64) MEROBOX_ARCH="linux-x86-64" ;;
             aarch64 | arm64) MEROBOX_ARCH="linux-aarch64" ;;
             *) echo "::error::no merobox release binary for $(uname -m)"; exit 1 ;;
           esac
+        fi
 
-          ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
-          timeout 180 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox "$ASSET"
-          timeout 60 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox.sha256 "${ASSET}.sha256"
+        {
+          echo "version=${MEROBOX_VERSION}"
+          echo "tag=v${MEROBOX_VERSION}"
+          echo "arch=${MEROBOX_ARCH}"
+        } >> "$GITHUB_OUTPUT"
 
-          EXPECTED_SHA="$(awk '{print $1}' /tmp/merobox.sha256)"
-          ACTUAL_SHA="$(sha256sum /tmp/merobox | awk '{print $1}')"
+    # A run fans out to ~100 jobs that all want the same 35 MB asset. Without
+    # this they all fetch it from the release CDN at once, which is both a
+    # thundering herd against the anonymous rate limit and ~100 chances to hit
+    # a transient upstream failure. The cache is a different service, and it is
+    # keyed on the exact build, so a version bump misses by construction rather
+    # than serving a stale binary.
+    - name: Restore the cached merobox binary
+      if: runner.os != 'Windows'
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/merobox
+        key: merobox-${{ steps.pin.outputs.tag }}-${{ steps.pin.outputs.arch }}
+
+    - name: Install merobox
+      shell: bash
+      env:
+        MEROBOX_VERSION: ${{ steps.pin.outputs.version }}
+        TAG: ${{ steps.pin.outputs.tag }}
+        MEROBOX_ARCH: ${{ steps.pin.outputs.arch }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+
+        if [ "${RUNNER_OS}" = "Windows" ]; then
+          pip install "merobox==${MEROBOX_VERSION}"
+        else
+          CACHE_DIR="$HOME/.cache/merobox"
+          BIN="$CACHE_DIR/merobox-${TAG}-${MEROBOX_ARCH}"
+          SUM="$BIN.sha256"
+          mkdir -p "$CACHE_DIR"
+
+          if [ "${CACHE_HIT:-}" = "true" ] && [ -s "$BIN" ] && [ -s "$SUM" ]; then
+            echo "merobox ${TAG} restored from cache"
+          else
+            ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
+
+            # Retry budget sized to the `timeout` around it, not left at
+            # curl's default. `--retry 3` alone backs off 1s, 2s, 4s, so all
+            # four attempts land inside ~7 seconds and a blip of even a minute
+            # takes the job down: on 2026-09-21 a run of 99 jobs lost 17 to
+            # four consecutive `504`s inside 7.3s, while `timeout 180` never
+            # came close to its budget. `--retry-delay` fixes the interval
+            # (curl then skips its own backoff), and `--retry-max-time` keeps
+            # the whole sequence inside the outer timeout.
+            #
+            # `--retry-all-errors` is what makes this cover a 504 at all;
+            # without it curl retries only a subset of transient conditions.
+            RETRY=(--retry 5 --retry-delay 5 --retry-max-time 150 --retry-all-errors)
+
+            if ! timeout 180 curl -fsSL "${RETRY[@]}" -o "$BIN" "$ASSET"; then
+              echo "::error::could not download merobox ${TAG} from the GitHub release CDN after 5 attempts over ~150s. This is an INFRASTRUCTURE fetch failure, not a test failure: no test has run at this point. Check https://www.githubstatus.com and that the asset exists at ${ASSET}"
+              exit 1
+            fi
+            if ! timeout 90 curl -fsSL "${RETRY[@]}" -o "$SUM" "${ASSET}.sha256"; then
+              echo "::error::downloaded merobox ${TAG} but could not fetch its checksum from ${ASSET}.sha256. This is an INFRASTRUCTURE fetch failure, not a test failure"
+              exit 1
+            fi
+          fi
+
+          # Verified on every path, cache hit included. A cache entry is
+          # attacker-influenceable in a way a release asset is not (any job that
+          # can write the cache scope can seed it), so restoring without
+          # checking the digest would trade a transient failure for a silent
+          # one.
+          EXPECTED_SHA="$(awk '{print $1}' "$SUM")"
+          ACTUAL_SHA="$(sha256sum "$BIN" | awk '{print $1}')"
           if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
             echo "::error::merobox ${TAG} checksum mismatch: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}"
             exit 1
           fi
 
           mkdir -p "$HOME/.local/bin"
-          install -m 0755 /tmp/merobox "$HOME/.local/bin/merobox"
+          install -m 0755 "$BIN" "$HOME/.local/bin/merobox"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
         fi

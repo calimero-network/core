@@ -645,7 +645,9 @@ impl ContextManager {
             .load(group_id)?
             .is_none()
         {
-            eyre::bail!("group '{group_id:?}' not found");
+            eyre::bail!(crate::error::ContextError::GroupNotFound {
+                group_id: format!("{group_id:?}"),
+            });
         }
 
         // Before the identity read, which answers for a namespace this device was

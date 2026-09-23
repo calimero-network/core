@@ -39,9 +39,16 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             match MembershipRepository::new(&self.datastore).role_of(&group_id, &identity) {
                 Ok(Some(role)) => role,
                 Ok(None) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "identity is not a member of group '{group_id:?}'"
-                    )));
+                    // The member the CALLER named, not this node. 404 matches
+                    // `get_member_capabilities`: the caller asked about somebody
+                    // who is not in this group.
+                    return ActorResponse::reply(Err(
+                        calimero_governance_store::MembershipError::MemberNotFound {
+                            group_id: format!("{group_id:?}"),
+                            member: identity.to_string(),
+                        }
+                        .into(),
+                    ));
                 }
                 Err(err) => return ActorResponse::reply(Err(err)),
             };

@@ -161,7 +161,9 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         let result = (|| -> eyre::Result<_> {
             let meta = MetaRepository::new(&datastore)
                 .load(&group_id)?
-                .ok_or_else(|| eyre::eyre!("group not found"))?;
+                .ok_or_else(|| crate::error::ContextError::GroupNotFound {
+                    group_id: format!("{group_id:?}"),
+                })?;
 
             let signer_account = crate::member_account::require(&datastore, &group_id, &signer)?;
             MembershipRepository::new(&datastore).require_admin_or_capability(

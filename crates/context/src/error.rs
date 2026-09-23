@@ -87,6 +87,74 @@ pub enum ContextError {
         group_id: String,
     },
 
+    /// The node is not a member of the namespace the request names.
+    ///
+    /// The namespace-scoped sibling of [`Self::NotAGroupMember`]; separate so
+    /// the message names a namespace rather than a group, which is what the
+    /// operator is holding when they hit this.
+    #[error("node is not a member of namespace '{namespace_id}'")]
+    NotANamespaceMember {
+        /// Debug rendering of the target namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// A caller-supplied identity is not a member of the group it named.
+    ///
+    /// Distinct from [`Self::NotAGroupMember`], which is about THIS NODE's own
+    /// standing. `create_context` takes an `identity_secret` straight from the
+    /// request body, so the identity it checks is frequently not the node's --
+    /// and a message saying "node is not a member" would name the wrong
+    /// principal entirely.
+    ///
+    /// `403` rather than `404`: the caller holds this key and is acting AS this
+    /// identity, so the refusal is about standing, not about a thing being
+    /// absent. It also keeps company with the capability check immediately
+    /// after it, which refuses the same call for the same shape of reason.
+    #[error("identity '{identity}' is not a member of group '{group_id}'")]
+    IdentityNotAGroupMember {
+        /// Debug rendering of the target group id (for the message only).
+        group_id: String,
+        /// Rendering of the identity that was checked (for the message only).
+        identity: String,
+    },
+
+    /// The named group has no meta row on this node.
+    ///
+    /// Typed so it can answer `404`. As an untyped `bail!` it fell through to
+    /// the generic `500`, and a caller cannot tell "what you asked about is
+    /// not here" from "this node fell over" — one means stop, the other means
+    /// retry. A control-plane script read exactly that 500 as "already left"
+    /// and carried on past a real failure.
+    #[error("group '{group_id}' not found")]
+    GroupNotFound {
+        /// Debug rendering of the absent group id (for the message only).
+        group_id: String,
+    },
+
+    /// The named namespace has no meta row on this node. See
+    /// [`Self::GroupNotFound`] for why this is typed.
+    #[error("namespace '{namespace_id}' not found")]
+    NamespaceNotFound {
+        /// Debug rendering of the absent namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// The named application is not installed on this node. See
+    /// [`Self::GroupNotFound`] for why this is typed.
+    #[error("application '{application_id}' not found")]
+    ApplicationNotFound {
+        /// Rendering of the absent application id (for the message only).
+        application_id: String,
+    },
+
+    /// The named context does not exist on this node. See
+    /// [`Self::GroupNotFound`] for why this is typed.
+    #[error("context '{context_id}' not found")]
+    ContextNotFound {
+        /// Rendering of the absent context id (for the message only).
+        context_id: String,
+    },
+
     /// The key material offered for pairing carries no valid signature from the
     /// device that minted it.
     ///

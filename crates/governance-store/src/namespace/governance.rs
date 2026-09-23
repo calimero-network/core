@@ -3849,6 +3849,18 @@ pub fn namespace_groups_member_but_keyless(
     NamespaceRetryService::new(store, namespace_id).groups_member_but_keyless()
 }
 
+/// The namespace root when this node participates in it and holds an identity
+/// for it, but can resolve itself to no account and holds no key — the state a
+/// self-purged TEE replica is left in after fleet HA is disabled and
+/// re-enabled. See
+/// [`NamespaceRetryService::root_participating_but_unbootstrapped`].
+pub fn namespace_root_participating_but_unbootstrapped(
+    store: &Store,
+    namespace_id: NamespaceId,
+) -> EyreResult<Vec<[u8; 32]>> {
+    NamespaceRetryService::new(store, namespace_id).root_participating_but_unbootstrapped()
+}
+
 /// Distinct group ids in `namespace_id` that have at least one buffered
 /// encrypted group op the local node CAN already decrypt — the inverse of
 /// [`namespace_groups_awaiting_key`]. This is the held-key, buffered-op set

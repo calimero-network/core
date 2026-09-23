@@ -7,7 +7,7 @@ use calimero_context_client::group::RetryGroupUpgradeRequest;
 use calimero_server_primitives::admin::{
     RetryGroupUpgradeApiRequest, UpgradeGroupApiResponse, UpgradeGroupApiResponseData,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::parse_group_id;
 use super::upgrade_group::format_status;
@@ -51,7 +51,14 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, error=?err, "Failed to retry group upgrade");
+            // A 4xx is the caller naming something absent or not theirs, not a
+            // fault of this node. On a fleet node these journals ship to a
+            // central store, where an `ERROR` per poll buries real faults.
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, error=?err, "Failed to retry group upgrade");
+            } else {
+                error!(group_id=%group_id_str, error=?err, "Failed to retry group upgrade");
+            }
             err.into_response()
         }
     }

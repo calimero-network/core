@@ -12,7 +12,9 @@ use tracing::{debug, warn};
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
-use calimero_governance_store::{GroupKeyring, MembershipRepository, NamespaceRepository};
+use calimero_governance_store::{
+    GroupKeyring, MembershipRepository, NamespaceRepository, TeeAdmissionPolicyRead,
+};
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
 /// `member`, signed with the verifier's namespace identity (`signer_sk`).
@@ -117,11 +119,28 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             &self.datastore,
             &group_id,
         ) {
-            Ok(Some(p)) => p,
-            Ok(None) => {
+            Ok(TeeAdmissionPolicyRead::Set(p)) => p,
+            Ok(TeeAdmissionPolicyRead::NotSet) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "no TeeAdmissionPolicy set for group"
                 )))
+            }
+            // Refusing either way, but the operator is told which fault they
+            // have. "No policy set" sends someone who HAS set one off to set
+            // it again; the real problem is an op-log entry nobody can read.
+            Ok(TeeAdmissionPolicyRead::Unreadable { undecodable }) => {
+                let detail = undecodable
+                    .iter()
+                    .map(|e| format!("seq {}: {}", e.sequence, e.error))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "TeeAdmissionPolicy could not be read: {} op-log entr{} do not decode \
+                     ({detail}). A policy may well be set — this is not the same as no policy \
+                     being set.",
+                    undecodable.len(),
+                    if undecodable.len() == 1 { "y" } else { "ies" },
+                )));
             }
             Err(e) => return ActorResponse::reply(Err(e)),
         };

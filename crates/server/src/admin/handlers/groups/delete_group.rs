@@ -7,7 +7,7 @@ use calimero_context_client::group::DeleteGroupRequest;
 use calimero_server_primitives::admin::{
     DeleteGroupApiRequest, DeleteGroupApiResponse, DeleteGroupApiResponseData,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -45,7 +45,14 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, error=?err, "Failed to delete group");
+            // A 4xx is the caller naming something absent or not theirs, not a
+            // fault of this node. On a fleet node these journals ship to a
+            // central store, where an `ERROR` per poll buries real faults.
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, error=?err, "Failed to delete group");
+            } else {
+                error!(group_id=%group_id_str, error=?err, "Failed to delete group");
+            }
             err.into_response()
         }
     }

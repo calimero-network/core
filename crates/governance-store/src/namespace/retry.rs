@@ -120,6 +120,71 @@ impl<'a> NamespaceRetryService<'a> {
     /// is therefore treated as keyed here — but that case still surfaces
     /// through the op-driven set the moment one of its (subgroup-key-encrypted)
     /// ops is buffered, so it is not stranded.
+    /// The namespace root when this node **participates in it and holds an
+    /// identity for it, yet holds no key and cannot even resolve itself to an
+    /// account** — the state a self-purged TEE replica is left in.
+    ///
+    /// Disabling fleet HA is a `ReadOnlyTee` self-leave, and the self-purge
+    /// then removes the membership row, the account binding, the group keys
+    /// and the gov-op log, while deliberately keeping the namespace identity
+    /// as a retry anchor. Re-enabling rewrites the participation marker.
+    ///
+    /// That leaves the replica invisible to BOTH existing worklists:
+    /// [`groups_awaiting_key`] needs a buffered op (the log is gone), and
+    /// [`groups_member_but_keyless`] resolves the identity to an account
+    /// before anything else (the binding is gone). So no key request was
+    /// emitted at all, and the node sat subscribed and participating holding
+    /// nothing — never reaching the acceptance gate that everyone assumed had
+    /// refused it.
+    ///
+    /// **Asking is not accepting.** This widens only who *emits* a request;
+    /// what may be *adopted* is unchanged and still decided by
+    /// `key_server_accepted` — a trusted anchor of the group, or a responder
+    /// proving it is a device of this node's own account. A node that
+    /// qualifies for neither gets a refusal it can log instead of a silent
+    /// stall, which is strictly better than emitting nothing.
+    ///
+    /// Deliberately narrow: this fires only when the identity resolves to NO
+    /// account, which is the purged shape. A node that can resolve itself is
+    /// already answered by [`groups_member_but_keyless`], so nothing that
+    /// worked before changes.
+    pub fn root_participating_but_unbootstrapped(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
+        // No identity ⇒ nothing to recover, and nothing to recover it AS.
+        let Some(record) = NamespaceRepository::new(self.store).identity_record(&ns_typed)? else {
+            return Ok(Vec::new());
+        };
+        let my_identity = record.public_key;
+
+        // No separate participation check: `store_identity` writes the
+        // `NamespaceParticipation` row itself, so holding an identity for this
+        // namespace IS participating in it. Scanning the participation rows
+        // again would cost an O(namespaces) walk on every recovery tick to
+        // re-derive what the identity read above already established.
+
+        // Resolvable ⇒ `groups_member_but_keyless` already owns this case.
+        if crate::member_account_in_namespace(self.store, &ns_typed, &my_identity)?.is_some() {
+            return Ok(Vec::new());
+        }
+
+        // Only a root covered by its own keyring can be recovered here, matching
+        // `groups_member_but_keyless`.
+        if crate::key_covering_group(self.store, &ns_typed)? != ns_typed {
+            return Ok(Vec::new());
+        }
+
+        let has_key = GroupKeyring::new(self.store, ns_typed)
+            .load_current_key()
+            .map_err(|e| eyre::eyre!("load_current_key(root): {e}"))?
+            .is_some();
+        if has_key {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![ns_typed.to_bytes()])
+    }
+
     pub fn groups_member_but_keyless(&self) -> EyreResult<Vec<[u8; 32]>> {
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
