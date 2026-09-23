@@ -505,6 +505,15 @@ jobs:
           - workflow: delegated-session
             file: workflows/delegated-session.yml
             app: scaffolding-e2e
+          # The posture a hosted relay actually runs: delegated execution served
+          # with NO node credential. Nothing covered it - `--public-intents`
+          # appeared in no scenario, so the flag deciding whether a relay is
+          # reachable by the clients it exists for had only production as
+          # evidence. Two nodes identical but for the flag, so a 200 has a 401
+          # beside it and the flag is provably what opened the route.
+          - workflow: public-intents
+            file: workflows/public-intents.yml
+            app: scaffolding-e2e
           # A node holding no account root joins and writes under a certificate signed elsewhere - the
           # cold-storage posture the account/device split exists for. Needs merobox >= 0.6.67.
           - workflow: offline-account-root
