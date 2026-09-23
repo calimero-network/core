@@ -286,6 +286,13 @@ type SharedStampAuthorization = (BTreeMap<AccountId, OpMask>, PublicKey);
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
+/// Lattice joins run on applied bytes only; a local write already descends from the stored value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteOrigin {
+    Local,
+    Applied,
+}
+
 impl<S: StorageAdaptor> Interface<S> {
     /// Resolve a [`SharedMember`](StorageType::SharedMember)'s writer set from
     /// its `anchor`'s **locally verified** state, mirroring
@@ -2499,7 +2506,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 // Save data (might merge, producing different hash)
-                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata.clone())?
+                let Some((_, _full_hash)) =
+                    Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Applied)?
                 else {
                     debug!(
                         %id,
@@ -3210,6 +3218,7 @@ impl<S: StorageAdaptor> Interface<S> {
         id: Id,
         data: &[u8],
         metadata: Metadata,
+        origin: WriteOrigin,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
         // Serialize the WHOLE read-merge-write-rehash sequence, not just the
         // index update. The entry-value write (`storage_write(Key::Entry(id))`)
@@ -3250,6 +3259,11 @@ impl<S: StorageAdaptor> Interface<S> {
                         | crate::collections::crdt_meta::CrdtType::Custom(_)
                 )
             ) && !crate::collections::is_app_root_entry(id)
+                || origin == WriteOrigin::Applied
+                    && matches!(
+                        metadata.crdt_type,
+                        Some(crate::collections::crdt_meta::CrdtType::FugueTextBlock)
+                    )
             {
                 // `Custom` joins this arm for the same reason, and it is
                 // load-bearing rather than tidy. The `is_app_root_entry` guard
@@ -3268,6 +3282,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 // 900 on one node and 100 on the other. The merge has to run in
                 // both directions or it is not commutative, and the entities
                 // never converge.
+                //
+                // A `FugueTextBlock` is mutable under one key, so it must join
+                // here rather than reach the LWW-by-HLC branches below.
                 //
                 // P3 (core#2716) per-`delta_id` rotation-log child. Merge
                 // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
@@ -3291,6 +3308,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        origin,
                     )?,
                 }
             } else if last_metadata.updated_at > metadata.updated_at {
@@ -3388,6 +3406,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        origin,
                     )?
                 } else {
                     data.to_vec()
@@ -3403,6 +3422,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        origin,
                     )?
                 } else {
                     data.to_vec()
@@ -3799,6 +3819,7 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: &Metadata,
         existing_timestamp: u64,
         incoming_timestamp: u64,
+        origin: WriteOrigin,
     ) -> Result<Vec<u8>, StorageError> {
         use crate::collections::crdt_meta::{CrdtType, MergeError};
         use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
@@ -3861,7 +3882,8 @@ impl<S: StorageAdaptor> Interface<S> {
             let is_lww = matches!(
                 crdt_type,
                 CrdtType::LwwRegister { .. } | CrdtType::RotationLog
-            );
+            ) || (origin == WriteOrigin::Local
+                && matches!(crdt_type, CrdtType::FugueTextBlock));
             if is_lww {
                 return Ok(lww_pick(existing, incoming));
             }
@@ -4158,7 +4180,9 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
+        let Some((is_new, full_hash)) =
+            Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Local)?
+        else {
             return Ok(None);
         };
 

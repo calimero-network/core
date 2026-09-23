@@ -32,6 +32,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
 | `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
+| `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
+| `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -39,6 +41,21 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `FrozenStorage`            | Immutable data           | First-write-wins                  | Blob       |
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
+
+### `FugueText` constraints
+
+- A block holds at most `MAX_RUN_LEN` (256) nodes, and a full run is never rewritten or split.
+  The overflowing character opens a new block parented on the full run's last node, side right.
+  Row counts cannot see a regression here, so only a bytes-per-keystroke gate catches one.
+- No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
+- Tombstones are one bit per NODE, because coalescing grows a run after the fact.
+- Blocks are mutable under one key, so entries carry their own `crdt_type`: the `FugueTextBlock` tag routes to a join instead of the untagged last-writer-wins, which drops every node only the loser defines.
+  It dispatches on the APPLIED path only, since a local write is not a merge.
+- The join is a tombstone OR plus the maximum of `(node count, text, parent, side)`, which stays convergent against untrusted peer bytes.
+- The stored entry tuple is `(value, key)`; the reverse order still decodes, so getting it wrong is a silent bad join rather than an error.
+- A replica id derives from the device id, and a counter is never reused, because `FugueTree::integrate` keeps the first definition of a node.
+- Plain Fugue, not FugueMax; the residual ordering case is pinned by `figure_7__right_siblings_order_by_id_not_by_right_origin`.
+- `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
@@ -132,6 +149,8 @@ function is registered, it returns an error rather than silently falling back to
 | `GCounter`     | `merge_g_counter()`   | Counter::merge() - max per executor   |
 | `PnCounter`    | `merge_pn_counter()`  | Counter::merge() - max per executor   |
 | `Rga`          | `merge_rga()`         | RGA::merge() - union characters       |
+| `FugueText`    | `merge_fugue_text()`  | FugueText::merge() - union blocks     |
+| `FugueTextBlock`| `merge_fugue_text_block()` | Per-block join; the arm the SYNC path reaches* |
 | `LwwRegister`  | Returns incoming      | Timestamp comparison done by caller   |
 | `UnorderedMap` | Returns incoming      | Entries are separate entities*        |
 | `UnorderedSet` | Returns incoming      | Entries are separate entities*        |
@@ -141,6 +160,9 @@ function is registered, it returns an error rather than silently falling back to
 | `Custom`       | `WasmRequired` error  | Variant-only dispatch cannot resolve it — the caller must, using the entry's `CustomTypeId`. See above. |
 
 *These types use "Structured" storage - container metadata only; entries sync separately.
+
+*`FugueTextBlock` is the per-block join the sync path reaches; see the `FugueText`
+constraints above for why those entries carry their own tag.
 
 ### is_builtin_crdt() Definition
 
@@ -183,6 +205,8 @@ src/
 │   ├── unordered_set.rs      # Unordered set
 │   ├── vector.rs             # Vector CRDT
 │   ├── rga.rs                # RGA (replicated growable array)
+│   ├── fugue.rs              # Pure Tree-Fugue algorithm (no storage)
+│   ├── fugue_text.rs         # Storage-backed Fugue text, run-length blocks
 │   ├── root.rs               # Root collection
 │   ├── nested.rs             # Nested CRDTs
 │   ├── nested_map.rs         # Nested map

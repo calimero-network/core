@@ -1,6 +1,6 @@
 name: E2E - Rust Apps
 
-# Tests scaffolding-e2e and xcall-example apps using locally-built Docker image.
+# Runs the merobox scenario matrix below against a locally-built merod image.
 # Parallel build: merod image + WASM apps build concurrently, then all test
 # workflows run in parallel via matrix.
 # Self-contained: doesn't depend on release.yml
@@ -21,6 +21,7 @@ on:
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
       - "apps/collaborative-editor/**"
+      - "apps/fugue-collab/**"
       - "apps/kv-store-init/**"
       - "apps/kv-store-with-handlers/**"
       - "apps/kv-store-with-user-and-frozen-storage/**"
@@ -48,6 +49,7 @@ on:
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
       - "apps/collaborative-editor/**"
+      - "apps/fugue-collab/**"
       - "apps/kv-store-init/**"
       - "apps/kv-store-with-handlers/**"
       - "apps/kv-store-with-user-and-frozen-storage/**"
@@ -442,6 +444,12 @@ jobs:
       - name: Build collaborative-editor bundle
         run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
 
+      - name: Build fugue-collab app
+        run: cargo mero build --manifest-path apps/fugue-collab/Cargo.toml
+
+      - name: Build fugue-collab bundle
+        run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-init app
         run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
@@ -514,6 +522,7 @@ jobs:
             apps/blobs/res/state-schema.json
             apps/abi_conformance/res/*
             apps/collaborative-editor/res/*
+            apps/fugue-collab/res/*
             apps/kv-store-init/res/*
             apps/kv-store-with-handlers/res/*
             apps/kv-store-with-user-and-frozen-storage/res/*
@@ -1027,6 +1036,30 @@ jobs:
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
+          - workflow: collaborative-editor-concurrent
+            file: workflows/collaborative-editor-concurrent.yml
+            app: collaborative-editor
+          # registry_fetch "false": a node cut off from its peers cannot fetch bytecode
+          - workflow: fugue-collab-figure2
+            file: workflows/fugue-collab-figure2.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-partition-heal
+            file: workflows/fugue-collab-partition-heal.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-restart-mid-edit
+            file: workflows/fugue-collab-restart-mid-edit.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-late-joiner
+            file: workflows/fugue-collab-late-joiner.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-large-paste
+            file: workflows/fugue-collab-large-paste.yml
+            app: fugue-collab
+            registry_fetch: "false"
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init
@@ -1717,7 +1750,8 @@ jobs:
         run: |
           message="## E2E Rust Apps Failed
 
-          One or more E2E workflows (scaffolding-e2e, xcall-example) failed.
+          One or more jobs in this workflow (the merobox scenario matrix,
+          auth-seam, projection-coverage, key-recovery-coverage) failed.
 
           Please check the workflow logs for more details."
 

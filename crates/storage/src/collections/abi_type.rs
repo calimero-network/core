@@ -14,9 +14,9 @@ use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, 
 use super::crdt_meta::Mergeable;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, LwwRegister,
-    ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector,
-    WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, FugueText,
+    LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
+    UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -206,6 +206,12 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> AbiType for Counter<ALLOW_D
 impl<S: StorageAdaptor> AbiType for ReplicatedGrowableArray<S> {
     fn type_ref(_reg: &mut TypeRegistry) -> TypeRef {
         opaque_ref(CrdtCollectionType::ReplicatedGrowableArray)
+    }
+}
+
+impl<S: StorageAdaptor> AbiType for FugueText<S> {
+    fn type_ref(_reg: &mut TypeRegistry) -> TypeRef {
+        opaque_ref(CrdtCollectionType::FugueText)
     }
 }
 

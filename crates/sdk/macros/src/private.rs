@@ -108,6 +108,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "is a collaborative-edit text CRDT; use `Vector<u8>` or a `String` field.",
     ),
     (
+        "FugueText",
+        "is a collaborative-edit text CRDT; use `Vector<u8>` or a `String` field.",
+    ),
+    (
         "SharedStorage",
         "models single-signature shared/causal reconciliation; pointless with one writer.",
     ),
@@ -645,6 +649,7 @@ mod tests {
         "GCounter",
         "PNCounter",
         "ReplicatedGrowableArray<String>",
+        "FugueText",
     ];
 
     const EXCLUDED_ACCESS_CONTROL_TYPES: &[&str] = &[

@@ -8,6 +8,7 @@ pub mod hash_comparison;
 pub mod levelwise;
 pub mod nested_container;
 pub mod random;
+pub mod text;
 
 pub use deterministic::Scenario;
 pub use random::RandomScenario;
