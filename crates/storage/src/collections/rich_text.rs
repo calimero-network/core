@@ -22,15 +22,16 @@ use serde::{Deserialize, Serialize, Serializer};
 use super::error::StoreError;
 use super::fugue::{FugueTree, RawId};
 use super::fugue_text::{
-    anchor_at_in, local_replica, Anchor, Bias, FugueText, IdRange, PositionIndex, Removed,
+    advance, anchor_at_in, invalid, minting_replica, out_of_bounds, Anchor, Bias, BorshKey,
+    FugueText, IdRange, PositionIndex, Removed,
 };
 use super::mark_schema::{expand_for, mark_prefix, Expand, MarkSchema};
 use super::{CrdtType, UnorderedMap};
-use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
 
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
 const LAMPORT_EXHAUSTED: &str = "mark lamport space exhausted";
+const SEED_WITH: &str = "mark_with_replica(start, end, key, value, replica)"; // the migration-safe minting call
 
 /// A Lamport-ordered, globally unique mark identity. Field order IS the
 /// comparator: greater lamport wins, greater replica breaks the tie.
@@ -53,39 +54,7 @@ pub struct MarkId {
     pub replica: u64,
 }
 
-/// Storage key for a mark; owns its serialized bytes for `AsRef<[u8]>`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MarkKey {
-    id: MarkId,
-    bytes: Vec<u8>,
-}
-
-impl MarkKey {
-    fn new(id: MarkId) -> Self {
-        // `MarkId` is fixed-size POD, so serialization cannot fail.
-        let bytes = borsh::to_vec(&id).unwrap_or_default();
-        Self { id, bytes }
-    }
-}
-
-impl BorshSerialize for MarkKey {
-    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
-        BorshSerialize::serialize(&self.id, writer)
-    }
-}
-
-impl BorshDeserialize for MarkKey {
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let id = MarkId::deserialize_reader(reader)?;
-        Ok(Self::new(id))
-    }
-}
-
-impl AsRef<[u8]> for MarkKey {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
+type MarkKey = BorshKey<MarkId>;
 
 /// One formatting operation, written once and never rewritten.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -120,6 +89,26 @@ pub enum DeltaOp {
     Delete {
         delete: usize,
     },
+}
+
+impl DeltaOp {
+    /// Plain text, carrying no attributes.
+    #[must_use]
+    pub fn insert(text: &str) -> Self {
+        Self::Insert {
+            insert: text.to_owned(),
+            attributes: None,
+        }
+    }
+
+    /// Skip `count` characters, leaving their formatting untouched.
+    #[must_use]
+    pub const fn retain(count: usize) -> Self {
+        Self::Retain {
+            retain: count,
+            attributes: None,
+        }
+    }
 }
 
 /// A rendered run: `text`, never offsets, because a run-length list cannot
@@ -262,7 +251,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     /// One editor transaction, text and formatting together, returning the steps
     /// that undo it. Every check runs first, so a rejected delta stores nothing.
     pub fn apply_delta(&mut self, ops: &[DeltaOp]) -> Result<DeltaUndo, StoreError> {
-        self.apply_delta_with_replica(ops, minting_replica("apply_delta"))
+        self.apply_delta_with_replica(ops, minting_replica("RichText", "apply_delta", SEED_WITH))
     }
 
     /// Set `key` to `value` over visible positions `start..end`. `Ok(None)` means
@@ -274,7 +263,13 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         key: &str,
         value: Option<&str>,
     ) -> Result<Option<MarkId>, StoreError> {
-        self.mark_with_replica(start, end, key, value, minting_replica("mark"))
+        self.mark_with_replica(
+            start,
+            end,
+            key,
+            value,
+            minting_replica("RichText", "mark", SEED_WITH),
+        )
     }
 
     /// [`Self::mark`] with `value: None`. Readability only; it takes the same
@@ -297,7 +292,13 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         key: &str,
         value: Option<&str>,
     ) -> Result<Option<MarkId>, StoreError> {
-        self.mark_at_with_replica(start, end, key, value, minting_replica("mark_at"))
+        self.mark_at_with_replica(
+            start,
+            end,
+            key,
+            value,
+            minting_replica("RichText", "mark_at", SEED_WITH),
+        )
     }
 
     /// The migration-safe minting variant: `replica` is given rather than read
@@ -322,7 +323,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             return Ok(None);
         }
 
-        let marks = self.sorted_marks()?;
+        let marks = self.marks()?;
         let index = PositionIndex::build(&tree);
         if uniform_value(&runs_of(&index, &marks, tree.len()), key, value, start, end) {
             return Ok(None);
@@ -336,7 +337,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     /// Replay a [`DeltaUndo`] in order, returning the undo of the undo, so redo
     /// needs no extra machinery.
     pub fn apply_undo(&mut self, undo: &DeltaUndo) -> Result<DeltaUndo, StoreError> {
-        let replica = minting_replica("apply_undo");
+        let replica = minting_replica("RichText", "apply_undo", SEED_WITH);
         let mut redo: Vec<UndoStep> = Vec::new();
         for step in &undo.0 {
             match *step {
@@ -380,7 +381,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     pub fn to_delta(&self) -> Result<Vec<Span>, StoreError> {
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let marks = self.sorted_marks()?;
+        let marks = self.marks()?;
         let chars: Vec<char> = tree.values().chars().collect();
 
         let mut out: Vec<Span> = Vec::new();
@@ -393,11 +394,6 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             push_span(&mut out, text, run.attributes);
         }
         Ok(out)
-    }
-
-    /// The raw rows, ascending by [`MarkId`]. Diagnostics and undo stacks.
-    pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
-        self.sorted_marks()
     }
 
     pub fn get_text(&self) -> Result<String, StoreError> {
@@ -528,7 +524,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             return Ok(None);
         }
         let tree = self.text.tree()?;
-        let marks = self.sorted_marks()?;
+        let marks = self.marks()?;
         match boundary_left_origin(&tree, &marks, pos) {
             Some(left) => self.text.insert_str_after(Some(left), replica, text),
             None => self.text.insert_str_with_replica(pos, replica, text),
@@ -639,7 +635,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         let _ignored = mark_prefix(key)?;
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let marks = self.sorted_marks()?;
+        let marks = self.marks()?;
 
         if let (Some(from), Some(to)) = (index.resolve(&start), index.resolve(&end)) {
             if from < to
@@ -662,7 +658,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     ) -> Result<Vec<UndoStep>, StoreError> {
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let marks = self.sorted_marks()?;
+        let marks = self.marks()?;
         let end = end.min(tree.len());
 
         let mut steps = Vec::new();
@@ -699,7 +695,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     fn attr_runs(&self, start: usize, end: usize) -> Result<Vec<AttrRun>, StoreError> {
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let marks = self.sorted_marks()?;
+        let marks = self.marks()?;
         let end = end.min(tree.len());
 
         let mut out: Vec<AttrRun> = Vec::new();
@@ -750,18 +746,20 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         Ok(id)
     }
 
-    fn sorted_marks(&self) -> Result<Vec<Mark>, StoreError> {
+    /// The raw rows, ascending by [`MarkId`]. Diagnostics and undo stacks.
+    pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
         let mut marks: Vec<Mark> = self.marks.entries()?.map(|(_, mark)| mark).collect();
         marks.sort_by_key(|mark| mark.id);
         Ok(marks)
     }
 
-    /// Copy in `other`'s mark rows. Write-once makes the join the identity, so a
-    /// key both sides hold needs no reconciliation at all.
-    pub(crate) fn merge_marks_from<S2: StorageAdaptor>(
+    /// Copy in `other`'s text and mark rows. Write-once makes the mark join the
+    /// identity, so a key both sides hold needs no reconciliation at all.
+    pub(crate) fn merge_from<S2: StorageAdaptor>(
         &mut self,
         other: &RichText<Sc, S2>,
     ) -> Result<(), StoreError> {
+        self.text.merge_blocks_from(&other.text)?;
         for (key, incoming) in other.marks.entries()? {
             if self.marks.get(&key)?.is_some() {
                 continue;
@@ -773,14 +771,6 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             let _ignored = self.marks.insert(key, incoming)?;
         }
         Ok(())
-    }
-
-    pub(crate) fn merge_from<S2: StorageAdaptor>(
-        &mut self,
-        other: &RichText<Sc, S2>,
-    ) -> Result<(), StoreError> {
-        self.text.merge_blocks_from(&other.text)?;
-        self.merge_marks_from(other)
     }
 }
 
@@ -982,35 +972,6 @@ fn push_span(out: &mut Vec<Span>, text: String, attributes: BTreeMap<String, Str
 
 const fn last_id(range: &IdRange) -> RawId {
     (range.start.0, range.start.1 + range.len - 1)
-}
-
-fn advance(pos: usize, count: usize) -> Result<usize, StoreError> {
-    pos.checked_add(count).ok_or_else(|| out_of_bounds(pos))
-}
-
-/// The local replica, for a call that mints mark ids; a loud panic beats a
-/// silent network divergence.
-#[expect(
-    clippy::panic,
-    reason = "minting from the node-local device id inside a migration diverges ids across nodes"
-)]
-fn minting_replica(method: &str) -> u64 {
-    if env::in_merge_mode() {
-        panic!(
-            "RichText::{method}() is non-deterministic during a state migration: it mints mark \
-             ids from the node-local device id, diverging ids across nodes. Seed with \
-             `mark_with_replica(start, end, key, value, replica)`."
-        );
-    }
-    local_replica()
-}
-
-pub(super) fn invalid(message: &str) -> StoreError {
-    StoreError::StorageError(crate::interface::StorageError::InvalidData(message.into()))
-}
-
-pub(super) fn out_of_bounds(pos: usize) -> StoreError {
-    invalid(&format!("position {pos} out of bounds"))
 }
 
 /// A JSON attribute value, before canonicalisation to a string.

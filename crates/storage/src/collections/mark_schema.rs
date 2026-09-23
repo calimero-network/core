@@ -6,6 +6,7 @@
 //! renders a mark from its stored anchors and gets the same spans as everyone
 //! else. There is no schema-version divergence in the stored bytes.
 
+use super::fugue_text::invalid;
 use crate::collections::error::StoreError;
 
 /// How a formatting key behaves at the edges of its range.
@@ -85,10 +86,6 @@ pub(crate) fn expand_for<Sc: MarkSchema>(key: &str, removing: bool) -> Result<Ex
         ))
     })?;
     Ok(if removing { expand.inverted() } else { expand })
-}
-
-fn invalid(message: &str) -> StoreError {
-    StoreError::StorageError(crate::interface::StorageError::InvalidData(message.into()))
 }
 
 #[cfg(test)]

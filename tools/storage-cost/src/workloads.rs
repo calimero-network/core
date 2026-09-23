@@ -302,11 +302,8 @@ type RichDoc = RichText<DefaultMarks, MainStorage>;
 
 fn build_rich_text(n: usize) -> Root<RichDoc> {
     let mut doc = Root::new(RichDoc::new);
-    doc.apply_delta(&[DeltaOp::Insert {
-        insert: "a".repeat(n),
-        attributes: None,
-    }])
-    .expect("seed insert should succeed");
+    doc.apply_delta(&[DeltaOp::insert(&"a".repeat(n))])
+        .expect("seed insert should succeed");
     doc
 }
 
@@ -381,18 +378,11 @@ fn build_rich_document(n: usize) -> (Root<BlockDoc>, Vec<BlockId>) {
             .insert_block(ids.last().copied(), "paragraph", 0)
             .expect("insert_block should succeed");
         let _undo = doc
-            .apply_delta(id, &[one_char()])
+            .apply_delta(id, &[DeltaOp::insert("a")])
             .expect("seed typing should succeed");
         ids.push(id);
     }
     (doc, ids)
-}
-
-fn one_char() -> DeltaOp {
-    DeltaOp::Insert {
-        insert: "a".to_owned(),
-        attributes: None,
-    }
 }
 
 /// The document read: one spine rebuild plus one render per block, so linear in
@@ -432,13 +422,7 @@ fn rich_document_split_block(n: usize) {
         .insert_block(None, "paragraph", 0)
         .expect("insert_block should succeed");
     let _undo = doc
-        .apply_delta(
-            block,
-            &[DeltaOp::Insert {
-                insert: "a".repeat(n),
-                attributes: None,
-            }],
-        )
+        .apply_delta(block, &[DeltaOp::insert(&"a".repeat(n))])
         .expect("seed typing should succeed");
     reset_counters();
     let _new = doc

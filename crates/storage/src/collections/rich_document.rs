@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use super::crdt_meta::{MergeError, Mergeable};
 use super::error::StoreError;
 use super::fugue::RawId;
-use super::fugue_text::{Anchor, Bias, FugueText, PositionIndex};
+use super::fugue_text::{invalid, out_of_bounds, Anchor, Bias, BorshKey, FugueText, PositionIndex};
 use super::mark_schema::{expand_for, MarkSchema};
 use super::rich_text::{Attrs, DeltaOp, DeltaUndo, MarkId, RichText, Span};
 use super::{CrdtType, LwwRegister, UnorderedMap, ValueRef};
@@ -36,10 +36,6 @@ const BLOCKS_FIELD: &str = "__doc_blocks"; // child id namespace for the block m
 const PROPS_FIELD: &str = "__block_props"; // child id namespace for a block's structure rows
 const ATTRS_FIELD: &str = "__block_attrs"; // child id namespace for a block's attributes
 const SPINE_SLOT: &str = "\u{FFFC}"; // one OBJECT REPLACEMENT CHARACTER per block ever created
-const KIND: &str = "kind"; // property row key
-const DEPTH: &str = "depth"; // property row key
-const PLACE: &str = "place"; // property row key
-const DELETED: &str = "deleted"; // property row key
 
 /// A block's identity: the spine character minted when it was created, stable
 /// across every later move. JSON: the `[replica, counter]` pair.
@@ -59,42 +55,7 @@ const DELETED: &str = "deleted"; // property row key
 )]
 pub struct BlockId(pub RawId);
 
-/// Storage key for a block; owns its serialized bytes for `AsRef<[u8]>`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlockKey {
-    id: BlockId,
-    bytes: Vec<u8>,
-}
-
-impl BlockKey {
-    fn new(id: BlockId) -> Self {
-        // `BlockId` is fixed-size POD, so serialization cannot fail.
-        let bytes = borsh::to_vec(&id).unwrap_or_default();
-        Self { id, bytes }
-    }
-
-    const fn id(&self) -> BlockId {
-        self.id
-    }
-}
-
-impl BorshSerialize for BlockKey {
-    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
-        BorshSerialize::serialize(&self.id, writer)
-    }
-}
-
-impl BorshDeserialize for BlockKey {
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        Ok(Self::new(BlockId::deserialize_reader(reader)?))
-    }
-}
-
-impl AsRef<[u8]> for BlockKey {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
+type BlockKey = BorshKey<BlockId>;
 
 /// One field of a block's mutable structure. The variant carries the field, so
 /// a read never has to trust the row key and a write cannot name the wrong one.
@@ -109,10 +70,10 @@ pub(crate) enum Prop {
 impl Prop {
     const fn key(&self) -> &'static str {
         match *self {
-            Self::Kind(_) => KIND,
-            Self::Depth(_) => DEPTH,
-            Self::Place(_) => PLACE,
-            Self::Deleted(_) => DELETED,
+            Self::Kind(_) => "kind",
+            Self::Depth(_) => "depth",
+            Self::Place(_) => "place",
+            Self::Deleted(_) => "deleted",
         }
     }
 }
@@ -313,13 +274,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         kind: &str,
         depth: u8,
     ) -> Result<BlockId, StoreError> {
-        let at = self.slot_for(after)?;
-        let minted = self
-            .spine
-            .insert_str(at, SPINE_SLOT)?
-            .ok_or_else(|| invalid("the spine minted no slot for a block"))?;
-
-        let id = BlockId(minted.start);
+        let id = BlockId(self.mint_slot(after)?);
         let key = BlockKey::new(id);
         let mut block = Block::new(id, self.blocks.entry_id(&key));
         block.set(Prop::Kind(kind.to_owned()))?;
@@ -340,13 +295,9 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
     /// settle on one placement; the old slot is left unreferenced and invisible.
     pub fn move_block(&mut self, block: BlockId, after: Option<BlockId>) -> Result<(), StoreError> {
         let mut row = self.row(block)?;
-        let at = self.slot_for(after)?;
-        let minted = self
-            .spine
-            .insert_str(at, SPINE_SLOT)?
-            .ok_or_else(|| invalid("the spine minted no slot for a block"))?;
+        let id = self.mint_slot(after)?;
         row.set(Prop::Place(Anchor::Char {
-            id: minted.start,
+            id,
             bias: Bias::Before,
         }))
     }
@@ -394,7 +345,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
             let _undo = self.row(new)?.body.apply_delta(&carry(&tail))?;
             let _undo = row
                 .body
-                .apply_delta(&[retain(at), DeltaOp::Delete { delete: len - at }])?;
+                .apply_delta(&[DeltaOp::retain(at), DeltaOp::Delete { delete: len - at }])?;
         }
         Ok(new)
     }
@@ -411,7 +362,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         declared_keys::<Sc>(&tail)?;
 
         if !tail.is_empty() {
-            let mut ops = vec![retain(head.body.len()?)];
+            let mut ops = vec![DeltaOp::retain(head.body.len()?)];
             ops.extend(carry(&tail));
             let _undo = head.body.apply_delta(&ops)?;
         }
@@ -519,6 +470,15 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         })
     }
 
+    fn mint_slot(&mut self, after: Option<BlockId>) -> Result<RawId, StoreError> {
+        let at = self.slot_for(after)?;
+        let minted = self
+            .spine
+            .insert_str(at, SPINE_SLOT)?
+            .ok_or_else(|| invalid("the spine minted no slot for a block"))?;
+        Ok(minted.start)
+    }
+
     /// Copy in `other`'s spine and block rows. A key both sides hold is merged
     /// field by field, because a block, unlike a mark, is mutable.
     pub(crate) fn merge_from(&mut self, other: &Self) -> Result<(), MergeError> {
@@ -619,28 +579,13 @@ fn declared_keys<Sc: MarkSchema>(spans: &[Span]) -> Result<(), StoreError> {
     Ok(())
 }
 
-const fn retain(count: usize) -> DeltaOp {
-    DeltaOp::Retain {
-        retain: count,
-        attributes: None,
-    }
-}
-
-fn invalid(message: &str) -> StoreError {
-    StoreError::StorageError(crate::interface::StorageError::InvalidData(message.into()))
-}
-
-fn out_of_bounds(pos: usize) -> StoreError {
-    invalid(&format!("position {pos} out of bounds"))
-}
-
 fn unknown_block(block: BlockId) -> StoreError {
     invalid(&format!("unknown block {:?}", block.0))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Anchor, Bias, BlockId, Prop, RichDocument};
+    use super::{Anchor, Bias, BlockId, DeltaOp, Prop, RichDocument};
     use crate::collections::DefaultMarks;
     use crate::collections::Root;
     use crate::env;
@@ -797,7 +742,7 @@ mod tests {
         let mut doc = doc();
         let first = doc.insert_block(None, "paragraph", 0).unwrap();
         let second = doc.insert_block(Some(first), "paragraph", 0).unwrap();
-        let _undo = doc.apply_delta(second, &[insert("gone")]).unwrap();
+        let _undo = doc.apply_delta(second, &[DeltaOp::insert("gone")]).unwrap();
 
         assert!(!doc.delete_block(second).unwrap(), "it was not deleted yet");
         assert!(doc.delete_block(second).unwrap(), "the second call sees it");
@@ -809,12 +754,5 @@ mod tests {
             "gone",
             "a tombstone hides the block, it does not drop its body"
         );
-    }
-
-    fn insert(text: &str) -> super::DeltaOp {
-        super::DeltaOp::Insert {
-            insert: text.to_owned(),
-            attributes: None,
-        }
     }
 }

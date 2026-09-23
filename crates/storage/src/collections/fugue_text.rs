@@ -28,6 +28,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 const BLOCKS_FIELD: &str = "__fugue_blocks"; // child id namespace for the block map
 const MAX_RUN_LEN: usize = 256; // nodes per block
 const COUNTER_EXHAUSTED: &str = "replica counter space exhausted";
+const SEED_WITH: &str = "insert_str_with_replica(pos, replica, s)"; // the migration-safe minting call
 
 /// The run's FIRST node: it covers `counter..counter + len` of `replica`'s counter space.
 #[derive(
@@ -53,40 +54,42 @@ impl RunId {
     }
 }
 
-/// Storage key for a block (owns serialized bytes for `AsRef<[u8]>`).
+/// A map key that owns its borsh bytes for `AsRef<[u8]>`; it encodes as `id` alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RunKey {
-    id: RunId,
+pub(crate) struct BorshKey<T> {
+    id: T,
     bytes: Vec<u8>,
 }
 
-impl BorshSerialize for RunKey {
+pub(crate) type RunKey = BorshKey<RunId>;
+
+impl<T: BorshSerialize + Copy> BorshKey<T> {
+    pub(super) fn new(id: T) -> Self {
+        // Every key id is fixed-size POD, so serialization cannot fail.
+        let bytes = borsh::to_vec(&id).unwrap_or_default();
+        Self { id, bytes }
+    }
+
+    pub(super) const fn id(&self) -> T {
+        self.id
+    }
+}
+
+impl<T: BorshSerialize> BorshSerialize for BorshKey<T> {
     fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
         self.id.serialize(writer)
     }
 }
 
-impl BorshDeserialize for RunKey {
+impl<T: BorshSerialize + BorshDeserialize> BorshDeserialize for BorshKey<T> {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let id = RunId::deserialize_reader(reader)?;
+        let id = T::deserialize_reader(reader)?;
         let bytes = borsh::to_vec(&id).map_err(borsh::io::Error::other)?;
         Ok(Self { id, bytes })
     }
 }
 
-impl RunKey {
-    fn new(id: RunId) -> Self {
-        // `RunId` is fixed-size POD, so serialization cannot fail.
-        let bytes = borsh::to_vec(&id).unwrap_or_default();
-        Self { id, bytes }
-    }
-
-    const fn id(&self) -> RunId {
-        self.id
-    }
-}
-
-impl AsRef<[u8]> for RunKey {
+impl<T> AsRef<[u8]> for BorshKey<T> {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
     }
@@ -303,7 +306,11 @@ impl<S: StorageAdaptor> FugueText<S> {
 
     /// Insert a string at `pos`. Panics inside a state migration.
     pub fn insert_str(&mut self, pos: usize, s: &str) -> Result<Option<IdRange>, StoreError> {
-        self.insert_str_with_replica(pos, minting_replica("insert_str"), s)
+        self.insert_str_with_replica(
+            pos,
+            minting_replica("FugueText", "insert_str", SEED_WITH),
+            s,
+        )
     }
 
     /// Insert at `pos` under an explicit `replica`; two writers sharing one mint colliding ids.
@@ -346,7 +353,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         anchor: &Anchor,
         s: &str,
     ) -> Result<Option<IdRange>, StoreError> {
-        let replica = minting_replica("insert_str_at");
+        let replica = minting_replica("FugueText", "insert_str_at", SEED_WITH);
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
@@ -373,7 +380,7 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// Apply a whole editor change in one call, returning what [`Self::undo`]
     /// takes to reverse it, in application order. Panics inside a state migration.
     pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<Vec<Undo>, StoreError> {
-        let replica = minting_replica("apply_delta");
+        let replica = minting_replica("FugueText", "apply_delta", SEED_WITH);
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
@@ -856,7 +863,7 @@ fn unknown_anchor() -> StoreError {
     invalid("anchor names an unknown character")
 }
 
-fn advance(pos: usize, count: usize) -> Result<usize, StoreError> {
+pub(super) fn advance(pos: usize, count: usize) -> Result<usize, StoreError> {
     pos.checked_add(count).ok_or_else(|| out_of_bounds(pos))
 }
 
@@ -942,30 +949,29 @@ fn build_tree(loaded: &[LoadedBlock]) -> Result<FugueTree, StoreError> {
     clippy::panic,
     reason = "minting from the node-local device id inside a migration diverges ids across nodes"
 )]
-fn minting_replica(method: &str) -> u64 {
+pub(super) fn minting_replica(type_name: &str, method: &str, seed_with: &str) -> u64 {
     if env::in_merge_mode() {
         panic!(
-            "FugueText::{method}() is non-deterministic during a state migration: it mints node \
-             ids from the node-local device id, diverging ids across nodes. Seed with \
-             `insert_str_with_replica(pos, replica, s)`."
+            "{type_name}::{method}() is non-deterministic during a state migration: it mints ids \
+             from the node-local device id, diverging ids across nodes. Seed with `{seed_with}`."
         );
     }
     local_replica()
 }
 
 /// The replica id is the first 8 bytes of the device id: a stamp, not a gate.
-pub(super) fn local_replica() -> u64 {
+fn local_replica() -> u64 {
     let device = env::device_id();
     let mut head = [0_u8; 8];
     head.copy_from_slice(&device[..8]);
     u64::from_be_bytes(head)
 }
 
-fn invalid(message: &str) -> StoreError {
+pub(super) fn invalid(message: &str) -> StoreError {
     StoreError::StorageError(crate::interface::StorageError::InvalidData(message.into()))
 }
 
-fn out_of_bounds(pos: usize) -> StoreError {
+pub(super) fn out_of_bounds(pos: usize) -> StoreError {
     invalid(&format!("position {pos} out of bounds"))
 }
 
