@@ -145,8 +145,10 @@ pub(crate) fn resolve_publish_material(
     let group_id = calimero_governance_store::get_group_for_context(store, &context_id)?
         .ok_or(EphemeralOutboundError::NoGroup)?;
 
-    // Load the current (highest-epoch) group key for encryption.
-    let record = calimero_governance_store::GroupKeyring::new(store, group_id)
+    // Seal under the keyring that seals the context's state deltas, so presence
+    // is readable by exactly the readers of its state.
+    let key_group_id = calimero_governance_store::key_covering_group(store, &group_id)?;
+    let record = calimero_governance_store::GroupKeyring::new(store, key_group_id)
         .load_current_key_record()?
         .ok_or(EphemeralOutboundError::NoGroupKey)?;
 
@@ -946,6 +948,39 @@ mod tests {
         assert!(
             is_permanent_publish_failure(&err),
             "a departed context must be reclaimable, got: {err}"
+        );
+    }
+
+    /// An unreadable topology must fail the resolve, not fall back to the group's
+    /// own key. It keeps the entry: a store read error looks the same from here.
+    #[test]
+    fn an_unreadable_topology_fails_the_resolve_and_keeps_the_entry() {
+        let store = fresh_store();
+        let context_id = ContextId::from([0x3Cu8; 32]);
+        let author_sk = PrivateKey::from([0x3Du8; 32]);
+        store_local_identity(&store, &context_id, &author_sk);
+
+        let a = ContextGroupId::from([0x3Eu8; 32]);
+        let b = ContextGroupId::from([0x3Fu8; 32]);
+        let mut handle = store.handle();
+        for (child, parent) in [(a, b), (b, a)] {
+            handle
+                .put(
+                    &calimero_store::key::GroupParentRef::new(child.to_bytes()),
+                    &parent.to_bytes(),
+                )
+                .expect("write parent edge");
+        }
+        register_context_in_group(&store, &b, &context_id).expect("register context");
+        let _ = GroupKeyring::new(&store, b)
+            .store_key(&[0x42u8; 32])
+            .expect("store the group's own key");
+
+        let err = resolve_publish_material(&store, context_id, author_sk.public_key())
+            .expect_err("a cyclic topology must not resolve to any key");
+        assert!(
+            !is_permanent_publish_failure(&err),
+            "an unreadable topology must not reclaim the entry, got: {err}"
         );
     }
 

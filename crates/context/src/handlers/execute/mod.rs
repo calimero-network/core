@@ -1,6 +1,4 @@
-use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
-};
+use calimero_governance_store::{GroupKeyring, MetaRepository, NamespaceRepository};
 use std::borrow::Cow;
 // Removed: NonZeroUsize (replaced with CausalDelta)
 use std::time::Instant;
@@ -388,41 +386,19 @@ impl Handler<ExecuteRequest> for ContextManager {
         let (encryption_key, broadcast_key_id) =
             match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
-                    // Errors from `resolve_namespace` or
-                    // `is_open_chain_to_namespace` mean we cannot reliably
-                    // decide *which* key (subgroup vs. namespace) to encrypt
-                    // with — they signal store corruption (cyclic parent
-                    // edges, missing namespace metadata, etc.). Silently
-                    // falling back to the subgroup key would mask the
-                    // corruption *and* mis-encrypt for inheritance-eligible
-                    // receivers, who'd then fail to decrypt. Mirror the
-                    // governance-publisher path: propagate the error.
-                    let ns_id = match NamespaceRepository::new(&self.datastore).resolve(&gid) {
-                        Ok(ns_id) => ns_id,
+                    // An error means the topology is unreadable (cyclic parent
+                    // edges, missing namespace meta): refuse rather than guess a key.
+                    let key_group_id = match calimero_governance_store::key_covering_group(
+                        &self.datastore,
+                        &gid,
+                    ) {
+                        Ok(key_group_id) => key_group_id,
                         Err(err) => {
                             error!(
                                 group_id = ?gid,
                                 ?context_id,
                                 %err,
-                                "state-delta encryption: resolve_namespace failed",
-                            );
-                            return ActorResponse::reply(Err(ExecuteError::InternalError {
-                                kind: InternalErrorKind::Encryption,
-                            }));
-                        }
-                    };
-                    let key_group_id = match CapabilitiesRepository::new(&self.datastore)
-                        .is_open_chain_to_namespace(&gid, &ns_id)
-                    {
-                        Ok(true) => ns_id,
-                        Ok(false) => gid,
-                        Err(err) => {
-                            error!(
-                                group_id = ?gid,
-                                namespace_id = ?ns_id,
-                                ?context_id,
-                                %err,
-                                "state-delta encryption: is_open_chain_to_namespace failed",
+                                "state-delta encryption: key_covering_group failed",
                             );
                             return ActorResponse::reply(Err(ExecuteError::InternalError {
                                 kind: InternalErrorKind::Encryption,

@@ -148,6 +148,16 @@ pub(crate) async fn resolve_and_decrypt(
             }
         };
 
+    // The keyring that seals the context's state deltas: the namespace's for an
+    // Open chain, otherwise the group's own.
+    let key_group_id = match calimero_governance_store::key_covering_group(store, &group_id) {
+        Ok(key_group_id) => key_group_id,
+        Err(err) => {
+            debug!(%context_id, %err, "ephemeral: covering keyring lookup error - dropping");
+            return None;
+        }
+    };
+
     // Presence is transient and has no history, so only the CURRENT group key is
     // acceptable. The keyring deliberately retains superseded keys for
     // state-delta decryption; accepting them here would let a rotated-out member
@@ -156,7 +166,7 @@ pub(crate) async fn resolve_and_decrypt(
     //
     // Deliberately does not touch `lookup_group_key_with_wait` — the state-delta
     // path still needs historical keys.
-    let record = match calimero_governance_store::GroupKeyring::new(store, group_id)
+    let record = match calimero_governance_store::GroupKeyring::new(store, key_group_id)
         .load_current_key_record()
     {
         Ok(Some(r)) => r,
@@ -176,7 +186,7 @@ pub(crate) async fn resolve_and_decrypt(
         // peer still publishing under the old key); it is also the signal an
         // operator would see if `load_current_key_record` ever ordered two
         // keys wrongly — see the ordering note at the top of this module.
-        let keyring = calimero_governance_store::GroupKeyring::new(store, group_id);
+        let keyring = calimero_governance_store::GroupKeyring::new(store, key_group_id);
         let known_but_superseded = matches!(keyring.load_key_by_id(&key_id), Ok(Some(_)));
         debug!(
             %context_id,

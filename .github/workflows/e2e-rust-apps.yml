@@ -1098,6 +1098,9 @@ jobs:
           - workflow: ephemeral-presence-e2e
             file: workflows/ephemeral-presence-e2e.yml
             app: kv-store
+          - workflow: ephemeral-open-subgroup-e2e
+            file: workflows/ephemeral-open-subgroup-e2e.yml
+            app: kv-store
           - workflow: nested-crdt
             file: workflows/nested-crdt-test.yml
             app: nested-crdt-test
@@ -1182,14 +1185,14 @@ jobs:
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
-      # Only ephemeral-presence-e2e needs this. Its assertions are Node scripts
+      # Only the ephemeral-* scenarios need this. Their assertions are Node scripts
       # (apps/kv-store/scripts/ephemeral-*.js) using the GLOBAL `WebSocket` and
       # `fetch` — presence has no read endpoint, so a subscriber is the only way
       # to observe it, and global WebSocket landed in Node 22. Pinned rather
       # than inherited so the runner image changing its default node cannot
       # silently take the scripts out from under us.
       - name: Setup Node
-        if: matrix.workflow == 'ephemeral-presence-e2e'
+        if: startsWith(matrix.workflow, 'ephemeral-')
         uses: actions/setup-node@v7
         with:
           node-version: 22
