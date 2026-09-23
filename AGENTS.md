@@ -313,7 +313,7 @@ Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx)
 - **Namespace**: A root group (a group with no parent). The application-instance boundary and identity scope for a node - each namespace has its own Ed25519 keypair, and all its subgroups and contexts share that identity. All groups in a namespace share one governance DAG.
 - **Group**: A governance boundary within a namespace. Has members, an inherited application, and one or more contexts. Membership, access control, and upgrades happen here via signed governance ops that propagate over P2P gossip; every group has at least one Admin.
 - **Context**: A running instance of a WASM application with its own isolated state, kept in sync across context members via CRDT replication. Belongs to exactly one group (32-byte `ContextId`).
-- **CRDTs**: Automatic conflict resolution - `GCounter`, `PnCounter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `UnorderedSet<T>`, `Vector<T>`, `ReplicatedGrowableArray` (see [crates/storage/AGENTS.md](crates/storage/AGENTS.md)).
+- **CRDTs**: Automatic conflict resolution - `GCounter`, `PnCounter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `UnorderedSet<T>`, `Vector<T>`, `FugueText`, `RichText`, `RichDocument`, `ReplicatedGrowableArray` (see [crates/storage/AGENTS.md](crates/storage/AGENTS.md)).
 - **DAG**: Causal ordering of governance ops and state deltas via parent references. Governance ops are either cleartext `RootOp`s (group creation, member join, key delivery) or encrypted `GroupOp`s (membership, capabilities).
 - **Gossipsub**: libp2p P2P broadcast; governance ops and deltas propagate per namespace/context topic.
 

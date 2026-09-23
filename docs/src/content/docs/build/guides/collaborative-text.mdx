@@ -1,0 +1,208 @@
+---
+title: Build a collaborative editor
+description: Store shared text, formatting and block documents in FugueText, RichText and RichDocument, and wire an editor to them.
+sidebar:
+  order: 7
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Three collections hold text that several people edit at once.
+All three are built on Fugue, a sequence CRDT that never interleaves two runs typed concurrently at the same spot: if Alice types `aaaa` and Bob types `bbbb` there, every node ends with `aaaabbbb` or `bbbbaaaa`, never `abab...`.
+
+## Pick a type
+
+| You are storing | Use | What merges how |
+| --- | --- | --- |
+| Plain text: a title, a note, a code cell | `FugueText` | Characters as run-length blocks; concurrent inserts never interleave. |
+| One formatted body: a comment, a message | `RichText<Sc>` | A `FugueText` plus formatting marks written once and never rewritten. |
+| A document of blocks: headings, paragraphs, list items | `RichDocument<Sc>` | An ordered list of blocks, each with its own kind, depth, attributes and `RichText` body. |
+
+`ReplicatedGrowableArray` (RGA) is the older text collection.
+Its concurrent runs interleave, and it costs more per keystroke; keep it only for apps that already store it.
+`FugueText` is not a drop-in replacement: it stores a different format, so moving existing RGA data to it takes a [migration](/build/migrations/).
+
+## Declare the state
+
+```rust
+use calimero_storage::collections::{DefaultMarks, FugueText, RichDocument, UnorderedMap};
+
+#[app::state(emits = DocsEvent)]
+pub struct Docs {
+    pub title: FugueText,
+    pub bodies: UnorderedMap<String, RichDocument<DefaultMarks>>,
+}
+```
+
+`DefaultMarks` is the formatting schema; see [Formatting](#formatting) to declare your own.
+
+## Positions are characters, not bytes
+
+Every position, length and range counts Unicode scalar values (a Rust `char`).
+A browser counts UTF-16 code units, where an emoji such as `😀` is two units but one position here.
+Convert at the edge of your client, in both directions, and core stays as it is.
+
+## Apply a whole editor change in one call
+
+An editor reports each change as a list of steps over the text as it was before the change, the shape Quill made common: keep `n` characters, insert a string, delete `n` characters.
+Send the whole list in one call rather than one call per keystroke:
+
+```rust
+use calimero_storage::collections::fugue_text::TextOp;
+
+// "Hello" becomes "Hello, world"
+let undo = self.title.apply_delta(&[TextOp::Retain(5), TextOp::Insert(", world".into())])?;
+```
+
+`apply_delta` loads the document once, writes each touched block once, and stores nothing if any step fails.
+`RichText::apply_delta` and `RichDocument::apply_delta(block, ops)` take `DeltaOp`, which also carries formatting; its JSON is Quill's (`{"retain": 3, "attributes": {"bold": "true"}}`).
+
+`TextOp`, `DeltaOp` and the ids and anchors below have no `AbiType`, so an app method cannot take or return them directly.
+Mirror them in a type of your own, as `apps/fugue-editor` does with its `Change` enum, and pass ids and anchors to clients as opaque strings (the reference apps use bs58-encoded borsh).
+
+### Apply a change only onto the text it was computed from
+
+A client computes its steps against the text it last read.
+If a peer's edit landed on the node in between, the same positions now point somewhere else.
+Have the client send the text it computed against, apply only when it still matches, and return the current text either way so the client can rebase its edit and resend it:
+
+```rust
+pub fn edit_title(&mut self, base: String, changes: Vec<Change>) -> app::Result<Edited> {
+    let current = self.title.get_text()?;
+    if current != base {
+        return Ok(Edited { applied: false, text: current });
+    }
+    let ops: Vec<TextOp> = changes.into_iter().map(Into::into).collect();
+    self.title.apply_delta(&ops)?;
+    Ok(Edited { applied: true, text: self.title.get_text()? })
+}
+```
+
+When the client rebases, it has to work out what the peers inserted from the two texts.
+Align them on the characters they share: a diff that only trims a common prefix and suffix reads peers typing on both sides of your letter as that letter being replaced, and your next keystroke lands in the wrong place.
+
+## Emit ids, not positions
+
+An event is recorded with the change and replayed on every receiving node, where concurrent edits have already moved every position the author counted.
+Put the character ids the change returned into the event, never a position:
+
+```rust
+let minted = self.title.insert_str(position, &text)?; // Some(IdRange) of the new characters
+if let Some(ids) = minted {
+    app::emit!(DocsEvent::TitleChanged { ids: ids.into() }); // a mirror of IdRange, as in apps/rich-collab
+}
+```
+
+A delete returns `Removed`, which carries the ids it took; one delete can span several writers.
+A client that only needs to know *that* something changed can re-read the text on the event instead.
+
+## Cursors that survive concurrent edits
+
+A position goes stale the moment a peer types before it.
+An `Anchor` names the gap beside a character instead, so it follows that character wherever edits move it:
+
+```rust
+use calimero_storage::collections::fugue_text::Bias;
+
+let anchor = self.title.anchor_at(caret, Bias::Before)?; // store or send this
+let caret_now = self.title.resolve(&anchor)?;            // where that gap is today
+```
+
+`Bias::Before` holds the character on the right of the gap and `Bias::After` the one on the left.
+An anchor on a deleted character resolves to the gap it left.
+`resolve_many` resolves a whole slice of anchors against one tree build, which is what makes drawing every peer's cursor affordable.
+Minting and resolving an anchor stores nothing, so anchors suit presence you send to peers rather than state you persist.
+
+## Undo your own edits
+
+Undo is local and built by your app.
+Every edit returns what reverses it, and reversing it returns what redoes it:
+
+```rust
+let steps = self.title.apply_delta(&ops)?;  // Vec<Undo>
+let redo = self.title.undo(&steps)?;        // takes the edit back
+let again = self.title.undo(&redo)?;        // puts it back
+```
+
+Because an undo names the characters the edit wrote, it takes back only this writer's edit and leaves every peer's concurrent text alone.
+Undoing a delete writes new characters at the gap; deleted characters are never revived.
+`RichText::apply_delta` returns a `DeltaUndo` for `apply_undo`, which also restores formatting.
+
+## Formatting
+
+`RichText` stores formatting as marks: a key such as `bold` or `link`, a value, and the two anchors of its range.
+A mark is written once and never rewritten, and removing formatting is a new mark whose value is `None`:
+
+```rust
+self.body.mark(0, 5, "bold", Some("true"))?;  // bold the first five characters
+self.body.unmark(0, 5, "bold")?;              // unbold them: a new mark with no value
+```
+
+Where a mark reaches for text typed at its edge is the schema's call.
+In `DefaultMarks`, `bold`, `italic`, `underline` and `strike` grow at their end (keep typing and the new text is bold), while `link`, `code`, `highlight` and `comment` grow at neither edge.
+Declare your own by implementing `MarkSchema`; a key is matched on the part before its first `:`, so `comment:alice` and `comment:bob` share one policy:
+
+```rust
+use calimero_storage::collections::{Expand, MarkSchema};
+
+pub struct DriveMarks;
+
+impl MarkSchema for DriveMarks {
+    fn expand(prefix: &str) -> Option<Expand> {
+        Some(match prefix {
+            "bold" | "italic" => Expand::After,
+            "link" | "comment" => Expand::None,
+            _ => return None, // any other key is rejected at write time
+        })
+    }
+}
+```
+
+The schema only decides how a mark is written, never how it is read, so a node running an older schema renders the same spans.
+`to_delta` returns the rendered spans; re-asserting formatting that is already in effect writes nothing.
+
+## Block documents
+
+`RichDocument` orders blocks and gives each one a kind, a depth, string attributes and a `RichText` body:
+
+```rust
+let heading = doc.insert_block(None, "heading", 0)?;         // first block
+let para = doc.insert_block(Some(heading), "paragraph", 0)?;
+doc.set_attr(heading, "level", Some("1"))?;
+doc.apply_delta(para, &ops)?;                                // edit a body
+let tail = doc.split_block(para, 12)?;                       // Enter at character 12
+doc.merge_blocks(para, tail)?;                               // Backspace at the start of `tail`
+let blocks = doc.blocks()?;                                  // Vec<BlockView> in order
+```
+
+A block's id never changes, so a moved block keeps its identity and two concurrent moves settle on one place instead of duplicating it.
+Kind, depth, each attribute and the placement are separate fields that merge separately: one person turning a paragraph into a heading while another indents it keeps both changes.
+Nesting is the `depth` number on a flat list; a renderer builds lists and nested blocks from `(depth, kind)`.
+Deleting a block leaves a tombstone and keeps its body, so ids and anchors into it still resolve.
+
+<Aside type="caution" title="Splitting while someone types">
+  `split_block` moves the characters that existed when it ran.
+  Text a peer types into the tail at the same moment stays in the first block.
+  This is specified behaviour: the content is never lost, only placed before the split.
+</Aside>
+
+## Migrations
+
+`insert`, `insert_str`, `apply_delta`, `mark`, `insert_block`, `move_block` and `split_block` mint character ids from the device that calls them, so they panic inside an [`#[app::migrate]`](/build/migrations/) function, where every node must produce the same bytes.
+Seed text there with `insert_str_with_replica` and formatting with `mark_with_replica`, passing the same replica id on every node.
+
+## What it costs
+
+Order is recomputed from the stored blocks on every call, so a read costs one pass over the document's blocks, not its characters, and typing into one block writes that block.
+Formatting writes one row per mark, and a redundant mark writes none; inserting or moving a block writes a constant number of rows however long the document is.
+See [Storage complexity](/build/storage-complexity/#collaborative-text) for how that compares with RGA.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Collection reference" href="/build/collections/" description="Every CRDT collection and how it merges." />
+  <LinkCard title="Emit and handle events" href="/build/guides/events/" description="Tell clients a document changed." />
+  <LinkCard title="Migrations" href="/build/migrations/" description="Move existing state, including RGA text, to a new shape." />
+</CardGrid>
+
+The reference apps in the core repo show each type end to end: `apps/fugue-editor` (FugueText with undo tokens), `apps/fugue-collab` (FugueText over several nodes) and `apps/rich-collab` (RichDocument with formatting, anchors and events).

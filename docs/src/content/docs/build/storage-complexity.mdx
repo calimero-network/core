@@ -81,6 +81,7 @@ length.
 | `SortedMap` / `SortedSet` | `O(1)` | `O(K log K)` + index write | `O(1)` warm | see gotcha below | `range`/`prefix` `O(log n + k)`; `first`/`last` `O(log n)` |
 | `Vector` | `get(i)` is `O(i)` reads | `push` `O(K log K)`; `update(i)` `O(1)` | `O(1)` warm | `O(n)` reads | positional only — see gotcha |
 | `ReplicatedGrowableArray` (RGA) | `get_text` `O(n log n)` | single-char `insert` `O(n log n)`; `insert_str` is bulk | `O(n log n)` | `O(n log n)` | n/a |
+| `FugueText` | `get_text` / `char_at` `O(b)` in blocks | writes each touched block once; `insert_str` and `apply_delta` are bulk | `O(b)` | `O(b)` | n/a |
 | `Counter` / `PNCounter` | `value()` `O(actors)` reads | `increment` `O(K log K)` | n/a | n/a | n/a |
 | `LwwRegister` | `O(1)` | `O(K log K)` | n/a | n/a | n/a |
 | `Authored*` (map / vector) | same as the underlying collection, plus a per-entry owner-stamp read | | | | |
@@ -138,6 +139,14 @@ add a string, call `insert_str` once: it materializes the order a single time
 and then appends each character. Same applies to reading — call `get_text()`
 once and slice the result rather than calling it in a loop.
 :::
+
+### Collaborative text
+
+`FugueText` stores text as blocks of up to 256 consecutive characters, and a read rebuilds the order from those blocks, so it costs `O(b)` in blocks rather than in characters.
+Text typed or pasted in one place fills a block before opening the next; text inserted in many scattered places makes more, smaller blocks, up to one per character in the worst case.
+A write stores each block it touches once, so one `apply_delta` for a whole editor change costs one write per touched block rather than one per character.
+`RichText` adds one row per formatting mark and nothing for a mark already in effect, and `RichDocument` writes a constant number of rows to insert or move a block however long the document is.
+The measured rows for every text workload, RGA included, are pinned in [`tools/storage-cost/storage-costs.json`](https://github.com/calimero-network/core/blob/master/tools/storage-cost/storage-costs.json); see [benchmarking](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md) to rerun them.
 
 ### `Counter`
 
@@ -225,7 +234,7 @@ single parent grows unbounded.
 - **Use the right collection for the access pattern.** Point lookups →
   `UnorderedMap`. Ordered scans, ranges, or pagination → `SortedMap`. Append-log
   with in-order reads → `Vector` (iterate, don't index). Collaborative text →
-  `RGA` with `insert_str`. A running total across writers → `Counter`.
+  `FugueText` with one `apply_delta` per editor change. A running total across writers → `Counter`.
 - **Reach for `SortedMap` only when you need order.** It is the `BTreeMap` to
   `UnorderedMap`'s `HashMap`: more write and disk cost, paid back only if you
   actually range/prefix/paginate.
