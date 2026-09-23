@@ -2599,6 +2599,30 @@ fn key_covering_group_maps_an_open_chain_to_the_namespace() {
     );
 }
 
+/// An unreadable topology must surface as an error. Defaulting to the group's
+/// own key would seal for the wrong readers, which is worse than refusing.
+#[test]
+fn key_covering_group_propagates_an_unreadable_topology() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let a = ContextGroupId::from([0xB3; 32]);
+    let b = ContextGroupId::from([0xB4; 32]);
+    nest_for_test_unchecked(&store, &a, &b);
+    nest_for_test_unchecked(&store, &b, &a);
+    for gid in [&a, &b] {
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(gid, VisibilityMode::Open)
+            .unwrap();
+    }
+
+    let res = crate::key_covering_group(&store, &b);
+    assert!(
+        res.is_err(),
+        "a cyclic parent chain must be an error, not a guessed keyring, got {res:?}"
+    );
+}
+
 /// The wire form of a Restricted-chain subgroup join, and the disclosure it
 /// closes.
 ///
