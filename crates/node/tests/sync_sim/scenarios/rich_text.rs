@@ -11,21 +11,17 @@
 //! `calimero-storage`'s `rich_text_fuzz`, and duplicating it here would only
 //! duplicate its mistakes.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
-use calimero_primitives::crdt::CrdtType;
-use calimero_storage::address::Id;
-use calimero_storage::collections::{DefaultMarks, DeltaOp, Mark, MarkId, RichText, Root, Span};
-use calimero_storage::delta::clear_pending_delta;
-use calimero_storage::env::take_last_artifact;
+use calimero_storage::collections::{DefaultMarks, DeltaOp, Mark, MarkId, RichText, Span};
 use calimero_storage::store::MainStorage;
 
 use crate::sync_sim::node::SimNode;
 use crate::sync_sim::protocol::execute_level_wise_sync;
 use crate::sync_sim::runtime::SimRng;
 use crate::sync_sim::scenarios::text::{
-    changed, context, converge_group, delivery_pass, edit, land, pull, read, replica_of,
-    unique_chars, Oracle, Pending, DELIVERY_PASSES, EDIT_ROUNDS, SYNC_ROUNDS,
+    assert_rows_tagged, changed, context, converge_group, delivery_pass, edit, land, pull, read,
+    replica_of, seed_doc, unique_chars, Oracle, Pending, DELIVERY_PASSES, EDIT_ROUNDS, SYNC_ROUNDS,
 };
 
 type Rich = RichText<DefaultMarks, MainStorage>;
@@ -57,105 +53,6 @@ fn text_of(node: &SimNode) -> String {
 
 fn len_of(node: &SimNode) -> usize {
     read::<Rich, _>(node, |doc| doc.len().expect("len should be readable"))
-}
-
-/// Materialise the empty document the way production `init` does.
-fn seed_rich_doc(node: &SimNode) {
-    clear_pending_delta();
-    node.storage().with_index(|| {
-        let doc = Root::new(|| Rich::new_with_field_name(FIELD));
-        doc.commit();
-    });
-    let _ignored = take_last_artifact();
-}
-
-/// The collections hanging off the context root, by CRDT tag. A rich document
-/// owns one `FugueText` (its characters) and one `UnorderedMap` (its marks).
-fn collections_by_tag(node: &SimNode) -> BTreeMap<CrdtType, Vec<Id>> {
-    let root = node.storage().root_id();
-    let mut out: BTreeMap<CrdtType, Vec<Id>> = BTreeMap::new();
-    for child in node.storage().get_children(root) {
-        if let Some(tag) = node
-            .storage()
-            .get_index(child.id())
-            .and_then(|index| index.metadata.crdt_type.clone())
-        {
-            out.entry(tag).or_default().push(child.id());
-        }
-    }
-    out
-}
-
-/// The tags the two halves of a rich document must carry.
-///
-/// A text row is stamped `FugueTextBlock` because a block is MUTABLE under one
-/// key: untagged, it would reconcile last-writer-wins and drop every node only
-/// the loser defines. A mark row is deliberately UNTAGGED, and that is the whole
-/// reason this composite needs no `CrdtType` of its own: a mark is written once,
-/// so two replicas holding one id hold identical bytes and last-writer-wins
-/// cannot pick wrong. Stamping one with a converging type would route it
-/// through the wrong arm of `merge_by_crdt_type`.
-///
-/// HashComparison carries an untagged leaf as a synthetic opaque `LwwRegister`,
-/// which the storage layer merges identically and which is not an input to the
-/// Merkle hash, so both spellings are accepted here.
-fn assert_rows_tagged(label: &str, node: &SimNode) {
-    let collections = collections_by_tag(node);
-    let rows_under = |tag: &CrdtType| -> Vec<Id> {
-        collections
-            .get(tag)
-            .into_iter()
-            .flatten()
-            .flat_map(|id| node.storage().get_children(*id))
-            .map(|child| child.id())
-            .collect()
-    };
-
-    let text_rows = rows_under(&CrdtType::FugueText);
-    let mark_rows = rows_under(&CrdtType::UnorderedMap);
-    assert!(
-        !text_rows.is_empty(),
-        "{label}: {} holds no text rows, so the tag check would pass vacuously",
-        node.id()
-    );
-    assert_eq!(
-        mark_rows.len(),
-        rich_marks(node).len(),
-        "{label}: {} stores a different number of mark rows than it reads back",
-        node.id()
-    );
-    assert!(
-        !mark_rows.is_empty(),
-        "{label}: {} holds no mark rows, so the tag check would pass vacuously",
-        node.id()
-    );
-
-    for id in text_rows {
-        assert_eq!(
-            tag_of(node, id),
-            Some(CrdtType::FugueTextBlock),
-            "{label}: {} text row {id:?} lost its CRDT tag",
-            node.id()
-        );
-    }
-    for id in mark_rows {
-        let tag = tag_of(node, id);
-        assert!(
-            tag.is_none() || matches!(tag, Some(CrdtType::LwwRegister { .. })),
-            "{label}: {} mark row {id:?} is stamped {tag:?}, which routes a write-once row \
-             through a converging merge arm",
-            node.id()
-        );
-    }
-}
-
-fn tag_of(node: &SimNode, id: Id) -> Option<CrdtType> {
-    node.storage()
-        .get_index(id)
-        .expect("a stored row has an index")
-        .metadata
-        .crdt_type
-        .clone()
 }
 
 /// The standing assertions every rich scenario ends with.
@@ -234,7 +131,12 @@ fn assert_rich_properties(
             node.id()
         );
 
-        assert_rows_tagged(label, node);
+        assert_eq!(
+            assert_rows_tagged(label, node),
+            rich_marks(node).len(),
+            "{label}: {} stores a different number of mark rows than it reads back",
+            node.id()
+        );
         assert_eq!(
             node.root_hash(),
             root,
@@ -281,7 +183,7 @@ fn random_rich_edit(
             let count = 1 + rng.gen_range_usize((len - start).min(3));
             let bytes = edit::<Rich>(node, |doc| {
                 let _undo = doc
-                    .apply_delta(&[retain(start), DeltaOp::Delete { delete: count }])
+                    .apply_delta(&[DeltaOp::retain(start), DeltaOp::Delete { delete: count }])
                     .expect("delete should succeed");
             });
             oracle.delete_range(start, start + count);
@@ -294,7 +196,7 @@ fn random_rich_edit(
             let pos = rng.gen_range_usize(len + 1);
             let bytes = edit::<Rich>(node, |doc| {
                 let _undo = doc
-                    .apply_delta(&[retain(pos), insert(&text)])
+                    .apply_delta(&[DeltaOp::retain(pos), DeltaOp::insert(&text)])
                     .expect("insert should succeed");
             });
             oracle.insert_str(pos, &text);
@@ -302,20 +204,6 @@ fn random_rich_edit(
         }
     };
     (bytes, written)
-}
-
-fn retain(count: usize) -> DeltaOp {
-    DeltaOp::Retain {
-        retain: count,
-        attributes: None,
-    }
-}
-
-fn insert(text: &str) -> DeltaOp {
-    DeltaOp::Insert {
-        insert: text.to_owned(),
-        attributes: None,
-    }
 }
 
 /// Seed every replica from one authored passage, so they share a document to
@@ -326,7 +214,7 @@ fn seeded_mesh(names: &[String]) -> (Vec<SimNode>, Vec<Oracle>, Vec<usize>) {
         .map(|name| SimNode::new_in_context(name.clone(), context()))
         .collect();
     for node in &nodes {
-        seed_rich_doc(node);
+        seed_doc(node, || Rich::new_with_field_name(FIELD));
     }
     let mut oracles: Vec<Oracle> = nodes.iter().map(|n| Oracle::new(replica_of(n))).collect();
     let mut minted = vec![0_usize; nodes.len()];
@@ -335,7 +223,7 @@ fn seeded_mesh(names: &[String]) -> (Vec<SimNode>, Vec<Oracle>, Vec<usize>) {
     minted[0] += SEED_LEN;
     let seeded = edit::<Rich>(&nodes[0], |doc| {
         let _undo = doc
-            .apply_delta(&[insert(&base)])
+            .apply_delta(&[DeltaOp::insert(&base)])
             .expect("seed insert should succeed");
     });
     oracles[0].insert_str(0, &base);
@@ -373,7 +261,7 @@ async fn rich_marks_converge_under_lossy_delta_delivery() {
                     let pos = rng.gen_range_usize(oracles[author].len() + 1);
                     let bytes = edit::<Rich>(&nodes[author], |doc| {
                         let _undo = doc
-                            .apply_delta(&[retain(pos), insert(&passage)])
+                            .apply_delta(&[DeltaOp::retain(pos), DeltaOp::insert(&passage)])
                             .expect("passage insert");
                     });
                     oracles[author].insert_str(pos, &passage);
@@ -472,7 +360,7 @@ async fn rich_mark_arriving_before_its_text_is_inert_then_correct() {
     minted[0] += 6;
     let typed = edit::<Rich>(&nodes[0], |doc| {
         let _undo = doc
-            .apply_delta(&[retain(SEED_LEN), insert(&typed_text)])
+            .apply_delta(&[DeltaOp::retain(SEED_LEN), DeltaOp::insert(&typed_text)])
             .expect("typing should succeed");
     });
     oracles[0].insert_str(SEED_LEN, &typed_text);
@@ -577,7 +465,7 @@ async fn rich_partition_format_versus_type() {
     minted[1] += 4;
     let _edit = edit::<Rich>(&nodes[1], |doc| {
         let _undo = doc
-            .apply_delta(&[retain(6), insert(&typed)])
+            .apply_delta(&[DeltaOp::retain(6), DeltaOp::insert(&typed)])
             .expect("typing should succeed");
     });
     oracles[1].insert_str(6, &typed);
@@ -630,14 +518,14 @@ async fn rich_marks_reach_a_hash_comparison_joiner() {
         .map(|name| SimNode::new_in_context(name.clone(), context()))
         .collect();
     for node in &nodes {
-        seed_rich_doc(node);
+        seed_doc(node, || Rich::new_with_field_name(FIELD));
     }
     let mut oracle = Oracle::new(replica_of(&nodes[0]));
 
     let passage = unique_chars(0, 0, PASSAGE_LEN);
     let _seeded = edit::<Rich>(&nodes[0], |doc| {
         let _undo = doc
-            .apply_delta(&[insert(&passage)])
+            .apply_delta(&[DeltaOp::insert(&passage)])
             .expect("seed insert should succeed");
     });
     oracle.insert_str(0, &passage);
@@ -678,14 +566,14 @@ async fn rich_marks_reach_a_level_wise_joiner() {
         .map(|name| SimNode::new_in_context(name.clone(), context()))
         .collect();
     for node in &nodes {
-        seed_rich_doc(node);
+        seed_doc(node, || Rich::new_with_field_name(FIELD));
     }
     let mut oracle = Oracle::new(replica_of(&nodes[0]));
 
     let passage = unique_chars(0, 0, PASSAGE_LEN);
     let _seeded = edit::<Rich>(&nodes[0], |doc| {
         let _undo = doc
-            .apply_delta(&[insert(&passage)])
+            .apply_delta(&[DeltaOp::insert(&passage)])
             .expect("seed insert should succeed");
     });
     oracle.insert_str(0, &passage);
@@ -737,7 +625,7 @@ async fn rich_mark_anchors_name_the_same_character_on_every_replica() {
     minted[1] += 3;
     let _edit = edit::<Rich>(&nodes[1], |doc| {
         let _undo = doc
-            .apply_delta(&[retain(0), insert(&typed)])
+            .apply_delta(&[DeltaOp::retain(0), DeltaOp::insert(&typed)])
             .expect("typing should succeed");
     });
     oracles[1].insert_str(0, &typed);

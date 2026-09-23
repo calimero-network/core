@@ -133,10 +133,13 @@ pub(crate) fn changed(
 }
 
 /// Materialise the empty document, the way production `init` does.
-pub(crate) fn seed_doc(node: &SimNode) {
+pub(crate) fn seed_doc<T: BorshSerialize + BorshDeserialize>(
+    node: &SimNode,
+    init: impl FnOnce() -> T,
+) {
     clear_pending_delta();
     node.storage().with_index(|| {
-        let doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FIELD));
+        let doc = Root::new(init);
         doc.commit();
         let _ignored = take_last_artifact();
     });
@@ -285,6 +288,75 @@ pub(crate) fn assert_blocks_tagged(label: &str, node: &SimNode) {
             child.id()
         );
     }
+}
+
+/// Every row reachable from the context root, paired with the tag that decides
+/// how a conflicting copy of it is merged.
+pub(crate) fn tagged_rows(node: &SimNode) -> BTreeMap<Id, Option<CrdtType>> {
+    let mut out = BTreeMap::new();
+    let mut frontier = vec![node.storage().root_id()];
+    while let Some(id) = frontier.pop() {
+        for child in node.storage().get_children(id) {
+            let tag = node
+                .storage()
+                .get_index(child.id())
+                .and_then(|index| index.metadata.crdt_type.clone());
+            if out.insert(child.id(), tag).is_none() {
+                frontier.push(child.id());
+            }
+        }
+    }
+    out
+}
+
+/// A text row that lost its `FugueTextBlock` tag reconciles last-writer-wins and
+/// drops every node only the loser defines; a mark, property or block row that
+/// GAINED a converging tag would be routed through the wrong arm instead.
+/// Returns how many map rows it checked.
+pub(crate) fn assert_rows_tagged(label: &str, node: &SimNode) -> usize {
+    let rows = tagged_rows(node);
+    let children_of = |wanted: &CrdtType| -> Vec<Id> {
+        rows.iter()
+            .filter(|(_, tag)| tag.as_ref() == Some(wanted))
+            .flat_map(|(id, _)| node.storage().get_children(*id))
+            .map(|child| child.id())
+            .collect()
+    };
+
+    let text_rows = children_of(&CrdtType::FugueText);
+    let map_rows = children_of(&CrdtType::UnorderedMap);
+    let map_row_count = map_rows.len();
+    assert!(
+        !text_rows.is_empty(),
+        "{label}: {} holds no text rows, so the tag check would pass vacuously",
+        node.id()
+    );
+    assert!(
+        !map_rows.is_empty(),
+        "{label}: {} holds no map rows, so the tag check would pass vacuously",
+        node.id()
+    );
+
+    for id in text_rows {
+        assert_eq!(
+            rows.get(&id).cloned().flatten(),
+            Some(CrdtType::FugueTextBlock),
+            "{label}: {} text row {id:?} lost its CRDT tag",
+            node.id()
+        );
+    }
+    for id in map_rows {
+        let tag = rows.get(&id).cloned().flatten();
+        // HashComparison carries an untagged leaf as a synthetic opaque
+        // `LwwRegister`, which merges identically and is not a hash input.
+        assert!(
+            tag.is_none() || matches!(tag, Some(CrdtType::LwwRegister { .. })),
+            "{label}: {} map row {id:?} is stamped {tag:?}, which routes it through a \
+             converging merge arm it was never written for",
+            node.id()
+        );
+    }
+    map_row_count
 }
 
 pub(crate) fn assert_text_properties(
@@ -489,7 +561,7 @@ async fn text_concurrent_edits_converge_under_lossy_delta_delivery() {
             .map(|i| SimNode::new_in_context(format!("t{i}"), context()))
             .collect();
         for node in &nodes {
-            seed_doc(node);
+            seed_doc(node, || Text::new_with_field_name(FIELD));
         }
         let mut oracles: Vec<Oracle> = nodes.iter().map(|n| Oracle::new(replica_of(n))).collect();
         let mut minted = vec![0_usize; count];
@@ -587,7 +659,7 @@ async fn text_partition_heal_keeps_each_sides_passage_contiguous() {
             .map(|i| SimNode::new_in_context(format!("p{i}"), context()))
             .collect();
         for node in &nodes {
-            seed_doc(node);
+            seed_doc(node, || Text::new_with_field_name(FIELD));
         }
         let mut oracles: Vec<Oracle> = nodes.iter().map(|n| Oracle::new(replica_of(n))).collect();
         let mut minted = [0_usize; 4];
@@ -668,9 +740,9 @@ async fn text_late_joiner_catches_up_via_hash_comparison() {
         .map(|name| SimNode::new_in_context(name, context()))
         .collect();
     for node in &nodes[..3] {
-        seed_doc(node);
+        seed_doc(node, || Text::new_with_field_name(FIELD));
     }
-    seed_doc(&nodes[4]);
+    seed_doc(&nodes[4], || Text::new_with_field_name(FIELD));
 
     let mut oracles: Vec<Oracle> = nodes.iter().map(|n| Oracle::new(replica_of(n))).collect();
     let mut minted = vec![0_usize; nodes.len()];
@@ -739,7 +811,7 @@ async fn text_late_joiner_catches_up_via_level_wise() {
         .map(|name| SimNode::new_in_context(name, context()))
         .collect();
     for node in &nodes {
-        seed_doc(node);
+        seed_doc(node, || Text::new_with_field_name(FIELD));
     }
     let mut oracles: Vec<Oracle> = nodes.iter().map(|n| Oracle::new(replica_of(n))).collect();
     let mut minted = 0_usize;
@@ -789,8 +861,8 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
 
     let author = SimNode::new_in_context("stale-author", context());
     let receiver = SimNode::new_in_context("stale-receiver", context());
-    seed_doc(&author);
-    seed_doc(&receiver);
+    seed_doc(&author, || Text::new_with_field_name(FIELD));
+    seed_doc(&receiver, || Text::new_with_field_name(FIELD));
 
     let head = unique_chars(0, 0, 3);
     let tail = unique_chars(0, 3, 3);
@@ -809,8 +881,8 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
     // Both writers mint the same block key, for different text of equal length.
     let p = SimNode::new_in_context("forge-p", context());
     let q = SimNode::new_in_context("forge-q", context());
-    seed_doc(&p);
-    seed_doc(&q);
+    seed_doc(&p, || Text::new_with_field_name(FIELD));
+    seed_doc(&q, || Text::new_with_field_name(FIELD));
 
     let p_text = unique_chars(0, 0, 4);
     let q_text = unique_chars(1, 0, 4);
@@ -835,7 +907,7 @@ async fn text_anchor_resolves_to_the_same_character_on_every_replica() {
         .map(|i| SimNode::new_in_context(format!("a{i}"), context()))
         .collect();
     for node in &nodes {
-        seed_doc(node);
+        seed_doc(node, || Text::new_with_field_name(FIELD));
     }
     let _typed = edit::<Text>(&nodes[0], |doc| {
         let _minted = doc.insert_str(0, "hello world").expect("seed text");

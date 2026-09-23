@@ -12,21 +12,17 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use calimero_primitives::crdt::CrdtType;
 use calimero_storage::address::Id;
-use calimero_storage::collections::{
-    BlockId, BlockView, DefaultMarks, DeltaOp, RichDocument, Root,
-};
-use calimero_storage::delta::clear_pending_delta;
-use calimero_storage::env::take_last_artifact;
+use calimero_storage::collections::{BlockId, BlockView, DefaultMarks, DeltaOp, RichDocument};
 use calimero_storage::store::MainStorage;
 
 use crate::sync_sim::node::SimNode;
 use crate::sync_sim::protocol::execute_level_wise_sync;
 use crate::sync_sim::runtime::SimRng;
 use crate::sync_sim::scenarios::text::{
-    changed, context, converge_group, delivery_pass, edit, land, read, replica_of, unique_chars,
-    Oracle, Pending, DELIVERY_PASSES, EDIT_ROUNDS, SYNC_ROUNDS,
+    assert_rows_tagged, changed, context, converge_group, delivery_pass, edit, land, read,
+    replica_of, seed_doc, tagged_rows, unique_chars, Oracle, Pending, DELIVERY_PASSES, EDIT_ROUNDS,
+    SYNC_ROUNDS,
 };
 
 type Doc = RichDocument<DefaultMarks, MainStorage>;
@@ -48,82 +44,6 @@ fn blocks_of(node: &SimNode) -> Vec<BlockView> {
 
 fn text_of(view: &BlockView) -> String {
     view.spans.iter().map(|span| span.text.as_str()).collect()
-}
-
-/// Materialise the empty document the way production `init` does.
-fn seed_document(node: &SimNode) {
-    clear_pending_delta();
-    node.storage().with_index(|| {
-        let doc = Root::new(|| Doc::new_with_field_name(FIELD));
-        doc.commit();
-    });
-    let _ignored = take_last_artifact();
-}
-
-/// Every row reachable from the context root, paired with the tag that decides
-/// how a conflicting copy of it is merged.
-fn tagged_rows(node: &SimNode) -> BTreeMap<Id, Option<CrdtType>> {
-    let mut out = BTreeMap::new();
-    let mut frontier = vec![node.storage().root_id()];
-    while let Some(id) = frontier.pop() {
-        for child in node.storage().get_children(id) {
-            let tag = node
-                .storage()
-                .get_index(child.id())
-                .and_then(|index| index.metadata.crdt_type.clone());
-            if out.insert(child.id(), tag).is_none() {
-                frontier.push(child.id());
-            }
-        }
-    }
-    out
-}
-
-/// A text row that lost its `FugueTextBlock` tag reconciles last-writer-wins and
-/// drops every node only the loser defines; a mark, property or block row that
-/// GAINED a converging tag would be routed through the wrong arm instead.
-fn assert_rows_tagged(label: &str, node: &SimNode) {
-    let rows = tagged_rows(node);
-    let children_of = |wanted: &CrdtType| -> Vec<Id> {
-        rows.iter()
-            .filter(|(_, tag)| tag.as_ref() == Some(wanted))
-            .flat_map(|(id, _)| node.storage().get_children(*id))
-            .map(|child| child.id())
-            .collect()
-    };
-
-    let text_rows = children_of(&CrdtType::FugueText);
-    let map_rows = children_of(&CrdtType::UnorderedMap);
-    assert!(
-        !text_rows.is_empty(),
-        "{label}: {} holds no text rows, so the tag check would pass vacuously",
-        node.id()
-    );
-    assert!(
-        !map_rows.is_empty(),
-        "{label}: {} holds no map rows, so the tag check would pass vacuously",
-        node.id()
-    );
-
-    for id in text_rows {
-        assert_eq!(
-            rows.get(&id).cloned().flatten(),
-            Some(CrdtType::FugueTextBlock),
-            "{label}: {} text row {id:?} lost its CRDT tag",
-            node.id()
-        );
-    }
-    for id in map_rows {
-        let tag = rows.get(&id).cloned().flatten();
-        // HashComparison carries an untagged leaf as a synthetic opaque
-        // `LwwRegister`, which merges identically and is not a hash input.
-        assert!(
-            tag.is_none() || matches!(tag, Some(CrdtType::LwwRegister { .. })),
-            "{label}: {} map row {id:?} is stamped {tag:?}, which routes it through a \
-             converging merge arm it was never written for",
-            node.id()
-        );
-    }
 }
 
 /// The standing assertions every document scenario ends with.
@@ -213,20 +133,6 @@ fn assert_document_properties(
     }
 }
 
-fn retain(count: usize) -> DeltaOp {
-    DeltaOp::Retain {
-        retain: count,
-        attributes: None,
-    }
-}
-
-fn insert(text: &str) -> DeltaOp {
-    DeltaOp::Insert {
-        insert: text.to_owned(),
-        attributes: None,
-    }
-}
-
 /// Type `text` into `block` at `pos`, keeping that block's oracle in step.
 fn type_into(
     node: &SimNode,
@@ -237,7 +143,7 @@ fn type_into(
 ) -> Vec<u8> {
     let bytes = edit::<Doc>(node, |doc| {
         let _undo = doc
-            .apply_delta(block, &[retain(pos), insert(text)])
+            .apply_delta(block, &[DeltaOp::retain(pos), DeltaOp::insert(text)])
             .expect("typing should succeed");
     });
     oracle_for(oracles, node, block).insert_str(pos, text);
@@ -264,7 +170,10 @@ fn random_edit(
             let count = 1 + rng.gen_range_usize((len - start).min(3));
             let bytes = edit::<Doc>(node, |doc| {
                 let _undo = doc
-                    .apply_delta(block, &[retain(start), DeltaOp::Delete { delete: count }])
+                    .apply_delta(
+                        block,
+                        &[DeltaOp::retain(start), DeltaOp::Delete { delete: count }],
+                    )
                     .expect("delete should succeed");
             });
             oracle_for(oracles, node, block).delete_range(start, start + count);
@@ -315,7 +224,7 @@ fn random_edit(
                     .insert_block(Some(block), KINDS[rng.gen_range_usize(KINDS.len())], 0)
                     .expect("insert_block should succeed");
                 let _undo = doc
-                    .apply_delta(created, &[insert(&text)])
+                    .apply_delta(created, &[DeltaOp::insert(&text)])
                     .expect("typing should succeed");
             });
             let mut oracle = Oracle::new(replica_of(node));
@@ -367,7 +276,7 @@ fn seeded_mesh(names: &[String]) -> (Vec<SimNode>, Vec<Oracles>, Vec<usize>, Vec
         .map(|name| SimNode::new_in_context(name.clone(), context()))
         .collect();
     for node in &nodes {
-        seed_document(node);
+        seed_doc(node, || Doc::new_with_field_name(FIELD));
     }
     let mut oracles: Vec<Oracles> = (0..nodes.len()).map(|_| Oracles::new()).collect();
     let mut minted = vec![0_usize; nodes.len()];
@@ -384,7 +293,7 @@ fn seeded_mesh(names: &[String]) -> (Vec<SimNode>, Vec<Oracles>, Vec<usize>, Vec
                 .insert_block(after, KINDS[slot % KINDS.len()], 0)
                 .expect("seed insert_block should succeed");
             let _undo = doc
-                .apply_delta(created, &[insert(&text)])
+                .apply_delta(created, &[DeltaOp::insert(&text)])
                 .expect("seed typing should succeed");
         });
         blocks.push(created);
@@ -576,7 +485,7 @@ async fn rich_document_partition_insert_and_move_versus_edit() {
                 .insert_block(Some(anchor), "paragraph", 0)
                 .expect("insert_block should succeed");
             let _undo = doc
-                .apply_delta(created[side], &[insert(&text)])
+                .apply_delta(created[side], &[DeltaOp::insert(&text)])
                 .expect("typing should succeed");
         });
         oracle_for(&mut oracles[side], &nodes[side], created[side]).insert_str(0, &text);
@@ -634,7 +543,7 @@ async fn rich_document_reaches_a_hash_comparison_joiner() {
         .map(|name| SimNode::new_in_context((*name).to_owned(), context()))
         .collect();
     for node in &nodes {
-        seed_document(node);
+        seed_doc(node, || Doc::new_with_field_name(FIELD));
     }
     let mut oracles = Oracles::new();
 
@@ -691,7 +600,7 @@ async fn rich_document_reaches_a_level_wise_joiner() {
         .map(|name| SimNode::new_in_context((*name).to_owned(), context()))
         .collect();
     for node in &nodes {
-        seed_document(node);
+        seed_doc(node, || Doc::new_with_field_name(FIELD));
     }
     let mut oracles = Oracles::new();
 
