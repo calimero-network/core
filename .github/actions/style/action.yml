@@ -7,7 +7,6 @@ runs:
       id: changed-files
       uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
 
-    # Check for Markdown/MDX changes
     - name: Check for Markdown/MDX changes
       env:
         ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
@@ -21,7 +20,6 @@ runs:
            fi
         fi
 
-    # Check for Rust code changes and run Rust formatting
     - name: Check for Rust code changes
       env:
         ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
@@ -31,10 +29,8 @@ runs:
         if echo "$ALL_CHANGED_FILES" | grep -q '\.rs$'; then
           echo "Running checks for the Rust code..."
 
-          # Install the nightly toolchain
           rustup toolchain install nightly
 
-          # Install rustfmt for the nightly toolchain
           rustup component add rustfmt --toolchain nightly
 
           if ! cargo +nightly fmt -- --check; then

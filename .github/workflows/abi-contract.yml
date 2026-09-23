@@ -1,17 +1,7 @@
 name: ABI Contract (abi-codegen)
 
-# Cross-repo ABI contract: every ABI core emits must be parseable by the
-# downstream @calimero-network/abi-codegen tool (mero-devtools-js). "Core breaks
-# first" — if a schema change here makes the tool unable to parse a current-core
-# ABI, this job fails at the source instead of the breakage shipping silently.
-#
-# This is the true integration half of the guard. The in-crate tests in
-# crates/wasm-abi only prove core's Rust enums match core's OWN bundled JSON
-# schema; they cannot see the tool. This job closes that gap.
-#
-# NOTE: until the matching mero-devtools-js change (schema + model sync) is
-# released on the pinned ref below, this job is expected to be RED — that is the
-# honest current state of the contract, not a flake.
+# Cross-repo contract: every ABI core emits must stay parseable by the downstream
+# abi-codegen tool; expected RED until the paired mero-devtools-js change ships.
 
 permissions:
   contents: read
@@ -34,8 +24,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  # Ref of mero-devtools-js to validate against. Bump to a release tag once the
-  # schema-sync change lands, so the contract is pinned to a published version.
+  # Bump to a release tag once the schema-sync change lands, to pin the contract
+  # to a published version.
   DEVTOOLS_REF: main
 
 jobs:

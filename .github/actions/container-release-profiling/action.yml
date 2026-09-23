@@ -114,7 +114,6 @@ runs:
         DOCKER_METADATA_PR_HEAD_SHA: true
       with:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
-        # Use -profiling suffix for all tags to distinguish from regular images
         tags: |
           type=raw,value=edge-profiling,enable=${{ github.ref == 'refs/heads/master' }}
           type=ref,prefix=pr-,suffix=-profiling,event=pr

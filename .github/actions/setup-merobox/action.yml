@@ -5,8 +5,7 @@ runs:
   using: "composite"
   steps:
     # Split out from the install so the cache key can name the version and
-    # architecture. Keeping the pin in one place means the cache key and the
-    # asset URL can never disagree about which build is wanted.
+    # architecture; the pin stays in one place so key and asset URL can't disagree.
     - name: Resolve the pinned merobox build
       id: pin
       shell: bash
@@ -33,12 +32,8 @@ runs:
           echo "arch=${MEROBOX_ARCH}"
         } >> "$GITHUB_OUTPUT"
 
-    # A run fans out to ~100 jobs that all want the same 35 MB asset. Without
-    # this they all fetch it from the release CDN at once, which is both a
-    # thundering herd against the anonymous rate limit and ~100 chances to hit
-    # a transient upstream failure. The cache is a different service, and it is
-    # keyed on the exact build, so a version bump misses by construction rather
-    # than serving a stale binary.
+    # ~100 jobs want this same asset; caching it avoids a thundering herd against the release CDN's
+    # anonymous rate limit. Keyed on the exact build, so a version bump misses by construction.
     - name: Restore the cached merobox binary
       if: runner.os != 'Windows'
       id: cache
@@ -70,17 +65,8 @@ runs:
           else
             ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
 
-            # Retry budget sized to the `timeout` around it, not left at
-            # curl's default. `--retry 3` alone backs off 1s, 2s, 4s, so all
-            # four attempts land inside ~7 seconds and a blip of even a minute
-            # takes the job down: on 2026-09-21 a run of 99 jobs lost 17 to
-            # four consecutive `504`s inside 7.3s, while `timeout 180` never
-            # came close to its budget. `--retry-delay` fixes the interval
-            # (curl then skips its own backoff), and `--retry-max-time` keeps
-            # the whole sequence inside the outer timeout.
-            #
-            # `--retry-all-errors` is what makes this cover a 504 at all;
-            # without it curl retries only a subset of transient conditions.
+            # `--retry-delay` fixes the interval (skipping curl's own backoff) so the
+            # retries fit the outer `timeout`. `--retry-all-errors` is required to retry a 504 at all.
             RETRY=(--retry 5 --retry-delay 5 --retry-max-time 150 --retry-all-errors)
 
             if ! timeout 180 curl -fsSL "${RETRY[@]}" -o "$BIN" "$ASSET"; then
@@ -93,11 +79,8 @@ runs:
             fi
           fi
 
-          # Verified on every path, cache hit included. A cache entry is
-          # attacker-influenceable in a way a release asset is not (any job that
-          # can write the cache scope can seed it), so restoring without
-          # checking the digest would trade a transient failure for a silent
-          # one.
+          # Verified on every path, cache hit included: a cache entry is attacker-influenceable in a way a
+          # release asset isn't, so skipping this trades a transient failure for a silent one.
           EXPECTED_SHA="$(awk '{print $1}' "$SUM")"
           ACTUAL_SHA="$(sha256sum "$BIN" | awk '{print $1}')"
           if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
