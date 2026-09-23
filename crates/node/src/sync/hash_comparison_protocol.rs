@@ -56,8 +56,9 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::child_trie::ChildTrie;
+use calimero_storage::collections::is_app_root_entry;
 use calimero_storage::env::with_runtime_env;
-use calimero_storage::index::Index;
+use calimero_storage::index::{EntityIndex, Index};
 use calimero_storage::interface::Interface;
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
@@ -572,6 +573,17 @@ async fn run_initiator_impl<T: SyncTransport>(
                         local_only_children,
                         common_children,
                     } => {
+                        // Same child set, different node hash: a peer that
+                        // materialised this container from a descendant's ancestor
+                        // chain holds no row for it, and nothing else carries one.
+                        if remote_only_children.is_empty() && local_only_children.is_empty() {
+                            if let Some(own_row) = with_runtime_env(runtime_env.clone(), || {
+                                local_entity_wire_row(&remote_node.id, schema_bytecode_id)
+                            }) {
+                                pending_local_leaf_pushes.push(own_row);
+                            }
+                        }
+
                         // Remote-only children: the peer has them, we don't.
                         // Normally we recurse to pull them. But if we have a
                         // local tombstone for one (we cleared it), add-wins
@@ -1337,57 +1349,11 @@ fn collect_leaves_recursive(
         .map(|c| *c.id().as_bytes())
         .collect();
 
-    if children_ids.is_empty() {
-        // Leaf node — collect its data. Internal nodes (children non-empty)
-        // are NOT emitted as leaves: storage-layer collection containers
-        // have structural Merkle bytes in their `find_by_id_raw` result
-        // (children list / `Collection` borsh) that aren't user data and
-        // would corrupt the receiver if applied as a leaf. Pushing only
-        // true leaves and reconstructing internal structure via parent_id
-        // links on those leaves is the correct shape for this protocol.
-        if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
-                // Opaque leaf — carry it with a synthetic LWW wire type so it is
-                // pushed (and is `is_valid()` on the peer), not silently dropped.
-                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
-                CrdtType::opaque_leaf()
-            });
-            // Carry the leaf's Merkle parent_id on the wire so the
-            // receiver can place the entity at the correct position in
-            // *its* tree instead of always making it a direct child of
-            // the context root. The receiver's apply path
-            // (`apply_leaf_with_crdt_merge`) reads this back; pre-fix
-            // the field was always `None` and the receiver fell back to
-            // context-root, which silently corrupted the Merkle topology
-            // for any nested-collection entity → divergent root hash
-            // that HashComparison could never heal. See the smoke-test
-            // Round-2 failure on bdc61af for evidence.
-            let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
-                .with_created_at(index.metadata.created_at());
-            if let Some(parent_id) = index.parent_id() {
-                metadata = metadata.with_parent(*parent_id.as_bytes());
-            }
-            // Ship the full ancestor chain alongside `parent_id`. Same
-            // trust model as the existing `parent_id` wire — not
-            // cryptographically signed; HashComparison sync exists to
-            // repair drifted tree shapes, so a signed commitment to a
-            // single shape would reject every legitimate repair. See the
-            // `LeafMetadata::ancestors` field doc for why this matters
-            // for nested entities (without the chain the receiver's
-            // ancestor loop calls `add_root` for any missing
-            // grandparent, misplacing the subtree).
-            if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
-                metadata = metadata.with_ancestors(ancestors);
-            }
-            if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
-                metadata = metadata.with_authorization(auth);
-            }
-            // PR-6b Task 6b.7: stamp the sender's loaded-reader schema — see
-            // `get_local_tree_node`.
-            if let Some(schema) = schema_bytecode_id {
-                metadata = metadata.with_schema_bytecode_id(schema);
-            }
-            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+    // Internal nodes carry their own row too: a container's bytes are the only
+    // source of its `own_hash`. The app root is excluded, being created locally
+    // by every node and merged by the app rather than here.
+    if children_ids.is_empty() || !is_app_root_entry(entity_id) {
+        if let Some(leaf_data) = entity_wire_row(entity_id, &index, schema_bytecode_id) {
             if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
                 warn!(
                     %entity_id,
@@ -1398,21 +1364,17 @@ fn collect_leaves_recursive(
                 leaves.push(leaf_data);
             }
         }
-    } else {
-        // Internal node — recurse into children. Their parent_id on the
-        // wire identifies *this* entity as their parent, so the receiver
-        // can rebuild the tree structure without needing this internal
-        // node's bytes.
-        for child_id in &children_ids {
-            collect_leaves_recursive(
-                context_id,
-                child_id,
-                false,
-                leaves,
-                depth + 1,
-                schema_bytecode_id,
-            )?;
-        }
+    }
+
+    for child_id in &children_ids {
+        collect_leaves_recursive(
+            context_id,
+            child_id,
+            false,
+            leaves,
+            depth + 1,
+            schema_bytecode_id,
+        )?;
     }
 
     Ok(())
@@ -1619,48 +1581,67 @@ pub(crate) fn get_local_tree_node(
     }
 
     // No children, live or tombstoned — leaf, or empty-internal.
-    if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-        let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
-            // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
-            // Emit a real *leaf* (not a malformed empty `internal` node, which the
-            // peer's `TreeNode::is_valid()` rejects) carrying a synthetic LWW wire
-            // type — merge-equivalent to `None` and Merkle-hash-neutral.
-            trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
-            CrdtType::opaque_leaf()
-        });
-        // Carry the leaf's Merkle parent_id on the wire — see the same
-        // comment in `collect_leaves_recursive` for rationale.
-        let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
-            .with_created_at(index.metadata.created_at());
-        if let Some(parent_id) = index.parent_id() {
-            metadata = metadata.with_parent(*parent_id.as_bytes());
-        }
-        // Full ancestor chain — see the matching block in
-        // `collect_leaves_recursive` for rationale.
-        if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
-            metadata = metadata.with_ancestors(ancestors);
-        }
-        if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
-            metadata = metadata.with_authorization(auth);
-        }
-        // PR-6b Task 6b.7: stamp the sender's loaded-reader schema so a receiver
-        // on an older reader can decline+buffer this leaf if it's future-schema.
-        if let Some(schema) = schema_bytecode_id {
-            metadata = metadata.with_schema_bytecode_id(schema);
-        }
-        let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-        Ok(Some(TreeNode::leaf(
+    match entity_wire_row(entity_id, &index, schema_bytecode_id) {
+        Some(leaf_data) => Ok(Some(TreeNode::leaf(
             *entity_id.as_bytes(),
             full_hash,
             leaf_data,
-        )))
-    } else {
-        Ok(Some(TreeNode::internal(
+        ))),
+        None => Ok(Some(TreeNode::internal(
             *entity_id.as_bytes(),
             full_hash,
             vec![],
-        )))
+        ))),
     }
+}
+
+/// One entity's stored bytes plus what a receiver needs to place and merge it;
+/// `None` when the entity has no `Key::Entry` row. The ancestor chain is
+/// unsigned on purpose: this protocol repairs drifted tree shapes, so a
+/// commitment to one shape would reject every legitimate repair.
+fn entity_wire_row(
+    entity_id: Id,
+    index: &EntityIndex,
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Option<TreeLeafData> {
+    let entry_data = Interface::<MainStorage>::find_by_id_raw(entity_id)?;
+    let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+        // Opaque entity (e.g. the `Root<T>` state entry): a synthetic LWW wire
+        // type is merge-equivalent to `None` and Merkle-hash-neutral, and keeps
+        // the row `is_valid()` on the peer instead of silently dropped.
+        trace!(%entity_id, "opaque entity, synthesised LWW wire type for sync");
+        CrdtType::opaque_leaf()
+    });
+    let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+        .with_created_at(index.metadata.created_at());
+    if let Some(parent_id) = index.parent_id() {
+        metadata = metadata.with_parent(*parent_id.as_bytes());
+    }
+    if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
+        metadata = metadata.with_ancestors(ancestors);
+    }
+    if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
+        metadata = metadata.with_authorization(auth);
+    }
+    if let Some(schema) = schema_bytecode_id {
+        metadata = metadata.with_schema_bytecode_id(schema);
+    }
+    Some(TreeLeafData::new(
+        *entity_id.as_bytes(),
+        entry_data,
+        metadata,
+    ))
+}
+
+/// [`entity_wire_row`] for an entity named by the DFS, `None` when this node
+/// holds no index or no data row for it.
+fn local_entity_wire_row(
+    node_id: &[u8; 32],
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Option<TreeLeafData> {
+    let entity_id = Id::new(*node_id);
+    let index = Index::<MainStorage>::get_index(entity_id).ok().flatten()?;
+    entity_wire_row(entity_id, &index, schema_bytecode_id)
 }
 
 /// Apply tombstones a remote node advertised in its `deleted_children`, for any
@@ -2481,5 +2462,85 @@ mod tests {
             "originator (self_log_own_rotations) and receiver (apply_action) must land \
              the same anchor full_hash via the rotation-log collection child"
         );
+    }
+
+    /// A collection container's `Key::Entry` row is the only source of its
+    /// `own_hash`, so the push leg has to emit it alongside its children; the
+    /// app root is the one entity left out, being merged by the app.
+    #[test]
+    fn collect_local_leaves_emits_a_containers_own_row() {
+        use std::sync::Arc;
+
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        let context_id = ContextId::from([0xCA; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
+
+        let root_id = Id::new(*context_id.as_ref());
+        let container_id = Id::new([0x5C; 32]);
+        let child_id = Id::new([0x5D; 32]);
+
+        with_runtime_env(runtime_env, || {
+            let add_under = |parent: Id, id: Id, data: Vec<u8>| {
+                let parent_hash = Index::<MainStorage>::get_hashes_for(parent)
+                    .ok()
+                    .flatten()
+                    .map_or([0; 32], |(full, _)| full);
+                let parent_meta = Index::<MainStorage>::get_index(parent)
+                    .ok()
+                    .flatten()
+                    .map(|idx| idx.metadata.clone())
+                    .unwrap_or_default();
+                Interface::<MainStorage>::apply_action(
+                    Action::Add {
+                        id,
+                        data,
+                        ancestors: vec![ChildInfo::new(parent, parent_hash, parent_meta)],
+                        metadata: Metadata::new(100, 100),
+                    },
+                    &ApplyContext::empty(),
+                )
+                .expect("add entity");
+            };
+
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+            add_under(root_id, container_id, container_id.as_bytes().to_vec());
+            add_under(container_id, child_id, b"entry".to_vec());
+
+            let keys: Vec<[u8; 32]> =
+                collect_local_leaves(context_id, root_id.as_bytes(), true, None)
+                    .expect("collect should not error")
+                    .into_iter()
+                    .map(|leaf| leaf.key)
+                    .collect();
+
+            assert!(
+                keys.contains(container_id.as_bytes()),
+                "the container's own row must be emitted, got {keys:?}"
+            );
+            assert!(
+                keys.contains(child_id.as_bytes()),
+                "the child leaf must still be emitted, got {keys:?}"
+            );
+            assert!(
+                !keys.contains(root_id.as_bytes()),
+                "the app root must not be emitted, got {keys:?}"
+            );
+        });
     }
 }

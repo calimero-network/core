@@ -6,6 +6,7 @@ pub mod buffering;
 pub mod deterministic;
 pub mod hash_comparison;
 pub mod levelwise;
+pub mod nested_container;
 pub mod random;
 pub mod text;
 
