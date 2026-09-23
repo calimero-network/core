@@ -2,7 +2,7 @@
 //! machine-independent and immune to constant-factor drift.
 //!
 //! ```text
-//! cargo test -p storage-cost --release --test flat_curve
+//! cargo test -p storage-cost --release --test flat_curve -- --include-ignored
 //! ```
 //!
 //! Every shape is checked in both directions: a `KnownLinearInN` cost that
@@ -110,6 +110,7 @@ fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
     );
 }
 
+#[ignore = "slow in debug: sweeps every workload across its sizes; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn build_cost_per_entry_does_not_grow_with_collection_size() {
     assert_bounded("writes/entry", CostShape::FlatPerEntry, |c| c.rows_written);
@@ -118,6 +119,7 @@ fn build_cost_per_entry_does_not_grow_with_collection_size() {
 
 /// Reads matter most: the VM has no read counter and no read limit, so an
 /// O(n) read pattern is invisible until a call dies outright.
+#[ignore = "slow in debug: sweeps every workload across its sizes; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn point_operation_cost_does_not_grow_with_collection_size() {
     assert_bounded("reads/call", CostShape::ConstantPerCall, |c| c.rows_read);
@@ -128,6 +130,7 @@ fn point_operation_cost_does_not_grow_with_collection_size() {
 
 /// The ratchet on costs known to be O(n): fails if one gets worse than linear,
 /// and fails differently if one stops being linear.
+#[ignore = "slow in debug: sweeps every workload across its sizes; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn known_linear_costs_are_still_exactly_linear() {
     let mut failures = Vec::new();
@@ -161,6 +164,7 @@ fn known_linear_costs_are_still_exactly_linear() {
 
 /// The same ratchet for builds known to be `O(n^2)` overall, measured at
 /// [`QUADRATIC_SIZES`].
+#[ignore = "slow in debug: sweeps every workload across its sizes; run by the release storage-cost CI job via --include-ignored"]
 #[test]
 fn quadratic_build_costs_are_still_exactly_quadratic() {
     let floor = QUADRATIC_LARGEST as f64 / QUADRATIC_FLOOR_DIVISOR;
