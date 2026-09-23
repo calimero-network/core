@@ -1471,6 +1471,8 @@ fn generate_assign_deterministic_ids_impl(
                     | "Counter"
                     | "ReplicatedGrowableArray"
                     | "FugueText"
+                    | "RichText"
+                    | "RichDocument"
                     | "UserStorage"
                     | "FrozenStorage"
                     | "SharedStorage"
@@ -1560,6 +1562,8 @@ mod tests {
             pub struct AppRoot {
                 pub legacy: ReplicatedGrowableArray,
                 pub doc: FugueText,
+                pub rich: RichText<DefaultMarks>,
+                pub blocks: RichDocument<DefaultMarks>,
                 pub opaque: SomeUserType,
             }
         };
@@ -1568,7 +1572,7 @@ mod tests {
         let orig = StructOrEnumItem::Struct(item);
         let rendered = generate_assign_deterministic_ids_impl(&ident, &generics, &orig).to_string();
 
-        for field in ["legacy", "doc"] {
+        for field in ["legacy", "doc", "rich", "blocks"] {
             assert!(
                 rendered.contains(&format!("self . {field} . reassign_deterministic_id")),
                 "`{field}` must be reassigned a deterministic id, in:\n{rendered}",

@@ -32,11 +32,11 @@ help: the trait `calimero_storage::collections::rekey::RekeyTarget` is not imple
              AccessControl
              AuthoredMap<K, V, S>
              AuthoredVector<V, S>
+             Block<Sc, S>
              Box<T>
              Counter<ALLOW_DECREMENT, S>
              FrozenValue<T>
              Option<T>
-             PermissionedStorage<T, A>
            and $N others
 note: required by a bound in `Mergeable`
   --> src/collections/crdt_meta.rs

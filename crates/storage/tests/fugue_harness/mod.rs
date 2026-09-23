@@ -78,6 +78,22 @@ pub fn edit<T: BorshSerialize + BorshDeserialize>(
     })
 }
 
+/// [`edit`] for a transaction that may legitimately change nothing, which is
+/// what every rejected-write assertion needs.
+pub fn try_edit<T: BorshSerialize + BorshDeserialize>(
+    store: &Store,
+    device: [u8; 32],
+    f: impl FnOnce(&mut Root<T>),
+) -> Option<Vec<u8>> {
+    clear_pending_delta();
+    env::with_runtime_env(env_for(store, device), || {
+        let mut doc = Root::<T>::fetch().expect("document root should exist");
+        f(&mut doc);
+        doc.commit();
+        env::take_last_artifact()
+    })
+}
+
 /// Lands `delta` the way the sync path does, through `Interface::apply_action`.
 pub fn land(store: &Store, device: [u8; 32], delta: &[u8]) {
     let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
@@ -160,4 +176,28 @@ pub fn entry_bytes(store: &Store, ids: &BTreeSet<Id>) -> BTreeMap<Id, Option<Vec
             )
         })
         .collect()
+}
+
+pub fn root_hash(store: &Store, writer: u8) -> Option<[u8; 32]> {
+    env::with_runtime_env(env_for(store, device(writer)), env::root_hash)
+}
+
+/// Every ordering of `0..n`, for the delivery-order convergence tests.
+pub fn permutations(n: usize) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    let mut current: Vec<usize> = (0..n).collect();
+    permute(&mut current, 0, &mut out);
+    out
+}
+
+fn permute(current: &mut Vec<usize>, at: usize, out: &mut Vec<Vec<usize>>) {
+    if at == current.len() {
+        out.push(current.clone());
+        return;
+    }
+    for index in at..current.len() {
+        current.swap(at, index);
+        permute(current, at + 1, out);
+        current.swap(at, index);
+    }
 }

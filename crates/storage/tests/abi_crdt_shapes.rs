@@ -1,17 +1,18 @@
 //! Locks the exact ABI shape of every CRDT wrapper against what the syn
 //! normalizer produces today. `inner_type` is populated ONLY where
-//! `CollectionType` cannot carry the payload - two wrappers out of eleven -
+//! `CollectionType` cannot carry the payload - two wrappers out of thirteen -
 //! and CRDT maps always describe their key as `string` no matter the Rust
 //! key type. A uniform-looking refactor of these impls is a bug, and this
 //! file is what catches it.
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, FugueText,
-    GCounter, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap,
-    SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredVector, BlockView, Counter, DefaultMarks, FrozenStorage,
+    FrozenValue, FugueText, GCounter, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray,
+    RichDocument, RichText, SharedStorage, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet,
+    UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
-use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeRef};
+use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeDef, TypeRef};
 
 fn ref_of<T: AbiType>() -> TypeRef {
     let mut reg = TypeRegistry::new();
@@ -199,6 +200,63 @@ fn per_identity_storage_is_a_plain_map() {
         assert_eq!(*key, STR, "the identity key describes as a string");
         assert_eq!(*value, TypeRef::Scalar(ScalarType::U64));
     }
+}
+
+/// A composite of existing collections has no tag of its own, and what a client
+/// receives is the RENDERED span rather than the stored mark row.
+#[test]
+fn rich_text_is_an_untagged_map_of_rendered_spans() {
+    let mut reg = TypeRegistry::new();
+    let (c, crdt, inner) = parts(<RichText<DefaultMarks> as AbiType>::type_ref(&mut reg));
+    assert_eq!(crdt, None, "a pure composite carries no CRDT tag");
+    assert_eq!(inner, None, "the payload rides Map.value");
+    let CollectionType::Map { key, value } = c else {
+        panic!("expected map")
+    };
+    assert_eq!(*key, STR);
+    assert_eq!(*value, TypeRef::reference("Span"));
+
+    <Span as AbiType>::register(&mut reg);
+    let TypeDef::Record { fields } = reg
+        .into_types()
+        .remove("Span")
+        .expect("a span must be a named type")
+    else {
+        panic!("expected a record")
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["text", "attributes"]);
+}
+
+/// The block list is the same untagged shape, and what it advertises is the
+/// rendered block rather than the stored row.
+#[test]
+fn rich_document_is_an_untagged_map_of_rendered_blocks() {
+    let mut reg = TypeRegistry::new();
+    let (c, crdt, inner) = parts(<RichDocument<DefaultMarks> as AbiType>::type_ref(&mut reg));
+    assert_eq!(crdt, None, "a pure composite carries no CRDT tag");
+    assert_eq!(inner, None, "the payload rides Map.value");
+    let CollectionType::Map { key, value } = c else {
+        panic!("expected map")
+    };
+    assert_eq!(*key, STR);
+    assert_eq!(*value, TypeRef::reference("BlockView"));
+
+    <BlockView as AbiType>::register(&mut reg);
+    let types = reg.into_types();
+    let TypeDef::Record { fields } = types
+        .get("BlockView")
+        .expect("a block view must be a named type")
+        .clone()
+    else {
+        panic!("expected a record")
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["id", "kind", "depth", "attrs", "spans"]);
+    assert!(
+        types.contains_key("Span"),
+        "a block view's spans must pull the span record in with it"
+    );
 }
 
 // ── opaque: no payload anywhere ─────────────────────────────────────────

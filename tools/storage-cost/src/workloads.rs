@@ -14,7 +14,8 @@ use std::rc::Rc;
 use calimero_storage::action::Action;
 use calimero_storage::collections::fugue_text::TextOp;
 use calimero_storage::collections::{
-    FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap, Vector,
+    BlockId, DefaultMarks, DeltaOp, FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray,
+    RichDocument, RichText, Root, UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -293,6 +294,142 @@ fn build_fugue_text_fragmented(n: usize) -> Root<FugueText<MainStorage>> {
     text
 }
 
+/// The document `rich_text_to_delta_many_marks` holds fixed while its mark
+/// count varies, so the curve it draws is in marks and not in characters.
+const RICH_DOC_CHARS: usize = 64;
+
+type RichDoc = RichText<DefaultMarks, MainStorage>;
+
+fn build_rich_text(n: usize) -> Root<RichDoc> {
+    let mut doc = Root::new(RichDoc::new);
+    doc.apply_delta(&[DeltaOp::insert(&"a".repeat(n))])
+        .expect("seed insert should succeed");
+    doc
+}
+
+/// One mark over the whole document. An earlier mark pays for the map's own
+/// rows, so what is measured is the marginal cost of adding one entry - which
+/// must not grow with the number of characters the mark covers.
+fn rich_text_mark(n: usize) {
+    let mut doc = build_rich_text(n);
+    let _first = doc
+        .mark(0, 1, "italic", Some("true"))
+        .expect("mark should succeed");
+    reset_counters();
+    let id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    assert!(id.is_some(), "the measured mark was suppressed");
+}
+
+/// Re-asserting formatting that is already in effect: zero rows written at
+/// every `n`, which is the only defence against unbounded row growth.
+fn rich_text_redundant_mark(n: usize) {
+    let mut doc = build_rich_text(n);
+    let _id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    reset_counters();
+    let id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    assert!(id.is_none(), "the redundant mark was not suppressed");
+}
+
+/// The read, over `n` characters carrying one mark.
+fn rich_text_to_delta(n: usize) {
+    let mut doc = build_rich_text(n);
+    let _id = doc
+        .mark(0, n, "bold", Some("true"))
+        .expect("mark should succeed");
+    reset_counters();
+    let spans = doc.to_delta().expect("to_delta should succeed");
+    assert!(!spans.is_empty(), "the measured read returned nothing");
+}
+
+/// The read, over a fixed document carrying `n` marks. Distinct keys, so none
+/// is suppressed and the mark set really does grow.
+fn rich_text_to_delta_many_marks(n: usize) {
+    let mut doc = build_rich_text(RICH_DOC_CHARS);
+    for index in 0..n {
+        let start = index % (RICH_DOC_CHARS - 1);
+        let _id = doc
+            .mark(start, start + 1, &format!("comment:{index}"), Some("x"))
+            .expect("mark should succeed");
+    }
+    reset_counters();
+    let spans = doc.to_delta().expect("to_delta should succeed");
+    assert!(!spans.is_empty(), "the measured read returned nothing");
+}
+
+type BlockDoc = RichDocument<DefaultMarks, MainStorage>;
+
+/// A document of `n` blocks, each holding one character, so what a block
+/// workload measures is the block count rather than the text inside it.
+///
+/// Built by FIELD NAME, not by `new()`: a random collection id moves where a
+/// block's children land in the child trie, and the row counts wobble by one
+/// with it - the same reason `nested_map_insert` fixes its parent id.
+fn build_rich_document(n: usize) -> (Root<BlockDoc>, Vec<BlockId>) {
+    let mut doc = Root::new(|| BlockDoc::new_with_field_name("blocks"));
+    let mut ids = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = doc
+            .insert_block(ids.last().copied(), "paragraph", 0)
+            .expect("insert_block should succeed");
+        let _undo = doc
+            .apply_delta(id, &[DeltaOp::insert("a")])
+            .expect("seed typing should succeed");
+        ids.push(id);
+    }
+    (doc, ids)
+}
+
+/// The document read: one spine rebuild plus one render per block, so linear in
+/// blocks and never quadratic.
+fn rich_document_blocks(n: usize) {
+    let (doc, _ids) = build_rich_document(n);
+    reset_counters();
+    let blocks = doc.blocks().expect("blocks should succeed");
+    assert_eq!(blocks.len(), n, "the measured read lost a block");
+}
+
+/// One more block on a document that already holds `n`. What it WRITES must not
+/// grow with `n`; the snapshot pins that exactly.
+fn rich_document_insert_block(n: usize) {
+    let (mut doc, ids) = build_rich_document(n);
+    reset_counters();
+    let _id = doc
+        .insert_block(ids.last().copied(), "paragraph", 0)
+        .expect("insert_block should succeed");
+}
+
+/// Moving a block mints one spine slot and rewrites one property row, whatever
+/// the document holds.
+fn rich_document_move_block(n: usize) {
+    let (mut doc, ids) = build_rich_document(n);
+    let first = *ids.first().expect("the document holds a block");
+    reset_counters();
+    doc.move_block(first, ids.last().copied())
+        .expect("move_block should succeed");
+}
+
+/// Splitting one block of `n` characters in half: the tail's text and its
+/// formatting are re-minted in the new block, so the cost is in the tail.
+fn rich_document_split_block(n: usize) {
+    let mut doc = Root::new(|| BlockDoc::new_with_field_name("blocks"));
+    let block = doc
+        .insert_block(None, "paragraph", 0)
+        .expect("insert_block should succeed");
+    let _undo = doc
+        .apply_delta(block, &[DeltaOp::insert(&"a".repeat(n))])
+        .expect("seed typing should succeed");
+    reset_counters();
+    let _new = doc
+        .split_block(block, n / 2)
+        .expect("split_block should succeed");
+}
+
 fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     text.insert_str(0, &"a".repeat(n))
@@ -382,7 +519,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 14] = [
+    const REGISTRY: [Entry; 18] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -417,11 +554,30 @@ pub fn all() -> Vec<Workload> {
             0,
             fugue_text_apply_delta,
         ),
+        // All three load the whole document, so the asserted curve is their
+        // READ. What they write - one entry for a mark, nothing at all for a
+        // redundant one - is pinned exactly by the snapshot.
+        ("rich_text_mark", KnownLinearInN, 0, rich_text_mark),
+        (
+            "rich_text_redundant_mark",
+            KnownLinearInN,
+            0,
+            rich_text_redundant_mark,
+        ),
+        ("rich_text_to_delta", KnownLinearInN, 0, rich_text_to_delta),
+        // Linear in the CHARACTERS a split carries, not in the block count, so
+        // it belongs beside the other text-sized reads.
+        (
+            "rich_document_split_block",
+            KnownLinearInN,
+            0,
+            rich_document_split_block,
+        ),
     ];
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because
     /// `REGISTRY` is crossed with `SIZES` unconditionally.
-    const QUADRATIC_REGISTRY: [Entry; 5] = [
+    const QUADRATIC_REGISTRY: [Entry; 9] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
@@ -452,6 +608,41 @@ pub fn all() -> Vec<Workload> {
             QuadraticBuild,
             0,
             fugue_text_insert_interleaved_sync,
+        ),
+        // Linear in MARKS, not characters; the build of n marks is quadratic,
+        // which is why it is measured at the smaller sizes.
+        (
+            "rich_text_to_delta_many_marks",
+            KnownLinearInN,
+            0,
+            rich_text_to_delta_many_marks,
+        ),
+        // Every block operation rebuilds the spine from stored rows, so a build
+        // of n blocks is quadratic and these are measured at the smaller sizes.
+        //
+        // `rich_document_blocks` is the one point workload declared
+        // `FlatPerEntry`: that shape divides by `n`, which is exactly the
+        // assertion "reading a document costs a bounded number of rows PER
+        // BLOCK", i.e. that the read stays linear in blocks. A `KnownLinearInN`
+        // ceiling is stated as a multiple of `n` and cannot carry this read's
+        // real per-block constant.
+        (
+            "rich_document_blocks",
+            FlatPerEntry,
+            0,
+            rich_document_blocks,
+        ),
+        (
+            "rich_document_insert_block",
+            ConstantPerCall,
+            0,
+            rich_document_insert_block,
+        ),
+        (
+            "rich_document_move_block",
+            ConstantPerCall,
+            0,
+            rich_document_move_block,
         ),
     ];
 

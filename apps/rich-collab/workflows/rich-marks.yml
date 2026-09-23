@@ -1,0 +1,565 @@
+description: >
+  Every Peritext mark rule this design commits to, one document per case, one
+  cluster boot. The concurrent cases run inside a single partition window: under
+  Docker that window is a real libp2p partition, and under --no-docker
+  partition_peers is a no-op, so the same cases degrade to a race and only the
+  assertions that hold under both are made.
+name: Rich Collab Marks
+
+# Fields every call and sync step shares, merged in with `<<:`.
+x-call: &call
+  type: call
+  context_id: "{{context_id}}"
+x-sync: &sync
+  type: wait_for_sync
+  context_id: "{{context_id}}"
+  nodes: [rich-node-1, rich-node-2, rich-node-3]
+  timeout: 90
+  trigger_sync: true
+
+# Defined individually so every port is pinned: the count form lets --e2e-mode
+# allocate ports dynamically, and a later start_node reconnects on base_port.
+nodes:
+  image: ghcr.io/calimero-network/merod:edge
+  rich-node-1:
+    port: 2800
+    rpc_port: 2900
+  rich-node-2:
+    port: 2801
+    rpc_port: 2901
+  rich-node-3:
+    port: 2802
+    rpc_port: 2902
+
+steps:
+  - name: Install rich-collab on Node 1
+    type: install_application
+    node: rich-node-1
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
+  - name: Install rich-collab on Node 2
+    type: install_application
+    node: rich-node-2
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+
+  - name: Install rich-collab on Node 3
+    type: install_application
+    node: rich-node-3
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: rich-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - rich-node-2
+      - rich-node-3
+    outputs:
+      context_id: contextId
+
+
+  # ── growing boundary: bold grows when a peer types at its end ──────────
+
+  - name: Create the growing-boundary document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: marks-growing
+
+  - name: Add the growing-boundary block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: marks-growing
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      growing_block: result.output
+
+  - name: Type abcde into the growing-boundary block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-growing
+      block: "{{growing_block}}"
+      ops:
+        - insert: abcde
+
+  - name: Bold bcd in the growing-boundary block
+    <<: *call
+    node: rich-node-1
+    method: mark
+    args:
+      doc: marks-growing
+      block: "{{growing_block}}"
+      start: 1
+      end: 4
+      key: bold
+      value: "true"
+
+
+  # ── non-growing boundary: a link does not grow ─────────────────────────
+
+  - name: Create the non-growing-boundary document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: marks-nongrowing
+
+  - name: Add the non-growing-boundary block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: marks-nongrowing
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      nongrowing_block: result.output
+
+  - name: Type abcde into the non-growing-boundary block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-nongrowing
+      block: "{{nongrowing_block}}"
+      ops:
+        - insert: abcde
+
+  - name: Link bcd in the non-growing-boundary block
+    <<: *call
+    node: rich-node-1
+    method: mark
+    args:
+      doc: marks-nongrowing
+      block: "{{nongrowing_block}}"
+      start: 1
+      end: 4
+      key: link
+      value: https://example.test
+
+
+  # ── undo of a delta that changed text and formatting together ──────────
+
+  - name: Create the undo document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: marks-undo
+
+  - name: Add the undo block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: marks-undo
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      undo_block: result.output
+
+  - name: Type hello world into the undo block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-undo
+      block: "{{undo_block}}"
+      ops:
+        - insert: hello world
+
+
+  # ── the three concurrent cases, seeded before the partition ────────────
+
+  - name: Create the bold-versus-unbold document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: marks-bold-vs-unbold
+
+  - name: Add the bold-versus-unbold block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: marks-bold-vs-unbold
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      contested_block: result.output
+
+  - name: Type the sentence into the bold-versus-unbold block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-bold-vs-unbold
+      block: "{{contested_block}}"
+      ops:
+        - insert: The fox jumped.
+
+  - name: Create the format-versus-delete document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: marks-format-vs-delete
+
+  - name: Add the format-versus-delete block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: marks-format-vs-delete
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      cut_block: result.output
+
+  - name: Type the sentence into the format-versus-delete block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-format-vs-delete
+      block: "{{cut_block}}"
+      ops:
+        - insert: The fox jumped.
+
+  - name: Create the two-comments document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: marks-two-comments
+
+  - name: Add the two-comments block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: marks-two-comments
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      comment_block: result.output
+
+  - name: Type the sentence into the two-comments block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-two-comments
+      block: "{{comment_block}}"
+      ops:
+        - insert: The fox jumped.
+
+  - name: Wait for every seeded document to reach every node
+    <<: *sync
+
+  - name: List the documents on Node 3
+    <<: *call
+    node: rich-node-3
+    method: list_docs
+    outputs:
+      docs_node3: result
+
+  - name: Assert every case has its own document
+    type: json_assert
+    statements:
+      - 'json_equal({{docs_node3}}, {"output": ["marks-bold-vs-unbold", "marks-format-vs-delete", "marks-growing", "marks-nongrowing", "marks-two-comments", "marks-undo"]})'
+
+
+  # ── the sequential cases ───────────────────────────────────────────────
+
+  - name: Node 2 types at the bold run's end
+    <<: *call
+    node: rich-node-2
+    method: apply_delta
+    args:
+      doc: marks-growing
+      block: "{{growing_block}}"
+      ops:
+        - retain: 4
+        - insert: X
+
+  - name: The typed character joined the bold run
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: marks-growing
+      equals:
+        output: 'paragraph/0{:a}{bold=true:bcdX}{:e};'
+
+  - name: Node 2 types at the link's end
+    <<: *call
+    node: rich-node-2
+    method: apply_delta
+    args:
+      doc: marks-nongrowing
+      block: "{{nongrowing_block}}"
+      ops:
+        - retain: 4
+        - insert: X
+
+  - name: The typed character stayed outside the link
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: marks-nongrowing
+      equals:
+        output: 'paragraph/0{:a}{link=https://example.test:bcd}{:Xe};'
+
+  - name: Node 1 bolds a run, cuts a word and types a replacement in one delta
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: marks-undo
+      block: "{{undo_block}}"
+      ops:
+        - retain: 6
+          attributes:
+            bold: "true"
+        - delete: 5
+        - insert: there
+    outputs:
+      undo_token: result.output
+
+  - name: The mixed delta landed on every node
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: marks-undo
+      equals:
+        output: 'paragraph/0{bold=true:hello there};'
+
+  - name: Node 1 takes the whole mixed delta back
+    <<: *call
+    node: rich-node-1
+    method: undo
+    args:
+      doc: marks-undo
+      block: "{{undo_block}}"
+      token: "{{undo_token}}"
+
+  - name: The undo restored the text and dropped the formatting everywhere
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: marks-undo
+      equals:
+        output: 'paragraph/0{:hello world};'
+
+
+  # ── the concurrent cases ───────────────────────────────────────────────
+
+  - name: Partition Node 1 from Node 2 and Node 3 (libp2p only; RPC stays up)
+    type: partition_peers
+    node: rich-node-1
+    peers:
+      - rich-node-2
+      - rich-node-3
+
+  - name: Settle after the partition takes effect
+    type: wait
+    seconds: 12
+
+  - name: Node 1 bolds the whole sentence
+    <<: *call
+    node: rich-node-1
+    method: mark
+    args:
+      doc: marks-bold-vs-unbold
+      block: "{{contested_block}}"
+      start: 0
+      end: 15
+      key: bold
+      value: "true"
+
+  - name: Node 1 takes the bold back off everything but the first word
+    <<: *call
+    node: rich-node-1
+    method: mark
+    args:
+      doc: marks-bold-vs-unbold
+      block: "{{contested_block}}"
+      start: 4
+      end: 15
+      key: bold
+      value: null
+
+  - name: Node 2 bolds the tail of the same sentence
+    <<: *call
+    node: rich-node-2
+    method: mark
+    args:
+      doc: marks-bold-vs-unbold
+      block: "{{contested_block}}"
+      start: 8
+      end: 15
+      key: bold
+      value: "true"
+
+  - name: Node 1 bolds the word Node 2 is about to delete
+    <<: *call
+    node: rich-node-1
+    method: mark
+    args:
+      doc: marks-format-vs-delete
+      block: "{{cut_block}}"
+      start: 4
+      end: 7
+      key: bold
+      value: "true"
+
+  - name: Node 2 deletes the word Node 1 just bolded
+    <<: *call
+    node: rich-node-2
+    method: apply_delta
+    args:
+      doc: marks-format-vs-delete
+      block: "{{cut_block}}"
+      ops:
+        - retain: 4
+        - delete: 3
+
+  - name: Node 1 comments on the middle word
+    <<: *call
+    node: rich-node-1
+    method: mark
+    args:
+      doc: marks-two-comments
+      block: "{{comment_block}}"
+      start: 4
+      end: 7
+      key: comment:alpha
+      value: first
+
+  - name: Node 2 comments on the same word
+    <<: *call
+    node: rich-node-2
+    method: mark
+    args:
+      doc: marks-two-comments
+      block: "{{comment_block}}"
+      start: 4
+      end: 7
+      key: comment:beta
+      value: second
+
+  - name: Heal the partition
+    type: heal_peers
+    node: rich-node-1
+    peers:
+      - rich-node-2
+      - rich-node-3
+
+  - name: Wait for the libp2p mesh to reform
+    type: wait
+    seconds: 12
+
+  - name: The contested sentence survived intact on every node
+    <<: *sync
+    timeout: 180
+    expect:
+      method: passage_count
+      args:
+        doc: marks-bold-vs-unbold
+        block: "{{contested_block}}"
+        needle: The fox jumped.
+      equals:
+        output: 1
+
+  - name: Read the contested digest on Node 1
+    <<: *call
+    node: rich-node-1
+    method: get_state_digest
+    args:
+      doc: marks-bold-vs-unbold
+    outputs:
+      contested_node1: result
+
+  - name: Read the contested digest on Node 2
+    <<: *call
+    node: rich-node-2
+    method: get_state_digest
+    args:
+      doc: marks-bold-vs-unbold
+    outputs:
+      contested_node2: result
+
+  - name: Read the contested digest on Node 3
+    <<: *call
+    node: rich-node-3
+    method: get_state_digest
+    args:
+      doc: marks-bold-vs-unbold
+    outputs:
+      contested_node3: result
+
+  # The contested tail depends on which MarkId won, which depends on replica
+  # ids, so only the part every ordering agrees on is asserted as a literal.
+  - name: Assert the three replicas agree on the contested document
+    type: json_assert
+    statements:
+      - 'json_equal({{contested_node1}}, {{contested_node2}})'
+      - 'json_equal({{contested_node2}}, {{contested_node3}})'
+
+  - name: Assert the uncontested prefix stayed bold
+    type: assert
+    statements:
+      - "contains({{contested_node1}}, 'bold=true:The ')"
+
+  - name: The deleted word is gone and its mark renders nothing
+    <<: *sync
+    timeout: 180
+    expect:
+      method: get_state_digest
+      args:
+        doc: marks-format-vs-delete
+      equals:
+        output: 'paragraph/0{:The  jumped.};'
+
+  - name: Both comments render on the one range
+    <<: *sync
+    timeout: 180
+    expect:
+      method: get_state_digest
+      args:
+        doc: marks-two-comments
+      equals:
+        output: 'paragraph/0{:The }{comment:alpha=first,comment:beta=second:fox}{: jumped.};'
+
+  - name: No node reported a stuck root-hash divergence
+    type: assert_log_absent
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    patterns:
+      - "DIVERGENCE DETECTED"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

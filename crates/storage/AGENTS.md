@@ -34,6 +34,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
 | `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
 | `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
+| `RichText<Sc>`             | Text plus formatting marks| Composite: text union + mark union| Structured |
+| `RichDocument<Sc>`         | Ordered list of rich-text blocks| Composite: spine union + per-field LWW| Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
@@ -71,6 +73,34 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - `Anchor`, `Bias`, `IdRange`, `Removed` and `Undo` carry borsh AND serde. Borsh is the persisted format; the JSON is the JSON-RPC shape, with a `RawId` as the two-element array `[replica, counter]`. Both are pinned as formats.
   They have no `AbiType`, so a guest method still cannot take or return one directly - `cargo mero build` rejects it - and the reference app ships them as bs58-encoded borsh.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
+
+### `RichText` constraints
+
+- A composite of `FugueText` and an `UnorderedMap` of mark rows, with **no `CrdtType` of its own**, no arm in `merge_by_crdt_type` and no `CrdtCollectionType` in the ABI (it reports `crdt_type: None` like `UserStorage`, and the value it advertises is the rendered `Span`).
+  That is sound for exactly one reason: a mark row is written ONCE and never rewritten, so two replicas holding one `MarkId` hold byte-identical values, and the last-writer-wins that an untagged entry falls back to cannot pick wrong.
+  Removing formatting is a NEW row with a greater id and `value: None`, never an edit or a delete. Stamping a mark row with a converging type would route it through the wrong arm; `sync_sim`'s `rich_text` scenarios pin that it stays opaque.
+- The read rule is the whole format contract: per character, per key, the covering mark with the greatest `MarkId` wins, and a `None` value means the key is absent. A future compaction may replace any set of marks by an equivalent one as long as that rule still renders the same spans.
+- `MarkId` is `(lamport, replica)` with `lamport = 1 + the greatest this replica can see`, NOT an HLC. The WASM clock is quantised to about 15 microseconds and re-seeded per instance, so two marks minted in one call would share a timestamp - harmless for a register's value, silent data loss for a map KEY.
+- Where a mark grows when text is typed at its edge is decided ONCE, at write time, as the two stored anchor biases; `MarkSchema` is consulted on the write side only. A replica running an older schema therefore renders identical spans, and a removal uses `Expand::inverted()` so turning bold off keeps growing the way turning it on did.
+- A boundary insert follows Peritext: scan the tombstones in the gap, and if one carries the `After` anchor of any mark, insert after the last such tombstone. It reads stored anchor sides, never the schema, which is what makes it identical on every replica. `FugueTree::insert_after_in` exists for it, because a visible index cannot name a position among tombstones.
+- A mark naming a character this replica has not received is RETAINED and skipped for the read; dropping it would diverge from a replica that has the text. A mark whose start resolves at or after its end covers nothing.
+- `to_delta` merges adjacent runs with equal attributes. That is load-bearing, not cosmetic: without it a replica holding a mark that loses everywhere still emits a span boundary, and two replicas would render different span lists for the same document.
+- Redundant-write suppression is the only defence against unbounded row growth before a compaction rule exists: re-asserting formatting already in effect writes zero rows. Toggling one range `n` times still writes `n` rows, which `rich_text_marks.rs` makes visible rather than acceptable.
+- `apply_delta` runs every fallible check against a pure length walk before the first write, because it spans two collections and cannot share one draft. A rejected delta therefore stores nothing at all. A delete past the end still clamps silently, matching `FugueText`.
+- `mark`, `unmark`, `mark_at`, `apply_delta` and `apply_undo` panic in merge mode: they mint ids from the node-local device id. A migration seeds formatting with `mark_with_replica`.
+
+### `RichDocument` constraints
+
+- A composite of a spine `FugueText`, an `UnorderedMap` of block rows and, per block, one property map, one attribute map and a `RichText` body. Like `RichText` it has **no `CrdtType` of its own** and reports `crdt_type: None` in the ABI, advertising the rendered `BlockView`.
+- Block order is the spine: creating a block mints one `U+FFFC` placeholder, and the block's id IS that character's id, so it survives every later move.
+- **A block's mutable structure is one row per field, never one row per block.** A map entry carries no `crdt_type`, so an entry holding four registers in one blob would reconcile last-writer-wins as a whole: a concurrent `set_depth` would lose to a `set_kind`, and a `set_kind` racing a delete could resurrect the block. One row per field makes the storage layer's per-row last-write-wins exactly per-field last-write-wins, which is why the composite still needs no `CrdtType`.
+- The read rule is: a block renders at the position its `place` anchor resolves to, ties break on `BlockId`, and a block whose spine slot has NOT arrived renders at the END rather than disappearing - content that exists must never be invisible, and the state self-heals when the slot lands. A spine character no block names is invisible, because the read enumerates blocks and never spine characters.
+- Deleting is a tombstone row, never `UnorderedMap::remove`: it reclaims exactly as much storage (none, since the body rows survive either way) and it makes an undelete an ordinary last write instead of a race against an index tombstone.
+- A move mints a NEW spine slot and last-write-wins on `place`, leaving the old slot live and unreferenced. The block id never changes, so two concurrent moves settle on one placement and can never duplicate a block.
+- `split_block` and `merge_blocks` carry the tail's text AND its formatting, because a mark is anchored to the characters it was written over and cannot follow them: the tail's resolved spans are re-asserted as the complete desired attribute set on the insert, which writes one mark row per carried key rather than one per span. Both validate every carried key before the first write.
+- **The split anomaly is specified behaviour, not a defect.** A peer typing in the tail while another replica splits keeps its text in the FIRST block: the split deletes only the characters that existed when it ran, and the snapshot it copied did not contain the peer's. It is pinned by `rich_document_blocks.rs` and by a `sync_sim` scenario rather than discovered.
+- Nesting is a `depth` number on a flat list. Two adjacent lists of one kind at one depth render as a single list; a renderer synthesises the container from `(depth, kind)`.
+- `insert_block`, `move_block` and `split_block` mint spine ids, so they panic inside a state migration exactly as `FugueText::insert_str` does, and for the same reason.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
