@@ -148,9 +148,10 @@ steps:
       restored_node3: result
 
   - name: Assert the block rows survived the restart
-    type: json_assert
+    type: assert
+    # Node 3 may already have synced Node 1's "ONE-" by now; its own rows are what must survive.
     statements:
-      - 'json_equal({{restored_node3}}, {"output": "paragraph/0{:SEED}{bold=true:-THREE};"})'
+      - "contains({{restored_node3}}, 'SEED}{bold=true:-THREE};')"
 
   - name: Let Node 3 rejoin the mesh
     type: wait
