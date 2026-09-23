@@ -16,10 +16,18 @@ thiserror.workspace = true
 calimero-storage.workspace = true
 tracing.workspace = true
 
+[lib]
+bench = false
+
 [dev-dependencies]
 calimero-storage = { workspace = true, features = ["testing"] }
+criterion.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 
 [features]
 testing = []
+
+[[bench]]
+name = "pending"
+harness = false

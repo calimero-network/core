@@ -46,7 +46,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 - A block holds at most `MAX_RUN_LEN` (256) nodes, and a full run is never rewritten or split.
   The overflowing character opens a new block parented on the full run's last node, side right.
-  Row counts cannot see a regression here, so only a bytes-per-keystroke gate catches one.
+  Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
 - No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
 - Tombstones are one bit per NODE, because coalescing grows a run after the fact.
 - Blocks are mutable under one key, so entries carry their own `crdt_type`: the `FugueTextBlock` tag routes to a join instead of the untagged last-writer-wins, which drops every node only the loser defines.
