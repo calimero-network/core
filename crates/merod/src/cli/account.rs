@@ -53,6 +53,9 @@ enum AccountSubcommands {
     Warrant(WarrantCommand),
     /// Sign a session request offline, for a client that holds no node
     LoginStatement(LoginStatementCommand),
+
+    /// Sign one request, so a caller's identity travels with it.
+    SignRequest(SignRequestCommand),
     /// Sign a verifier's payload with the account root, offline
     SignWithRoot(SignWithRootCommand),
 }
@@ -133,6 +136,7 @@ impl AccountCommand {
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
             AccountSubcommands::LoginStatement(cmd) => cmd.run(),
+            AccountSubcommands::SignRequest(cmd) => cmd.run(),
             AccountSubcommands::SignWithRoot(cmd) => cmd.run(root_args).await,
         }
     }
@@ -475,6 +479,95 @@ pub struct LoginStatementCommand {
 /// which would hand a proof minted by one client to another.
 fn parse_audience(spelling: &str) -> calimero_account::Audience {
     calimero_account::Audience::from_spelling(spelling)
+}
+
+/// Sign one request.
+///
+/// The bottom link of the chain a delegated caller presents, and the only one
+/// minted per call. The other two — a device certificate and, on the long
+/// chain, a login statement — are minted by `sign-cert` and `login-statement`
+/// and reused for their lifetimes.
+///
+/// Signs with whatever secret it is handed. On the SHORT chain that is the
+/// device key itself, which is what a script or a CI step holds; on the long
+/// chain it is the ephemeral session key `login-statement --generate-session-key`
+/// printed. The node's verifier accepts both, so the choice here is about where
+/// the key lives rather than about what the node will take.
+#[derive(Debug, Parser)]
+pub struct SignRequestCommand {
+    /// The HTTP method, exactly as it will be sent.
+    ///
+    /// Not folded. `HEAD` and `GET` are the same PERMISSION — the node's
+    /// permission table treats a HEAD read of a mapped GET route as a GET — and
+    /// they are different REQUESTS. A signature layer that folded them would
+    /// let a proof minted for one be presented as the other.
+    #[arg(long)]
+    method: String,
+
+    /// The path, WITHOUT the query string.
+    ///
+    /// Excluded deliberately: a proxy may rewrite a query — a token parameter
+    /// most of all — and signing over bytes something else is entitled to
+    /// change means failing for reasons the caller cannot see. Anything that
+    /// must be bound belongs in the body.
+    #[arg(long)]
+    path: String,
+
+    /// The request body, exactly as it will be sent. Empty when there is none.
+    ///
+    /// The signature commits to a hash of these bytes, so a body re-serialized
+    /// between signing and sending is a signature for a different request. An
+    /// absent body is not a special case: it commits to the hash of nothing.
+    #[arg(long, default_value = "")]
+    body: String,
+
+    /// The key that signs, as a secret, 64 hex chars.
+    ///
+    /// The public half is derived rather than taken, as everywhere else here: a
+    /// caller able to NAME a key it does not hold could mint a signature it
+    /// cannot produce.
+    #[arg(long, value_name = "HEX")]
+    signer_secret: String,
+
+    /// Seconds from now that the signature stays honourable.
+    ///
+    /// Short is right. The window is what bounds replay and nothing else does —
+    /// a captured signature performs the identical request until it expires.
+    #[arg(long, default_value_t = 300)]
+    valid_for: u64,
+}
+
+impl SignRequestCommand {
+    fn run(self) -> EyreResult<()> {
+        let secret = PrivateKey::from(parse_key(&self.signer_secret, "signer-secret")?);
+
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let expires_at = issued_at.saturating_add(self.valid_for);
+
+        let signature = calimero_account::RequestSig::sign(
+            &secret,
+            &self.method,
+            &self.path,
+            self.body.as_bytes(),
+            issued_at,
+            expires_at,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the request: {err}"))?;
+
+        // The signature first and alone on its line, so a caller can take it
+        // with `head -1` and a scenario can capture it by regex — the same
+        // shape `warrant` and `login-statement` emit.
+        println!(
+            "{}",
+            hex::encode(borsh::to_vec(&signature).wrap_err("Failed to encode the signature")?)
+        );
+        println!("Signer:  {}", hex::encode(secret.public_key()));
+        println!("Expires: {expires_at}");
+
+        Ok(())
+    }
 }
 
 impl LoginStatementCommand {
