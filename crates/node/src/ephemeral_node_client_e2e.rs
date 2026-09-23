@@ -32,7 +32,12 @@
 //! Run with: `cargo test -p calimero-node ephemeral_node_client_e2e`
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{register_context_in_group, GroupKeyring};
+use calimero_context_config::VisibilityMode;
+use calimero_crypto::{Nonce, SharedKey};
+use calimero_governance_store::{
+    register_context_in_group, CapabilitiesRepository, GroupKeyring, NamespaceRepository,
+};
+use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
 use serial_test::serial;
@@ -250,4 +255,122 @@ async fn no_group_key_error_reaches_the_caller_and_nothing_is_echoed() {
         snap.is_empty(),
         "nothing may be echoed locally when the publish is impossible, got {snap:?}"
     );
+}
+
+// -------------------------------------------------------------------------
+// Test 5: presence is sealed under the keyring that covers the context
+// -------------------------------------------------------------------------
+
+/// Nest `child` under `parent` with the given visibility.
+fn nest(node: &TestNode, parent: &ContextGroupId, child: &ContextGroupId, mode: VisibilityMode) {
+    NamespaceRepository::new(&node.store)
+        .nest(parent, child)
+        .expect("nest");
+    CapabilitiesRepository::new(&node.store)
+        .set_subgroup_visibility(child, mode)
+        .expect("set visibility");
+}
+
+/// Publish `slice` as `author_sk` on `context_id` and return the `key_id`,
+/// nonce and ciphertext of the envelope that went out on the wire.
+async fn publish_and_capture(
+    node: &TestNode,
+    context_id: ContextId,
+    author_sk: &PrivateKey,
+    slice: &[u8],
+) -> ([u8; 32], Nonce, Vec<u8>) {
+    store_local_identity(node, &context_id, author_sk);
+    node.node_client
+        .set_local_ephemeral(context_id, author_sk.public_key(), slice.to_vec())
+        .await
+        .expect("set_local_ephemeral must succeed");
+
+    for _ in 0..100 {
+        let captured = node
+            .publishes
+            .lock()
+            .expect("publishes lock")
+            .iter()
+            .find_map(
+                |bytes| match borsh::from_slice::<BroadcastMessage<'_>>(bytes) {
+                    Ok(BroadcastMessage::Ephemeral {
+                        context_id: sent_to,
+                        key_id,
+                        nonce,
+                        ciphertext,
+                        ..
+                    }) if sent_to == context_id => Some((key_id, nonce, ciphertext.into_owned())),
+                    _ => None,
+                },
+            );
+        if let Some(captured) = captured {
+            return captured;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("no Ephemeral publish for {context_id:?} reached the network");
+}
+
+/// A member who inherits an Open subgroup holds only the namespace key. Their
+/// presence must publish, sealed under that key.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn inherited_member_publishes_presence_on_an_open_subgroup() {
+    let node = boot_test_node().await;
+
+    let ns = ContextGroupId::from([0x51u8; 32]);
+    let sub = ContextGroupId::from([0x52u8; 32]);
+    let context_id = ContextId::from([0x53u8; 32]);
+    nest(&node, &ns, &sub, VisibilityMode::Open);
+    register_context_in_group(&node.store, &sub, &context_id).expect("register context");
+    let ns_key = [0x54u8; 32];
+    let ns_key_id = GroupKeyring::new(&node.store, ns)
+        .store_key(&ns_key)
+        .expect("store namespace key");
+
+    let slice = b"cursor={x:5,y:1}";
+    let (key_id, nonce, ciphertext) =
+        publish_and_capture(&node, context_id, &PrivateKey::from([0x55u8; 32]), slice).await;
+
+    assert_eq!(key_id, ns_key_id, "must be sealed under the namespace key");
+    let opened = SharedKey::from_sk(&PrivateKey::from(ns_key))
+        .decrypt(ciphertext, nonce)
+        .expect("the namespace key must open the published slice");
+    assert_eq!(opened, slice);
+}
+
+/// Behind a Restricted wall presence must be sealed under the subgroup's own
+/// key, never the namespace key, even on a node holding both.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn presence_behind_a_restricted_wall_is_not_sealed_for_the_namespace() {
+    let node = boot_test_node().await;
+
+    let ns = ContextGroupId::from([0x56u8; 32]);
+    let ns_key_id = GroupKeyring::new(&node.store, ns)
+        .store_key(&[0x57u8; 32])
+        .expect("store namespace key");
+    let restricted = ContextGroupId::from([0x58u8; 32]);
+    nest(&node, &ns, &restricted, VisibilityMode::Restricted);
+    let walled_open = ContextGroupId::from([0x59u8; 32]);
+    nest(&node, &restricted, &walled_open, VisibilityMode::Open);
+
+    for (seed, group) in [(0x5Au8, restricted), (0x5Bu8, walled_open)] {
+        let context_id = ContextId::from([seed; 32]);
+        register_context_in_group(&node.store, &group, &context_id).expect("register context");
+        let own_key_id = GroupKeyring::new(&node.store, group)
+            .store_key(&[seed.wrapping_add(0x10); 32])
+            .expect("store subgroup key");
+
+        let (key_id, ..) =
+            publish_and_capture(&node, context_id, &PrivateKey::from([seed; 32]), b"x").await;
+        assert_ne!(
+            key_id, ns_key_id,
+            "group {group:?} must not seal for the namespace"
+        );
+        assert_eq!(
+            key_id, own_key_id,
+            "group {group:?} must seal under its own key"
+        );
+    }
 }
