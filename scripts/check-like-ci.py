@@ -1,24 +1,8 @@
 #!/usr/bin/env python3
-"""Run CI's own checks locally, by reading the workflow instead of copying it.
+"""Run CI's Rust checks locally by reading ci-checks.yml instead of copying it.
 
-Why this exists
----------------
-The commands are already written down in `.github/workflows/ci-checks.yml`, and
-a second hand-maintained copy of them is worse than none: it drifts silently,
-and it drifts in the direction of running *less* than CI does. Three PRs in a
-row went red for exactly that reason, each on a different narrowing:
-
-* per-crate `cargo clippy` instead of `--workspace --all-targets`, which missed
-  a `-D warnings` error in a test file;
-* `cargo test -p <crate> --lib`, which never builds a crate's `tests/`
-  integration targets;
-* default features, which never compiles the `mock-attestation` module that CI
-  lints and tests in its own step.
-
-Every one of those looked like "I ran the tests". So this script does not hold a
-list of commands -- it *reads the job* and runs the steps it finds, in order. Add
-a step to CI and it appears here with no edit; change a flag in CI and the local
-run changes with it.
+A hand-kept copy drifts toward running less than CI. This runs the `run` steps of
+every job the `Rust` check needs, in order, so a CI change needs no edit here.
 
 Usage
 -----
@@ -28,11 +12,7 @@ Usage
     ./scripts/check-like-ci.py --skip deny --skip machete
     ./scripts/check-like-ci.py --job wasm-size    # a different job
 
-Failures do not stop the run, mirroring `if: ${{ !cancelled() }}` on the job's
-steps: CI reports every step it could, and so should this. That is also the
-behaviour worth having locally -- one pass tells you everything to fix rather
-than one thing at a time. `--fail-fast` opts out.
-
+Failures do not stop the run, like `if: !cancelled()` in CI; `--fail-fast` opts out.
 Exit status is 0 only if every step that ran passed.
 """
 
@@ -54,13 +34,7 @@ DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-checks.yml"
 AGGREGATE_JOB = "rust"  # the required `Rust` check; its `needs` are the jobs run by default
 INSTALL_ACTION = "taiki-e/install-action"  # steps whose `tool:` binaries CI installs for later steps
 
-# Prerequisites CI has and a workstation may not. Reported once, up front, as
-# warnings rather than errors: a step that needs one will fail on its own and say
-# why, but knowing beforehand is the difference between "my change broke this"
-# and "this machine cannot run this step".
-#
-# Each entry is (predicate, message). The predicate returns True when the
-# prerequisite is MISSING.
+# (predicate, message) for things CI has and a workstation may not; True means missing.
 PREREQS = [
     (
         lambda: shutil.which("ifconfig") is None,
@@ -107,13 +81,7 @@ def installed_tools(doc: dict, job: str) -> list[str]:
 
 
 def load_steps(doc: dict, workflow: Path, job: str) -> list[tuple[str, str, dict]]:
-    """The named job's `run` steps as (name, script, env), in workflow order.
-
-    Steps that use an action (`uses:`) carry no script to run -- checkout and
-    toolchain setup are the local machine's existing state -- so they are
-    dropped here rather than reported as skipped, which would be noise on every
-    single run.
-    """
+    """The job's `run` steps as (name, script, env); `uses:` steps have nothing to run locally."""
     jobs = doc.get("jobs") or {}
     if job not in jobs:
         raise SystemExit(
@@ -136,13 +104,7 @@ def load_steps(doc: dict, workflow: Path, job: str) -> list[tuple[str, str, dict
 
 
 def resolve_env(raw: dict) -> dict:
-    """CI's env, minus what only makes sense on a runner.
-
-    A `${{ ... }}` expression cannot be evaluated here, so those entries are
-    dropped: `CARGO_TARGET_DIR` pointed at the runner's workspace and a secret
-    token has no local value. Anything already exported wins, so a caller can
-    set `CALIMERO_AUTH_FRONTEND_SRC` and have it survive.
-    """
+    """CI's env without the `${{ }}` expressions only a runner can evaluate; exported values win."""
     env = dict(os.environ)
     for key, value in raw.items():
         if isinstance(value, str):
@@ -150,19 +112,14 @@ def resolve_env(raw: dict) -> dict:
                 continue
             rendered = value
         elif isinstance(value, bool):
-            # YAML reads `yes`/`no`/`true`/`false` as booleans, so a perfectly
-            # ordinary workflow value arrives here not-a-string. Actions renders
-            # these lowercased; dropping them instead (the first version of this
-            # function did) loses env the step was written to rely on.
+            # YAML reads true/false as booleans; Actions renders them lowercased.
             rendered = "true" if value else "false"
         elif isinstance(value, (int, float)):
             rendered = str(value)
         else:
             continue
         env.setdefault(key, rendered)
-    # CI runs with incremental compilation off. Matching it keeps the local
-    # target directory closer to CI's and, on a small disk, is the difference
-    # between finishing and running out of space.
+    # rust-cache turns incremental compilation off in CI.
     env.setdefault("CARGO_INCREMENTAL", "0")
     return env
 
@@ -236,8 +193,7 @@ def main() -> int:
             continue
 
         started = time.monotonic()
-        # `bash -e` matches the workflow's `shell: bash -e {0}`, so a multi-line
-        # step stops at its first failing command here exactly as it does in CI.
+        # Actions runs `run:` steps with `bash -e`.
         completed = subprocess.run(
             ["bash", "-e", "-c", script],
             cwd=REPO_ROOT,
@@ -264,11 +220,7 @@ def main() -> int:
 
     failed = [name for name, status, _ in results if status != "ok"]
     ran = len(results)
-    # Three different reasons a step has no result, kept apart because they mean
-    # different things to whoever reads this: filtered out by --only/--skip,
-    # never reached because --fail-fast stopped the run, or simply absent. Rolled
-    # together as "skipped" this line once said "1 not selected" about a step
-    # that was very much selected and just never ran.
+    # Deselected by --only/--skip and never reached after --fail-fast are reported apart.
     unreached = len(selected) - ran if stopped_early else 0
     deselected = len(steps) - len(selected)
     tail = "".join(
