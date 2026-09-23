@@ -13,8 +13,7 @@ use std::rc::Rc;
 
 use calimero_storage::action::Action;
 use calimero_storage::collections::{
-    FugueText, FugueTextSimple, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root,
-    UnorderedMap, Vector,
+    FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray, Root, UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -272,45 +271,6 @@ fn land_remote_fugue_char(index: usize) {
     });
 }
 
-fn fugue_simple_char_at(n: usize) {
-    let text = build_fugue_simple(n);
-    reset_counters();
-    let _ignored = text.char_at(n / 2).expect("char_at should succeed");
-}
-
-fn fugue_simple_insert_interleaved_sync(n: usize) {
-    let text = Root::new(|| {
-        FugueTextSimple::<MainStorage>::new_with_field_name(FUGUE_SIMPLE_INTERLEAVED_FIELD)
-    });
-    text.commit();
-    for i in 0..n / 2 {
-        let mut text =
-            Root::<FugueTextSimple<MainStorage>>::fetch().expect("document root should exist");
-        text.insert(i, 'a').expect("local insert should succeed");
-        text.commit();
-        land_remote_fugue_simple_char(i);
-    }
-}
-
-const FUGUE_SIMPLE_INTERLEAVED_FIELD: &str = "interleaved_fugue_simple_doc";
-
-fn land_remote_fugue_simple_char(index: usize) {
-    land_remote_char(remote_fugue_device(index), "a FugueTextSimple", || {
-        let mut text = Root::new(|| {
-            FugueTextSimple::<MainStorage>::new_with_field_name(FUGUE_SIMPLE_INTERLEAVED_FIELD)
-        });
-        text.insert(0, 'r').expect("remote insert should succeed");
-        text.commit();
-    });
-}
-
-fn build_fugue_simple(n: usize) -> Root<FugueTextSimple<MainStorage>> {
-    let mut text = Root::new(FugueTextSimple::<MainStorage>::new);
-    text.insert_str(0, &"a".repeat(n))
-        .expect("insert_str should succeed");
-    text
-}
-
 fn build_fugue_text_fragmented(n: usize) -> Root<FugueText<MainStorage>> {
     let mut text = Root::new(FugueText::<MainStorage>::new);
     for i in 0..n {
@@ -441,7 +401,7 @@ pub fn all() -> Vec<Workload> {
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because
     /// `REGISTRY` is crossed with `SIZES` unconditionally.
-    const QUADRATIC_REGISTRY: [Entry; 7] = [
+    const QUADRATIC_REGISTRY: [Entry; 5] = [
         (
             "rga_insert_per_char",
             QuadraticBuild,
@@ -472,18 +432,6 @@ pub fn all() -> Vec<Workload> {
             QuadraticBuild,
             0,
             fugue_text_insert_interleaved_sync,
-        ),
-        (
-            "fugue_simple_insert_interleaved_sync",
-            QuadraticBuild,
-            0,
-            fugue_simple_insert_interleaved_sync,
-        ),
-        (
-            "fugue_simple_char_at",
-            KnownLinearInN,
-            0,
-            fugue_simple_char_at,
         ),
     ];
 
@@ -585,7 +533,7 @@ mod tests {
     #[test]
     fn every_remote_character_actually_lands() {
         let n = 10;
-        let cases: [LandingCase; 3] = [
+        let cases: [LandingCase; 2] = [
             (
                 "rga_insert_interleaved_sync",
                 rga_insert_interleaved_sync,
@@ -601,16 +549,6 @@ mod tests {
                 fugue_text_insert_interleaved_sync,
                 || {
                     Root::<FugueText<MainStorage>>::fetch()
-                        .expect("document root should exist after the workload")
-                        .get_text()
-                        .expect("get_text should succeed")
-                },
-            ),
-            (
-                "fugue_simple_insert_interleaved_sync",
-                fugue_simple_insert_interleaved_sync,
-                || {
-                    Root::<FugueTextSimple<MainStorage>>::fetch()
                         .expect("document root should exist after the workload")
                         .get_text()
                         .expect("get_text should succeed")
@@ -643,26 +581,15 @@ mod tests {
 
     #[test]
     fn positional_reads_return_real_characters() {
-        let cases: [ReadCase; 2] = [
-            ("fugue_text", 1_000, |n| {
-                let text = build_fugue_text(n);
-                let start = n / 2;
-                (
-                    text.char_at(start).expect("char_at should succeed"),
-                    text.text_range(start, start + RANGE_READ_CHARS)
-                        .expect("text_range should succeed"),
-                )
-            }),
-            ("fugue_simple", 500, |n| {
-                let text = build_fugue_simple(n);
-                let start = n / 2;
-                (
-                    text.char_at(start).expect("char_at should succeed"),
-                    text.text_range(start, start + RANGE_READ_CHARS)
-                        .expect("text_range should succeed"),
-                )
-            }),
-        ];
+        let cases: [ReadCase; 1] = [("fugue_text", 1_000, |n| {
+            let text = build_fugue_text(n);
+            let start = n / 2;
+            (
+                text.char_at(start).expect("char_at should succeed"),
+                text.text_range(start, start + RANGE_READ_CHARS)
+                    .expect("text_range should succeed"),
+            )
+        })];
 
         for (name, n, read) in cases {
             let ((one, range), _) = measure(|| read(n));
