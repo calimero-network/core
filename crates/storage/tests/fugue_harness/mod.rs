@@ -1,12 +1,16 @@
 //! The storage harness shared by the `FugueText` integration tests: per-replica
 //! stores reconciled by `Interface::apply_action`. A directory module, since
 //! `tests/fugue_harness.rs` would be compiled as a test target of its own.
+//! Each test binary uses a subset, so unused helpers here are not dead code.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+#![allow(dead_code)]
+
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::address::Id;
 use calimero_storage::collections::{FugueText, Root};
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{self, RuntimeEnv};
@@ -28,8 +32,17 @@ pub fn fork(store: &Store) -> Store {
 }
 
 pub fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
+    counting_env_for(store, device, &Rc::new(Cell::new(0)))
+}
+
+/// [`env_for`] with a tally of the host reads it issues.
+pub fn counting_env_for(store: &Store, device: [u8; 32], reads: &Rc<Cell<usize>>) -> RuntimeEnv {
     let r = Rc::clone(store);
-    let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
+    let tally = Rc::clone(reads);
+    let reader = Rc::new(move |key: &Key| {
+        tally.set(tally.get() + 1);
+        r.borrow().get(&key.to_bytes()).cloned()
+    });
     let w = Rc::clone(store);
     let writer = Rc::new(move |key: Key, value: &[u8]| {
         w.borrow_mut()
@@ -98,16 +111,53 @@ pub fn fugue_text_in(store: &Store, device: [u8; 32]) -> String {
     })
 }
 
-/// Authored under replica 0, so neither writer's counter space starts used.
-pub fn fugue_genesis(field: &str, seed: &str) -> Store {
+/// A store holding one committed root state, built by `init` and seeded by `seed`.
+pub fn genesis<T: BorshSerialize + BorshDeserialize>(
+    init: impl FnOnce() -> T,
+    seed: impl FnOnce(&mut Root<T>),
+) -> Store {
     let store = new_store();
     clear_pending_delta();
     env::with_runtime_env(env_for(&store, device(1)), || {
-        let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(field));
-        doc.insert_str_with_replica(0, 0, seed)
-            .expect("seed insert should succeed");
-        doc.commit();
+        let mut root = Root::new(init);
+        seed(&mut root);
+        root.commit();
         let _ignored = env::take_last_artifact();
     });
     store
+}
+
+/// Authored under replica 0, so neither writer's counter space starts used.
+pub fn fugue_genesis(field: &str, seed: &str) -> Store {
+    genesis(
+        || FugueText::<MainStorage>::new_with_field_name(field),
+        |doc| {
+            doc.insert_str_with_replica(0, 0, seed)
+                .expect("seed insert should succeed");
+        },
+    )
+}
+
+/// The non-root entity ids a delta writes.
+pub fn written_ids(delta: &[u8]) -> Vec<Id> {
+    let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
+        StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    actions
+        .iter()
+        .map(|action| action.id())
+        .filter(|id| !id.is_root())
+        .collect()
+}
+
+/// The stored bytes of every entity `ids` names, so two replicas can be compared row by row.
+pub fn entry_bytes(store: &Store, ids: &BTreeSet<Id>) -> BTreeMap<Id, Option<Vec<u8>>> {
+    ids.iter()
+        .map(|id| {
+            (
+                *id,
+                store.borrow().get(&Key::Entry(*id).to_bytes()).cloned(),
+            )
+        })
+        .collect()
 }

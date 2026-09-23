@@ -44,6 +44,11 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 
 ### `FugueText` constraints
 
+- Every position is an index into Unicode SCALAR VALUES (Rust `char`), never bytes and never UTF-16 code units.
+  That is `insert`, `insert_str`, `insert_str_with_replica`, `delete`, `delete_range`, `text_range`, `char_at`, `anchor_at`, `len` and every `TextOp` an `apply_delta` carries.
+  An astral character is one position and a combining mark is its own, so a grapheme cluster spans several; a browser counts UTF-16 code units, where an astral character is two, so a TypeScript binding converts on both edges and core stays as it is.
+  A run is capped in nodes and one node holds one scalar value, so a cap boundary can never land inside a character (`scalar_value_tests`).
+
 - A block holds at most `MAX_RUN_LEN` (256) nodes, and a full run is never rewritten or split.
   The overflowing character opens a new block parented on the full run's last node, side right.
   Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
@@ -58,9 +63,13 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
 - `apply_delta` takes a whole editor change (`TextOp::{Retain, Insert, Delete}`) in one call: one load, one tree build, one traversal, one write per touched block, and nothing written if any op fails.
   It must store byte for byte what the same ops store one call at a time; `apply_delta_stores_what_the_ops_stored_one_at_a_time` is that gate.
-- Undo is local and built by the app: each edit returns what its inverse takes (`insert_str` and `insert_str_at` an `IdRange` for `delete_ids`; `delete_range` and `delete_ids` a `Removed` for `insert_str_at`).
+- Undo is local and built by the app: each edit returns what its inverse takes (`insert_str` and `insert_str_at` an `IdRange` for `delete_ids`; `delete_range` and `delete_ids` a `Removed` for `insert_str_at`; `apply_delta` a `Vec<Undo>` for `undo`, which is a thin reverse loop over those two primitives and returns the redo steps).
   Tombstones are monotone, so undoing a delete mints new characters at the anchor and never clears a bit.
-- A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing.
+- `Removed` also carries the ids it took, coalesced into runs, because one delete can span several writers and the single anchor cannot name them.
+  App events must carry those ids and never positions: an event is recorded in the delta and re-emitted on the RECEIVING node, where a concurrent edit has already moved every position the author counted.
+- A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing; `resolve_many` resolves a whole slice against one.
+- `Anchor`, `Bias`, `IdRange`, `Removed` and `Undo` carry borsh AND serde. Borsh is the persisted format; the JSON is the JSON-RPC shape, with a `RawId` as the two-element array `[replica, counter]`. Both are pinned as formats.
+  They have no `AbiType`, so a guest method still cannot take or return one directly - `cargo mero build` rejects it - and the reference app ships them as bs58-encoded borsh.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
 
 ## AI Agent Mental Model: CRDT Merge Architecture

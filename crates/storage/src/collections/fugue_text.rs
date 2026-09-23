@@ -3,10 +3,21 @@
 //! One entity is one run of up to `MAX_RUN_LEN` nodes, each after the first the right
 //! child of the one before; a full run is never rewritten. Order is recomputed from the
 //! stored blocks through a [`FugueTree`] on every call, so gas is equal on every replica.
+//!
+//! # The unit of a position
+//!
+//! Every `pos`, `start`, `end` and `TextOp` count here is an index into Unicode
+//! SCALAR VALUES (Rust `char`), never bytes and never UTF-16 code units. That covers
+//! `insert`, `insert_str`, `insert_str_with_replica`, `delete`, `delete_range`,
+//! `text_range`, `char_at`, `anchor_at`, `len` and every `TextOp` an `apply_delta`
+//! carries. An astral character is one position and a combining mark is its own,
+//! so a grapheme cluster spans several. A browser counts UTF-16 code units, where
+//! every astral character is two, so a TypeScript binding converts on both edges.
 
 use std::collections::BTreeSet;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 
 use super::fugue::{FugueNode, FugueTree, NodeId, RawId, Side};
 use super::{CrdtType, UnorderedMap};
@@ -158,15 +169,21 @@ fn tomb_trim(bits: &mut Vec<u8>) {
     }
 }
 
-/// Which side of its character an [`Anchor`] sits on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// Which side of its character an [`Anchor`] sits on. JSON: `"Before"` / `"After"`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum Bias {
     Before,
     After,
 }
 
 /// A cursor that survives concurrent edits: the gap beside a character, or a document edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+///
+/// JSON: `"Start"`, `"End"`, or `{"Char":{"id":[replica,counter],"bias":"After"}}`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum Anchor {
     Start,
     End,
@@ -174,17 +191,23 @@ pub enum Anchor {
 }
 
 /// The ids one insert minted: `len` consecutive counters from `start`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// JSON: `{"start":[replica,counter],"len":n}`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct IdRange {
     pub start: RawId,
     pub len: u32,
 }
 
 /// What a delete took out, and where from: the input to [`FugueText::insert_str_at`].
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// JSON: `{"text":"...","anchor":<Anchor>,"ids":[<IdRange>]}`.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Removed {
     pub text: String,
     pub anchor: Anchor,
+    /// The characters taken, as runs of consecutive ids: a delete can span several.
+    pub ids: Vec<IdRange>,
 }
 
 /// One step of an editor change, walking the document as it was before the change.
@@ -193,6 +216,14 @@ pub enum TextOp {
     Retain(usize),
     Insert(String),
     Delete(usize),
+}
+
+/// What one op of an applied change took, so the change can be taken back.
+/// JSON: `{"Inserted":<IdRange>}` or `{"Removed":<Removed>}`.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub enum Undo {
+    Inserted(IdRange),
+    Removed(Removed),
 }
 
 /// A storage-backed collaborative text collection with Tree-Fugue ordering.
@@ -317,24 +348,51 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(removed)
     }
 
-    /// Apply a whole editor change in one call. Panics inside a state migration.
-    pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<(), StoreError> {
+    /// Apply a whole editor change in one call, returning what [`Self::undo`]
+    /// takes to reverse it, in application order. Panics inside a state migration.
+    pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<Vec<Undo>, StoreError> {
         let replica = minting_replica("apply_delta");
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
+        let mut steps = Vec::new();
         let mut pos = 0_usize;
         for (index, op) in ops.iter().enumerate() {
             match *op {
                 TextOp::Retain(count) => pos = advance(pos, count)?,
                 TextOp::Insert(ref text) => {
-                    let _minted = draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    let minted = draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    steps.extend(minted.map(Undo::Inserted));
                     pos = advance(pos, text.chars().count())?;
                 }
-                TextOp::Delete(count) => drop(draft.delete(pos, advance(pos, count)?)?),
+                TextOp::Delete(count) => {
+                    let removed = draft.delete(pos, advance(pos, count)?)?;
+                    steps.extend(removed.map(Undo::Removed));
+                }
             }
         }
-        self.flush(draft)
+        self.flush(draft)?;
+        Ok(steps)
+    }
+
+    /// Reverse `steps`, last one first, returning what redoes them. Each step is
+    /// its own write, so a failure part-way leaves the earlier ones undone.
+    pub fn undo(&mut self, steps: &[Undo]) -> Result<Vec<Undo>, StoreError> {
+        let mut redo = Vec::with_capacity(steps.len());
+        for step in steps.iter().rev() {
+            match *step {
+                Undo::Inserted(ref minted) => {
+                    redo.extend(self.delete_ids(minted)?.map(Undo::Removed));
+                }
+                Undo::Removed(ref removed) => {
+                    redo.extend(
+                        self.insert_str_at(&removed.anchor, &removed.text)?
+                            .map(Undo::Inserted),
+                    );
+                }
+            }
+        }
+        Ok(redo)
     }
 
     /// Delete the character at `pos`.
@@ -400,6 +458,16 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// The gap `anchor` names now; a deleted character resolves to the gap it left.
     pub fn resolve(&self, anchor: &Anchor) -> Result<usize, StoreError> {
         resolve_in(&build_tree(&self.load()?)?, anchor)
+    }
+
+    /// [`Self::resolve`] for many anchors against ONE rebuild of the tree, which is
+    /// what makes rendering a document's cursors and marks affordable.
+    pub fn resolve_many(&self, anchors: &[Anchor]) -> Result<Vec<usize>, StoreError> {
+        let tree = build_tree(&self.load()?)?;
+        anchors
+            .iter()
+            .map(|anchor| resolve_in(&tree, anchor))
+            .collect()
     }
 
     /// The number of visible characters.
@@ -673,8 +741,28 @@ impl Draft {
                 id: *first,
                 bias: Bias::Before,
             },
+            ids: id_runs(picked),
         }))
     }
+}
+
+/// Runs of consecutive ids, so one delete names what it took without listing every character.
+fn id_runs(picked: &[(RawId, char)]) -> Vec<IdRange> {
+    let mut runs: Vec<IdRange> = Vec::new();
+    for &((replica, counter), _) in picked {
+        let extends = runs.last().is_some_and(|last| {
+            last.start.0 == replica
+                && u64::from(last.start.1) + u64::from(last.len) == u64::from(counter)
+        });
+        match runs.last_mut() {
+            Some(last) if extends => last.len += 1,
+            _ => runs.push(IdRange {
+                start: (replica, counter),
+                len: 1,
+            }),
+        }
+    }
+    runs
 }
 
 /// The gap `anchor` names in `tree`; a deleted character names the gap it left.
@@ -2511,7 +2599,9 @@ mod apply_path_tests {
                             .expect("delete should succeed");
                     }
                     Step::Delta(ref ops) if per_char => apply_ops_one_at_a_time(&mut doc, ops),
-                    Step::Delta(ref ops) => doc.apply_delta(ops).expect("delta should succeed"),
+                    Step::Delta(ref ops) => {
+                        let _undo = doc.apply_delta(ops).expect("delta should succeed");
+                    }
                 }
             }
             doc.commit();
@@ -2702,5 +2792,286 @@ mod apply_path_tests {
             "{} delta bytes for {PASTE_LEN} pasted characters",
             delta.len()
         );
+    }
+}
+
+/// Documents outlive code, so the stored layout is frozen here, not merely described.
+#[cfg(test)]
+mod golden_tests {
+    use super::{join_block, BlockId, BlockKey, BlockSide, TextBlock, MAX_RUN_LEN};
+
+    /// Multi-byte text, a parent, side L, and a trimmed bitmap with a gap byte.
+    fn golden_block() -> TextBlock {
+        TextBlock {
+            start_id: BlockId::new(0x0102_0304_0506_0708, 0x090A_0B0C),
+            text: "a\u{e9}\u{65e5}\u{1F600}".to_owned(),
+            parent: Some(BlockId::new(9, 7)),
+            side: BlockSide::L,
+            tombstones: vec![0b0000_1001, 0b0100_0000],
+        }
+    }
+
+    #[test]
+    fn text_block__borsh_layout_is_frozen() {
+        let block = golden_block();
+        let bytes = borsh::to_vec(&block).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                8, 7, 6, 5, 4, 3, 2, 1, // start_id.replica, u64 little-endian
+                12, 11, 10, 9, // start_id.counter, u32 little-endian
+                10, 0, 0, 0, // text, byte length then UTF-8
+                97, 195, 169, 230, 151, 165, 240, 159, 152, 128, //
+                1, 9, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, // parent: Some(BlockId)
+                0, // side: L
+                2, 0, 0, 0, 9, 64, // tombstones, byte length then bits
+            ]
+        );
+        assert_eq!(borsh::from_slice::<TextBlock>(&bytes).unwrap(), block);
+    }
+
+    #[test]
+    fn text_block__side_r_and_a_rootless_parent_are_frozen() {
+        let block = TextBlock {
+            parent: None,
+            side: BlockSide::R,
+            ..golden_block()
+        };
+        assert_eq!(
+            borsh::to_vec(&block).unwrap(),
+            [
+                8, 7, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9, 10, 0, 0, 0, 97, 195, 169, 230, 151, 165,
+                240, 159, 152, 128, //
+                0,   // parent: None
+                1,   // side: R
+                2, 0, 0, 0, 9, 64,
+            ]
+        );
+    }
+
+    /// The map key is the `BlockId` alone: the value duplicates it, the key does not.
+    #[test]
+    fn block_key__borsh_layout_is_frozen() {
+        let key = BlockKey::new(golden_block().start_id);
+        assert_eq!(
+            borsh::to_vec(&key).unwrap(),
+            [8, 7, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9]
+        );
+        assert_eq!(key.as_ref(), borsh::to_vec(&key).unwrap());
+    }
+
+    /// Every stored document partitions its counter space at this cap, and a full
+    /// run is never rewritten, so changing it re-chunks every document ever written.
+    #[test]
+    fn max_run_len__is_frozen() {
+        assert_eq!(
+            MAX_RUN_LEN, 256,
+            "stored documents are chunked at this cap and full runs are never rewritten, \
+             so an existing document cannot be read back under another value"
+        );
+    }
+
+    /// One pair per tie-break level of `(node count, text, parent, side)`.
+    #[test]
+    fn join_block__ranks_by_each_tie_break_level_in_turn() {
+        let base = |text: &str, parent: Option<BlockId>, side: BlockSide| TextBlock {
+            start_id: BlockId::new(1, 0),
+            text: text.to_owned(),
+            parent,
+            side,
+            tombstones: Vec::new(),
+        };
+        let (l, r) = (BlockSide::L, BlockSide::R);
+        let (low, high) = (Some(BlockId::new(1, 1)), Some(BlockId::new(1, 2)));
+
+        let table = [
+            (
+                "node count beats text",
+                base("zz", None, r),
+                base("aaa", None, r),
+            ),
+            (
+                "equal count: greater text wins",
+                base("ab", None, r),
+                base("ba", None, r),
+            ),
+            (
+                "equal count and text: greater parent wins",
+                base("ab", low, r),
+                base("ab", high, r),
+            ),
+            (
+                "a rootless block loses to a parented one",
+                base("ab", None, r),
+                base("ab", low, r),
+            ),
+            (
+                "equal count, text and parent: R beats L",
+                base("ab", low, l),
+                base("ab", low, r),
+            ),
+        ];
+
+        for (what, loser, winner) in table {
+            let mut keeps = winner.clone();
+            join_block(&mut keeps, loser.clone());
+            assert_eq!(keeps, winner, "{what}: the winner did not keep its record");
+
+            let mut takes = loser;
+            join_block(&mut takes, winner.clone());
+            assert_eq!(takes, winner, "{what}: the loser did not take the winner");
+        }
+    }
+
+    /// The bitmap is a union whichever side of the rank wins.
+    #[test]
+    fn join_block__unions_tombstones_across_the_rank() {
+        let block = |text: &str, tombstones: Vec<u8>| TextBlock {
+            start_id: BlockId::new(1, 0),
+            text: text.to_owned(),
+            parent: None,
+            side: BlockSide::R,
+            tombstones,
+        };
+        let mut winner = block("abc", vec![0b0000_0001]);
+        join_block(&mut winner, block("a", vec![0b0000_0100]));
+        assert_eq!(winner.text, "abc");
+        assert_eq!(winner.tombstones, vec![0b0000_0101]);
+
+        let mut loser = block("a", vec![0b0000_0100]);
+        join_block(&mut loser, block("abc", vec![0b0000_0001]));
+        assert_eq!(loser.text, "abc");
+        assert_eq!(loser.tombstones, vec![0b0000_0101]);
+    }
+}
+
+/// Positions are Unicode scalar values on every path, and a run never splits one.
+#[cfg(test)]
+mod scalar_value_tests {
+    use super::{doc_in, BlockId, FugueText, TextBlock, TextOp, MAX_RUN_LEN};
+    use crate::collections::fugue_text::{Anchor, Bias};
+    use crate::env;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    const GRINNING: &str = "\u{1F600}"; // astral: 1 scalar value, 2 UTF-16 units, 4 bytes
+    const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // 5 scalar values
+    const ACUTE: &str = "e\u{301}"; // a combining mark is its own scalar value
+
+    fn utf16_len(text: &str) -> usize {
+        text.chars().map(char::len_utf16).sum()
+    }
+
+    #[test]
+    fn every_position_counts_scalar_values() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<890>>("scalar-units");
+        let seed = format!("{GRINNING}{FAMILY}{ACUTE}");
+        doc.insert_str_with_replica(0, 7, &seed).unwrap();
+
+        assert_eq!(doc.len().unwrap(), 8);
+        assert_eq!(utf16_len(&seed), 12, "a browser would count 12");
+        assert_eq!(seed.len(), 25, "the bytes are a third unit again");
+
+        assert_eq!(doc.char_at(0).unwrap(), Some('\u{1F600}'));
+        assert_eq!(doc.char_at(2).unwrap(), Some('\u{200D}'));
+        assert_eq!(doc.char_at(7).unwrap(), Some('\u{301}'));
+        assert_eq!(doc.char_at(8).unwrap(), None);
+        assert_eq!(doc.text_range(1, 6).unwrap(), FAMILY);
+
+        // Position 3 is inside the family sequence, between two of its parts.
+        doc.insert_str_with_replica(3, 7, GRINNING).unwrap();
+        assert_eq!(doc.len().unwrap(), 9);
+        assert_eq!(doc.char_at(3).unwrap(), Some('\u{1F600}'));
+
+        // Deleting one position takes one scalar value, not one UTF-16 unit.
+        let removed = doc.delete_range(3, 4).unwrap().unwrap();
+        assert_eq!(removed.text, GRINNING);
+        assert_eq!(doc.get_text().unwrap(), seed);
+    }
+
+    #[test]
+    fn anchors_address_scalar_values() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<891>>("scalar-anchors");
+        doc.insert_str_with_replica(0, 7, &format!("{GRINNING}{GRINNING}{ACUTE}"))
+            .unwrap();
+
+        let after_first = doc.anchor_at(1, Bias::After).unwrap();
+        let before_mark = doc.anchor_at(3, Bias::Before).unwrap();
+        assert!(matches!(after_first, Anchor::Char { .. }));
+
+        doc.insert_str_with_replica(0, 7, FAMILY).unwrap();
+        assert_eq!(doc.resolve(&after_first).unwrap(), 6);
+        assert_eq!(doc.resolve(&before_mark).unwrap(), 8);
+        assert_eq!(
+            doc.resolve_many(&[after_first, before_mark]).unwrap(),
+            [6, 8]
+        );
+    }
+
+    #[test]
+    fn apply_delta_counts_scalar_values() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<892>>("scalar-delta");
+        doc.insert_str_with_replica(0, 7, &format!("{GRINNING}{FAMILY}"))
+            .unwrap();
+
+        // Every count is scalar values, including the cursor walk between the ops.
+        let steps = doc
+            .apply_delta(&[
+                TextOp::Retain(1),
+                TextOp::Insert(ACUTE.to_owned()),
+                TextOp::Retain(2),
+                TextOp::Insert(GRINNING.to_owned()),
+                TextOp::Delete(1),
+            ])
+            .unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            doc.get_text().unwrap(),
+            "\u{1F600}e\u{301}\u{1F468}\u{200D}\u{1F600}\u{200D}\u{1F467}"
+        );
+        assert_eq!(doc.len().unwrap(), 8);
+    }
+
+    /// A run is capped in NODES, and one node holds one scalar value, so the
+    /// boundary can never land inside a character's bytes.
+    #[test]
+    fn the_run_cap_never_splits_an_astral_character() {
+        env::reset_for_testing();
+        type S = MockedStorage<893>;
+        let mut doc = doc_in::<S>("scalar-cap");
+        let paste: String = GRINNING.repeat(MAX_RUN_LEN + 3);
+        doc.insert_str_with_replica(0, 7, &paste).unwrap();
+
+        let blocks = stored(&doc);
+        assert_eq!(blocks.len(), 2, "the paste must cross the cap");
+        assert_eq!(blocks[0].1.text.chars().count(), MAX_RUN_LEN);
+        assert_eq!(blocks[1].1.text.chars().count(), 3);
+        for (id, block) in &blocks {
+            assert!(
+                block.text.chars().all(|c| c == '\u{1F600}'),
+                "block {id:?} holds a split character"
+            );
+        }
+        assert_eq!(doc.get_text().unwrap(), paste);
+
+        // The stored rows survive a borsh round trip unchanged.
+        let bytes = borsh::to_vec(&blocks).unwrap();
+        assert_eq!(
+            borsh::from_slice::<Vec<(BlockId, TextBlock)>>(&bytes).unwrap(),
+            blocks
+        );
+    }
+
+    fn stored<S: StorageAdaptor>(doc: &FugueText<S>) -> Vec<(BlockId, TextBlock)> {
+        let mut out: Vec<(BlockId, TextBlock)> = doc
+            .blocks
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k.id(), v))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
     }
 }

@@ -4,13 +4,20 @@
 #![allow(non_snake_case)]
 #![allow(clippy::unwrap_used)]
 
-use calimero_storage::collections::fugue_text::{Anchor, Bias};
+use std::cell::Cell;
+use std::rc::Rc;
+
+use calimero_sdk::serde_json::{from_str, to_string};
+use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, Undo};
 use calimero_storage::collections::FugueText;
+use calimero_storage::env;
 use calimero_storage::store::MainStorage;
 
 mod fugue_harness;
 
-use fugue_harness::{device, edit, fork, fugue_genesis, fugue_text_in, land, read_with, Store};
+use fugue_harness::{
+    counting_env_for, device, edit, fork, fugue_genesis, fugue_text_in, land, read_with, Store,
+};
 
 type Doc = FugueText<MainStorage>;
 
@@ -22,6 +29,17 @@ fn anchor_in(store: &Store, pos: usize, bias: Bias) -> Anchor {
     read_with::<Doc, _>(store, device(ALICE), |doc| {
         doc.anchor_at(pos, bias).unwrap()
     })
+}
+
+/// Runs `read` against `store`, returning what it returned and the host reads it cost.
+fn counted<R>(store: &Store, read: impl FnOnce(&Doc) -> R) -> (R, usize) {
+    let reads = Rc::new(Cell::new(0));
+    let out = env::with_runtime_env(counting_env_for(store, device(ALICE), &reads), || {
+        let doc = calimero_storage::collections::Root::<Doc>::fetch().unwrap();
+        reads.set(0);
+        read(&doc)
+    });
+    (out, reads.get())
 }
 
 fn resolve_in(store: &Store, anchor: &Anchor) -> usize {
@@ -192,4 +210,160 @@ fn anchor__borsh_encoding_is_pinned() {
     assert_eq!(borsh::from_slice::<Anchor>(&bytes).unwrap(), anchor);
     assert_eq!(borsh::to_vec(&Anchor::Start).unwrap(), [0]);
     assert_eq!(borsh::to_vec(&Anchor::End).unwrap(), [1]);
+}
+
+/// Apps ship anchors over JSON-RPC, so the JSON is a format too. A `RawId` is
+/// the two-element array `[replica, counter]`.
+#[test]
+fn editor_types__json_encoding_is_pinned() {
+    let anchor = Anchor::Char {
+        id: (1, 2),
+        bias: Bias::After,
+    };
+    let range = IdRange {
+        start: (1, 2),
+        len: 3,
+    };
+    let removed = Removed {
+        text: "ab".to_owned(),
+        anchor,
+        ids: vec![range],
+    };
+
+    let json: Vec<(String, &str)> = vec![
+        (to_string(&Bias::Before).unwrap(), r#""Before""#),
+        (to_string(&Bias::After).unwrap(), r#""After""#),
+        (to_string(&Anchor::Start).unwrap(), r#""Start""#),
+        (to_string(&Anchor::End).unwrap(), r#""End""#),
+        (
+            to_string(&anchor).unwrap(),
+            r#"{"Char":{"id":[1,2],"bias":"After"}}"#,
+        ),
+        (to_string(&range).unwrap(), r#"{"start":[1,2],"len":3}"#),
+        (
+            to_string(&removed).unwrap(),
+            r#"{"text":"ab","anchor":{"Char":{"id":[1,2],"bias":"After"}},"ids":[{"start":[1,2],"len":3}]}"#,
+        ),
+        (
+            to_string(&Undo::Inserted(range)).unwrap(),
+            r#"{"Inserted":{"start":[1,2],"len":3}}"#,
+        ),
+        (
+            to_string(&Undo::Removed(removed.clone())).unwrap(),
+            r#"{"Removed":{"text":"ab","anchor":{"Char":{"id":[1,2],"bias":"After"}},"ids":[{"start":[1,2],"len":3}]}}"#,
+        ),
+    ];
+    for (got, want) in json {
+        assert_eq!(got, want);
+    }
+
+    assert_eq!(from_str::<Anchor>(r#""Start""#).unwrap(), Anchor::Start);
+    assert_eq!(
+        from_str::<Undo>(
+            r#"{"Removed":{"text":"ab","anchor":{"Char":{"id":[1,2],"bias":"After"}},"ids":[{"start":[1,2],"len":3}]}}"#
+        )
+        .unwrap(),
+        Undo::Removed(removed)
+    );
+}
+
+/// Rendering a document resolves every cursor and mark, so the rebuild is paid once.
+#[test]
+fn resolve_many__equals_resolve_over_the_slice_for_one_rebuild() {
+    let base = fugue_genesis("resolve_many", "hello world");
+    let store = fork(&base);
+    let _deleted = delete(&store, ALICE, 4, 5);
+    assert_eq!(fugue_text_in(&store, device(ALICE)), "hell world");
+
+    let tombstoned = Anchor::Char {
+        id: (0, 4), // the 'o' the delete took: seeded under replica 0
+        bias: Bias::After,
+    };
+    let anchors = [
+        Anchor::Start,
+        Anchor::End,
+        anchor_in(&store, 2, Bias::Before),
+        anchor_in(&store, 7, Bias::After),
+        tombstoned,
+    ];
+
+    let one_by_one: Vec<usize> = anchors.iter().map(|a| resolve_in(&store, a)).collect();
+    let (batched, reads) = counted(&store, |doc| doc.resolve_many(&anchors).unwrap());
+    assert_eq!(batched, one_by_one);
+    assert_eq!(batched, vec![0, 10, 2, 7, 4]);
+
+    let (_one, single_reads) = counted(&store, |doc| doc.resolve(&Anchor::Start).unwrap());
+    assert_eq!(
+        reads,
+        single_reads,
+        "resolving {} anchors must cost what resolving one costs",
+        anchors.len()
+    );
+}
+
+/// An unknown id must fail the batch exactly as it fails a single resolve.
+#[test]
+fn resolve_many__fails_on_an_unknown_character_like_resolve_does() {
+    let base = fugue_genesis("resolve_many_unknown", "ab");
+    let unknown = Anchor::Char {
+        id: (99, 0),
+        bias: Bias::Before,
+    };
+    read_with::<Doc, _>(&base, device(ALICE), |doc| {
+        let single = doc.resolve(&unknown).unwrap_err().to_string();
+        let batched = doc
+            .resolve_many(&[Anchor::Start, unknown, Anchor::End])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(batched, single);
+    });
+}
+
+/// An app event is recorded in the delta and re-emitted on the RECEIVING node, so
+/// a position the author computed names the wrong place wherever a peer edited
+/// first. The ids a write returns do not move.
+#[test]
+fn an_events_ids_place_correctly_on_a_replica_that_edited_first() {
+    let base = fugue_genesis("event_ids", "hello world");
+    let (alice, bob) = (fork(&base), fork(&base));
+
+    // Bob types BEFORE everything Alice is about to touch, without telling her.
+    let before = insert(&bob, BOB, 0, ">>> ");
+    assert_eq!(fugue_text_in(&bob, device(BOB)), ">>> hello world");
+
+    // Alice replaces "world": position 6 on her replica, 10 on Bob's.
+    let mut minted = None;
+    let typed = edit::<Doc>(&alice, device(ALICE), |doc| {
+        let _removed = doc.delete_range(6, 11).unwrap();
+        minted = doc
+            .insert_str_with_replica(6, u64::from(ALICE), "there")
+            .unwrap();
+    });
+    let minted = minted.unwrap();
+    assert_eq!(fugue_text_in(&alice, device(ALICE)), "hello there");
+
+    assert_eq!(sync([&alice, &bob], &[before, typed]), ">>> hello there");
+
+    // The payload a position-based event would have carried.
+    const AUTHORS_POSITION: usize = 6;
+    let ids = [Anchor::Char {
+        id: minted.start,
+        bias: Bias::Before,
+    }];
+    for store in [&alice, &bob] {
+        let placed =
+            read_with::<Doc, _>(store, device(ALICE), |doc| doc.resolve_many(&ids).unwrap());
+        assert_eq!(
+            placed,
+            vec![10],
+            "the typed run sits at 10 on both replicas"
+        );
+    }
+    assert_eq!(
+        read_with::<Doc, _>(&bob, device(BOB), |doc| doc
+            .text_range(AUTHORS_POSITION, AUTHORS_POSITION + 5)
+            .unwrap()),
+        "llo t",
+        "the author's position names someone else's text on the receiving replica"
+    );
 }
