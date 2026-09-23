@@ -7,7 +7,7 @@
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::fugue_text::{Anchor, Bias, TextOp};
+use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, TextOp};
 use calimero_storage::collections::FugueText;
 
 #[app::state(emits = FugueCollabEvent)]
@@ -85,6 +85,63 @@ impl FugueCollabState {
             editor: encode_identity(&env::device_id()),
         });
 
+        Ok(())
+    }
+
+    /// Like `insert_text`, returning an opaque token `undo_insert` takes.
+    pub fn insert_text_tracked(&mut self, position: usize, text: String) -> app::Result<String> {
+        let minted = self.document.insert_str(position, &text)?;
+        self.emit_inserted(position, text);
+        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&minted)?).into_string())
+    }
+
+    pub fn undo_insert(&mut self, token: String) -> app::Result<()> {
+        let bytes = bs58::decode(token).into_vec()?;
+        if let Some(minted) = calimero_sdk::borsh::from_slice::<Option<IdRange>>(&bytes)? {
+            if let Some(removed) = self.document.delete_ids(&minted)? {
+                self.emit_deleted(&removed)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Like `delete_range`, returning an opaque token `undo_delete` takes.
+    pub fn delete_range_tracked(&mut self, start: usize, end: usize) -> app::Result<String> {
+        let removed = self.document.delete_range(start, end)?;
+        if let Some(removed) = &removed {
+            self.emit_deleted(removed)?;
+        }
+        Ok(bs58::encode(calimero_sdk::borsh::to_vec(&removed)?).into_string())
+    }
+
+    pub fn undo_delete(&mut self, token: String) -> app::Result<()> {
+        let bytes = bs58::decode(token).into_vec()?;
+        if let Some(removed) = calimero_sdk::borsh::from_slice::<Option<Removed>>(&bytes)? {
+            let position = self.document.resolve(&removed.anchor)?;
+            let _minted = self
+                .document
+                .insert_str_at(&removed.anchor, &removed.text)?;
+            self.emit_inserted(position, removed.text);
+        }
+        Ok(())
+    }
+
+    fn emit_inserted(&self, position: usize, text: String) {
+        app::emit!(FugueCollabEvent::TextInserted {
+            position,
+            text,
+            editor: encode_identity(&env::device_id()),
+        });
+    }
+
+    /// The removed characters' gap is where they started; a peer's text typed inside them is not counted.
+    fn emit_deleted(&self, removed: &Removed) -> app::Result<()> {
+        let start = self.document.resolve(&removed.anchor)?;
+        app::emit!(FugueCollabEvent::TextDeleted {
+            start,
+            end: start + removed.text.chars().count(),
+            editor: encode_identity(&env::device_id()),
+        });
         Ok(())
     }
 
@@ -183,5 +240,41 @@ mod tests {
         assert_eq!(payload(1)["text"], json!("there"));
 
         assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello there");
+    }
+
+    /// The tracked edits and their undos change the document, so they must say so.
+    #[test]
+    fn tracked_edits_and_their_undos_emit_events() {
+        let mut app = TestHost::new(FugueCollabState::init);
+        app.call(|s| s.insert_text(0, "hello world".to_owned()))
+            .unwrap();
+        let _ignored = app.take_events();
+
+        let cut = app.call(|s| s.delete_range_tracked(6, 11)).unwrap();
+        app.call(|s| s.undo_delete(cut)).unwrap();
+        let typed = app
+            .call(|s| s.insert_text_tracked(0, ">> ".to_owned()))
+            .unwrap();
+        app.call(|s| s.undo_insert(typed)).unwrap();
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "hello world");
+
+        let events = app.events();
+        let seen: Vec<(String, Value)> = events
+            .iter()
+            .map(|e| (e.kind.clone(), from_slice(&e.data).expect("JSON payload")))
+            .collect();
+        let expected = [
+            ("TextDeleted", json!({"start": 6, "end": 11})),
+            ("TextInserted", json!({"position": 6, "text": "world"})),
+            ("TextInserted", json!({"position": 0, "text": ">> "})),
+            ("TextDeleted", json!({"start": 0, "end": 3})),
+        ];
+        assert_eq!(seen.len(), expected.len(), "{seen:?}");
+        for ((kind, payload), (want_kind, want)) in seen.iter().zip(&expected) {
+            assert_eq!(kind, want_kind);
+            for (key, value) in want.as_object().expect("object") {
+                assert_eq!(&payload[key], value, "{kind}.{key}");
+            }
+        }
     }
 }

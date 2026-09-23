@@ -58,6 +58,8 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - `insert_str` resolves the insert rule once, for the first character, and writes each block it touches exactly once.
 - `apply_delta` takes a whole editor change (`TextOp::{Retain, Insert, Delete}`) in one call: one load, one tree build, one traversal, one write per touched block, and nothing written if any op fails.
   It must store byte for byte what the same ops store one call at a time; `apply_delta_stores_what_the_ops_stored_one_at_a_time` is that gate.
+- Undo is local and built by the app: each edit returns what its inverse takes (`insert_str` and `insert_str_at` an `IdRange` for `delete_ids`; `delete_range` and `delete_ids` a `Removed` for `insert_str_at`).
+  Tombstones are monotone, so undoing a delete mints new characters at the anchor and never clears a bit.
 - A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.
 

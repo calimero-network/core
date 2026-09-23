@@ -173,6 +173,20 @@ pub enum Anchor {
     Char { id: RawId, bias: Bias },
 }
 
+/// The ids one insert minted: `len` consecutive counters from `start`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct IdRange {
+    pub start: RawId,
+    pub len: u32,
+}
+
+/// What a delete took out, and where from: the input to [`FugueText::insert_str_at`].
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Removed {
+    pub text: String,
+    pub anchor: Anchor,
+}
+
 /// One step of an editor change, walking the document as it was before the change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextOp {
@@ -249,24 +263,12 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// Insert a character at `pos`. Panics inside a state migration.
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
         self.insert_str(pos, content.encode_utf8(&mut [0_u8; 4]))
+            .map(drop)
     }
 
     /// Insert a string at `pos`. Panics inside a state migration.
-    #[expect(
-        clippy::panic,
-        reason = "non-deterministic during migrate (node-local device id); a loud panic is \
-                  the intended, unmissable guard against a silent network divergence"
-    )]
-    pub fn insert_str(&mut self, pos: usize, s: &str) -> Result<(), StoreError> {
-        if env::in_merge_mode() {
-            panic!(
-                "FugueText::insert_str() is non-deterministic during a state migration: it \
-                 mints node ids from the node-local device id, diverging ids across nodes. \
-                 Seed with `insert_str_with_replica(pos, replica, s)`."
-            );
-        }
-        let replica = local_replica();
-        self.insert_str_with_replica(pos, replica, s)
+    pub fn insert_str(&mut self, pos: usize, s: &str) -> Result<Option<IdRange>, StoreError> {
+        self.insert_str_with_replica(pos, minting_replica("insert_str"), s)
     }
 
     /// Insert at `pos` under an explicit `replica`; two writers sharing one mint colliding ids.
@@ -275,26 +277,50 @@ impl<S: StorageAdaptor> FugueText<S> {
         pos: usize,
         replica: u64,
         s: &str,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Option<IdRange>, StoreError> {
         // Re-key thunk for a document stored as a collection value.
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
-        draft.insert(pos, replica, s, false)?;
-        self.flush(draft)
+        let minted = draft.insert(pos, replica, s, false)?;
+        self.flush(draft)?;
+        Ok(minted)
+    }
+
+    /// Insert at the gap `anchor` names now: the undo of a delete. Panics inside a state migration.
+    pub fn insert_str_at(
+        &mut self,
+        anchor: &Anchor,
+        s: &str,
+    ) -> Result<Option<IdRange>, StoreError> {
+        let replica = minting_replica("insert_str_at");
+        let _ignored = super::rekey::register_rekey::<Self>();
+
+        let mut draft = Draft::open(self)?;
+        let pos = resolve_in(&draft.tree, anchor)?;
+        let minted = draft.insert(pos, replica, s, false)?;
+        self.flush(draft)?;
+        Ok(minted)
+    }
+
+    /// Delete the characters `ids` names that are still live: the undo of an insert.
+    pub fn delete_ids(&mut self, ids: &IdRange) -> Result<Option<Removed>, StoreError> {
+        let mut draft = Draft::open(self)?;
+        let end = u64::from(ids.start.1) + u64::from(ids.len);
+        let picked = draft
+            .tree
+            .delete_ids_in(&draft.order, |(replica, counter)| {
+                replica == ids.start.0 && counter >= ids.start.1 && u64::from(counter) < end
+            });
+        let removed = draft.bury(&picked)?;
+        self.flush(draft)?;
+        Ok(removed)
     }
 
     /// Apply a whole editor change in one call. Panics inside a state migration.
-    #[expect(clippy::panic, reason = "same guard as `insert_str`")]
     pub fn apply_delta(&mut self, ops: &[TextOp]) -> Result<(), StoreError> {
-        if env::in_merge_mode() {
-            panic!(
-                "FugueText::apply_delta() is non-deterministic during a state migration: it \
-                 mints node ids from the node-local device id, diverging ids across nodes."
-            );
-        }
+        let replica = minting_replica("apply_delta");
         let _ignored = super::rekey::register_rekey::<Self>();
-        let replica = local_replica();
 
         let mut draft = Draft::open(self)?;
         let mut pos = 0_usize;
@@ -302,10 +328,10 @@ impl<S: StorageAdaptor> FugueText<S> {
             match *op {
                 TextOp::Retain(count) => pos = advance(pos, count)?,
                 TextOp::Insert(ref text) => {
-                    draft.insert(pos, replica, text, index + 1 < ops.len())?;
+                    let _minted = draft.insert(pos, replica, text, index + 1 < ops.len())?;
                     pos = advance(pos, text.chars().count())?;
                 }
-                TextOp::Delete(count) => draft.delete(pos, advance(pos, count)?)?,
+                TextOp::Delete(count) => drop(draft.delete(pos, advance(pos, count)?)?),
             }
         }
         self.flush(draft)
@@ -314,16 +340,22 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// Delete the character at `pos`.
     pub fn delete(&mut self, pos: usize) -> Result<(), StoreError> {
         self.delete_range(pos, pos.checked_add(1).ok_or_else(|| out_of_bounds(pos))?)
+            .map(drop)
     }
 
     /// Delete the half-open range `start..end` of visible positions, clamped in `end`.
-    pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
+    pub fn delete_range(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Result<Option<Removed>, StoreError> {
         if start > end {
             return Err(invalid("start must be <= end"));
         }
         let mut draft = Draft::open(self)?;
-        draft.delete(start, end)?;
-        self.flush(draft)
+        let removed = draft.delete(start, end)?;
+        self.flush(draft)?;
+        Ok(removed)
     }
 
     /// The document text, tombstones excluded.
@@ -367,17 +399,7 @@ impl<S: StorageAdaptor> FugueText<S> {
 
     /// The gap `anchor` names now; a deleted character resolves to the gap it left.
     pub fn resolve(&self, anchor: &Anchor) -> Result<usize, StoreError> {
-        let (id, bias) = match *anchor {
-            Anchor::Start => return Ok(0),
-            Anchor::End => return self.len(),
-            Anchor::Char { id, bias } => (id, bias),
-        };
-        let tree = build_tree(&self.load()?)?;
-        let before = tree
-            .live_before(id)
-            .ok_or_else(|| invalid("anchor names an unknown character"))?;
-        let live = tree.node(id).is_some_and(|node| node.value.is_some());
-        Ok(before + usize::from(live && bias == Bias::After))
+        resolve_in(&build_tree(&self.load()?)?, anchor)
     }
 
     /// The number of visible characters.
@@ -533,10 +555,16 @@ impl Draft {
 
     /// Only the first character needs the insert rule; the rest chain right.
     /// `chain` also grows the tree, which only a later op in the same call reads.
-    fn insert(&mut self, pos: usize, replica: u64, s: &str, chain: bool) -> Result<(), StoreError> {
+    fn insert(
+        &mut self,
+        pos: usize,
+        replica: u64,
+        s: &str,
+        chain: bool,
+    ) -> Result<Option<IdRange>, StoreError> {
         let mut rest = s.chars();
         let Some(first) = rest.next() else {
-            return Ok(());
+            return Ok(None);
         };
         let counter = next_counter(replica, &self.loaded)?;
         let node = self
@@ -585,7 +613,10 @@ impl Draft {
         if let Some(head) = self.order.iter().position(|n| *n == Some(node.id)) {
             let _ignored = self.order.splice(head + 1..head + 1, chained);
         }
-        Ok(())
+        Ok(Some(IdRange {
+            start: node.id,
+            len: last - counter + 1,
+        }))
     }
 
     fn open_block(&mut self, id: BlockId, parent: Option<BlockId>, side: BlockSide) -> usize {
@@ -615,10 +646,17 @@ impl Draft {
         let _ignored = self.dirty.insert(lb.id);
     }
 
-    fn delete(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
-        let count = end.saturating_sub(start);
-        for raw in self.tree.delete_in(&self.order, start, count) {
-            let id = BlockId::from_raw(raw);
+    fn delete(&mut self, start: usize, end: usize) -> Result<Option<Removed>, StoreError> {
+        let picked = self
+            .tree
+            .delete_in(&self.order, start, end.saturating_sub(start));
+        self.bury(&picked)
+    }
+
+    /// Set the stored bit of each character the tree just tombstoned.
+    fn bury(&mut self, picked: &[(RawId, char)]) -> Result<Option<Removed>, StoreError> {
+        for (raw, _) in picked {
+            let id = BlockId::from_raw(*raw);
             let index =
                 find_block(&self.loaded, id).ok_or_else(|| invalid("deleted node has no block"))?;
             let lb = &mut self.loaded[index];
@@ -629,8 +667,28 @@ impl Draft {
             tomb_trim(&mut lb.block.tombstones);
             let _ignored = self.dirty.insert(lb.id);
         }
-        Ok(())
+        Ok(picked.first().map(|(first, _)| Removed {
+            text: picked.iter().map(|(_, content)| *content).collect(),
+            anchor: Anchor::Char {
+                id: *first,
+                bias: Bias::Before,
+            },
+        }))
     }
+}
+
+/// The gap `anchor` names in `tree`; a deleted character names the gap it left.
+fn resolve_in(tree: &FugueTree, anchor: &Anchor) -> Result<usize, StoreError> {
+    let (id, bias) = match *anchor {
+        Anchor::Start => return Ok(0),
+        Anchor::End => return Ok(tree.len()),
+        Anchor::Char { id, bias } => (id, bias),
+    };
+    let before = tree
+        .live_before(id)
+        .ok_or_else(|| invalid("anchor names an unknown character"))?;
+    let live = tree.node(id).is_some_and(|node| node.value.is_some());
+    Ok(before + usize::from(live && bias == Bias::After))
 }
 
 fn advance(pos: usize, count: usize) -> Result<usize, StoreError> {
@@ -714,6 +772,22 @@ fn build_tree(loaded: &[LoadedBlock]) -> Result<FugueTree, StoreError> {
     Ok(tree)
 }
 
+/// The local replica, for a call that mints ids; a loud panic beats a silent network divergence.
+#[expect(
+    clippy::panic,
+    reason = "minting from the node-local device id inside a migration diverges ids across nodes"
+)]
+fn minting_replica(method: &str) -> u64 {
+    if env::in_merge_mode() {
+        panic!(
+            "FugueText::{method}() is non-deterministic during a state migration: it mints node \
+             ids from the node-local device id, diverging ids across nodes. Seed with \
+             `insert_str_with_replica(pos, replica, s)`."
+        );
+    }
+    local_replica()
+}
+
 /// The replica id is the first 8 bytes of the device id: a stamp, not a gate.
 fn local_replica() -> u64 {
     let device = env::device_id();
@@ -749,7 +823,8 @@ mod tests {
 
     use super::model_tests::Model;
     use super::{
-        doc_in, join_block, tomb_set, BlockId, BlockSide, FugueText, TextBlock, TextOp, MAX_RUN_LEN,
+        doc_in, join_block, tomb_set, Anchor, BlockId, BlockSide, FugueText, TextBlock, TextOp,
+        MAX_RUN_LEN,
     };
     use crate::collections::Root;
     use crate::env;
@@ -1097,6 +1172,16 @@ mod tests {
         let mut doc = Root::new(FugueText::new);
         env::with_merge_mode(|| {
             let _ignored = doc.apply_delta(&[TextOp::Insert("H".to_owned())]);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "migration")]
+    fn insert_str_at_panics_during_migration() {
+        env::reset_for_testing();
+        let mut doc = Root::new(FugueText::new);
+        env::with_merge_mode(|| {
+            let _ignored = doc.insert_str_at(&Anchor::Start, "H");
         });
     }
 
@@ -2301,9 +2386,10 @@ mod apply_path_tests {
                     doc.insert_str(pos, text).expect("insert should succeed");
                     pos += text.chars().count();
                 }
-                TextOp::Delete(count) => doc
-                    .delete_range(pos, pos + count)
-                    .expect("delete should succeed"),
+                TextOp::Delete(count) => drop(
+                    doc.delete_range(pos, pos + count)
+                        .expect("delete should succeed"),
+                ),
             }
         }
     }
@@ -2416,7 +2502,7 @@ mod apply_path_tests {
                         if per_char {
                             doc.insert_str_per_char(pos, replica, text)
                         } else {
-                            doc.insert_str_with_replica(pos, replica, text)
+                            doc.insert_str_with_replica(pos, replica, text).map(drop)
                         }
                         .expect("insert should succeed");
                     }
