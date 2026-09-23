@@ -58,8 +58,18 @@ static NAMESPACE_REGEX: LazyLock<Regex> =
 static NAMESPACE_READ_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(identity|groups)$").unwrap());
 
-static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave)$").unwrap());
+/// Membership operations on a namespace, plus `admit`.
+///
+/// `admit` publishes a join a keyholder signed but cannot publish itself, and
+/// its caller holds **only a key** — no account on this node and no way to be
+/// given one. So this mapping does not make the route usable by its intended
+/// caller; what it does is stop it demanding `admin`, which meant the only way
+/// to serve an admission was handing out node credentials. Making it reachable
+/// by a caller holding nothing is a separate change: the route has to leave the
+/// protected router entirely, the way the intent pair already has.
+static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave|admit)$").unwrap()
+});
 
 static GROUP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)(?:/.*)?$").unwrap());
@@ -96,6 +106,13 @@ static ALIAS_LIST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 static APPLICATION_VERSIONS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/applications/([^/]+)/versions$").unwrap());
+
+/// `APPLICATION_REGEX` is anchored right after the id, so it does not reach
+/// this subpath and nor does the versions pattern above. Unmapped, an ABI read
+/// fell to the admin-api default-deny — an odd place for it to land, since the
+/// ABI is exactly what a client needs in order to call the application at all.
+static APPLICATION_ABI_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/applications/([^/]+)/abi$").unwrap());
 
 /// Map an alias path segment to its [`AliasType`]. The regexes only capture
 /// `context|application|identity|device`, so every capture maps.
@@ -389,7 +406,22 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let Some(ctx_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match method {
-                HttpMethod::POST => {
+                // Both halves of the pair, on one permission.
+                //
+                // The GET answers "can this relay run my intent, and whose name
+                // do I put in the warrant?" — the executor account, which is a
+                // content address no client can derive. A client that may POST
+                // but not GET can therefore only mint warrants naming the wrong
+                // executor, which are refused after it has already spent a nonce
+                // on them. The two routes are built and mounted as one surface
+                // for that reason; requiring a separate permission for the read
+                // would rebuild the same split one layer up.
+                //
+                // Left unmapped, the GET fell to the admin-api default-deny, so
+                // the only way to let a delegated client discover an executor
+                // was handing it node credentials — the thing this whole path
+                // exists to avoid.
+                HttpMethod::GET | HttpMethod::POST => {
                     vec![Permission::Context(ContextPermission::PerformIntent(scope))]
                 }
                 _ => vec![],
@@ -477,6 +509,21 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                 HttpMethod::GET => vec![Permission::Context(ContextPermission::Alias(
                     AliasPermission::List(alias_type, ResourceScope::Global),
                 ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Reading an application's interface description. The same permission the
+    // application itself reads under: describing an app discloses no more than
+    // listing it, and a client that may not see the app has no use for its ABI.
+    if let Some(captures) = APPLICATION_ABI_REGEX.captures(path) {
+        if let Some(app_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => {
+                    vec![Permission::Application(ApplicationPermission::List(scope))]
+                }
                 _ => vec![],
             };
         }
@@ -1339,6 +1386,101 @@ mod tests {
         // first one.
         assert!(validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required));
         assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+    }
+
+    /// Discovery must reach the same token that submits.
+    ///
+    /// The GET reports the executor account a warrant has to name — a content
+    /// address no client can derive. Requiring `admin` for it meant a delegated
+    /// client could submit an intent it had no way to address correctly, and
+    /// would find out only after spending a nonce on a warrant every relay
+    /// refuses. One permission for both halves is what stops that.
+    #[test]
+    fn discovering_an_intent_relay_does_not_require_admin() {
+        let validator = PermissionValidator::new();
+
+        let get = Request::builder()
+            .method(Method::GET)
+            .uri("/admin-api/contexts/ctx-1/intents")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&get);
+
+        assert!(
+            matches!(
+                required.as_slice(),
+                [Permission::Context(ContextPermission::PerformIntent(_))]
+            ),
+            "expected a scoped intent permission, got {required:?}",
+        );
+
+        // The token that submits an intent is the token that can discover where
+        // to submit it. Holding one without the other is the state this mapping
+        // exists to make unreachable.
+        assert!(validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required));
+
+        // And it stays scoped: a token for another context does not reach this
+        // one, which a blanket mapping would have allowed.
+        assert!(!validator.validate_permissions(&["context:intent[ctx-2]".to_owned()], &required));
+    }
+
+    /// An ABI read is a client action, not an operator one.
+    ///
+    /// `APPLICATION_REGEX` is anchored right after the id and the versions
+    /// pattern matches only `/versions`, so this subpath reached neither and
+    /// fell to the default-deny. The effect was that the one document a client
+    /// needs in order to call an application at all was node-owner only.
+    #[test]
+    fn reading_an_application_abi_does_not_require_admin() {
+        let validator = PermissionValidator::new();
+
+        let get = Request::builder()
+            .method(Method::GET)
+            .uri("/admin-api/applications/app-1/abi")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&get);
+
+        assert!(
+            matches!(
+                required.as_slice(),
+                [Permission::Application(ApplicationPermission::List(_))]
+            ),
+            "expected a scoped application permission, got {required:?}",
+        );
+
+        assert!(validator.validate_permissions(&["application:list[app-1]".to_owned()], &required));
+        assert!(!validator.validate_permissions(&["application:list[app-2]".to_owned()], &required));
+    }
+
+    /// Admission must not cost node credentials.
+    ///
+    /// The caller of this route holds only a key — no account here, and no way
+    /// to be given one — so the mapping does not by itself make the route
+    /// usable; the route also has to leave the protected router. What the
+    /// mapping removes is the state where an operator who wants to serve an
+    /// admission has no option but to hand out `admin`.
+    #[test]
+    fn admitting_a_join_does_not_require_admin() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/namespaces/ns-1/admit")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+
+        assert!(
+            matches!(
+                required.as_slice(),
+                [Permission::Namespace(NamespacePermission::Manage(_))]
+            ),
+            "expected a scoped namespace permission, got {required:?}",
+        );
+
+        assert!(validator.validate_permissions(&["namespace:manage[ns-1]".to_owned()], &required));
+        assert!(!validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required));
     }
 
     /// The read route must not fall to the admin default-deny.
