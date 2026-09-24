@@ -98,10 +98,6 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Extra settle margin for the identify exchange
-    type: wait
-    seconds: 10
-
   # ── The assertion ──────────────────────────────────────────────────────
   # Measured 0 on both nodes before the fix. Asserted per node rather than
   # across the union, because one node populating its table while the other
@@ -114,6 +110,13 @@ steps:
     patterns:
       - "RoutingUpdated"
     tail_lines: 20000
+    # `timeout` rather than the fixed wait that used to precede this. A log
+    # line appears when the node gets there, not when the workflow reaches
+    # the step, so a sleep has to be sized by guess — too short fails on a
+    # slow runner, too long taxes every run. Polling returns as soon as the
+    # line is there.
+    timeout: 60
+    check_interval: 2
 
   - name: Node-2's kad routing table gained a peer
     type: assert_log_present
