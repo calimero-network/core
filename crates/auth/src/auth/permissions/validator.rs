@@ -166,10 +166,13 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                 // reached this route before still does, and no further.
                 //
                 // The regex is anchored to a single segment, so this arm is
-                // `GET /admin-api/contexts/{id}` alone. Its siblings
-                // (`/identities`, `/identities-owned`, `/storage`, `/group`,
-                // and the `for-application` listings) are matched by their own
-                // patterns and keep requiring `context:list`.
+                // `GET /admin-api/contexts/{id}` alone. Its four read
+                // sub-resources (`/identities`, `/identities-owned`,
+                // `/storage`, `/group`) are matched by
+                // `CONTEXT_READ_SUBRESOURCE_REGEX` and now take the same narrow
+                // verb, because their handlers apply the same scope check. The
+                // two `for-application` listings still require `context:list`:
+                // nothing narrows those.
                 HttpMethod::GET => vec![Permission::Context(ContextPermission::ListOwn(scope))],
                 HttpMethod::DELETE => vec![Permission::Context(ContextPermission::Delete(scope))],
                 _ => vec![],
@@ -312,7 +315,15 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let Some(ns_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Namespace(NamespacePermission::List(scope))],
+                // `list-own`, not `list`. The handler narrows this read to the
+                // caller's own namespaces, so the narrow verb is what it
+                // requires — and `list` satisfies `list-own` one-directionally,
+                // so an operator token still reaches it unchanged.
+                //
+                // Requiring `list` instead would keep a delegated caller out of
+                // a row that is already theirs; granting `list` to reach it
+                // would hand them every tenant's.
+                HttpMethod::GET => vec![Permission::Namespace(NamespacePermission::ListOwn(scope))],
                 HttpMethod::DELETE => {
                     vec![Permission::Namespace(NamespacePermission::Manage(scope))]
                 }
@@ -325,6 +336,15 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let (Some(ns_id), Some(resource)) = (captures.get(1), captures.get(2)) {
             let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
             return match (method, resource.as_str()) {
+                // Only `groups`, and the asymmetry is the point. This arm covers
+                // `identity` too, whose handler is NOT caller-scoped — moving it
+                // to the narrow verb would open it to a delegated session that
+                // then reads any namespace's identity. The verb follows the
+                // handler, one route at a time, never the regex that happens to
+                // group them.
+                (HttpMethod::GET, "groups") => {
+                    vec![Permission::Namespace(NamespacePermission::ListOwn(scope))]
+                }
                 (HttpMethod::GET, _) => {
                     vec![Permission::Namespace(NamespacePermission::List(scope))]
                 }
@@ -374,12 +394,20 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         }
     }
 
-    // Context sub-resources: read-only views of a context a member needs
+    // Context sub-resources: read-only views of a context a member needs.
+    //
+    // `list-own`, because every one of these four handlers refuses a caller
+    // whose groups do not reach the named context — the same `ListScope::admits`
+    // predicate `GET /admin-api/contexts/:id` applies. The narrow verb is only
+    // safe while that stays true: a fifth sub-resource added to this regex
+    // without the handler-side check would be reachable by any delegated
+    // session. The wide `context:list` still satisfies `list-own`, so operator
+    // and client tokens are unaffected.
     if let Some(captures) = CONTEXT_READ_SUBRESOURCE_REGEX.captures(path) {
         if let Some(ctx_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::ListOwn(scope))],
                 _ => vec![],
             };
         }
@@ -1506,6 +1534,62 @@ mod tests {
         assert!(!validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required));
     }
 
+    /// A delegated caller can read a namespace it is in, and an operator token
+    /// still reaches every one.
+    ///
+    /// The pairing is what makes this safe, and neither half is optional. The
+    /// route asks for the NARROW verb, so a delegated session reaches it — and
+    /// the handler narrows the answer to the caller's own namespaces, so
+    /// reaching it grants nothing beyond them. Mapping this to `list` instead
+    /// would keep a caller out of a row already theirs; granting `list` to get
+    /// in would hand them every tenant's.
+    #[test]
+    fn reading_one_namespace_takes_the_narrow_verb() {
+        let validator = PermissionValidator::new();
+
+        for path in [
+            "/admin-api/namespaces/ns-1",
+            "/admin-api/namespaces/ns-1/groups",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+
+            assert!(
+                matches!(
+                    required.as_slice(),
+                    [Permission::Namespace(NamespacePermission::ListOwn(_))]
+                ),
+                "{path}: expected the narrow namespace verb, got {required:?}",
+            );
+
+            // The delegated session reaches it…
+            assert!(
+                validator.validate_permissions(&["namespace:list-own".to_owned()], &required),
+                "{path}: a delegated session must reach its own namespace",
+            );
+            // …and so does an operator, because `list` satisfies `list-own`.
+            assert!(
+                validator.validate_permissions(&["namespace:list".to_owned()], &required),
+                "{path}: an operator token must not lose access to this route",
+            );
+            // One direction only. If this ever passes, a delegated session has
+            // been handed the node-wide answer.
+            assert!(
+                !validator.validate_permissions(
+                    &["namespace:list-own".to_owned()],
+                    &[Permission::Namespace(NamespacePermission::List(
+                        ResourceScope::Global
+                    ))],
+                ),
+                "{path}: list-own must never satisfy list",
+            );
+        }
+    }
+
     /// The read route must not fall to the admin default-deny.
     ///
     /// This is the failure the mapping exists to prevent, and it is silent: an
@@ -1918,22 +2002,23 @@ mod tests {
 
     /// The direction that must NOT hold.
     ///
-    /// `context:list[<id>]` is also what `/contexts/:id/identities`,
-    /// `/identities-owned`, `/storage`, `/group` and the two `for-application`
-    /// listings require, and none of those narrows its answer to the caller.
-    /// Had `list-own` been folded into `list` — or made to satisfy it — opening
-    /// the listings would have opened all of those too, which on a relay is one
-    /// tenant reading another's roster and state.
+    /// The two `for-application` listings enumerate every context running a
+    /// given application across the whole node, and nothing narrows that answer
+    /// to the caller. Had `list-own` been folded into `list` — or made to
+    /// satisfy it — opening the caller-scoped reads would have opened these too,
+    /// which on a relay is one tenant enumerating another's contexts.
+    ///
+    /// The four `/contexts/:id/*` read sub-resources used to be on this list and
+    /// deliberately are not any more: each refuses a caller whose groups do not
+    /// reach the named context. They are pinned on the other side of the line by
+    /// `list_own_reaches_the_scoped_context_sub_resources`, which is the test to
+    /// break if a handler ever loses its check.
     #[test]
     fn list_own_does_not_reach_the_unscoped_context_siblings() {
         let validator = PermissionValidator::new();
         let session = delegated_session();
 
         for path in [
-            "/admin-api/contexts/ctx-1/identities",
-            "/admin-api/contexts/ctx-1/identities-owned",
-            "/admin-api/contexts/ctx-1/storage",
-            "/admin-api/contexts/ctx-1/group",
             "/admin-api/contexts/for-application/app-1",
             "/admin-api/contexts/with-executors/for-application/app-1",
         ] {
@@ -1950,18 +2035,99 @@ mod tests {
         }
     }
 
-    /// The same audit for the namespace family: `namespace:list-own` opens the
-    /// collection listing and nothing under an individual namespace, none of
-    /// which is caller-scoped.
+    /// The other half of the pair: the verb moved because the handlers narrow.
+    ///
+    /// A delegated caller that cannot read a context's storage size or owning
+    /// group cannot do much with the ids the listing just gave it, so these four
+    /// are the reads that make the delegated surface usable rather than merely
+    /// enumerable.
+    ///
+    /// What makes the narrow verb safe is on the other side, in
+    /// `calimero-server`: each handler resolves the caller's groups per request
+    /// and returns `403` for a context they do not reach
+    /// (`admin/caller_scope.rs::admits_context`). This test pins only that the
+    /// permission layer lets the request through — it cannot see the handler. If
+    /// a fifth sub-resource is ever added to `CONTEXT_READ_SUBRESOURCE_REGEX`,
+    /// it inherits `list-own` from that arm silently, and the check it needs is
+    /// the one nothing here will miss.
+    #[test]
+    fn list_own_reaches_the_scoped_context_sub_resources() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for path in [
+            "/admin-api/contexts/ctx-1/identities",
+            "/admin-api/contexts/ctx-1/identities-owned",
+            "/admin-api/contexts/ctx-1/storage",
+            "/admin-api/contexts/ctx-1/group",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                validator.validate_permissions(&session, &required),
+                "a delegated session must reach GET {path} (required: {required:?})",
+            );
+            assert!(
+                validator.validate_permissions(&["context:list".to_owned()], &required),
+                "the wide verb must keep reaching GET {path}, or every operator \
+                 and client token that worked before this change breaks",
+            );
+        }
+    }
+
+    /// Blast radius: widening the four read sub-resources must not widen the
+    /// context tree around them.
+    ///
+    /// `/contexts/:id` has several other children, and they are matched by
+    /// different arms — membership actions, capabilities, the intent relay.
+    /// None of them is a scoped read, and a delegated session must not reach any
+    /// of them just because its siblings opened.
+    #[test]
+    fn list_own_does_not_reach_the_other_context_children() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for (method, path) in [
+            (Method::POST, "/admin-api/contexts/ctx-1/join"),
+            (Method::POST, "/admin-api/contexts/ctx-1/leave"),
+            (Method::POST, "/admin-api/contexts/ctx-1/resync"),
+            (Method::DELETE, "/admin-api/contexts/ctx-1"),
+            (Method::POST, "/admin-api/contexts/sync/ctx-1"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&session, &required),
+                "a delegated session must NOT reach {method} {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// The same audit for the namespace family, minus the two routes whose
+    /// handlers now narrow.
+    ///
+    /// `/namespaces/:id` and `/namespaces/:id/groups` moved to the narrow verb
+    /// together with a scope check in their handlers, so a delegated session
+    /// reaching them reads only its own. The rest have no owner model yet and
+    /// must stay shut — `identity` especially, because it shares a regex arm
+    /// with `groups` and is one careless edit away from being opened by
+    /// accident. That is not hypothetical: it is what the first draft of that
+    /// change did, and this test is what caught it.
     #[test]
     fn list_own_does_not_reach_the_unscoped_namespace_siblings() {
         let validator = PermissionValidator::new();
         let session = delegated_session();
 
         for path in [
-            "/admin-api/namespaces/ns-1",
             "/admin-api/namespaces/ns-1/identity",
-            "/admin-api/namespaces/ns-1/groups",
             "/admin-api/namespaces/for-application/app-1",
         ] {
             let req = Request::builder()
