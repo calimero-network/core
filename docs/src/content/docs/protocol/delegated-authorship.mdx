@@ -156,11 +156,13 @@ Asking before signing is not politeness. A nonce is spent from a monotonic per-d
 
 `POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.
 
-So a node may be run as a relay, with `merod init --public-intents` (or `server.admin.public_intents = true` in `config.toml`). It opens exactly the two routes above and nothing else, because they are the two that carry their own credential:
+So a node may be run as a relay, with `merod init --delegated-access` (or `server.admin.delegated_access = true` in `config.toml`). Both were called `public-intents` / `public_intents` until recently; the old flag and the old config key are still accepted for one release, but the name described only the write half and the surface now covers caller-scoped reads too. It does two things. First, it moves the two routes above onto the unauthenticated router, because they are the two that carry their own credential:
 
 - the warrant is signed by the author's device key and commits to this context, this method and these exact arguments;
 - it is refused unless unexpired, its nonce unspent, and the relay holds `CAN_AUTHOR_ON_BEHALF` — all before anything is executed or published;
 - the delta is attributed to the author, and every peer re-checks both signature layers and re-authorizes at the cut.
+
+Second, it turns on the request-carried proof path, so a caller holding an account root and a device key can authenticate *any* admin request by signing it, rather than by holding a session on a node it has no relationship with. That half is what the caller-scoped reads are for — `GET /admin-api/contexts`, `/namespaces`, and the per-resource reads each narrow to the caller's own groups, resolved per request. It is also why the flag is no longer called `public-intents`: the name described the first half only, and reads execute nothing.
 
 A node token proves none of that, and none of that needs one. What is left is signature verification on an unauthenticated request — cheap, and refused before execution; rate-limiting that hop belongs to the deployment's reverse proxy, as it does for the other public routes.
 

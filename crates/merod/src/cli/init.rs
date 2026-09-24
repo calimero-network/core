@@ -228,7 +228,7 @@ pub struct InitCommand {
     /// key to supply here.
     ///
     /// (`account_proof` is the provider that implements this; the flag is named
-    /// for what it lets an operator do, as `--public-intents` is.)
+    /// for what it lets an operator do, as `--delegated-access` is.)
     #[clap(long)]
     pub device_key_login: bool,
 
@@ -255,7 +255,7 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
-    /// Run this node as a delegated-execution relay: serve
+    /// Run this node as a delegated-access relay: serve
     /// `GET`/`POST /admin-api/contexts/:context_id/intents` without a node
     /// credential.
     ///
@@ -266,8 +266,20 @@ pub struct InitCommand {
     /// this member's, covers this exact intent, has not expired, has an unspent
     /// nonce, and this node holds `CAN_AUTHOR_ON_BEHALF` on the owning group.
     /// Nothing else on the admin API is opened.
-    #[clap(long, default_value_t = false)]
-    pub public_intents: bool,
+    ///
+    /// Accepts `--public-intents`, the previous name, for one release. The old
+    /// name says "intents" for something that now also governs reads such as
+    /// `GET /admin-api/namespaces`, which executes nothing — so it describes
+    /// neither half of what the flag does.
+    ///
+    /// A hidden `alias` rather than a `visible_alias`: the old name is kept
+    /// working, not advertised. Note that clap omits a plain `alias` from
+    /// `--help`, so anything that decides the flag exists by grepping help
+    /// output will conclude it is gone. The fleet image's build-time
+    /// conformance probe is exactly such a check, which is why it accepts both
+    /// spellings before this lands rather than after.
+    #[clap(long, alias = "public-intents", default_value_t = false)]
+    pub delegated_access: bool,
 
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
@@ -610,7 +622,7 @@ impl InitCommand {
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                 .collect(),
-            Some(AdminConfig::new(true, self.public_intents)),
+            Some(AdminConfig::new(true, self.delegated_access)),
             Some(JsonRpcConfig::new(true)),
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),
@@ -766,6 +778,35 @@ mod tests {
     use clap::Parser;
 
     use super::InitCommand;
+
+    /// The rename must not break a node image that still passes the old name.
+    ///
+    /// The fleet's `calimero-init.sh` writes `--public-intents`, and its
+    /// build-time conformance probe decides the flag exists by looking for it.
+    /// So the alias is what lets core and the image land independently, and it
+    /// is load-bearing until the image's merod is past this release. Asserted on
+    /// the parsed VALUE, not on parsing merely succeeding: an unknown flag that
+    /// clap silently ignored would also "parse".
+    #[test]
+    fn the_old_flag_name_still_sets_the_new_field() {
+        let old = InitCommand::try_parse_from(["merod", "--public-intents"])
+            .expect("--public-intents must keep parsing for one release");
+        assert!(
+            old.delegated_access,
+            "the old spelling must set the same field the new one does"
+        );
+
+        let new = InitCommand::try_parse_from(["merod", "--delegated-access"])
+            .expect("--delegated-access is the name going forward");
+        assert!(new.delegated_access);
+
+        let neither = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert!(
+            !neither.delegated_access,
+            "off by default: a relay must not open this surface because nobody \
+             mentioned it"
+        );
+    }
 
     // `merod init` is the only place the registry default is written, so both
     // arms decide whether a fresh node resolves apps at all.
