@@ -78,8 +78,12 @@ pub fn edit_title(&mut self, base: String, changes: Vec<Change>) -> app::Result<
 }
 ```
 
-When the client rebases, it has to work out what the peers inserted from the two texts.
-Align them on the characters they share: a diff that only trims a common prefix and suffix reads peers typing on both sides of your letter as that letter being replaced, and your next keystroke lands in the wrong place.
+When the client rebases, it has to work out what the peers changed between `base` and the current text.
+Do not diff the two texts: identical characters typed by different writers cannot be told apart, so a text diff misplaces a peer's insert and your next keystroke lands in the wrong place.
+Diff by identity instead: return `visible_ids()` with the text, keep the ids read alongside `base`, and compare the two id sequences.
+`visible_ids` lists every visible character's id in document order, coalesced into `IdRange` runs, and the i-th id names the i-th character of `get_text()`.
+An id only in the current sequence is a peer's insert, and an id only in yours is a peer's delete.
+`IdRange` has no `AbiType`, so return the runs through a mirror type, as in the event below; a `RichDocument` block reads them with `block_body(block)?.visible_ids()`.
 
 ## Emit ids, not positions
 

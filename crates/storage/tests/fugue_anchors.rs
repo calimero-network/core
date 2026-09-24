@@ -367,3 +367,76 @@ fn an_events_ids_place_correctly_on_a_replica_that_edited_first() {
         "the author's position names someone else's text on the receiving replica"
     );
 }
+
+fn visible_ids_in(store: &Store) -> Vec<IdRange> {
+    read_with::<Doc, _>(store, device(ALICE), |doc| doc.visible_ids().unwrap())
+}
+
+#[test]
+fn visible_ids__one_writers_typing_is_one_run() {
+    let alice = fugue_genesis("ids_typing", "");
+    let _delta = insert(&alice, ALICE, 0, "hello");
+    let _delta = insert(&alice, ALICE, 5, " you");
+    assert_eq!(
+        visible_ids_in(&alice),
+        vec![IdRange {
+            start: (u64::from(ALICE), 0),
+            len: 9
+        }]
+    );
+}
+
+#[test]
+fn visible_ids__a_delete_splits_the_run_around_its_gap() {
+    let alice = fugue_genesis("ids_delete", "abcdef");
+    let _delta = delete(&alice, ALICE, 2, 4);
+    assert_eq!(
+        visible_ids_in(&alice),
+        vec![
+            IdRange {
+                start: (0, 0),
+                len: 2
+            },
+            IdRange {
+                start: (0, 4),
+                len: 2
+            },
+        ]
+    );
+}
+
+/// Both writers type the same characters, so only the ids say whose is whose.
+#[test]
+fn visible_ids__agree_across_replicas_and_tell_identical_typing_apart() {
+    const SEED: &str = "--";
+    const TYPED: &str = "xyx"; // what each writer types, in counter order
+    let base = fugue_genesis("ids_concurrent", SEED);
+    let (alice, bob) = (fork(&base), fork(&base));
+    let deltas = [
+        insert(&alice, ALICE, 1, "xy"),
+        insert(&bob, BOB, 1, "xy"),
+        insert(&alice, ALICE, 0, "x"),
+        insert(&bob, BOB, 4, "x"),
+        delete(&alice, ALICE, 1, 2),
+    ];
+    let text = sync([&alice, &bob], &deltas);
+
+    let runs = visible_ids_in(&alice);
+    assert_eq!(runs, visible_ids_in(&bob));
+    let named: String = runs
+        .iter()
+        .flat_map(|run| (run.start.1..run.start.1 + run.len).map(move |c| (run.start.0, c)))
+        .map(|(replica, counter)| {
+            let log = if replica == 0 { SEED } else { TYPED };
+            log.chars().nth(counter as usize).unwrap()
+        })
+        .collect();
+    assert_eq!(named, text);
+    for writer in [ALICE, BOB] {
+        let first_xy = IdRange {
+            start: (u64::from(writer), 0),
+            len: 2,
+        };
+        assert!(runs.contains(&first_xy), "{writer}'s xy in {runs:?}");
+    }
+}
