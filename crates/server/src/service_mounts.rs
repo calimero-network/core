@@ -44,7 +44,7 @@ pub(crate) fn mount_runtime_services(
         config
             .admin
             .as_ref()
-            .is_some_and(|admin| admin.public_intents),
+            .is_some_and(|admin| admin.delegated_access),
     );
 
     if let Some((path, router)) = jsonrpc::service(

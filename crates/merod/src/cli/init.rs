@@ -226,7 +226,7 @@ pub struct InitCommand {
     /// key to supply here.
     ///
     /// (`account_proof` is the provider that implements this; the flag is named
-    /// for what it lets an operator do, as `--public-intents` is.)
+    /// for what it lets an operator do, as `--delegated-access` is.)
     #[clap(long)]
     pub device_key_login: bool,
 
@@ -253,19 +253,33 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
-    /// Run this node as a delegated-execution relay: serve
-    /// `GET`/`POST /admin-api/contexts/:context_id/intents` without a node
-    /// credential.
+    /// Serve callers who hold a key and have no account on this node.
     ///
-    /// Off by default. Pass it only for a node whose job is to write on behalf
-    /// of keyholders that have no relationship with it — a hosted TEE relay.
-    /// The two routes are self-authenticating: the warrant is the credential,
-    /// and a request is refused before anything executes unless the warrant is
-    /// this member's, covers this exact intent, has not expired, has an unspent
-    /// nonce, and this node holds `CAN_AUTHOR_ON_BEHALF` on the owning group.
-    /// Nothing else on the admin API is opened.
-    #[clap(long, default_value_t = false)]
-    pub public_intents: bool,
+    /// Two things, one posture. It mounts `GET`/`POST
+    /// /admin-api/contexts/:context_id/intents` on the public router, where the
+    /// warrant is the credential; and it lets the guard accept a
+    /// request-carried proof as an alternative to a token, which is what makes
+    /// the read surface reachable for the same callers.
+    ///
+    /// Off by default, with one deliberate exception: a proof from a device of
+    /// **this node's own account** is accepted regardless, so a second device
+    /// you paired works without anyone turning anything on. The flag therefore
+    /// means *serve other people's keyholders*, not *accept proofs* — a much
+    /// easier thing to weigh before setting it.
+    ///
+    /// Nothing else on the admin API is opened. Every route it does open is
+    /// self-authenticating: a warrant, or a signature chaining to a certificate
+    /// the caller's own account root signed.
+    ///
+    /// `--public-intents` is accepted as a hidden alias for one release. That
+    /// name was minted when this decided exactly two intent routes; it now
+    /// governs reads as well, and `GET /admin-api/namespaces` executes no
+    /// intent. The alias is what lets a deployment's config and this binary be
+    /// upgraded in either order — mero-tee's image asserts the flag exists at
+    /// build time, and a clean rename would red that build the moment core
+    /// merged.
+    #[clap(long, alias = "public-intents", default_value_t = false)]
+    pub delegated_access: bool,
 
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
@@ -608,7 +622,7 @@ impl InitCommand {
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                 .collect(),
-            Some(AdminConfig::new(true, self.public_intents)),
+            Some(AdminConfig::new(true, self.delegated_access)),
             Some(JsonRpcConfig::new(true)),
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),

@@ -156,7 +156,7 @@ Asking before signing is not politeness. A nonce is spent from a monotonic per-d
 
 `POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.
 
-So a node may be run as a relay, with `merod init --public-intents` (or `server.admin.public_intents = true` in `config.toml`). It opens exactly the two routes above and nothing else, because they are the two that carry their own credential:
+So a node may be run as a relay, with `merod init --delegated-access` (or `server.admin.delegated_access = true` in `config.toml`; `--public-intents` and `public_intents` are accepted as aliases for one release). It opens the two routes above, and lets the guard accept a request-carried proof in place of a token — every route it opens carries its own credential:
 
 - the warrant is signed by the author's device key and commits to this context, this method and these exact arguments;
 - it is refused unless unexpired, its nonce unspent, and the relay holds `CAN_AUTHOR_ON_BEHALF` — all before anything is executed or published;

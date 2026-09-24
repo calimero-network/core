@@ -92,24 +92,30 @@ pub struct AdminConfig {
     /// two drift — and the drift is silent in the unsafe direction, because the
     /// ingress exemption is the half that actually opens the door. mero-tee's
     /// node image drives both from a single Ansible variable for this reason.
-    #[serde(default)]
-    pub public_intents: bool,
+    /// `public_intents` is accepted as an alias for one release.
+    ///
+    /// The old name was minted when this decided exactly two routes. It now
+    /// also decides whether the guard accepts a request-carried proof, which
+    /// reaches reads — `GET /admin-api/namespaces` executes no intent and is
+    /// governed by this field. A config written before the rename keeps
+    /// working; a config written after reads correctly.
+    #[serde(default, alias = "public_intents")]
+    pub delegated_access: bool,
 }
 
 impl AdminConfig {
     /// One constructor taking both flags, rather than a `new(enabled)` plus a
-    /// `with_public_intents`.
+    /// `with_delegated_access`.
     ///
-    /// `public_intents` decides whether this node exposes a write path to
-    /// callers holding no credential on it, so there should be no way to build
-    /// this type without answering that. A default-false convenience
-    /// constructor is exactly how a relay ships with the posture nobody
-    /// intended — in either direction.
+    /// `delegated_access` decides whether this node serves callers holding no
+    /// credential on it, so there should be no way to build this type without
+    /// answering that. A default-false convenience constructor is exactly how a
+    /// relay ships with the posture nobody intended — in either direction.
     #[must_use]
-    pub const fn new(enabled: bool, public_intents: bool) -> Self {
+    pub const fn new(enabled: bool, delegated_access: bool) -> Self {
         Self {
             enabled,
-            public_intents,
+            delegated_access,
         }
     }
 }
@@ -471,7 +477,7 @@ pub(crate) fn setup(
         // routes are built once and mounted on exactly one of the two routers,
         // so the two postures cannot both be live and no ordering between the
         // routers decides which wins.
-        .merge(if admin_config.public_intents {
+        .merge(if admin_config.delegated_access {
             Router::new()
         } else {
             delegated_execution_routes()
@@ -485,7 +491,7 @@ pub(crate) fn setup(
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
         .nest("/tee", tee::service())
-        .merge(if admin_config.public_intents {
+        .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents"
@@ -508,7 +514,7 @@ pub(crate) fn setup(
 /// not `POST` learns the answer to a question it cannot then act on — either
 /// split is a surface that looks available and is not.
 ///
-/// Which router this is merged into is [`AdminConfig::public_intents`]; see there
+/// Which router this is merged into is [`AdminConfig::delegated_access`]; see there
 /// for why an unauthenticated posture is a coherent choice for these two routes
 /// and only these two.
 fn delegated_execution_routes() -> Router {
@@ -1179,6 +1185,51 @@ mod static_asset_tests {
         assert!(is_rewritable_text("text/css"));
         assert!(!is_rewritable_text("image/png"));
         assert!(!is_rewritable_text("application/wasm"));
+    }
+}
+
+#[cfg(test)]
+mod admin_config_tests {
+    use super::AdminConfig;
+
+    // Parsed as JSON rather than TOML, which the file actually is. `alias` is a
+    // serde attribute and applies to every format, so what is under test — that
+    // the attribute is present and spelled right — is the same either way, and
+    // this avoids a dev-dependency for three assertions.
+
+    /// A config written before the rename keeps working.
+    ///
+    /// This is the half of the compat path that cannot be checked by running
+    /// the binary: `--public-intents` on the command line is a clap alias and
+    /// is visible the moment anyone tries it, but a `config.toml` on a running
+    /// node is only read at startup. Without the serde alias a relay upgraded
+    /// in place reads its own config, finds no such key, defaults to `false`,
+    /// and silently stops serving the callers it was deployed for — with no
+    /// error anywhere, because a missing optional key is not an error.
+    #[test]
+    fn the_old_config_key_is_still_read() {
+        let config: AdminConfig =
+            serde_json::from_str(r#"{"enabled": true, "public_intents": true}"#).expect("parse");
+        assert!(
+            config.delegated_access,
+            "a config written before the rename must still enable the posture",
+        );
+    }
+
+    /// And the new one, so the alias is not the only path that works.
+    #[test]
+    fn the_new_config_key_is_read() {
+        let config: AdminConfig =
+            serde_json::from_str(r#"{"enabled": true, "delegated_access": true}"#).expect("parse");
+        assert!(config.delegated_access);
+    }
+
+    /// Absent means off, under either spelling. The posture a node was never
+    /// asked for is the one it must not adopt by default.
+    #[test]
+    fn absent_means_off() {
+        let config: AdminConfig = serde_json::from_str(r#"{"enabled": true}"#).expect("parse");
+        assert!(!config.delegated_access);
     }
 }
 
