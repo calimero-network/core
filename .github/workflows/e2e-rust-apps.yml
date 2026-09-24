@@ -102,6 +102,13 @@ jobs:
         run: python3 scripts/lint-e2e-bundle-shape.py
       - name: Lint e2e workflows for unbuilt scenario bundles
         run: python3 scripts/lint-e2e-bundle-coverage.py
+      # A log assertion couples a scenario to a string a program prints, and a
+      # rename breaks that coupling SILENTLY: an `absent` assertion then passes
+      # vacuously forever, and a `present` one fails far from the rename, in a
+      # scenario nobody associates with logging. Neither is caught by running
+      # the suite, which is why it is a lint rather than a test.
+      - name: Lint merobox log assertions for patterns that can never match
+        run: python3 scripts/lint-e2e-log-assertions.py
 
   # ── Auth seam: client-token e2e over real HTTP ──
   # Binary mode runs the PR's own merod; docker mode's --auth-service would boot a prebuilt image.
