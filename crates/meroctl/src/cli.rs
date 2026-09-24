@@ -1,11 +1,13 @@
 use std::process::ExitCode;
 
+use calimero_client::proof::RequestProofSigner;
 use calimero_client::ClientError;
+use calimero_primitives::identity::PrivateKey;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, Report as EyreReport, Result};
+use eyre::{bail, eyre, Report as EyreReport, Result, WrapErr};
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
@@ -134,6 +136,52 @@ pub struct RootArgs {
 
     #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
     pub output_format: Format,
+
+    /// The device credential from `merod account sign-cert`, hex.
+    ///
+    /// Supplying it — with `--device-secret` — makes every request carry a
+    /// signature instead of relying on a token this node issued. That is what
+    /// lets meroctl drive a relay it has no account on.
+    ///
+    /// The node must be running with `--delegated-access`; one that is not
+    /// answers `403`, which is distinct from the `401` a bad proof gets.
+    #[arg(long, value_name = "HEX", requires = "device_secret")]
+    #[arg(env = "CALIMERO_DEVICE_CREDENTIAL", hide_env_values = true)]
+    pub device_credential: Option<String>,
+
+    /// The key that signs each request, hex.
+    ///
+    /// The device key on its own, or the session key when `--device-session` is
+    /// given too.
+    ///
+    /// **Prefer the environment variable.** An argument is visible to every
+    /// process on the machine through `ps`, and lands in shell history; the flag
+    /// exists because a script that already handles its own secrets should not
+    /// have to go through the environment to use one.
+    #[arg(long, value_name = "HEX", requires = "device_credential")]
+    #[arg(env = "CALIMERO_DEVICE_SECRET", hide_env_values = true)]
+    pub device_secret: Option<String>,
+
+    /// A login statement from `merod account login-statement`, hex.
+    ///
+    /// Optional, and it changes which key `--device-secret` is: with it, the
+    /// session key; without it, the device key itself.
+    ///
+    /// Worth supplying for anything long-running. Only this link names a node,
+    /// so without it a captured proof is replayable at any node serving
+    /// delegated access until it expires.
+    #[arg(long, value_name = "HEX", requires = "device_credential")]
+    #[arg(env = "CALIMERO_DEVICE_SESSION", hide_env_values = true)]
+    pub device_session: Option<String>,
+}
+
+/// Decode one hex, borsh-encoded link of a proof chain.
+///
+/// Named in the error because the links are indistinguishable as hex, and
+/// passing them in the wrong order is the likely mistake.
+fn decode_link<T: borsh::BorshDeserialize>(raw: &str, what: &str) -> Result<T> {
+    let bytes = hex::decode(raw.trim()).wrap_err_with(|| format!("--{what} is not valid hex"))?;
+    borsh::from_slice(&bytes).wrap_err_with(|| format!("--{what} is not a valid encoding"))
 }
 
 #[derive(Debug, Clone)]
@@ -264,8 +312,57 @@ impl RootCommand {
         Ok(())
     }
 
-    // TODO: add custom error for handling authentication
+    /// Resolve a connection, then attach a request signer if one was configured.
+    ///
+    /// Applied here rather than inside each branch below: there are five ways to
+    /// arrive at a connection and the signer is orthogonal to all of them, so
+    /// threading it through each is five chances for one to be missed — and a
+    /// missed one is not a compile error, it is a path that silently does not
+    /// sign.
     async fn prepare_connection(&self, output: Output) -> Result<ConnectionInfo> {
+        let connection = self.resolve_connection(output).await?;
+        Ok(match self.request_proof_signer()? {
+            Some(signer) => connection.with_request_proof(signer),
+            None => connection,
+        })
+    }
+
+    /// Build the signer from the root arguments, when they were given.
+    ///
+    /// `--device-credential` and `--device-secret` require each other at parse
+    /// time, so either both are present or neither is; the session is the only
+    /// genuinely optional part, and it is what decides which chain this is.
+    fn request_proof_signer(&self) -> Result<Option<RequestProofSigner>> {
+        let (Some(credential), Some(secret)) =
+            (&self.args.device_credential, &self.args.device_secret)
+        else {
+            return Ok(None);
+        };
+
+        let account_proof = decode_link(credential, "device-credential")?;
+        let signer_key = PrivateKey::from(
+            <[u8; 32]>::try_from(
+                hex::decode(secret.trim())
+                    .wrap_err("--device-secret is not valid hex")?
+                    .as_slice(),
+            )
+            .map_err(|_ignored| {
+                eyre!("--device-secret must be 32 bytes, i.e. 64 hex characters")
+            })?,
+        );
+
+        Ok(Some(match &self.args.device_session {
+            Some(raw) => RequestProofSigner::with_session(
+                account_proof,
+                decode_link(raw, "device-session")?,
+                signer_key,
+            ),
+            None => RequestProofSigner::with_device_key(account_proof, signer_key),
+        }))
+    }
+
+    // TODO: add custom error for handling authentication
+    async fn resolve_connection(&self, output: Output) -> Result<ConnectionInfo> {
         if let Some(node) = &self.args.node {
             // Use specific node - first check if it's registered
             let config = Config::load().await?;
@@ -359,8 +456,80 @@ where
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
+    use clap::Parser;
 
     use super::RootCommand;
+
+    /// The credential and the secret require each other.
+    ///
+    /// Either alone is inert — a credential with no key signs nothing, a key
+    /// with no credential produces a signature the node cannot attribute — and
+    /// being told at parse time beats discovering it as a refusal from a node.
+    #[test]
+    fn the_proof_arguments_require_each_other() {
+        for lone in [
+            vec!["meroctl", "--device-credential", "aabb", "node", "list"],
+            vec![
+                "meroctl",
+                "--device-secret",
+                &"11".repeat(32),
+                "node",
+                "list",
+            ],
+        ] {
+            let err = RootCommand::try_parse_from(&lone)
+                .expect_err("one half of the pair must not parse alone");
+            assert!(
+                err.to_string().contains("device-"),
+                "the error must name the missing half: {err}"
+            );
+        }
+    }
+
+    /// The session is genuinely optional, and it is what picks the chain.
+    #[test]
+    fn a_session_is_optional_and_needs_the_credential() {
+        let two_link = RootCommand::try_parse_from([
+            "meroctl",
+            "--device-credential",
+            "aabb",
+            "--device-secret",
+            &"11".repeat(32),
+            "node",
+            "list",
+        ])
+        .expect("credential plus secret is the two-link chain");
+        assert!(two_link.args.device_session.is_none());
+
+        let three_link = RootCommand::try_parse_from([
+            "meroctl",
+            "--device-credential",
+            "aabb",
+            "--device-secret",
+            &"11".repeat(32),
+            "--device-session",
+            "ccdd",
+            "node",
+            "list",
+        ])
+        .expect("adding a statement is the three-link chain");
+        assert_eq!(three_link.args.device_session.as_deref(), Some("ccdd"));
+
+        let err =
+            RootCommand::try_parse_from(["meroctl", "--device-session", "ccdd", "node", "list"])
+                .expect_err("a session alone names no device");
+        assert!(err.to_string().contains("device-credential"), "{err}");
+    }
+
+    /// Nothing changes for a caller that passes none of them.
+    #[test]
+    fn the_proof_arguments_are_absent_by_default() {
+        let plain = RootCommand::try_parse_from(["meroctl", "node", "list"])
+            .expect("the ordinary invocation must be unaffected");
+        assert!(plain.args.device_credential.is_none());
+        assert!(plain.args.device_secret.is_none());
+        assert!(plain.args.device_session.is_none());
+    }
 
     // Walks the whole command tree, so a duplicate alias or a conflicting arg
     // anywhere fails here rather than panicking on first use in a debug build.
