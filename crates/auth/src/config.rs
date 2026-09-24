@@ -451,6 +451,9 @@ fn default_account_proof_permissions() -> Vec<String> {
         "context:list-own".to_owned(),
         "context:query".to_owned(),
         "context:subscribe".to_owned(),
+        // Sorted, so the pinned expectation in `account_proof`'s tests reads as
+        // a set rather than a history of what was added when.
+        "group:list-own".to_owned(),
         "namespace:list-own".to_owned(),
     ]
 }

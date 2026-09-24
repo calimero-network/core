@@ -71,6 +71,17 @@ static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave|admit)$").unwrap()
 });
 
+/// The two group reads whose handlers narrow to the caller, and ONLY those.
+///
+/// Separate from [`GROUP_REGEX`] and matched before it, because that one is a
+/// catch-all over `/groups/:id` and everything nested below — members,
+/// capabilities, settings, signing keys, ownership proofs, sync. Moving its GET
+/// arm to the narrow verb would open all of them to a delegated session at
+/// once, none of them scoped. The verb follows the handler, one route at a
+/// time, never the regex that happens to group them.
+static GROUP_OWN_READ_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)(/contexts)?$").unwrap());
+
 static GROUP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)(?:/.*)?$").unwrap());
 
@@ -375,6 +386,17 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
     // and everything nested below it (members, metadata, settings, upgrade,
     // migration, signing keys, ownership proofs, sync, …). Reads require
     // `group:list[<id>]`, mutations `group:manage[<id>]`.
+    // Before the catch-all below, so these two take the narrow verb and their
+    // siblings do not.
+    if let Some(captures) = GROUP_OWN_READ_REGEX.captures(path) {
+        if let Some(group_id) = captures.get(1) {
+            if group_id.as_str() != "join" && matches!(method, HttpMethod::GET) {
+                let scope = ResourceScope::Specific(vec![group_id.as_str().to_string()]);
+                return vec![Permission::Group(GroupPermission::ListOwn(scope))];
+            }
+        }
+    }
+
     if let Some(captures) = GROUP_REGEX.captures(path) {
         if let Some(group_id) = captures.get(1) {
             // `/admin-api/groups/join` is an exact route (join by invitation
@@ -1588,6 +1610,87 @@ mod tests {
                 "{path}: list-own must never satisfy list",
             );
         }
+    }
+
+    /// A delegated caller reads a group it is in — and nothing else under it.
+    ///
+    /// The second half is the one worth having. `GROUP_REGEX` is a catch-all
+    /// over `/groups/:id` and every route nested below it, so moving its GET
+    /// arm to the narrow verb would have opened members, capabilities,
+    /// settings, signing keys and ownership proofs in a single edit, none of
+    /// them scoped. A dedicated pattern matched first is what keeps the blast
+    /// radius to the two routes whose handlers actually narrow.
+    #[test]
+    fn reading_one_group_takes_the_narrow_verb_and_its_siblings_do_not() {
+        let validator = PermissionValidator::new();
+        let narrow = vec!["group:list-own".to_owned()];
+
+        for path in [
+            "/admin-api/groups/grp-1",
+            "/admin-api/groups/grp-1/contexts",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+
+            assert!(
+                matches!(
+                    required.as_slice(),
+                    [Permission::Group(GroupPermission::ListOwn(_))]
+                ),
+                "{path}: expected the narrow group verb, got {required:?}",
+            );
+            assert!(
+                validator.validate_permissions(&narrow, &required),
+                "{path}: a delegated session must reach its own group",
+            );
+            assert!(
+                validator.validate_permissions(&["group:list".to_owned()], &required),
+                "{path}: an operator token must not lose access",
+            );
+        }
+
+        // Everything else under the same id keeps the node-wide verb. If any of
+        // these starts passing, a delegated session has been handed a read
+        // nothing narrows.
+        for path in [
+            "/admin-api/groups/grp-1/members",
+            "/admin-api/groups/grp-1/member-devices",
+            "/admin-api/groups/grp-1/subgroups",
+            "/admin-api/groups/grp-1/settings/default-capabilities",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&narrow, &required),
+                "a delegated session must NOT reach GET {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// One direction only, for the group verbs as for the others.
+    #[test]
+    fn group_list_own_never_satisfies_group_list() {
+        let validator = PermissionValidator::new();
+        assert!(!validator.validate_permissions(
+            &["group:list-own".to_owned()],
+            &[Permission::Group(GroupPermission::List(
+                ResourceScope::Global
+            ))],
+        ));
+        assert!(validator.validate_permissions(
+            &["group:list".to_owned()],
+            &[Permission::Group(GroupPermission::ListOwn(
+                ResourceScope::Global
+            ))],
+        ));
     }
 
     /// The read route must not fall to the admin default-deny.

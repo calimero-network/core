@@ -138,6 +138,13 @@ expect_code "/admin-api/namespaces/${NAMESPACE}/groups" "${MEMBER_TOKEN}" member
 # well-formed empty one.
 expect_lists "/admin-api/contexts/${CONTEXT}/group" "${MEMBER_TOKEN}" member "${NAMESPACE}"
 
+# A namespace IS a root group, so its id is a group id and the group reads are
+# reachable with the same value. `/groups/:id/contexts` is checked on its body
+# for the same reason the listings are: it is a listing, and an empty one
+# answers 200 just as happily as a correct one.
+expect_code "/admin-api/groups/${NAMESPACE}" "${MEMBER_TOKEN}" member 200
+expect_lists "/admin-api/groups/${NAMESPACE}/contexts" "${MEMBER_TOKEN}" member "${CONTEXT}"
+
 echo "--- the stranger sees none of it ---"
 # The listings filter; they do not refuse.
 expect_omits "/admin-api/contexts" "${STRANGER_TOKEN}" stranger "${CONTEXT}"
@@ -159,6 +166,24 @@ expect_code "/admin-api/contexts/${CONTEXT}/storage" "${STRANGER_TOKEN}" strange
 expect_code "/admin-api/contexts/${CONTEXT}/group" "${STRANGER_TOKEN}" stranger 403
 expect_code "/admin-api/namespaces/${NAMESPACE}" "${STRANGER_TOKEN}" stranger 404
 expect_code "/admin-api/namespaces/${NAMESPACE}/groups" "${STRANGER_TOKEN}" stranger 404
+
+# The group pair answers 404 like the namespace pair, not 403 like the context
+# pair -- the same split recorded above, and pinned here on both sides so the
+# inconsistency is visible in one place rather than inferred from two files.
+expect_code "/admin-api/groups/${NAMESPACE}" "${STRANGER_TOKEN}" stranger 404
+expect_code "/admin-api/groups/${NAMESPACE}/contexts" "${STRANGER_TOKEN}" stranger 404
+
+# Containment: the group reads that were NOT opened must stay shut. A delegated
+# session reaching a roster or a signing key would be the leak this batch is
+# meant to avoid, and `/groups/:id` is a catch-all prefix away from all of them.
+# Real routes, every one: the guard runs BEFORE routing, so a 403 comes back for
+# a path that does not exist either, and a typo here would assert nothing.
+for shut in members member-devices subgroups settings/default-capabilities; do
+    req "/admin-api/groups/${NAMESPACE}/${shut}" "${MEMBER_TOKEN}"
+    [ "${REQ_CODE}" = "403" ] \
+        || fail "member GET /admin-api/groups/*/${shut}: expected 403, got ${REQ_CODE} -- ${REQ_BODY}"
+    echo "  ok /admin-api/groups/*/${shut} stays shut to a delegated session -> 403"
+done
 
 # Opening these to a delegated session must not have opened them to the world.
 req "/admin-api/contexts" ""
