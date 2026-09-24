@@ -1,0 +1,160 @@
+name: E2E Scaffolding - Delegated Proof
+description: >
+  A caller with no session, no token and no account on the node it is talking to
+  reads a context it is a member of — by signing the request.
+
+  `delegated-session.yml` covers the SESSION path: log in with a device key, get
+  a token, present the token. This is the other half of the architecture, and
+  nothing exercised it end to end. `RequestSig`, `CallerProof` and the guard that
+  verifies them are covered by unit tests, and by a fixture three independent
+  implementations agree on byte for byte — but no RUNNING node had ever accepted
+  a signed request. That is precisely the class a green `cargo test` cannot
+  speak to.
+
+  Three nodes, because three different refusals have to be told apart:
+
+    - `delegated-proof-node-1` serves delegated access. The proof is addressed
+      to it, and it is where the request must succeed.
+    - `delegated-proof-node-2` also serves delegated access, and its ACCOUNT is
+      the member. Presenting the same proof here must fail — the statement names
+      node-1's key, and only the session link carries a node at all. A refusal
+      here can therefore only be the node binding, which is what makes that
+      binding testable rather than assumed.
+    - `delegated-proof-node-3` does NOT serve delegated access. A sound chain is
+      refused with 403 rather than 401, because "this node was not asked to
+      serve you" is a different statement from "your credential is bad".
+
+  No auth provider is enabled on any node. The proof path is gated by
+  `--delegated-access` alone, and turning on `--device-key-login` as well would
+  mean not noticing if that stopped being true.
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: delegated-proof-node
+  init_args:
+    delegated-proof-node-1:
+      - --delegated-access
+    delegated-proof-node-2:
+      - --delegated-access
+    # node-3 deliberately has neither flag.
+
+steps:
+  - name: Login on delegated-proof-node-1
+    type: login
+    node: delegated-proof-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on delegated-proof-node-2
+    type: login
+    node: delegated-proof-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: delegated-proof-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create a namespace on node-1
+    type: create_namespace
+    node: delegated-proof-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: delegated-proof-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  # Node-2's ACCOUNT becomes the member. The device minted below never joins
+  # anything: a delegated caller's key sits in no group's binding rows, and the
+  # proof is what ties it back to an account that IS a member.
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: delegated-proof-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+
+  - name: Create a context in the namespace
+    type: create_context
+    node: delegated-proof-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: delegated-proof-node-2
+    context_id: '{{context_id}}'
+
+  - name: Both nodes converge before anything is signed
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - delegated-proof-node-1
+      - delegated-proof-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # --- A device for node-2's account, minted offline ---
+  #
+  # The node must be stopped: `sign-cert` reads the account root from the
+  # datastore, whose lock is exclusive, and the admin API never exposes it.
+
+  - name: Stop node-2 so its account root can be read
+    type: stop_node
+    nodes: delegated-proof-node-2
+
+  - name: Mint a device for node-2's account, offline
+    type: node_exec
+    node: delegated-proof-node-2
+    args: [account, sign-cert, --generate]
+    capture:
+      caller_credential: '^([0-9a-f]{100,})$'
+      caller_secret: '^Secret: +([0-9a-f]{64})$'
+    outputs:
+      caller_credential: caller_credential
+      caller_secret: caller_secret
+
+  - name: Start node-2 again
+    type: start_node
+    nodes: delegated-proof-node-2
+
+  # Read the relay's own key rather than pinning a constant: this is the value
+  # the statement is addressed to, and the one the guard checks it against.
+  - name: Read the relay's signing key
+    type: node_identity
+    node: delegated-proof-node-1
+    outputs:
+      relay_key: publicKey
+
+  - name: Assert the relay named itself
+    type: assert
+    statements:
+      - "is_set({{relay_key}})"
+
+  # --- The criterion ---
+  - name: A signed request is served, and only where and for what it was signed
+    type: script
+    script: scripts/delegated-proof.sh
+    target: local
+    args:
+      - delegated-proof-node-1
+      - delegated-proof-node-2
+      - delegated-proof-node-3
+      - '{{context_id}}'
+      - '{{caller_credential}}'
+      - '{{caller_secret}}'
+      - '{{relay_key}}'

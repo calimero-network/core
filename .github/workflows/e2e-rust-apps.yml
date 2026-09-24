@@ -512,6 +512,13 @@ jobs:
           - workflow: delegated-session
             file: workflows/delegated-session.yml
             app: scaffolding-e2e
+          # The other half of the architecture: no session and no token at all,
+          # just a signature on each request. Verified by unit tests and by a
+          # byte fixture three implementations agree on, but until this nothing
+          # had ever presented one to a running node.
+          - workflow: delegated-proof
+            file: workflows/delegated-proof.yml
+            app: scaffolding-e2e
           # The posture a hosted relay actually runs: delegated execution served
           # with NO node credential. Nothing covered it - `--public-intents`
           # appeared in no scenario, so the flag deciding whether a relay is

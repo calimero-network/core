@@ -535,6 +535,37 @@ pub struct SignRequestCommand {
     /// a captured signature performs the identical request until it expires.
     #[arg(long, default_value_t = 300)]
     valid_for: u64,
+
+    /// The device credential from `account sign-cert`, hex.
+    ///
+    /// Supplying it makes this print the whole `X-Calimero-Proof` header rather
+    /// than the signature alone. A node needs the chain, not one link: the
+    /// signature says a key signed this request, and only the credential says
+    /// whose key it is.
+    ///
+    /// Assembled here rather than by whatever presents the header, because the
+    /// three links are already the encodings the node deserializes and a second
+    /// place that concatenates them is a second spelling of a signed structure.
+    #[arg(long, value_name = "HEX")]
+    credential: Option<String>,
+
+    /// The login statement from `account login-statement`, hex.
+    ///
+    /// Present on the three-link chain, where `--signer-secret` is the session
+    /// key. Omit it on the two-link chain, where the device key signs the
+    /// request itself — that is a different encoding, not a shorter one.
+    #[arg(long, value_name = "HEX", requires = "credential")]
+    session: Option<String>,
+}
+
+/// Decode a hex-encoded, borsh-serialized link of the chain.
+///
+/// Named in the error, because the three are indistinguishable as hex and the
+/// most likely mistake is passing them in the wrong order.
+fn decode_borsh<T: borsh::BorshDeserialize>(raw: &str, what: &str) -> EyreResult<T> {
+    let bytes =
+        hex::decode(raw.trim()).map_err(|err| eyre::eyre!("--{what} is not valid hex: {err}"))?;
+    borsh::from_slice(&bytes).map_err(|err| eyre::eyre!("--{what} is not a valid encoding: {err}"))
 }
 
 impl SignRequestCommand {
@@ -565,6 +596,27 @@ impl SignRequestCommand {
         );
         println!("Signer:  {}", hex::encode(secret.public_key()));
         println!("Expires: {expires_at}");
+
+        // The header only when a credential was given: without one there is no
+        // chain to present, and printing a half-built value would invite
+        // someone to send it.
+        if let Some(credential) = &self.credential {
+            let account_proof = decode_borsh(credential, "credential")?;
+            let session = self
+                .session
+                .as_deref()
+                .map(|raw| decode_borsh(raw, "session"))
+                .transpose()?;
+            let proof = calimero_account::CallerProof {
+                account_proof,
+                session,
+                request: signature,
+            };
+            println!(
+                "Proof:   {}",
+                hex::encode(borsh::to_vec(&proof).wrap_err("Failed to encode the proof")?)
+            );
+        }
 
         Ok(())
     }
@@ -1171,6 +1223,70 @@ mod tests {
     use calimero_account::{Audience, DeviceId};
 
     use super::*;
+
+    /// `--session` without `--credential` is refused at parse time.
+    ///
+    /// Alone it would be silently dropped: the proof is only assembled when a
+    /// credential is present, so a caller passing just a session would get the
+    /// bare signature back and have no way to tell it had been ignored.
+    #[test]
+    fn a_session_without_a_credential_is_rejected() {
+        use clap::Parser;
+
+        let err = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &"11".repeat(32),
+            "--session",
+            "aabb",
+        ])
+        .expect_err("--session must require --credential");
+        assert!(
+            err.to_string().contains("credential"),
+            "the error must name what is missing: {err}"
+        );
+    }
+
+    /// Both together parse, and neither is required for the historical
+    /// signature-only output.
+    #[test]
+    fn the_proof_flags_are_optional_and_pair() {
+        use clap::Parser;
+
+        let bare = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &"11".repeat(32),
+        ])
+        .expect("the signature-only form must keep working");
+        assert!(bare.credential.is_none());
+        assert!(bare.session.is_none());
+
+        let full = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &"11".repeat(32),
+            "--credential",
+            "aabb",
+            "--session",
+            "ccdd",
+        ])
+        .expect("credential plus session is the three-link form");
+        assert_eq!(full.credential.as_deref(), Some("aabb"));
+        assert_eq!(full.session.as_deref(), Some("ccdd"));
+    }
 
     /// A fixed root, so these tests assert on derivation rather than on a key that
     /// changes per run. Not a secret: it owns nothing anywhere.
