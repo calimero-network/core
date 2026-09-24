@@ -685,7 +685,8 @@ mod tests {
                 "context:list-own".to_owned(),
                 "context:query".to_owned(),
                 "context:subscribe".to_owned(),
-                "namespace:list-own".to_owned()
+                "group:list-own".to_owned(),
+                "namespace:list-own".to_owned(),
             ]
         );
     }
@@ -1081,7 +1082,8 @@ mod tests {
                 "context:list-own".to_owned(),
                 "context:query".to_owned(),
                 "context:subscribe".to_owned(),
-                "namespace:list-own".to_owned()
+                "group:list-own".to_owned(),
+                "namespace:list-own".to_owned(),
             ]
         );
     }
