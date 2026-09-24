@@ -312,7 +312,15 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let Some(ns_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Namespace(NamespacePermission::List(scope))],
+                // `list-own`, not `list`. The handler narrows this read to the
+                // caller's own namespaces, so the narrow verb is what it
+                // requires — and `list` satisfies `list-own` one-directionally,
+                // so an operator token still reaches it unchanged.
+                //
+                // Requiring `list` instead would keep a delegated caller out of
+                // a row that is already theirs; granting `list` to reach it
+                // would hand them every tenant's.
+                HttpMethod::GET => vec![Permission::Namespace(NamespacePermission::ListOwn(scope))],
                 HttpMethod::DELETE => {
                     vec![Permission::Namespace(NamespacePermission::Manage(scope))]
                 }
@@ -325,6 +333,15 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let (Some(ns_id), Some(resource)) = (captures.get(1), captures.get(2)) {
             let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
             return match (method, resource.as_str()) {
+                // Only `groups`, and the asymmetry is the point. This arm covers
+                // `identity` too, whose handler is NOT caller-scoped — moving it
+                // to the narrow verb would open it to a delegated session that
+                // then reads any namespace's identity. The verb follows the
+                // handler, one route at a time, never the regex that happens to
+                // group them.
+                (HttpMethod::GET, "groups") => {
+                    vec![Permission::Namespace(NamespacePermission::ListOwn(scope))]
+                }
                 (HttpMethod::GET, _) => {
                     vec![Permission::Namespace(NamespacePermission::List(scope))]
                 }
@@ -1506,6 +1523,62 @@ mod tests {
         assert!(!validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required));
     }
 
+    /// A delegated caller can read a namespace it is in, and an operator token
+    /// still reaches every one.
+    ///
+    /// The pairing is what makes this safe, and neither half is optional. The
+    /// route asks for the NARROW verb, so a delegated session reaches it — and
+    /// the handler narrows the answer to the caller's own namespaces, so
+    /// reaching it grants nothing beyond them. Mapping this to `list` instead
+    /// would keep a caller out of a row already theirs; granting `list` to get
+    /// in would hand them every tenant's.
+    #[test]
+    fn reading_one_namespace_takes_the_narrow_verb() {
+        let validator = PermissionValidator::new();
+
+        for path in [
+            "/admin-api/namespaces/ns-1",
+            "/admin-api/namespaces/ns-1/groups",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+
+            assert!(
+                matches!(
+                    required.as_slice(),
+                    [Permission::Namespace(NamespacePermission::ListOwn(_))]
+                ),
+                "{path}: expected the narrow namespace verb, got {required:?}",
+            );
+
+            // The delegated session reaches it…
+            assert!(
+                validator.validate_permissions(&["namespace:list-own".to_owned()], &required),
+                "{path}: a delegated session must reach its own namespace",
+            );
+            // …and so does an operator, because `list` satisfies `list-own`.
+            assert!(
+                validator.validate_permissions(&["namespace:list".to_owned()], &required),
+                "{path}: an operator token must not lose access to this route",
+            );
+            // One direction only. If this ever passes, a delegated session has
+            // been handed the node-wide answer.
+            assert!(
+                !validator.validate_permissions(
+                    &["namespace:list-own".to_owned()],
+                    &[Permission::Namespace(NamespacePermission::List(
+                        ResourceScope::Global
+                    ))],
+                ),
+                "{path}: list-own must never satisfy list",
+            );
+        }
+    }
+
     /// The read route must not fall to the admin default-deny.
     ///
     /// This is the failure the mapping exists to prevent, and it is silent: an
@@ -1950,18 +2023,23 @@ mod tests {
         }
     }
 
-    /// The same audit for the namespace family: `namespace:list-own` opens the
-    /// collection listing and nothing under an individual namespace, none of
-    /// which is caller-scoped.
+    /// The same audit for the namespace family, minus the two routes whose
+    /// handlers now narrow.
+    ///
+    /// `/namespaces/:id` and `/namespaces/:id/groups` moved to the narrow verb
+    /// together with a scope check in their handlers, so a delegated session
+    /// reaching them reads only its own. The rest have no owner model yet and
+    /// must stay shut — `identity` especially, because it shares a regex arm
+    /// with `groups` and is one careless edit away from being opened by
+    /// accident. That is not hypothetical: it is what the first draft of that
+    /// change did, and this test is what caught it.
     #[test]
     fn list_own_does_not_reach_the_unscoped_namespace_siblings() {
         let validator = PermissionValidator::new();
         let session = delegated_session();
 
         for path in [
-            "/admin-api/namespaces/ns-1",
             "/admin-api/namespaces/ns-1/identity",
-            "/admin-api/namespaces/ns-1/groups",
             "/admin-api/namespaces/for-application/app-1",
         ] {
             let req = Request::builder()
