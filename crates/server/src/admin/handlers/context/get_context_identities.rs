@@ -54,7 +54,7 @@ use tracing::{error, info};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
 pub async fn handler(
@@ -62,6 +62,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
     req: Request,
 ) -> impl IntoResponse {
     let owned = req.uri().path().ends_with("identities-owned");
@@ -88,7 +89,7 @@ pub async fn handler(
     // delegated read follows. A membership change is a governance op this node
     // has already applied, and asking at the moment of the call is the only way
     // it reaches the answer.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(context_id=%context_id, error=?err, "Failed to resolve caller scope");

@@ -17,7 +17,10 @@ use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::MembershipRepository;
 
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use calimero_governance_store::AccountBindingRepository;
+use calimero_primitives::identity::DeviceId;
+
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 
 /// Which rows a caller may see.
 #[derive(Clone, Debug)]
@@ -84,6 +87,18 @@ pub(crate) const fn narrow_to(
 
 /// Resolve what this caller may list.
 ///
+/// `device` is the one that proved this caller, when one was named. `None` is
+/// not "no device" — it is "we were not told which". A request-carried proof
+/// names the device its certificate covers; a session does not, because
+/// `account_proof` mints a token whose subject is the account and the device
+/// that logged in is dropped there.
+///
+/// So the revocation filter below applies to proofs and not to sessions, which
+/// means a session survives the revocation of the very device that opened it.
+/// That is a gap in the session path rather than a decision here, and closing
+/// it means carrying the device through the login — a change in the auth store,
+/// not in this function.
+///
 /// The group set is resolved **per request**, never cached on the session — the
 /// same rule the delegated read follows (#3931). A membership change is a
 /// governance op this node has already applied, and the only way it reaches the
@@ -93,13 +108,28 @@ pub(crate) fn list_scope(
     ctx_client: &ContextClient,
     node_owner: Option<&AuthenticatedNodeOwner>,
     account: Option<&AuthenticatedAccount>,
+    device: Option<DeviceId>,
 ) -> eyre::Result<ListScope> {
     let Some(account) = narrow_to(node_owner, account) else {
         return Ok(ListScope::NodeWide);
     };
 
-    let groups =
-        MembershipRepository::new(ctx_client.datastore()).effective_groups_for_account(&account)?;
+    let store = ctx_client.datastore();
+    let mut groups = MembershipRepository::new(store).effective_groups_for_account(&account)?;
+
+    // Revocation is per device AND per group, so it can only be applied where
+    // both are in hand — which is here, and not at authentication. A device
+    // revoked in one group may be live in another, so this removes groups
+    // rather than refusing the caller: the account is still itself, and still a
+    // member everywhere the revocation does not reach.
+    //
+    // A read that fails removes the group. An unreadable revocation row is not
+    // evidence of a live device, and treating it as one would make the check
+    // conditional on the store answering.
+    if let Some(device) = device {
+        let bindings = AccountBindingRepository::new(store);
+        groups.retain(|group| !bindings.is_revoked(group, device).unwrap_or(true));
+    }
 
     Ok(ListScope::Account { account, groups })
 }
@@ -109,11 +139,13 @@ pub(crate) fn list_scope_for(
     ctx_client: &ContextClient,
     node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
     account: Option<axum::Extension<AuthenticatedAccount>>,
+    device: Option<axum::Extension<AuthenticatedDevice>>,
 ) -> eyre::Result<ListScope> {
     list_scope(
         ctx_client,
         node_owner.as_ref().map(|e| &e.0),
         account.as_ref().map(|e| &e.0),
+        device.map(|e| e.0 .0),
     )
 }
 

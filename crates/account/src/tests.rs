@@ -9,6 +9,7 @@
 mod support;
 
 mod account;
+mod caller;
 mod device;
 mod domain;
 mod external;
@@ -16,6 +17,8 @@ mod label;
 mod login;
 mod login_wire_fixture;
 mod pairing;
+mod request;
+mod request_wire_fixture;
 mod revocation;
 mod root_key;
 mod scope;

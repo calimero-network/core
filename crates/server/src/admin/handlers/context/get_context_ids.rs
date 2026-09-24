@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
 /// Hard cap on the number of contexts returned in a single response, regardless
@@ -45,13 +45,14 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     // Both bounds are silently clamped (rather than one clamped and one
     // rejected) so the endpoint treats over-large paging params consistently.
     let offset = query.offset.unwrap_or(0).min(MAX_OFFSET);
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_PAGE);
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             // Fail closed: a caller whose groups could not be resolved is not a

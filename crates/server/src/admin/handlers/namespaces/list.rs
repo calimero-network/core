@@ -12,7 +12,7 @@ use tracing::{debug, error};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
 pub async fn handler(
@@ -20,11 +20,12 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
