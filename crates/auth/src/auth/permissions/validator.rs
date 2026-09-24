@@ -1658,9 +1658,9 @@ mod tests {
         // nothing narrows.
         for path in [
             "/admin-api/groups/grp-1/members",
-            "/admin-api/groups/grp-1/capabilities",
-            "/admin-api/groups/grp-1/settings",
-            "/admin-api/groups/grp-1/signing-keys",
+            "/admin-api/groups/grp-1/member-devices",
+            "/admin-api/groups/grp-1/subgroups",
+            "/admin-api/groups/grp-1/settings/default-capabilities",
         ] {
             let req = Request::builder()
                 .method(Method::GET)
