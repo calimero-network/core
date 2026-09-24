@@ -894,6 +894,28 @@ mod tests {
                 "/admin-api/contexts/{context_id}/identities",
                 get(|| async { "ok" }),
             )
+            .route(
+                "/admin-api/contexts/{context_id}/identities-owned",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/{context_id}/storage",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/{context_id}/group",
+                get(|| async { "ok" }),
+            )
+            // Still shut to a delegated session, and mounted so a refusal here
+            // is the guard's 403 rather than a 404 from a route nobody added.
+            .route(
+                "/admin-api/contexts/for-application/{application_id}",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/with-executors/for-application/{application_id}",
+                get(|| async { "ok" }),
+            )
             .layer(super::guard_layer(
                 Arc::new(AuthService::new(Vec::new(), token_manager)),
                 // No proof policy: this test covers the token path, and giving
@@ -926,6 +948,13 @@ mod tests {
             "/admin-api/namespaces",
             "/admin-api/contexts",
             "/admin-api/contexts/ctx-1",
+            // The four read sub-resources. Passing the guard is all this
+            // asserts: each handler then resolves the caller's groups and
+            // refuses a context they do not reach.
+            "/admin-api/contexts/ctx-1/identities",
+            "/admin-api/contexts/ctx-1/identities-owned",
+            "/admin-api/contexts/ctx-1/storage",
+            "/admin-api/contexts/ctx-1/group",
         ] {
             let resp = scoped_request(path, delegated_session(), true).await;
             assert_eq!(
@@ -951,18 +980,28 @@ mod tests {
         );
     }
 
-    /// And so does the context sub-resource that has no caller scoping of its
-    /// own — the sibling `context:list` would have reached, which is why the
-    /// narrow `context:list-own` exists.
+    /// And so do the context reads that still have no caller scoping of their
+    /// own — the ones the wide `context:list` reaches, which is why the narrow
+    /// `context:list-own` exists as a separate verb.
+    ///
+    /// Both enumerate every context on the node running a given application.
+    /// Unlike the four `/contexts/:id/*` reads, they are answered without ever
+    /// naming a context whose group could be checked, so there is nothing for
+    /// `admits_context` to narrow and they stay shut until they get an owner
+    /// model of their own.
     #[tokio::test]
     async fn a_delegated_session_is_refused_an_unscoped_context_sibling() {
-        let resp = scoped_request(
-            "/admin-api/contexts/ctx-1/identities",
-            delegated_session(),
-            true,
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        for path in [
+            "/admin-api/contexts/for-application/app-1",
+            "/admin-api/contexts/with-executors/for-application/app-1",
+        ] {
+            let resp = scoped_request(path, delegated_session(), true).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::FORBIDDEN,
+                "a delegated session must NOT pass the guard for GET {path}",
+            );
+        }
     }
 
     /// Opening the listings must not have opened them to the world: with no

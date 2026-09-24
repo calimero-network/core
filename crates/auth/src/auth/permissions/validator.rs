@@ -166,10 +166,13 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                 // reached this route before still does, and no further.
                 //
                 // The regex is anchored to a single segment, so this arm is
-                // `GET /admin-api/contexts/{id}` alone. Its siblings
-                // (`/identities`, `/identities-owned`, `/storage`, `/group`,
-                // and the `for-application` listings) are matched by their own
-                // patterns and keep requiring `context:list`.
+                // `GET /admin-api/contexts/{id}` alone. Its four read
+                // sub-resources (`/identities`, `/identities-owned`,
+                // `/storage`, `/group`) are matched by
+                // `CONTEXT_READ_SUBRESOURCE_REGEX` and now take the same narrow
+                // verb, because their handlers apply the same scope check. The
+                // two `for-application` listings still require `context:list`:
+                // nothing narrows those.
                 HttpMethod::GET => vec![Permission::Context(ContextPermission::ListOwn(scope))],
                 HttpMethod::DELETE => vec![Permission::Context(ContextPermission::Delete(scope))],
                 _ => vec![],
@@ -391,12 +394,20 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         }
     }
 
-    // Context sub-resources: read-only views of a context a member needs
+    // Context sub-resources: read-only views of a context a member needs.
+    //
+    // `list-own`, because every one of these four handlers refuses a caller
+    // whose groups do not reach the named context — the same `ListScope::admits`
+    // predicate `GET /admin-api/contexts/:id` applies. The narrow verb is only
+    // safe while that stays true: a fifth sub-resource added to this regex
+    // without the handler-side check would be reachable by any delegated
+    // session. The wide `context:list` still satisfies `list-own`, so operator
+    // and client tokens are unaffected.
     if let Some(captures) = CONTEXT_READ_SUBRESOURCE_REGEX.captures(path) {
         if let Some(ctx_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::ListOwn(scope))],
                 _ => vec![],
             };
         }
@@ -1991,22 +2002,23 @@ mod tests {
 
     /// The direction that must NOT hold.
     ///
-    /// `context:list[<id>]` is also what `/contexts/:id/identities`,
-    /// `/identities-owned`, `/storage`, `/group` and the two `for-application`
-    /// listings require, and none of those narrows its answer to the caller.
-    /// Had `list-own` been folded into `list` — or made to satisfy it — opening
-    /// the listings would have opened all of those too, which on a relay is one
-    /// tenant reading another's roster and state.
+    /// The two `for-application` listings enumerate every context running a
+    /// given application across the whole node, and nothing narrows that answer
+    /// to the caller. Had `list-own` been folded into `list` — or made to
+    /// satisfy it — opening the caller-scoped reads would have opened these too,
+    /// which on a relay is one tenant enumerating another's contexts.
+    ///
+    /// The four `/contexts/:id/*` read sub-resources used to be on this list and
+    /// deliberately are not any more: each refuses a caller whose groups do not
+    /// reach the named context. They are pinned on the other side of the line by
+    /// `list_own_reaches_the_scoped_context_sub_resources`, which is the test to
+    /// break if a handler ever loses its check.
     #[test]
     fn list_own_does_not_reach_the_unscoped_context_siblings() {
         let validator = PermissionValidator::new();
         let session = delegated_session();
 
         for path in [
-            "/admin-api/contexts/ctx-1/identities",
-            "/admin-api/contexts/ctx-1/identities-owned",
-            "/admin-api/contexts/ctx-1/storage",
-            "/admin-api/contexts/ctx-1/group",
             "/admin-api/contexts/for-application/app-1",
             "/admin-api/contexts/with-executors/for-application/app-1",
         ] {
@@ -2019,6 +2031,82 @@ mod tests {
             assert!(
                 !validator.validate_permissions(&session, &required),
                 "a delegated session must NOT reach GET {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// The other half of the pair: the verb moved because the handlers narrow.
+    ///
+    /// A delegated caller that cannot read a context's storage size or owning
+    /// group cannot do much with the ids the listing just gave it, so these four
+    /// are the reads that make the delegated surface usable rather than merely
+    /// enumerable.
+    ///
+    /// What makes the narrow verb safe is on the other side, in
+    /// `calimero-server`: each handler resolves the caller's groups per request
+    /// and returns `403` for a context they do not reach
+    /// (`admin/caller_scope.rs::admits_context`). This test pins only that the
+    /// permission layer lets the request through — it cannot see the handler. If
+    /// a fifth sub-resource is ever added to `CONTEXT_READ_SUBRESOURCE_REGEX`,
+    /// it inherits `list-own` from that arm silently, and the check it needs is
+    /// the one nothing here will miss.
+    #[test]
+    fn list_own_reaches_the_scoped_context_sub_resources() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for path in [
+            "/admin-api/contexts/ctx-1/identities",
+            "/admin-api/contexts/ctx-1/identities-owned",
+            "/admin-api/contexts/ctx-1/storage",
+            "/admin-api/contexts/ctx-1/group",
+        ] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                validator.validate_permissions(&session, &required),
+                "a delegated session must reach GET {path} (required: {required:?})",
+            );
+            assert!(
+                validator.validate_permissions(&["context:list".to_owned()], &required),
+                "the wide verb must keep reaching GET {path}, or every operator \
+                 and client token that worked before this change breaks",
+            );
+        }
+    }
+
+    /// Blast radius: widening the four read sub-resources must not widen the
+    /// context tree around them.
+    ///
+    /// `/contexts/:id` has several other children, and they are matched by
+    /// different arms — membership actions, capabilities, the intent relay.
+    /// None of them is a scoped read, and a delegated session must not reach any
+    /// of them just because its siblings opened.
+    #[test]
+    fn list_own_does_not_reach_the_other_context_children() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for (method, path) in [
+            (Method::POST, "/admin-api/contexts/ctx-1/join"),
+            (Method::POST, "/admin-api/contexts/ctx-1/leave"),
+            (Method::POST, "/admin-api/contexts/ctx-1/resync"),
+            (Method::DELETE, "/admin-api/contexts/ctx-1"),
+            (Method::POST, "/admin-api/contexts/sync/ctx-1"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&session, &required),
+                "a delegated session must NOT reach {method} {path} (required: {required:?})",
             );
         }
     }
