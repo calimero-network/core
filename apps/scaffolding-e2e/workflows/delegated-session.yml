@@ -1,7 +1,9 @@
 name: E2E Scaffolding - Delegated Session
 description: >
   A device holding only a key obtains a session on a node it does not own, and
-  reads a context it is a member of — with no password anywhere in the flow.
+  reads a context it is a member of — with no password anywhere in the flow. A
+  second account, authenticated on the same node at the same moment, is served
+  none of the first one's rows.
 
   `delegated-authorship.yml` proves a keyholder can WRITE through a relay, but it
   logs in with a username and password, which is the provider the delegated
@@ -21,6 +23,15 @@ description: >
        scenario turns it on in the node's own config, which is exactly how an
        operator would.
 
+  The second half is the scoped READ surface. The criterion step reads through
+  `/contexts/:id/query` alone, so the routes a delegated session was opened to —
+  the listings, the single-resource reads and the four context read
+  sub-resources — had never been driven against a running node. They were covered
+  by unit tests over the permission layer and by handler tests over hand-built
+  stores, and neither can see a real node's membership. What is asserted is not
+  that a member gets a 200; it is that a stranger account with an equally valid
+  session is served none of the member's rows.
+
   The shape is chosen so each assertion can only pass for the right reason:
 
     - The signing device is minted OFFLINE for node-2's account and never joins
@@ -39,7 +50,11 @@ force_pull_image: false
 auth_mode: embedded
 
 nodes:
-  count: 2
+  # Three, and the third is the point: node-3 joins no namespace and no context,
+  # so its account is a STRANGER on a node where node-2's account is a member.
+  # Both log in to node-1, and what each is served is the tenant isolation the
+  # scoped reads exist to provide.
+  count: 3
   image: merod:local
   prefix: delegated-session-node
   # Enabled at INIT, not by a later `merod config`. merobox's `start_node`
@@ -167,6 +182,37 @@ steps:
     type: start_node
     nodes: delegated-session-node-2
 
+  # --- A device for a STRANGER account, minted the same way ---
+  #
+  # Same mechanism as the member's, deliberately: the two sessions must differ in
+  # exactly one thing -- which account signed -- or a difference in what they are
+  # served could be explained by something other than membership.
+  #
+  # Node-3 joined nothing, so this account reaches no group. It is nonetheless a
+  # real account with a real device, and `account_proof` authenticates accounts
+  # rather than memberships, so it will get a perfectly valid session. Being
+  # shown nothing with a valid session is the assertion; a broken credential
+  # would pass against a node with no scoping at all.
+
+  - name: Stop node-3 so its account root can be read
+    type: stop_node
+    nodes: delegated-session-node-3
+
+  - name: Mint a device for the stranger account, offline
+    type: node_exec
+    node: delegated-session-node-3
+    args: [account, sign-cert, --generate]
+    capture:
+      stranger_credential: '^([0-9a-f]{100,})$'
+      stranger_secret: '^Secret: +([0-9a-f]{64})$'
+    outputs:
+      stranger_credential: stranger_credential
+      stranger_secret: stranger_secret
+
+  - name: Start node-3 again
+    type: start_node
+    nodes: delegated-session-node-3
+
   # Read the node's own key rather than pinning a constant. This is the same
   # value the auth service reads at startup, through the same accessor
   # (`NamespaceRepository::node_identity`), so the two cannot disagree.
@@ -224,6 +270,27 @@ steps:
       - '{{author_credential}}'
       - '{{node_key}}'
       - '{{relay_account}}'
+
+  # --- What each session may READ ---
+  #
+  # The step above reads through `/contexts/:id/query` only. Everything opened to
+  # a delegated session -- the listings, the single-resource reads, the four
+  # context read sub-resources -- is checked here, for both accounts, against the
+  # same running node.
+
+  - name: The member is served its own rows and the stranger none of them
+    type: script
+    script: scripts/delegated-read-scope.sh
+    target: local
+    args:
+      - delegated-session-node-1
+      - '{{node_key}}'
+      - '{{context_id}}'
+      - '{{namespace_id}}'
+      - '{{author_secret}}'
+      - '{{author_credential}}'
+      - '{{stranger_secret}}'
+      - '{{stranger_credential}}'
 
   # The delegated write is a real delta, not a local mutation: it has to reach
   # the peer and be accepted there, which is where both signature layers are

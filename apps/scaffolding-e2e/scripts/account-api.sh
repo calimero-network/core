@@ -55,3 +55,57 @@ offline_merod() {
         "${MEROD_IMAGE:-merod:local}" \
         merod "$@"
 }
+
+# Mint a delegated session for a device key, with no password.
+#
+# Echoes the access token on stdout and nothing else, so a caller can take it
+# with `$(...)`; progress goes to stderr. Shared rather than copied because the
+# exchange has four moving parts that must agree (challenge, statement, session
+# key, credential), and a second copy drifts silently — it would keep passing
+# its own checks while real clients were refused.
+#
+# ONE `login-statement` invocation: each call signs a fresh statement with its
+# own timestamps, so taking the statement from one and the keys from another
+# posts a statement naming a session key it never signed over.
+mint_session() {
+    _url="$1"
+    _node_key="$2"
+    _secret="$3"
+    _credential="$4"
+
+    # Fetched immediately before signing: single-use and short-lived, so a
+    # statement minted against a stale one is refused before any signature work.
+    _challenge=$(curl -fsS "${_url}/auth/challenge" \
+        | sed -n 's/.*"challenge"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
+    [ -n "${_challenge}" ] || fail "the node issued no challenge"
+
+    _signed=$(offline_merod account login-statement \
+        --challenge "${_challenge}" \
+        --node "${_node_key}" \
+        --device-secret "${_secret}" \
+        --generate-session-key \
+        --credential "${_credential}" \
+        --audience cli)
+
+    _statement=$(echo "${_signed}" | head -1)
+    _session_key=$(echo "${_signed}" | sed -n 's/^Session:[[:space:]]*//p')
+    [ -n "${_statement}" ] || fail "merod produced no login statement"
+    [ -n "${_session_key}" ] || fail "merod produced no session key"
+    echo "statement signed, session key ${_session_key}" >&2
+
+    # `timestamp` is REQUIRED and `BaseTokenRequest` is `deny_unknown_fields`, so
+    # a body missing it is rejected before any provider runs -- and the refusal
+    # names deserialization, not the login, which reads as though the statement
+    # were at fault. `permissions` is deliberately OMITTED rather than set:
+    # leaving it unset takes the provider's own `session_permissions` instead of
+    # asking for authority a delegated session must not have.
+    _body=$(printf '{"auth_method":"account_proof","public_key":"%s","client_name":"%s","timestamp":%s,"provider_data":{"challenge":"%s","login_statement":"%s","account_proof":"%s"}}' \
+        "${_session_key}" "${_url}" "$(date +%s)" "${_challenge}" "${_statement}" "${_credential}")
+
+    _res=$(curl -sS -X POST "${_url}/auth/token" \
+        -H 'Content-Type: application/json' \
+        -d "${_body}")
+    _token=$(echo "${_res}" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [ -n "${_token}" ] || fail "no session was minted: ${_res}"
+    echo "${_token}"
+}
