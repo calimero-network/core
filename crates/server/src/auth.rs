@@ -876,7 +876,7 @@ mod tests {
         key_manager.set_key("k-1", &key).await.unwrap();
 
         let (access_token, _) = token_manager
-            .generate_token_pair("k-1".to_owned(), permissions, None)
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
             .await
             .unwrap();
 
@@ -894,10 +894,12 @@ mod tests {
                 "/admin-api/contexts/{context_id}/identities",
                 get(|| async { "ok" }),
             )
-            .layer(super::guard_layer(Arc::new(AuthService::new(
-                Vec::new(),
-                token_manager,
-            ))))
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                // No proof policy: this test covers the token path, and giving
+                // it one would let a failure there be masked by admission here.
+                None,
+            ))
             .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap()

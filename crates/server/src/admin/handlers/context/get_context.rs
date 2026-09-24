@@ -10,7 +10,7 @@ use tracing::{debug, error, info};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
 pub async fn handler(
@@ -18,6 +18,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     debug!(context_id=%context_id, "Getting context");
 
@@ -37,7 +38,7 @@ pub async fn handler(
     // nothing to resolve, and `ListScope::admits` is the same predicate the
     // listing applies — one rule, so the two cannot drift apart. A node owner,
     // and a node running with no auth guard, get `NodeWide` and are unaffected.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(context_id=%context_id, error=?err, "Failed to resolve the caller's list scope");
