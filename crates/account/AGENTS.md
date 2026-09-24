@@ -220,6 +220,27 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 | `src/tests/signed.rs` | That both verify entry points agree, that each statement kind still reports its own errors, and that the device check precedes the signature check |
 | `src/tests/support.rs` | Shared fixtures (`key`, `genesis_for`, `rotated`, `sign_handoff`, `sign_cert`, `pairing_fixture`) |
 
+## The request-carried proof
+
+`RequestSig` (`src/request.rs`) signs one call — method, path, a hash of the
+body, and a window — and `CallerProof` (`src/caller.rs`) is the chain a caller
+presents: `account_proof` → optional `session` → `request`. `CallerProof::verify`
+is the whole check, ordered cheapest-first so a stale proof is refused before any
+signature work.
+
+Two shapes. The **three-link** chain keeps the device key out of the signing
+path, so a leaked session key cannot be escalated. The **two-link** chain has the
+device key sign directly — `meroctl`'s shape — and carries **no node binding**,
+because only the session link names a node.
+
+**Four implementations must agree byte for byte**, and they are pinned to one
+fixture to keep them honest: this crate's own `tests/request_wire_fixture.rs`,
+`calimero-server`'s `proof_auth.rs` (`chain_for(1, &key(7))`), `calimero-client`'s
+`proof.rs`, and `mero-js`'s `proof-signer.test.ts`. A drift in the preimage or
+the field order stops matching the others rather than failing only in production
+against a node nobody ran locally. `merod account sign-request --credential` is
+the fifth producer, and is what the e2e presents.
+
 ## Invariants and Gotchas
 
 - **`VerifiedDeviceCert` does not mean "in force".** It means the credential is internally valid. Supersession, revocation and scope membership are at-cut questions answered by `calimero-authz`. The type exists so the two stages cannot be confused.
