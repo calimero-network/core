@@ -70,6 +70,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 - `Removed` also carries the ids it took, coalesced into runs, because one delete can span several writers and the single anchor cannot name them.
   App events must carry those ids and never positions: an event is recorded in the delta and re-emitted on the RECEIVING node, where a concurrent edit has already moved every position the author counted.
 - A cursor is an `Anchor`: a character id plus a `Bias`, or a document edge. `anchor_at` and `resolve` each cost one tree rebuild and store nothing; `resolve_many` resolves a whole slice against one.
+- `visible_ids` reads the id of every visible character, aligned with `get_text` and coalesced into `IdRange` runs, because a client rebasing a refused write must diff by identity: identical characters from different writers are indistinguishable as text.
 - `Anchor`, `Bias`, `IdRange`, `Removed` and `Undo` carry borsh AND serde. Borsh is the persisted format; the JSON is the JSON-RPC shape, with a `RawId` as the two-element array `[replica, counter]`. Both are pinned as formats.
   They have no `AbiType`, so a guest method still cannot take or return one directly - `cargo mero build` rejects it - and the reference app ships them as bs58-encoded borsh.
   An anchor on a deleted character resolves to the gap it left, which is only possible because tombstoned runs are never removed.

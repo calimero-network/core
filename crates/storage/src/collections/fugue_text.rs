@@ -452,6 +452,18 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(build_tree(&loaded)?.values())
     }
 
+    /// Visible characters' ids in document order, as maximal runs; id i names char i of `get_text`.
+    pub fn visible_ids(&self) -> Result<Vec<IdRange>, StoreError> {
+        let tree = self.tree()?;
+        let visible: Vec<(RawId, char)> = tree
+            .order()
+            .into_iter()
+            .filter_map(|id| tree.node(id?))
+            .filter_map(|node| Some((node.id, node.value?)))
+            .collect();
+        Ok(id_runs(&visible))
+    }
+
     /// The characters in `start..end`, by char index, clamped in `end`.
     pub fn text_range(&self, start: usize, end: usize) -> Result<String, StoreError> {
         if start > end {
@@ -777,7 +789,7 @@ impl Draft {
     }
 }
 
-/// Runs of consecutive ids, so one delete names what it took without listing every character.
+/// Runs of consecutive ids, so a span of characters is named without listing every id.
 fn id_runs(picked: &[(RawId, char)]) -> Vec<IdRange> {
     let mut runs: Vec<IdRange> = Vec::new();
     for &((replica, counter), _) in picked {
@@ -1991,7 +2003,7 @@ mod positional_read_tests {
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
-    use super::{build_tree, doc_in, find_block, FugueText, RunId};
+    use super::{build_tree, doc_in, find_block, Anchor, Bias, FugueText, RunId};
     use crate::collections::Root;
     use crate::env;
     use crate::store::{MockedStorage, StorageAdaptor};
@@ -2164,6 +2176,62 @@ mod positional_read_tests {
             let text = doc.get_text().unwrap();
             assert_eq!(doc.len().unwrap(), text.chars().count());
             assert_eq!(doc.is_empty().unwrap(), text.is_empty());
+        }
+    }
+
+    #[test]
+    fn visible_ids__name_each_char_of_get_text_and_agree_with_anchor_at() {
+        env::reset_for_testing();
+        type S = MockedStorage<888>;
+        let mut rng = StdRng::seed_from_u64(0x_1d_5e_e0_01);
+
+        for seed in 0..25_usize {
+            let mut doc = doc_in::<S>(&format!("vi{seed}"));
+            random_doc(&mut doc, &mut rng, 12);
+            let runs = doc.visible_ids().unwrap();
+            let ids: Vec<_> = runs
+                .iter()
+                .flat_map(|run| (0..run.len).map(move |k| (run.start.0, run.start.1 + k)))
+                .collect();
+            assert_eq!(ids.len(), doc.len().unwrap(), "seed {seed}: coverage");
+
+            let tree = doc.tree().unwrap();
+            let named: String = ids.iter().filter_map(|id| tree.node(*id)?.value).collect();
+            assert_eq!(named, doc.get_text().unwrap(), "seed {seed}: id order");
+
+            for pair in runs.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                assert!(
+                    !(a.start.0 == b.start.0 && a.start.1 + a.len == b.start.1),
+                    "seed {seed}: {a:?} and {b:?} should be one run"
+                );
+            }
+            for pos in 0..=ids.len() {
+                let after = match pos {
+                    0 => Anchor::Start,
+                    _ => Anchor::Char {
+                        id: ids[pos - 1],
+                        bias: Bias::After,
+                    },
+                };
+                let before = match ids.get(pos) {
+                    None => Anchor::End,
+                    Some(&id) => Anchor::Char {
+                        id,
+                        bias: Bias::Before,
+                    },
+                };
+                assert_eq!(
+                    doc.anchor_at(pos, Bias::After).unwrap(),
+                    after,
+                    "seed {seed}"
+                );
+                assert_eq!(
+                    doc.anchor_at(pos, Bias::Before).unwrap(),
+                    before,
+                    "seed {seed}"
+                );
+            }
         }
     }
 }
