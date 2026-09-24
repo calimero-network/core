@@ -237,6 +237,28 @@ mod tests {
         assert_eq!(policy.node_account, root.account());
     }
 
+    /// A node that has taken part in nothing serves no proofs at all.
+    ///
+    /// Not a refusal: with no policy the header is never looked at, so the
+    /// answer is whatever the absence of any other credential produces — a 401
+    /// that says nothing about delegated access. Worth pinning because it is
+    /// easy to read a 401 here as "the proof was rejected" and go looking at
+    /// the chain, when the node simply has no identity to check it against.
+    /// `merod init` provisions a signing key, but the account root and device
+    /// are minted the first time a node takes part in a namespace.
+    #[test]
+    fn a_node_with_no_identity_has_no_policy() {
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        assert!(
+            ProofPolicy::resolve(&store, true).is_none(),
+            "a node holding neither a device nor an account root must serve no \
+             proofs, however the flag is set",
+        );
+    }
+
     const METHOD: &str = "GET";
     const PATH: &str = "/admin-api/namespaces";
     const NOW: u64 = 1_700_000_000;

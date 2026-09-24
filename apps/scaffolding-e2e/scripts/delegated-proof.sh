@@ -14,7 +14,7 @@
 # gated by `--delegated-access` alone, and a scenario that turned on
 # `--device-key-login` as well would not notice if that stopped being true.
 #
-# Usage: delegated-proof.sh <relay> <member_node> <unflagged> <context> <credential> <device_secret> <relay_node_key>
+# Usage: delegated-proof.sh <relay> <member_node> <unflagged> <context> <credential> <device_secret> <relay_node_key> <unflagged_node_key>
 
 set -e
 
@@ -27,10 +27,11 @@ CONTEXT="$4"
 CREDENTIAL="$5"
 DEVICE_SECRET="$6"
 RELAY_KEY="$7"
+UNFLAGGED_KEY="$8"
 
-for v in RELAY MEMBER_NODE UNFLAGGED CONTEXT CREDENTIAL DEVICE_SECRET RELAY_KEY; do
+for v in RELAY MEMBER_NODE UNFLAGGED CONTEXT CREDENTIAL DEVICE_SECRET RELAY_KEY UNFLAGGED_KEY; do
     eval "val=\${$v}"
-    [ -n "${val}" ] || fail "usage: delegated-proof.sh <relay> <member_node> <unflagged> <context> <credential> <device_secret> <relay_node_key>"
+    [ -n "${val}" ] || fail "usage: delegated-proof.sh <relay> <member_node> <unflagged> <context> <credential> <device_secret> <relay_node_key> <unflagged_node_key>"
 done
 
 RELAY_URL=$(node_url "${RELAY}") || fail "could not resolve ${RELAY}"
@@ -49,14 +50,21 @@ UNFLAGGED_URL=$(node_url "${UNFLAGGED}") || fail "could not resolve ${UNFLAGGED}
 # proof path to a login provider it does not use.
 CHALLENGE="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
-SIGNED=$(offline_merod account login-statement \
-    --challenge "${CHALLENGE}" \
-    --node "${RELAY_KEY}" \
-    --device-secret "${DEVICE_SECRET}" \
-    --generate-session-key \
-    --credential "${CREDENTIAL}" \
-    --audience cli)
+# A statement is addressed to ONE node, so a second node needs its own. Both
+# come from the same device, which is the point: the account is identical and
+# only the node it names differs.
+mint_statement() {
+    _for_node="$1"
+    offline_merod account login-statement \
+        --challenge "${CHALLENGE}" \
+        --node "${_for_node}" \
+        --device-secret "${DEVICE_SECRET}" \
+        --generate-session-key \
+        --credential "${CREDENTIAL}" \
+        --audience cli
+}
 
+SIGNED=$(mint_statement "${RELAY_KEY}")
 STATEMENT=$(echo "${SIGNED}" | head -1)
 SESSION_SECRET=$(echo "${SIGNED}" | sed -n 's/^Session-Secret:[[:space:]]*//p')
 [ -n "${STATEMENT}" ] || fail "merod produced no login statement"
@@ -67,17 +75,23 @@ SESSION_SECRET=$(echo "${SIGNED}" | sed -n 's/^Session-Secret:[[:space:]]*//p')
 # `--credential` makes `sign-request` print the assembled `X-Calimero-Proof`
 # rather than the bare signature. Assembled by merod rather than here, so this
 # script carries no copy of an encoding the node has to agree with.
-sign_proof() {
-    _method="$1"
-    _path="$2"
+sign_proof_with() {
+    _statement="$1"
+    _secret="$2"
+    _method="$3"
+    _path="$4"
     offline_merod account sign-request \
         --method "${_method}" \
         --path "${_path}" \
-        --signer-secret "${SESSION_SECRET}" \
+        --signer-secret "${_secret}" \
         --credential "${CREDENTIAL}" \
-        --session "${STATEMENT}" \
+        --session "${_statement}" \
         --valid-for 300 \
         | sed -n 's/^Proof:[[:space:]]*//p'
+}
+
+sign_proof() {
+    sign_proof_with "${STATEMENT}" "${SESSION_SECRET}" "$1" "$2"
 }
 
 PROOF=$(sign_proof GET /admin-api/contexts)
@@ -130,10 +144,21 @@ expect "a proof minted for another node is refused" 401
 
 # --- 5. The flag actually gates it ------------------------------------------
 echo "== a node not serving delegated access refuses =="
-# 403, not 401: the chain is sound and the answer is "this node was not asked to
-# serve you", which is a different statement from "your credential is bad".
-probe "${UNFLAGGED_URL}" /admin-api/contexts "${PROOF}"
-expect "a node without --delegated-access refuses a sound proof" 403
+# Addressed to NODE-3, deliberately. `admit` verifies the chain before it
+# consults the policy, so the proof above — minted for the relay — would fail
+# the node binding here and never reach the branch this is about. The refusal
+# would still be 401, and would say nothing about the flag.
+UNFLAGGED_SIGNED=$(mint_statement "${UNFLAGGED_KEY}")
+UNFLAGGED_STATEMENT=$(echo "${UNFLAGGED_SIGNED}" | head -1)
+UNFLAGGED_SECRET=$(echo "${UNFLAGGED_SIGNED}" | sed -n 's/^Session-Secret:[[:space:]]*//p')
+[ -n "${UNFLAGGED_STATEMENT}" ] || fail "merod minted no statement for the unflagged node"
+
+# 403, not 401: this node CAN verify the chain, and the answer is "I was not
+# asked to serve that account" — a different statement from "your credential is
+# bad", and the one that tells a caller to stop retrying.
+probe "${UNFLAGGED_URL}" /admin-api/contexts \
+    "$(sign_proof_with "${UNFLAGGED_STATEMENT}" "${UNFLAGGED_SECRET}" GET /admin-api/contexts)"
+expect "a node without --delegated-access refuses a chain it can verify" 403
 
 # --- 6. The signature is bound to the request -------------------------------
 echo "== a proof does not travel between requests =="

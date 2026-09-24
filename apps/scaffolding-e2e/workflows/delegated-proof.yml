@@ -20,9 +20,20 @@ description: >
       node-1's key, and only the session link carries a node at all. A refusal
       here can therefore only be the node binding, which is what makes that
       binding testable rather than assumed.
-    - `delegated-proof-node-3` does NOT serve delegated access. A sound chain is
-      refused with 403 rather than 401, because "this node was not asked to
-      serve you" is a different statement from "your credential is bad".
+    - `delegated-proof-node-3` does NOT serve delegated access. A chain it can
+      verify is refused with 403 rather than 401, because "this node was not
+      asked to serve you" is a different statement from "your credential is
+      bad".
+
+      It needs an identity of its own for that to be reachable at all, which is
+      why it creates a namespace it then shares with nobody. A node that has
+      taken part in nothing holds neither a device nor an account root, so
+      `ProofPolicy::resolve` returns `None` and the header is ignored rather
+      than refused — the answer is 401 for want of any credential, which says
+      nothing about the flag. And the proof has to be addressed to node-3:
+      `admit` verifies the chain BEFORE consulting the policy, so a proof
+      minted for another node fails the binding first and never reaches the
+      `NotServed` branch.
 
   No auth provider is enabled on any node. The proof path is gated by
   `--delegated-access` alone, and turning on `--device-key-login` as well would
@@ -51,6 +62,12 @@ steps:
   - name: Login on delegated-proof-node-2
     type: login
     node: delegated-proof-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on delegated-proof-node-3
+    type: login
+    node: delegated-proof-node-3
     username: dev
     password: dev-password
 
@@ -134,6 +151,31 @@ steps:
 
   # Read the relay's own key rather than pinning a constant: this is the value
   # the statement is addressed to, and the one the guard checks it against.
+  # Node-3 takes part in something of its own, and shares it with nobody. Only
+  # that gives it the account root and signing key `ProofPolicy::resolve` needs
+  # in order to have a policy at all — without one it ignores proofs instead of
+  # refusing them, and the 403 this scenario is about is unreachable.
+  - name: Node-3 installs the application
+    type: install_application
+    node: delegated-proof-node-3
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id_3: applicationId
+
+  - name: Node-3 creates a namespace of its own
+    type: create_namespace
+    node: delegated-proof-node-3
+    application_id: '{{app_id_3}}'
+    outputs:
+      namespace_id_3: namespaceId
+
+  - name: Read node-3's signing key
+    type: node_identity
+    node: delegated-proof-node-3
+    outputs:
+      unflagged_key: publicKey
+
   - name: Read the relay's signing key
     type: node_identity
     node: delegated-proof-node-1
@@ -158,3 +200,4 @@ steps:
       - '{{caller_credential}}'
       - '{{caller_secret}}'
       - '{{relay_key}}'
+      - '{{unflagged_key}}'
