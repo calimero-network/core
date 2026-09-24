@@ -51,7 +51,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
 use calimero_account::{AccountId, AccountProof, Audience, DeviceCert, LoginStatement};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{DeviceId, PublicKey};
 use eyre::{bail, eyre, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -290,8 +290,17 @@ impl AccountProofProvider {
                 .any(|allowed| *allowed == audience_label(audience))
     }
 
-    /// Run the whole exchange, returning the account the session belongs to.
-    async fn authenticate_core(&self, data: &AccountProofAuthData) -> Result<AccountId> {
+    /// Run the whole exchange, returning the account the session belongs to and
+    /// the device that asked for it.
+    ///
+    /// Both, because they answer different questions downstream: governance
+    /// rows are keyed by ACCOUNT, and revocation is a per-DEVICE row. A caller
+    /// given only the account cannot check whether the key that just
+    /// authenticated has since been withdrawn.
+    async fn authenticate_core(
+        &self,
+        data: &AccountProofAuthData,
+    ) -> Result<(AccountId, DeviceId)> {
         let challenge_bytes = hex::decode(&data.challenge)
             .map_err(|err| eyre!("challenge is not valid hex: {err}"))?;
         let challenge: [u8; CHALLENGE_LEN] = challenge_bytes
@@ -355,7 +364,7 @@ impl AccountProofProvider {
         self.challenges.redeem(&challenge).await?;
 
         debug!(%account, "account authenticated by device key");
-        Ok(account)
+        Ok((account, verified.device))
     }
 }
 
@@ -374,7 +383,7 @@ struct AccountProofVerifier {
 #[async_trait]
 impl AuthVerifierFn for AccountProofVerifier {
     async fn verify(&self) -> Result<AuthResponse> {
-        let account = self.provider.authenticate_core(&self.auth_data).await?;
+        let (account, device) = self.provider.authenticate_core(&self.auth_data).await?;
         let key_id = account.to_string();
 
         // A verified proof is not the whole job: the subject has to EXIST as a
@@ -392,6 +401,12 @@ impl AuthVerifierFn for AccountProofVerifier {
             // rows are keyed by.
             key_id,
             permissions: self.provider.config.session_permissions.clone(),
+            // The device, beside the account, because revocation is a
+            // per-device row. The subject stays the account — that is what
+            // governance keys on — but a session that cannot name its device is
+            // one revocation cannot reach, and this provider is the only one
+            // that knows which device asked.
+            device: Some(hex::encode(device.as_bytes())),
         })
     }
 }
@@ -612,10 +627,10 @@ mod tests {
     #[tokio::test]
     async fn a_certified_device_authenticates_as_its_account() {
         let p = provider(Arc::new(MemoryStorage::new()));
-        let (root, device, session) = (key(1), key(2), key(3));
-        let data = valid_login(&p, &root, &device, &session).await;
+        let (root, device_key, session) = (key(1), key(2), key(3));
+        let data = valid_login(&p, &root, &device_key, &session).await;
 
-        let account = p
+        let (account, device) = p
             .authenticate_core(&data)
             .await
             .expect("a certified device must authenticate");
@@ -624,6 +639,14 @@ mod tests {
             account,
             AccountGenesis::new(root.public_key()).account_id(),
             "the session belongs to the ACCOUNT, not the device"
+        );
+        // And it knows WHICH device, which is what lets revocation reach a
+        // session at all: revocation is a per-device row, so an account alone
+        // cannot be checked against one.
+        assert_eq!(
+            device,
+            account_with_device(&root, &device_key).statement.device,
+            "the session must name the device whose key authenticated"
         );
     }
 

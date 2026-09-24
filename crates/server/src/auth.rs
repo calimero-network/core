@@ -503,6 +503,33 @@ where
                         Ok(account) => {
                             debug!(%account, "account-anchored session: granting AuthenticatedAccount");
                             parts.extensions.insert(AuthenticatedAccount(account));
+
+                            // And the device, when the token names one, so a
+                            // session is filtered by revocation exactly as a
+                            // request-carried proof is. A token minted before
+                            // this claim existed names none and behaves as it
+                            // always did — unfilterable, which is the gap being
+                            // closed rather than one being opened.
+                            //
+                            // An unparseable value grants no device rather than
+                            // a wrong one: the claim is advisory to this layer,
+                            // and inventing a device id would make revocation
+                            // consult a row about somebody else.
+                            match auth_response
+                                .device
+                                .as_deref()
+                                .map(str::parse::<calimero_primitives::identity::DeviceId>)
+                            {
+                                Some(Ok(device)) => {
+                                    parts.extensions.insert(AuthenticatedDevice(device));
+                                }
+                                Some(Err(_)) => warn!(
+                                    %account,
+                                    "session names a device that does not parse; \
+                                     granting no device",
+                                ),
+                                None => {}
+                            }
                         }
                         Err(_) => {
                             // Minted by the account provider yet not a parseable
@@ -721,7 +748,7 @@ mod tests {
         key_manager.set_key("k-1", &key).await.unwrap();
 
         let (access_token, _) = token_manager
-            .generate_token_pair("k-1".to_owned(), vec!["admin".to_owned()], None)
+            .generate_token_pair("k-1".to_owned(), vec!["admin".to_owned()], None, None)
             .await
             .unwrap();
 

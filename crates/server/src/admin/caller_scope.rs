@@ -93,11 +93,13 @@ pub(crate) const fn narrow_to(
 /// `account_proof` mints a token whose subject is the account and the device
 /// that logged in is dropped there.
 ///
-/// So the revocation filter below applies to proofs and not to sessions, which
-/// means a session survives the revocation of the very device that opened it.
-/// That is a gap in the session path rather than a decision here, and closing
-/// it means carrying the device through the login — a change in the auth store,
-/// not in this function.
+/// Both paths can name it now. A request-carried proof names the device its
+/// certificate covers; a session names the one the `account_proof` login
+/// recorded in its token. `None` therefore means one of two things, and neither
+/// is "no device": a password session, which identifies the node owner rather
+/// than a device of anybody's account, or a session minted before that claim
+/// existed. Both are unfilterable by revocation, and both are correct to be —
+/// the first has no device, the second has one nobody wrote down.
 ///
 /// The group set is resolved **per request**, never cached on the session — the
 /// same rule the delegated read follows (#3931). A membership change is a
