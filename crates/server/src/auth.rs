@@ -843,6 +843,162 @@ mod tests {
         assert!(resp.headers().get("X-Auth-Error").is_none());
     }
 
+    /// One GET through the real guard, with a token carrying exactly
+    /// `permissions` — or, when `send_token` is false, with no credential at
+    /// all.
+    ///
+    /// A sibling of `guarded_request` rather than a parameter on it: that one is
+    /// about what happens to a key *after* its token was minted, this one about
+    /// what a given scope reaches, and folding the two would make both harder to
+    /// read than either is now.
+    async fn scoped_request(path: &str, permissions: Vec<String>, send_token: bool) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "account_proof".to_owned(),
+            permissions.clone(),
+            None,
+        );
+        key_manager.set_key("k-1", &key).await.unwrap();
+
+        let (access_token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let mut builder = Request::builder().method(Method::GET).uri(path);
+        if send_token {
+            builder = builder.header("Authorization", format!("Bearer {access_token}"));
+        }
+
+        Router::new()
+            .route("/admin-api/namespaces", get(|| async { "ok" }))
+            .route("/admin-api/contexts", get(|| async { "ok" }))
+            .route("/admin-api/contexts/{context_id}", get(|| async { "ok" }))
+            .route("/admin-api/blobs", get(|| async { "ok" }))
+            .route(
+                "/admin-api/contexts/{context_id}/identities",
+                get(|| async { "ok" }),
+            )
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                // No proof policy: this test covers the token path, and giving
+                // it one would let a failure there be masked by admission here.
+                None,
+            ))
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// The scope `account_proof` mints by default, verbatim.
+    fn delegated_session() -> Vec<String> {
+        vec![
+            "context:intent".to_owned(),
+            "context:list-own".to_owned(),
+            "context:query".to_owned(),
+            "context:subscribe".to_owned(),
+            "namespace:list-own".to_owned(),
+        ]
+    }
+
+    /// The criterion, through the guard a client actually meets: a delegated
+    /// session reaches the two caller-scoped listings and the single-context
+    /// read, where before it got a 403 from the permission layer and never saw
+    /// the handler that would have scoped its answer.
+    #[tokio::test]
+    async fn a_delegated_session_passes_the_guard_for_the_scoped_listings() {
+        for path in [
+            "/admin-api/namespaces",
+            "/admin-api/contexts",
+            "/admin-api/contexts/ctx-1",
+        ] {
+            let resp = scoped_request(path, delegated_session(), true).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "a delegated session must pass the guard for GET {path}",
+            );
+        }
+    }
+
+    /// Blob enumeration stays shut to a delegated session (core #4019).
+    ///
+    /// `GET /admin-api/blobs` returns every blob the node holds, with no caller
+    /// scoping at all — on a relay, opening it would hand each tenant the blob
+    /// ids of every other one. It is deliberately not part of this change.
+    #[tokio::test]
+    async fn a_delegated_session_is_refused_blob_enumeration() {
+        let resp = scoped_request("/admin-api/blobs", delegated_session(), true).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers().get("X-Auth-Error").unwrap(),
+            "permission_denied",
+        );
+    }
+
+    /// And so does the context sub-resource that has no caller scoping of its
+    /// own — the sibling `context:list` would have reached, which is why the
+    /// narrow `context:list-own` exists.
+    #[tokio::test]
+    async fn a_delegated_session_is_refused_an_unscoped_context_sibling() {
+        let resp = scoped_request(
+            "/admin-api/contexts/ctx-1/identities",
+            delegated_session(),
+            true,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Opening the listings must not have opened them to the world: with no
+    /// credential the guard still answers 401, before any permission is
+    /// considered.
+    #[tokio::test]
+    async fn the_scoped_listings_still_refuse_an_unauthenticated_caller() {
+        for path in [
+            "/admin-api/namespaces",
+            "/admin-api/contexts",
+            "/admin-api/contexts/ctx-1",
+        ] {
+            let resp = scoped_request(path, delegated_session(), false).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "GET {path} with no token must be 401",
+            );
+        }
+    }
+
+    /// The node owner's path through the guard is unchanged.
+    #[tokio::test]
+    async fn an_admin_token_still_reaches_every_listing() {
+        for path in [
+            "/admin-api/namespaces",
+            "/admin-api/contexts",
+            "/admin-api/contexts/ctx-1",
+            "/admin-api/blobs",
+            "/admin-api/contexts/ctx-1/identities",
+        ] {
+            let resp = scoped_request(path, vec!["admin".to_owned()], true).await;
+            assert_eq!(resp.status(), StatusCode::OK, "admin must reach GET {path}");
+        }
+    }
+
     /// Unmapped `/admin-api/*` routes (governance subpaths, unhandled methods)
     /// must fail closed: a valid but non-admin token is denied, an admin token
     /// is allowed. Without the default-deny these admitted any valid token —

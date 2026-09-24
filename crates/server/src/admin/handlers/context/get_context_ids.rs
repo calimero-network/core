@@ -222,6 +222,53 @@ mod tests {
         );
     }
 
+    /// Two accounts on one relay, and the disjointness is the whole product
+    /// requirement: each tenant's listing is exactly its own, with no row in
+    /// common and nothing dropped from either.
+    ///
+    /// Separate from the test above because "A does not see B's" and "A and B
+    /// each see all of their own" are different failures — a scope that
+    /// resolved to the empty set would pass the first and be useless.
+    #[test]
+    fn two_accounts_list_disjoint_and_complete_sets() {
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+
+        let a_group = ContextGroupId::from([0xa1; 32]);
+        let b_group = ContextGroupId::from([0xb1; 32]);
+        let a_contexts = [ContextId::from([0x01; 32]), ContextId::from([0x02; 32])];
+        let b_contexts = [ContextId::from([0x11; 32])];
+
+        for context_id in &a_contexts {
+            ContextTreeService::new(&store, a_group)
+                .register_context(context_id)
+                .unwrap();
+        }
+        for context_id in &b_contexts {
+            ContextTreeService::new(&store, b_group)
+                .register_context(context_id)
+                .unwrap();
+        }
+
+        let scope_for = |account: u8, group| ListScope::Account {
+            account: AccountId::from([account; 32]),
+            groups: BTreeSet::from([group]),
+        };
+
+        let a = scoped_context_ids(&store, &scope_for(0x0a, a_group))
+            .unwrap()
+            .expect("an account scope enumerates");
+        let b = scoped_context_ids(&store, &scope_for(0x0b, b_group))
+            .unwrap()
+            .expect("an account scope enumerates");
+
+        assert_eq!(a, a_contexts.to_vec(), "each tenant sees all of its own");
+        assert_eq!(b, b_contexts.to_vec(), "each tenant sees all of its own");
+        assert!(
+            a.iter().all(|id| !b.contains(id)),
+            "the two tenants' listings must share no row: {a:?} vs {b:?}"
+        );
+    }
+
     /// `None` means "use the node-wide stream unchanged", which is what keeps a
     /// node owner's view exactly as it was.
     #[test]
