@@ -1474,3 +1474,160 @@ async fn concurrent_expired_requests_refresh_once() {
     // verified on server drop, proving the eight concurrent 401-avoiding
     // refreshes collapsed into one while all eight requests succeeded.
 }
+
+// ---- Request-carried proof (R12/R13) ----
+
+mod request_proof {
+    use calimero_account::{AccountGenesis, AccountProof, CallerProof, DeviceCert, KemPublicKey};
+    use calimero_primitives::identity::{DeviceId, PrivateKey};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    use super::{NoopAuth, NoopStorage};
+    use crate::connection::ConnectionInfo;
+    use crate::proof::RequestProofSigner;
+
+    fn signer() -> RequestProofSigner {
+        let root = PrivateKey::from([1_u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+        let device_sk = PrivateKey::from([51_u8; 32]);
+        let cert = DeviceCert::sign(
+            &root,
+            account,
+            device,
+            &device_sk.public_key(),
+            &KemPublicKey::from([9_u8; 32]),
+            0,
+            0,
+        )
+        .expect("cert");
+        RequestProofSigner::with_device_key(
+            AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            },
+            device_sk,
+        )
+    }
+
+    fn decode(req: &Request) -> CallerProof {
+        let raw = req
+            .headers
+            .get("x-calimero-proof")
+            .expect("proof header")
+            .to_str()
+            .expect("ascii");
+        borsh::from_slice(&hex::decode(raw).expect("hex")).expect("a CallerProof")
+    }
+
+    /// A connection that was not given a key sends no proof, and is otherwise
+    /// unchanged — this is every existing caller.
+    #[tokio::test]
+    async fn no_signer_means_no_proof_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/admin-api/contexts"))
+            .respond_with(|req: &Request| {
+                assert!(
+                    req.headers.get("x-calimero-proof").is_none(),
+                    "a connection given no key must send no proof"
+                );
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = server.uri().parse().unwrap();
+        let conn = ConnectionInfo::new(url, None, NoopAuth, NoopStorage);
+        let _ignored: serde_json::Value = conn.get("admin-api/contexts").await.unwrap();
+    }
+
+    /// The signature commits to the method and the path the node received —
+    /// not to the variant name, and not to anything after a `?`.
+    #[tokio::test]
+    async fn the_proof_commits_to_the_method_and_the_path_the_node_sees() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/admin-api/contexts"))
+            .respond_with(move |req: &Request| {
+                let proof = decode(req);
+                assert_eq!(proof.request.method, "GET");
+                assert_eq!(proof.request.path, "/admin-api/contexts");
+                assert!(
+                    proof.session.is_none(),
+                    "with_device_key is the two-link chain"
+                );
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = server.uri().parse().unwrap();
+        let conn =
+            ConnectionInfo::new(url, None, NoopAuth, NoopStorage).with_request_proof(signer());
+        let _ignored: serde_json::Value = conn.get("admin-api/contexts?limit=5").await.unwrap();
+    }
+
+    /// The bytes hashed are the bytes sent.
+    ///
+    /// This is what the serialize-once change in `request` exists for: the body
+    /// used to be re-serialized by `.json()` inside the retry closure, so a
+    /// signature taken over a separately-serialized copy would have been a
+    /// signature over a second spelling.
+    #[tokio::test]
+    async fn the_proof_commits_to_the_body_actually_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/admin-api/thing"))
+            .respond_with(move |req: &Request| {
+                let proof = decode(req);
+                assert_eq!(proof.request.method, "POST");
+                assert_eq!(
+                    proof.request.body_hash,
+                    calimero_account::RequestSig::body_hash(&req.body),
+                    "the hash must cover the body the server received"
+                );
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = server.uri().parse().unwrap();
+        let conn =
+            ConnectionInfo::new(url, None, NoopAuth, NoopStorage).with_request_proof(signer());
+        let _ignored: serde_json::Value = conn
+            .post("admin-api/thing", serde_json::json!({"a": 1}))
+            .await
+            .unwrap();
+    }
+
+    /// The JSON wire shape is unchanged by serializing ourselves.
+    #[tokio::test]
+    async fn a_json_body_still_carries_its_content_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/admin-api/thing"))
+            .and(wiremock::matchers::header(
+                "content-type",
+                "application/json",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({"a": 1})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = server.uri().parse().unwrap();
+        let conn = ConnectionInfo::new(url, None, NoopAuth, NoopStorage);
+        let _ignored: serde_json::Value = conn
+            .post("admin-api/thing", serde_json::json!({"a": 1}))
+            .await
+            .unwrap();
+    }
+}
