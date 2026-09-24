@@ -100,16 +100,21 @@ primitives/                   # calimero-server-primitives
 
 ### Admin API
 
-Three admin reads are **caller-scoped** (#3941): `GET /admin-api/contexts`,
-`GET /admin-api/namespaces` and the single-context `GET
-/admin-api/contexts/{id}` return only what the caller's groups reach, resolved
-per request through `admin/caller_scope.rs`. The single-context read applies the
-same `ListScope::admits` predicate the listing does — deliberately one rule, so
-a context the listing hides cannot be reached by naming its id (`403`; a `404`
-still means the node does not hold it). At the permission layer all three are
+Several admin reads are **caller-scoped** (#3941): `GET /admin-api/contexts`,
+`GET /admin-api/namespaces`, the single-context `GET /admin-api/contexts/{id}`
+and its four read sub-resources (`/identities`, `/identities-owned`, `/storage`,
+`/group`) return only what the caller's groups reach, resolved per request
+through `admin/caller_scope.rs`. Every one that names a context applies the same
+`ListScope::admits` predicate the listing does, through the shared
+`caller_scope::admits_context` — deliberately one rule and one copy of it, so a
+context the listing hides cannot be reached by naming its id on any of them
+(`403`; a `404` still means the node does not hold it). At the permission layer they are
 gated on the narrow `context:list-own` / `namespace:list-own`, which is what a
 delegated `account_proof` session carries; the wide `context:list` /
-`namespace:list` still satisfies them, so operator tokens are unaffected. A node-owner session, and a node
+`namespace:list` still satisfies them, so operator tokens are unaffected. The
+two `for-application` listings are **not** scoped — they enumerate node-wide
+without ever naming a context whose group could be checked — and keep requiring
+the wide `context:list`. A node-owner session, and a node
 running without the auth guard at all (`AuthMode::Proxy`, the default), keep the
 node-wide view — narrowing there would empty the endpoint on every
 default-configured node without closing anything, since the proxy is what decides
@@ -117,7 +122,7 @@ who gets through. `GET /admin-api/blobs` is **not** scoped: `BlobMeta` carries n
 owner and blobs are deduplicated by content hash with a `refs` count, so
 ownership is many-to-many and needs a model rather than an index (core #4019).
 It keeps requiring the node-wide `blob:list`, so a delegated session cannot
-enumerate blobs — opening it alongside the three above would hand every tenant
+enumerate blobs — opening it alongside the scoped reads above would hand every tenant
 the blob ids of every other one.
 
 ```
