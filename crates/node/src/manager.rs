@@ -20,20 +20,23 @@ mod startup;
 
 /// Per-(context, peer) record of a *persisting* same-DAG / different-root
 /// divergence observed by the hash-heartbeat. Lets the handler tell a
-/// transient, self-healing divergence (the common case — a concurrent sync
-/// apply mid-flight, logged at WARN) from one that is genuinely stuck across
-/// successive heartbeats (escalated to ERROR + an active recovery sync).
+/// transient, self-healing divergence (the common case - a concurrent sync
+/// apply mid-flight, logged at WARN) from one that is genuinely stuck for a
+/// full heartbeat period (escalated to ERROR + an active recovery sync).
 ///
-/// `count` increments only while the SAME (our, their) hash pair recurs — if
-/// either hash moves, sync is making progress and the streak resets to 1. The
-/// entry is cleared when the pair converges. Touched only synchronously by
+/// `since` holds while the SAME (our, their) hash pair recurs - if either hash
+/// moves, sync is making progress and the streak restarts. The entry is
+/// cleared when the pair converges. Touched only synchronously by
 /// `handlers::network_event::heartbeat::handle_hash_heartbeat` on the manager
 /// actor, so a plain `HashMap` (no lock) suffices.
 #[derive(Debug, Clone)]
 pub(crate) struct DivergenceMark {
     pub(crate) our_hash: calimero_primitives::hash::Hash,
     pub(crate) their_hash: calimero_primitives::hash::Hash,
-    pub(crate) count: u32,
+    /// When this hash pair was first observed.
+    pub(crate) since: Instant,
+    /// Set on the first escalation, so its recovery sync is kicked once.
+    pub(crate) escalated: bool,
     /// When this entry was last observed. Lets the heartbeat tick evict marks
     /// for peers that diverged and then went away without ever converging (a
     /// convergence is what normally removes the entry), so the map can't grow
@@ -41,10 +44,56 @@ pub(crate) struct DivergenceMark {
     pub(crate) last_seen: Instant,
 }
 
+/// What one more observation of a divergence means for its streak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Persistence {
+    Transient,
+    Escalated,
+    StillStuck,
+}
+
+impl DivergenceMark {
+    /// Record `(our_hash, their_hash)` seen at `now`; a moved hash restarts the streak.
+    pub(crate) fn observe(
+        prev: Option<&Self>,
+        our_hash: calimero_primitives::hash::Hash,
+        their_hash: calimero_primitives::hash::Hash,
+        now: Instant,
+    ) -> (Self, Persistence) {
+        let mut mark = match prev {
+            Some(prev) if prev.our_hash == our_hash && prev.their_hash == their_hash => {
+                prev.clone()
+            }
+            _ => Self {
+                our_hash,
+                their_hash,
+                since: now,
+                escalated: false,
+                last_seen: now,
+            },
+        };
+        mark.last_seen = now;
+        let persistence = if now.duration_since(mark.since) < DIVERGENCE_PERSIST_FOR {
+            Persistence::Transient
+        } else if mark.escalated {
+            Persistence::StillStuck
+        } else {
+            mark.escalated = true;
+            Persistence::Escalated
+        };
+        (mark, persistence)
+    }
+}
+
 /// Evict divergence / behind-sync bookkeeping for a (context, peer) or context
 /// not seen within this window. Generous relative to the 30s heartbeat cadence:
 /// only genuinely stale churned-away entries are reclaimed.
 pub(crate) const HEARTBEAT_STATE_TTL: Duration = Duration::from_secs(300);
+
+/// How long one divergence must persist unchanged before it escalates: just under a
+/// heartbeat period, in time rather than heartbeats, since every applied delta also heartbeats.
+pub(crate) const DIVERGENCE_PERSIST_FOR: Duration =
+    Duration::from_secs(crate::constants::HASH_HEARTBEAT_FREQUENCY_S.saturating_sub(5));
 
 /// Main node orchestrator.
 ///
@@ -103,8 +152,8 @@ pub struct NodeManager {
     pub(crate) divergence_detected: Counter,
     /// Per-(context, peer) persistence tracker for same-DAG / different-root
     /// divergence (#2319 follow-up). The hash-heartbeat escalates to `error!`
-    /// (and an active recovery sync) only after the SAME divergence survives
-    /// `DIVERGENCE_PERSIST_THRESHOLD` consecutive heartbeats; a first/changing
+    /// (and an active recovery sync) only after the SAME divergence persists for
+    /// `DIVERGENCE_PERSIST_FOR`; a first/changing
     /// observation logs at `warn!`. Keeps a transient mid-sync divergence from
     /// tripping log-scanning CI (`--e2e-mode`) on unrelated work while still
     /// surfacing a genuinely stuck split-brain. See [`DivergenceMark`].
@@ -325,5 +374,82 @@ impl NodeManager {
             namespace_id,
             facts,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use calimero_primitives::hash::Hash;
+
+    use super::{DivergenceMark, Persistence, DIVERGENCE_PERSIST_FOR};
+
+    const OURS: [u8; 32] = [1; 32];
+    const THEIRS: [u8; 32] = [2; 32];
+
+    /// Observe `(ours, theirs)` at each offset from one start, returning each verdict.
+    fn verdicts(observations: &[(Duration, [u8; 32], [u8; 32])]) -> Vec<Persistence> {
+        let start = Instant::now();
+        let mut mark = None;
+        observations
+            .iter()
+            .map(|&(at, ours, theirs)| {
+                let (next, persistence) = DivergenceMark::observe(
+                    mark.as_ref(),
+                    Hash::from(ours),
+                    Hash::from(theirs),
+                    start + at,
+                );
+                mark = Some(next);
+                persistence
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_burst_of_heartbeats_with_one_divergence_stays_transient() {
+        let burst: Vec<_> = (0..6)
+            .map(|ms| (Duration::from_millis(ms), OURS, THEIRS))
+            .collect();
+        assert_eq!(verdicts(&burst), vec![Persistence::Transient; 6]);
+    }
+
+    #[test]
+    fn a_divergence_held_for_the_window_escalates_once_then_stays_stuck() {
+        assert_eq!(
+            verdicts(&[
+                (Duration::ZERO, OURS, THEIRS),
+                (DIVERGENCE_PERSIST_FOR, OURS, THEIRS),
+                (DIVERGENCE_PERSIST_FOR * 2, OURS, THEIRS),
+            ]),
+            vec![
+                Persistence::Transient,
+                Persistence::Escalated,
+                Persistence::StillStuck
+            ]
+        );
+    }
+
+    #[test]
+    fn a_moved_hash_restarts_the_window() {
+        assert_eq!(
+            verdicts(&[
+                (Duration::ZERO, OURS, THEIRS),
+                (DIVERGENCE_PERSIST_FOR, OURS, [3; 32]),
+                (DIVERGENCE_PERSIST_FOR * 2, OURS, [3; 32]),
+            ]),
+            vec![
+                Persistence::Transient,
+                Persistence::Transient,
+                Persistence::Escalated
+            ]
+        );
+    }
+
+    #[test]
+    fn the_window_spans_most_of_a_heartbeat_period() {
+        let period = Duration::from_secs(crate::constants::HASH_HEARTBEAT_FREQUENCY_S);
+        assert!(DIVERGENCE_PERSIST_FOR < period && DIVERGENCE_PERSIST_FOR >= period / 2);
     }
 }

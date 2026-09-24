@@ -508,6 +508,104 @@ async fn rich_partition_format_versus_type() {
     );
 }
 
+/// One side formats a word while the other deletes it; the heal is
+/// HashComparison only, and the replicas must end byte-identical.
+#[tokio::test]
+async fn rich_partition_format_versus_delete() {
+    let label = "partition: format versus delete";
+    let names: Vec<String> = ["fd0", "fd1"].iter().map(|n| (*n).to_owned()).collect();
+    let (mut nodes, oracles, _minted) = seeded_mesh(&names);
+
+    let mut written = BTreeSet::new();
+    let _formatted = edit::<Rich>(&nodes[0], |doc| {
+        written.insert(
+            doc.mark(4, 7, "bold", Some("true"))
+                .expect("mark should succeed")
+                .expect("not suppressed"),
+        );
+        // Uncontested, so the read-back checks have formatting to compare.
+        written.insert(
+            doc.mark(0, 3, "italic", Some("true"))
+                .expect("mark should succeed")
+                .expect("not suppressed"),
+        );
+    });
+    let _deleted = edit::<Rich>(&nodes[1], |doc| {
+        let _undo = doc
+            .apply_delta(&[DeltaOp::retain(4), DeltaOp::Delete { delete: 3 }])
+            .expect("delete should succeed");
+    });
+
+    assert!(
+        converge_group(&mut nodes, &[0, 1]).await,
+        "{label}: the mesh did not converge after the heal"
+    );
+    let mut expected: Vec<char> = oracles[0].text().chars().collect();
+    let _cut: Vec<char> = expected.drain(4..7).collect();
+    assert_rich_properties(
+        label,
+        &[&nodes[0], &nodes[1]],
+        &expected.into_iter().collect::<String>(),
+        &[],
+        &written,
+    );
+}
+
+/// The heal the e2e runs: three nodes, one cut off while the other two keep
+/// exchanging deltas, every contested case at once, then HashComparison.
+#[tokio::test]
+async fn rich_partition_three_nodes_every_contested_case() {
+    let label = "partition: three nodes, every contested case";
+    let names: Vec<String> = ["tn0", "tn1", "tn2"]
+        .iter()
+        .map(|n| (*n).to_owned())
+        .collect();
+    let (mut nodes, oracles, _minted) = seeded_mesh(&names);
+
+    let mut written = BTreeSet::new();
+    let mut mark = |node: &SimNode, start, end, key: &str, value: Option<&str>| {
+        edit::<Rich>(node, |doc| {
+            if let Some(id) = doc
+                .mark(start, end, key, value)
+                .expect("mark should succeed")
+            {
+                written.insert(id);
+            }
+        })
+    };
+    // The cut-off side: its deltas reach nobody until the heal.
+    let _ = mark(&nodes[0], 0, SEED_LEN, "bold", Some("true"));
+    let _ = mark(&nodes[0], 4, SEED_LEN, "bold", None);
+    let _ = mark(&nodes[0], 4, 7, "bold", Some("true"));
+    let _ = mark(&nodes[0], 4, 7, "comment:a", Some("first"));
+    // The connected side: every delta lands on its peer at once.
+    let peer = [
+        mark(&nodes[1], 8, SEED_LEN, "bold", Some("true")),
+        edit::<Rich>(&nodes[1], |doc| {
+            let _undo = doc
+                .apply_delta(&[DeltaOp::retain(4), DeltaOp::Delete { delete: 3 }])
+                .expect("delete should succeed");
+        }),
+    ];
+    for delta in &peer {
+        land(&nodes[2], delta);
+    }
+
+    assert!(
+        converge_group(&mut nodes, &[0, 1, 2]).await,
+        "{label}: the mesh did not converge after the heal"
+    );
+    let mut expected: Vec<char> = oracles[0].text().chars().collect();
+    let _cut: Vec<char> = expected.drain(4..7).collect();
+    assert_rich_properties(
+        label,
+        &[&nodes[0], &nodes[1], &nodes[2]],
+        &expected.into_iter().collect::<String>(),
+        &[],
+        &written,
+    );
+}
+
 /// A joiner that catches up over HashComparison must end byte-identical.
 #[tokio::test]
 async fn rich_marks_reach_a_hash_comparison_joiner() {

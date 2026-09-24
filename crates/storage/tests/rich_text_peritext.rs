@@ -259,6 +259,49 @@ fn peritext_7__overlapping_comments_both_survive() {
     );
 }
 
+/// A mark over a word a concurrent delete removes renders nothing, and the two
+/// replicas store the same bytes for it whichever delete or mark lands first.
+#[test]
+fn format_versus_delete_converges_to_the_same_rows() {
+    let spans = merged(
+        SENTENCE,
+        |doc| {
+            let _id = doc.mark(4, 7, "bold", Some("true")).unwrap();
+        },
+        |doc| {
+            let _undo = doc
+                .apply_delta(&[DeltaOp::retain(4), DeltaOp::Delete { delete: 3 }])
+                .unwrap();
+        },
+    );
+    expect(&spans, &[("The  jumped.", NONE)]);
+}
+
+/// Two comments on exactly one range keep both keys on every replica.
+#[test]
+fn two_comments_on_one_range_converge_to_the_same_rows() {
+    let spans = merged(
+        SENTENCE,
+        |doc| {
+            let _id = doc.mark(4, 7, "comment:alpha", Some("first")).unwrap();
+        },
+        |doc| {
+            let _id = doc.mark(4, 7, "comment:beta", Some("second")).unwrap();
+        },
+    );
+    expect(
+        &spans,
+        &[
+            ("The ", NONE),
+            (
+                "fox",
+                &[("comment:alpha", "first"), ("comment:beta", "second")],
+            ),
+            (" jumped.", NONE),
+        ],
+    );
+}
+
 /// "the text inserted before the bold span becomes non-bold, and the text
 /// inserted after the bold span becomes bold."
 #[test]
