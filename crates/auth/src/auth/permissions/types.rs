@@ -116,6 +116,14 @@ pub enum GroupPermission {
     All(ResourceScope),
     Create(ResourceScope),
     List(ResourceScope),
+    /// The caller's slice of a group listing, not the node-wide answer.
+    ///
+    /// Held by a delegated session, which must reach a group it is a member of
+    /// and no other. [`Self::List`] satisfies it (see `matches_group`), so an
+    /// operator token reaches every route asking for this one — and the reverse
+    /// must never hold, or a delegated session inherits the node-wide read it
+    /// exists to be kept out of.
+    ListOwn(ResourceScope),
     Manage(ResourceScope),
 }
 
@@ -492,6 +500,7 @@ impl FromStr for Permission {
                 match *action {
                     "create" => Ok(Permission::Group(GroupPermission::Create(scope))),
                     "list" => Ok(Permission::Group(GroupPermission::List(scope))),
+                    "list-own" => Ok(Permission::Group(GroupPermission::ListOwn(scope))),
                     "manage" => Ok(Permission::Group(GroupPermission::Manage(scope))),
                     "" => Ok(Permission::Group(GroupPermission::All(scope))),
                     _ => Err(format!("Unknown group action: {action}")),
@@ -720,6 +729,14 @@ impl fmt::Display for Permission {
                 GroupPermission::List(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "group:list{params}")
+                }
+                // `format_simple_params`, as the namespace and context variants
+                // use: `format_params` pads a trailing user slot, so
+                // `group:list-own[grp-1]` would render as `group:list-own[grp-1,]`
+                // and stop matching the string an operator configured.
+                GroupPermission::ListOwn(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "group:list-own{params}")
                 }
                 GroupPermission::Manage(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
@@ -1063,6 +1080,7 @@ fn group_scope(perm: &GroupPermission) -> &ResourceScope {
         GroupPermission::All(scope)
         | GroupPermission::Create(scope)
         | GroupPermission::List(scope)
+        | GroupPermission::ListOwn(scope)
         | GroupPermission::Manage(scope) => scope,
     }
 }
@@ -1078,6 +1096,14 @@ fn matches_group(held: &GroupPermission, required: &GroupPermission) -> bool {
         (GroupPermission::List(h_scope), GroupPermission::List(r_scope)) => {
             matches_scope(h_scope, r_scope)
         }
+        // `list` is the node-wide answer and `list-own` the caller's slice of
+        // it, so holding the former satisfies the latter. This direction only:
+        // `list-own` must NOT satisfy `list`, or a delegated session reaches
+        // every group on the node.
+        (
+            GroupPermission::List(h_scope) | GroupPermission::ListOwn(h_scope),
+            GroupPermission::ListOwn(r_scope),
+        ) => matches_scope(h_scope, r_scope),
         (GroupPermission::Manage(h_scope), GroupPermission::Manage(r_scope)) => {
             matches_scope(h_scope, r_scope)
         }
