@@ -25,6 +25,13 @@ pub struct AuthResponse {
     pub key_id: String,
     /// The permissions granted to the authenticated user
     pub permissions: Vec<String>,
+    /// The device whose key authenticated, hex, when the provider knows one.
+    ///
+    /// Only `account_proof` produces this: a username/password session
+    /// identifies the node owner, who is not a device of anybody's account.
+    /// `None` therefore means "this path cannot name a device", not "no device
+    /// was involved" — and downstream, it means revocation cannot be applied.
+    pub device: Option<String>,
 }
 
 /// Error that can occur during authentication

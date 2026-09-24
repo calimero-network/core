@@ -219,7 +219,15 @@ pub async fn generate_client_key_handler(
     match state
         .0
         .token_generator
-        .generate_token_pair(client_id.clone(), client_key.permissions, node_url)
+        .generate_token_pair(
+            client_id.clone(),
+            client_key.permissions,
+            node_url,
+            // A client key is the node owner's, minted for their own
+            // application. It is not a device of anybody's account, so there
+            // is no device to name.
+            None,
+        )
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -329,7 +337,7 @@ mod tests {
         let _ = key_manager.set_key("root-1", &root).await.unwrap();
 
         let (access, _refresh) = token_manager
-            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None)
+            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None, None)
             .await
             .unwrap();
 

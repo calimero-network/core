@@ -345,6 +345,10 @@ impl AuthVerifierFn for UserPasswordVerifier {
 
         // Return the authentication response
         Ok(AuthResponse {
+            // A password session identifies the node owner, who is not a device
+            // of anybody's account. Naming one here would be inventing a fact
+            // the provider cannot know.
+            device: None,
             is_valid: true,
             key_id,
             permissions,

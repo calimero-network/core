@@ -321,7 +321,12 @@ pub async fn token_handler(
     match state
         .0
         .token_generator
-        .generate_token_pair(key_id.clone(), auth_response.permissions, node_url)
+        .generate_token_pair(
+            key_id.clone(),
+            auth_response.permissions,
+            node_url,
+            auth_response.device,
+        )
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -1136,7 +1141,7 @@ pub async fn mock_token_handler(
     match state
         .0
         .token_generator
-        .generate_token_pair(key_id.clone(), permissions, request.node_url)
+        .generate_token_pair(key_id.clone(), permissions, request.node_url, None)
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -1182,6 +1187,7 @@ mod tests {
 
     fn claims_for(sub: &str) -> Claims {
         Claims {
+            device: None,
             sub: sub.to_string(),
             iss: "calimero-test".to_string(),
             aud: "calimero-test".to_string(),

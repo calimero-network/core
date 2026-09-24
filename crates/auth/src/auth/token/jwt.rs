@@ -81,6 +81,24 @@ pub struct Claims {
     /// Node URL this token is valid for (optional, for backward compatibility)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_url: Option<String>,
+    /// The device whose key obtained this session, hex, when the provider that
+    /// minted it knows one.
+    ///
+    /// Carried because device revocation is a per-device, per-group governance
+    /// row: an account is not revoked, a device is. Without this the subject is
+    /// an account and nothing else, so a session survives the revocation of the
+    /// very device that opened it — the stolen phone keeps reading until the
+    /// token expires.
+    ///
+    /// `Option`, and skipped when absent, so tokens minted before this existed
+    /// stay valid and simply carry no device. They then behave exactly as they
+    /// did: unfilterable by revocation. A required claim would have invalidated
+    /// every live session on upgrade to fix a gap those sessions already had.
+    ///
+    /// Only `account_proof` sets it. A username/password session identifies the
+    /// node owner, who is not a device of anybody's account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 /// JWT Token Manager
@@ -259,6 +277,7 @@ impl TokenManager {
         expiry: Duration,
         node_url: Option<String>,
         token_type: TokenType,
+        device: Option<String>,
     ) -> Result<String, AuthError> {
         let now = Utc::now();
         let exp = now + expiry;
@@ -273,6 +292,7 @@ impl TokenManager {
             token_type,
             permissions,
             node_url,
+            device,
         };
 
         let secret = self
@@ -298,6 +318,7 @@ impl TokenManager {
         node_url: Option<String>,
         access_expiry: Duration,
         refresh_expiry: Duration,
+        device: Option<String>,
     ) -> Result<(String, String), AuthError> {
         let access_token = self
             .generate_token(
@@ -306,9 +327,13 @@ impl TokenManager {
                 access_expiry,
                 node_url.clone(),
                 TokenType::Access,
+                device.clone(),
             )
             .await?;
 
+        // The refresh token carries it too, or exchanging one would mint an
+        // access token that has forgotten which device the session belongs to —
+        // and a session that forgets is a session revocation stops reaching.
         let refresh_token = self
             .generate_token(
                 key_id,
@@ -316,6 +341,7 @@ impl TokenManager {
                 refresh_expiry,
                 node_url,
                 TokenType::Refresh,
+                device,
             )
             .await?;
 
@@ -337,8 +363,17 @@ impl TokenManager {
             Duration::seconds(custom_expiry.unwrap_or(self.config.access_token_expiry) as i64);
         let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
 
-        self.generate_raw_token_pair(key_id, permissions, node_url, access_expiry, refresh_expiry)
-            .await
+        // No device: a mock token stands in for a caller, not for a device of
+        // anybody's account, so naming one would be inventing a fact.
+        self.generate_raw_token_pair(
+            key_id,
+            permissions,
+            node_url,
+            access_expiry,
+            refresh_expiry,
+            None,
+        )
+        .await
     }
 
     /// Generate a pair of access and refresh tokens
@@ -357,6 +392,7 @@ impl TokenManager {
         key_id: String,
         permissions: Vec<String>,
         node_url: Option<String>,
+        device: Option<String>,
     ) -> Result<(String, String), AuthError> {
         // `get_key` yields only valid keys, so a revoked or expired one is
         // already absent by the time we get here.
@@ -379,6 +415,7 @@ impl TokenManager {
                     node_url,
                     access_expiry,
                     refresh_expiry,
+                    device,
                 )
                 .await
             }
@@ -390,6 +427,7 @@ impl TokenManager {
                     node_url,
                     access_expiry,
                     refresh_expiry,
+                    device,
                 )
                 .await
             }
@@ -593,6 +631,7 @@ impl TokenManager {
             is_valid: true,
             key_id: claims.sub,
             permissions: effective_permissions,
+            device: claims.device,
         })
     }
 
@@ -973,8 +1012,17 @@ impl TokenManager {
         let result = match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
             KeyType::Root => {
-                self.generate_token_pair(claims.sub, key.permissions, claims.node_url.clone())
-                    .await
+                self.generate_token_pair(
+                    claims.sub,
+                    key.permissions,
+                    claims.node_url.clone(),
+                    // Carried forward rather than dropped: a refresh that
+                    // forgot the device would launder a revocable session into
+                    // an unfilterable one, which is the opposite of what
+                    // refreshing is for.
+                    claims.device.clone(),
+                )
+                .await
             }
             // For client tokens, rotate the key ID
             KeyType::Client => {
@@ -1001,6 +1049,7 @@ impl TokenManager {
                         claims.node_url.clone(),
                         access_expiry,
                         refresh_expiry,
+                        claims.device.clone(),
                     )
                     .await?;
 
@@ -1224,7 +1273,7 @@ mod tests {
         tm.get_key_manager().set_key("key-1", &key).await.unwrap();
 
         let (access, _refresh) = tm
-            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
             .await
             .unwrap();
 
@@ -1258,6 +1307,7 @@ mod tests {
             .generate_token_pair(
                 "key-1".to_string(),
                 vec!["admin".to_string(), "context".to_string()],
+                None,
                 None,
             )
             .await
@@ -1301,7 +1351,7 @@ mod tests {
         tm.get_key_manager().set_key("key-1", &key).await.unwrap();
 
         let (_access, refresh) = tm
-            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
             .await
             .unwrap();
 
@@ -1337,7 +1387,7 @@ mod tests {
         tm.get_key_manager().set_key("key-1", &key).await.unwrap();
 
         let (_access, refresh) = tm
-            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
             .await
             .unwrap();
 
@@ -1363,7 +1413,7 @@ mod tests {
         tm.get_key_manager().set_key("key-1", &key).await.unwrap();
 
         let (_access, refresh) = tm
-            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
             .await
             .unwrap();
 
@@ -1401,7 +1451,7 @@ mod tests {
         tm.get_key_manager().set_key("root-1", &key).await.unwrap();
 
         let (_access, refresh) = tm
-            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None)
+            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None, None)
             .await
             .unwrap();
 
@@ -1461,7 +1511,12 @@ mod tests {
             .unwrap();
 
         let (_access, refresh) = tm
-            .generate_token_pair("client-1".to_string(), vec!["context".to_string()], None)
+            .generate_token_pair(
+                "client-1".to_string(),
+                vec!["context".to_string()],
+                None,
+                None,
+            )
             .await
             .unwrap();
 
