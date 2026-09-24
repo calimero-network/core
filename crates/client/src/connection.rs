@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 // External crates
-use eyre::{bail, eyre, Result};
+use eyre::{bail, eyre, Result, WrapErr};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -181,22 +181,26 @@ where
     /// Minted per attempt rather than per request: a proof expires, and a retry
     /// after a 401 refresh may land outside the window the first one was signed
     /// for. The auth header on the line above is reloaded for the same reason.
-    fn proof_header(&self, method: &str, path: &str, body: &[u8]) -> Option<String> {
-        let signer = self.request_proof.as_ref()?;
+    /// Fails the request rather than sending it unsigned.
+    ///
+    /// The tempting alternative is to warn and continue, so a connection that
+    /// also holds a token keeps working. That hides the thing worth knowing: a
+    /// caller that configured signing and is not signing has a broken key, and
+    /// would learn it only as an eventual refusal from a node — or not at all,
+    /// if the token carried the call. Failing here says which of the two it is,
+    /// locally, on the first request.
+    fn proof_header(&self, method: &str, path: &str, body: &[u8]) -> Result<Option<String>> {
+        let Some(signer) = self.request_proof.as_ref() else {
+            return Ok(None);
+        };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
+            .map_err(|err| eyre!("the system clock is before the unix epoch: {err}"))?
             .as_secs();
-        match signer.sign(method, path, body, now) {
-            Ok(header) => Some(header),
-            Err(err) => {
-                // A connection that also holds a token must not lose the call
-                // because signing failed; one that does not will get the
-                // node's own refusal, which says more than a local error.
-                tracing::warn!(%err, "could not sign this request; sending it unsigned");
-                None
-            }
-        }
+        signer
+            .sign(method, path, body, now)
+            .map(Some)
+            .wrap_err("failed to sign this request")
     }
 
     /// The base API URL this connection targets.
@@ -564,7 +568,7 @@ where
             // Signed per attempt, for the same reason the token is reloaded:
             // the proof carries an expiry, and a retry may land outside the
             // window the first attempt was signed for.
-            let proof_header = self.proof_header(facts.method, facts.path, facts.body);
+            let proof_header = self.proof_header(facts.method, facts.path, facts.body)?;
 
             let response = request_builder(auth_header, proof_header).await?;
 
