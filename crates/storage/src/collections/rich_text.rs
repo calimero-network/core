@@ -416,6 +416,10 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         self.text.anchor_at(pos, bias)
     }
 
+    pub fn visible_ids(&self) -> Result<Vec<IdRange>, StoreError> {
+        self.text.visible_ids()
+    }
+
     /// One tree rebuild for the whole slice: resolving a mark at a time is
     /// `O(N * m)`. `None` is an anchor this replica cannot place yet.
     pub fn resolve_many(&self, anchors: &[Anchor]) -> Result<Vec<Option<usize>>, StoreError> {

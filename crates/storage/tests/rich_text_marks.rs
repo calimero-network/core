@@ -525,6 +525,29 @@ fn astral_characters_count_as_one_position_each() {
     );
 }
 
+#[test]
+fn visible_ids__delegates_to_the_text_layer() {
+    let store = seeded("abc");
+    let (runs, anchor) = read_with::<Doc, _>(&store, device(ALICE), |doc| {
+        (
+            doc.visible_ids().unwrap(),
+            doc.anchor_at(3, Bias::After).unwrap(),
+        )
+    });
+    let [run] = runs[..] else {
+        panic!("one typed run, got {runs:?}");
+    };
+    assert_eq!(run.len, 3);
+    let last = (run.start.0, run.start.1 + 2);
+    assert_eq!(
+        anchor,
+        Anchor::Char {
+            id: last,
+            bias: Bias::After
+        }
+    );
+}
+
 // ── undo ────────────────────────────────────────────────────────────────
 
 #[test]
