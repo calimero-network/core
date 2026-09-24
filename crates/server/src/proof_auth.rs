@@ -35,6 +35,8 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tracing::{info, warn};
 
+use calimero_governance_store::NamespaceRepository;
+
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 
 /// Where a caller's chain travels.
@@ -99,9 +101,34 @@ impl ProofPolicy {
     /// serving proofs would be answering a question that cannot have a useful
     /// answer. Read once at startup, which matches the value being
     /// configuration: what clients pin should not change under them mid-session.
+    /// **Which key names this node.** Its *device signing key*, read through
+    /// `NamespaceRepository::node_identity` — the same source `name_this_node`
+    /// uses for the session path, and the same value `GET /admin-api/identity`
+    /// publishes as `publicKey`.
+    ///
+    /// This used to take the second element of `node_identity`, which is the
+    /// account's ROOT signing key. A `LoginStatement` names exactly one node, so
+    /// the two halves of one architecture disagreeing meant a statement could
+    /// satisfy the session path or this one and never both — and since the root
+    /// key is not the key clients can discover, every real client produced a
+    /// statement this path refused. `get_node_identity.rs` says why in the
+    /// negative: reporting the root "would name a key no signature on the wire
+    /// verifies against".
     pub(crate) fn resolve(store: &Store, delegated_access: bool) -> Option<Self> {
+        let node_key = match NamespaceRepository::new(store).node_identity() {
+            Ok(Some(identity)) => identity.public_key,
+            Ok(None) => {
+                info!("this node has no signing key yet, so it serves no request proofs");
+                return None;
+            }
+            Err(err) => {
+                warn!(%err, "could not read this node's signing key; serving no request proofs");
+                return None;
+            }
+        };
+
         match node_identity(store) {
-            Ok(Some((node_account, node_key, ..))) => Some(Self {
+            Ok(Some((node_account, ..))) => Some(Self {
                 node_key,
                 node_account,
                 delegated_access,
@@ -166,6 +193,49 @@ mod tests {
     use calimero_primitives::identity::{DeviceId, PrivateKey};
 
     use super::{ProofPolicy, Refusal};
+
+    /// `resolve` must name this node by the key clients can actually discover.
+    ///
+    /// The other tests here build a `ProofPolicy` directly, so whatever key they
+    /// pass is the key they verify against and any choice looks correct. The
+    /// bug this pins lived in `resolve` alone: it took the account ROOT key,
+    /// while `name_this_node` and `GET /admin-api/identity` both use the device
+    /// SIGNING key. A `LoginStatement` names one node, so the mismatch meant a
+    /// statement could satisfy the session path or the proof path and never
+    /// both — and the discoverable key is the device's, so every real client
+    /// produced one this path refused.
+    ///
+    /// It took an e2e to surface, because nothing in-process ever called
+    /// `resolve`.
+    #[test]
+    fn resolve_names_this_node_by_its_signing_key_not_its_account_root() {
+        use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's root");
+        let signing_key = NamespaceRepository::new(&store)
+            .provision_node_identity()
+            .expect("this node's signing key");
+
+        let policy = ProofPolicy::resolve(&store, true).expect("a policy");
+
+        assert_eq!(
+            policy.node_key, signing_key,
+            "the node must be named by the key it signs with, which is what \
+             GET /admin-api/identity publishes and what a client pins",
+        );
+        assert_ne!(
+            policy.node_key,
+            root.genesis().root_sign_pk,
+            "the account root signs certificates and never an op, so naming the \
+             node with it addresses statements to a key no client can discover",
+        );
+        assert_eq!(policy.node_account, root.account());
+    }
 
     const METHOD: &str = "GET";
     const PATH: &str = "/admin-api/namespaces";
