@@ -92,24 +92,34 @@ pub struct AdminConfig {
     /// two drift — and the drift is silent in the unsafe direction, because the
     /// ingress exemption is the half that actually opens the door. mero-tee's
     /// node image drives both from a single Ansible variable for this reason.
-    #[serde(default)]
-    pub public_intents: bool,
+    /// Reads `public_intents` too, for one release.
+    ///
+    /// The flag and the config key move in OPPOSITE directions, and only one of
+    /// them is safe to get wrong. A new merod reading an old `config.toml` is
+    /// covered by this alias. An OLD merod reading a NEW key is not, and cannot
+    /// be: it simply does not know `delegated_access`, so `#[serde(default)]`
+    /// leaves it false and the relay comes up with the surface silently SHUT.
+    /// That is why the fleet's node image keeps writing the old key until its
+    /// merod is past this release — a rollback that reads as "the flag stopped
+    /// working" rather than as a parse error.
+    #[serde(default, alias = "public_intents")]
+    pub delegated_access: bool,
 }
 
 impl AdminConfig {
     /// One constructor taking both flags, rather than a `new(enabled)` plus a
-    /// `with_public_intents`.
+    /// `with_delegated_access`.
     ///
-    /// `public_intents` decides whether this node exposes a write path to
+    /// `delegated_access` decides whether this node exposes a write path to
     /// callers holding no credential on it, so there should be no way to build
     /// this type without answering that. A default-false convenience
     /// constructor is exactly how a relay ships with the posture nobody
     /// intended — in either direction.
     #[must_use]
-    pub const fn new(enabled: bool, public_intents: bool) -> Self {
+    pub const fn new(enabled: bool, delegated_access: bool) -> Self {
         Self {
             enabled,
-            public_intents,
+            delegated_access,
         }
     }
 }
@@ -471,7 +481,7 @@ pub(crate) fn setup(
         // routes are built once and mounted on exactly one of the two routers,
         // so the two postures cannot both be live and no ordering between the
         // routers decides which wins.
-        .merge(if admin_config.public_intents {
+        .merge(if admin_config.delegated_access {
             Router::new()
         } else {
             delegated_execution_routes()
@@ -485,7 +495,7 @@ pub(crate) fn setup(
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
         .nest("/tee", tee::service())
-        .merge(if admin_config.public_intents {
+        .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents"
@@ -508,7 +518,7 @@ pub(crate) fn setup(
 /// not `POST` learns the answer to a question it cannot then act on — either
 /// split is a surface that looks available and is not.
 ///
-/// Which router this is merged into is [`AdminConfig::public_intents`]; see there
+/// Which router this is merged into is [`AdminConfig::delegated_access`]; see there
 /// for why an unauthenticated posture is a coherent choice for these two routes
 /// and only these two.
 fn delegated_execution_routes() -> Router {
@@ -1797,5 +1807,58 @@ mod parse_api_error_tests {
             let server_fault = parse_api_error(eyre::eyre!("something internal broke"));
             assert!(!server_fault.is_client_fault());
         }
+    }
+}
+
+#[cfg(test)]
+mod admin_config_compat_tests {
+    use super::AdminConfig;
+
+    /// A node upgraded in place still reads the key its `config.toml` holds.
+    ///
+    /// `merod init` wrote `public_intents` for every node created before this
+    /// rename, and nothing rewrites an existing config on upgrade. Without the
+    /// alias the field would fall to `#[serde(default)]` and the relay would
+    /// come up with the delegated surface SHUT — not an error, just quietly
+    /// off, which is the failure mode nobody notices until a client reports it.
+    #[test]
+    fn the_old_config_key_still_sets_the_new_field() {
+        let old: AdminConfig =
+            serde_json::from_str(r#"{"enabled":true,"public_intents":true}"#).unwrap();
+        assert!(
+            old.delegated_access,
+            "an existing config.toml must keep opening the surface it opened yesterday"
+        );
+
+        let new: AdminConfig =
+            serde_json::from_str(r#"{"enabled":true,"delegated_access":true}"#).unwrap();
+        assert!(new.delegated_access);
+
+        let absent: AdminConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(
+            !absent.delegated_access,
+            "a config that mentions neither must stay shut"
+        );
+    }
+
+    /// What this node WRITES is the new key, and that is the half the alias
+    /// cannot save.
+    ///
+    /// An older merod does not know `delegated_access`, so it reads a config
+    /// written here as "unset" and comes up shut. The compat paths therefore run
+    /// in opposite directions. A new binary reading an old key is covered
+    /// above; an old binary reading a new key is not, and cannot be. That is
+    /// why the fleet image keeps writing the old key until its merod is past
+    /// this release — a rollback would otherwise present as "the flag stopped
+    /// working" rather than as a parse error anyone could act on.
+    #[test]
+    fn a_written_config_uses_the_new_key_only() {
+        let json = serde_json::to_string(&AdminConfig::new(true, true)).unwrap();
+        assert!(json.contains("delegated_access"), "{json}");
+        assert!(
+            !json.contains("public_intents"),
+            "serializing the old name back out would make the rename invisible \
+             and never end: {json}"
+        );
     }
 }

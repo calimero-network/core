@@ -49,6 +49,11 @@ nodes:
   # config write before a restart is discarded.
   init_args:
     public-intents-node-1:
+      # Deliberately the OLD spelling. The flag is `--delegated-access` now,
+      # with `--public-intents` kept as a hidden alias for one release, and the
+      # fleet's node image still passes the old name — so this scenario is what
+      # proves the alias actually works on a real binary. A compat path nothing
+      # exercises is a compat path that is already broken.
       - --public-intents
 
 steps:
