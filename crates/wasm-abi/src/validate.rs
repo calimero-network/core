@@ -124,12 +124,12 @@ fn validate_variant(variant: &Variant, path: &str) -> Result<(), ValidationError
 
 fn validate_type_def(type_def: &TypeDef, path: &str) -> Result<(), ValidationError> {
     match type_def {
-        TypeDef::Record { fields } => {
+        TypeDef::Record { fields, .. } => {
             for field in fields {
                 validate_field(field, path)?;
             }
         }
-        TypeDef::Variant { variants } => {
+        TypeDef::Variant { variants, .. } => {
             for variant in variants {
                 validate_variant(variant, path)?;
             }
@@ -266,12 +266,12 @@ pub(crate) fn collect_refs_from_manifest(manifest: &Manifest, refs: &mut Vec<(St
 
 fn collect_refs_from_type_def(type_def: &TypeDef, path: &str, refs: &mut Vec<(String, String)>) {
     match type_def {
-        TypeDef::Record { fields } => {
+        TypeDef::Record { fields, .. } => {
             for field in fields {
                 collect_refs_from_type_ref(&field.type_, path, refs);
             }
         }
-        TypeDef::Variant { variants } => {
+        TypeDef::Variant { variants, .. } => {
             for variant in variants {
                 if let Some(payload) = &variant.payload {
                     collect_refs_from_type_ref(payload, path, refs);
@@ -343,13 +343,18 @@ mod tests {
         let mut manifest = Manifest::new();
 
         // Add a test type
-        let _ = manifest
-            .types
-            .insert("TestType".to_owned(), TypeDef::Record { fields: vec![] });
+        let _ = manifest.types.insert(
+            "TestType".to_owned(),
+            TypeDef::Record {
+                doc: None,
+                fields: vec![],
+            },
+        );
 
         // Add a test method
         manifest.methods.push(Method {
             name: "test_method".to_owned(),
+            doc: None,
             params: vec![],
             returns: Some(TypeRef::u32()),
             returns_nullable: None,
@@ -369,6 +374,7 @@ mod tests {
         let mut manifest = Manifest::new();
         manifest.methods.push(Method {
             name: "pairs".to_owned(),
+            doc: None,
             params: vec![],
             returns: Some(TypeRef::list(TypeRef::tuple(vec![
                 TypeRef::string(),
@@ -437,6 +443,7 @@ mod tests {
         // Add a method that references a non-existent type
         manifest.methods.push(Method {
             name: "test_method".to_owned(),
+            doc: None,
             params: vec![],
             returns: Some(TypeRef::reference("NonExistentType")),
             returns_nullable: None,

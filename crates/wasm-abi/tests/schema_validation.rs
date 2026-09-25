@@ -1,6 +1,8 @@
-use calimero_wasm_abi::schema::MethodIntent;
+use calimero_wasm_abi::schema::{
+    Event, Field, Manifest, Method, MethodIntent, Parameter, TypeDef, TypeRef, Variant,
+};
 use jsonschema::validator_for;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[test]
 fn test_schema_validation_basic() {
@@ -18,6 +20,7 @@ fn test_schema_validation_basic() {
     // Add a simple method
     manifest.methods.push(calimero_wasm_abi::schema::Method {
         name: "test_method".to_string(),
+        doc: None,
         params: vec![],
         returns: Some(calimero_wasm_abi::schema::TypeRef::u32()),
         returns_nullable: None,
@@ -96,6 +99,7 @@ fn test_schema_validation_shared_storage_crdt_type() {
     };
     manifest.methods.push(Method {
         name: "shared".to_string(),
+        doc: None,
         params: vec![],
         returns: Some(shared),
         returns_nullable: None,
@@ -322,6 +326,7 @@ fn test_schema_validation_tuple() {
     };
     manifest.methods.push(calimero_wasm_abi::schema::Method {
         name: "sorted_scores_range".to_string(),
+        doc: None,
         params: vec![],
         returns: Some(calimero_wasm_abi::schema::TypeRef::list(
             calimero_wasm_abi::schema::TypeRef::tuple(vec![
@@ -343,4 +348,115 @@ fn test_schema_validation_tuple() {
         "Schema validation failed: {:?}",
         validation_result.err()
     );
+}
+
+#[test]
+fn test_schema_validation_doc_on_every_object() {
+    let schema_json = include_str!("../wasm-abi.schema.json");
+    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
+
+    let doc = || Some("Documented.".to_owned());
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    let field = Field {
+        name: "a".to_owned(),
+        type_: TypeRef::u32(),
+        nullable: None,
+        doc: doc(),
+    };
+    let _ = manifest.types.insert(
+        "R".to_owned(),
+        TypeDef::Record {
+            doc: doc(),
+            fields: vec![field],
+        },
+    );
+    let _ = manifest.types.insert(
+        "V".to_owned(),
+        TypeDef::Variant {
+            doc: doc(),
+            variants: vec![Variant {
+                name: "A".to_owned(),
+                code: None,
+                payload: None,
+                doc: doc(),
+            }],
+        },
+    );
+    let _ = manifest.types.insert(
+        "B".to_owned(),
+        TypeDef::Bytes {
+            doc: doc(),
+            size: Some(32),
+            encoding: None,
+        },
+    );
+    let _ = manifest.types.insert(
+        "L".to_owned(),
+        TypeDef::Alias {
+            doc: doc(),
+            target: TypeRef::string(),
+            pattern: None,
+        },
+    );
+    manifest.methods.push(Method {
+        name: "m".to_owned(),
+        doc: doc(),
+        params: vec![Parameter {
+            name: "p".to_owned(),
+            type_: TypeRef::reference("R"),
+            nullable: None,
+            doc: doc(),
+        }],
+        returns: None,
+        returns_nullable: None,
+        errors: vec![],
+        intent: MethodIntent::Unspecified,
+        xcall_callable: false,
+        xcall_callers: Default::default(),
+    });
+    manifest.events.push(Event {
+        name: "E".to_owned(),
+        payload: None,
+        doc: doc(),
+    });
+
+    let manifest_json = serde_json::to_value(&manifest).unwrap();
+    let validation_result = schema.validate(&manifest_json);
+    assert!(
+        validation_result.is_ok(),
+        "doc must be accepted on every documented object: {:?}",
+        validation_result.err()
+    );
+}
+
+#[test]
+fn test_schema_validation_doc_does_not_loosen_other_keys() {
+    // `doc` is one more described key, not a relaxed `additionalProperties`: a
+    // misspelt key, a non-string doc, and a doc on an inline type reference all fail.
+    let schema_json = include_str!("../wasm-abi.schema.json");
+    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
+
+    let rejected = [
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"docs":"x"}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"doc":7}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[{"name":"p","type":{"kind":"u32","doc":"x"}}]}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[{"name":"p","type":{"kind":"bytes","doc":"x"}}]}]}),
+        json!({"schema_version":"wasm-abi/1","types":{"R":{"kind":"record","fields":[],"docs":"x"}},
+               "methods":[],"events":[]}),
+    ];
+    for manifest in rejected {
+        assert!(
+            schema.validate(&manifest).is_err(),
+            "must be rejected: {manifest}"
+        );
+    }
 }

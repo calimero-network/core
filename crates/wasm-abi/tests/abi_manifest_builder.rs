@@ -6,6 +6,7 @@ use calimero_wasm_abi::validate::validate_manifest;
 fn method(name: &str) -> Method {
     Method {
         name: name.to_owned(),
+        doc: None,
         params: vec![],
         returns: None,
         returns_nullable: None,
@@ -20,6 +21,7 @@ fn event(name: &str) -> calimero_wasm_abi::schema::Event {
     calimero_wasm_abi::schema::Event {
         name: name.to_owned(),
         payload: None,
+        doc: None,
     }
 }
 

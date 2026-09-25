@@ -128,6 +128,7 @@ fn struct_def(fields: &Fields, pattern: Option<&str>) -> Result<TokenStream, Syn
             };
             return Ok(quote! {
                 ::calimero_sdk::abi::TypeDef::Alias {
+                    doc: ::core::option::Option::None,
                     target: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                     pattern: #pattern,
                 }
@@ -143,7 +144,12 @@ fn struct_def(fields: &Fields, pattern: Option<&str>) -> Result<TokenStream, Syn
     }
 
     let fields = fields_vec(fields, false);
-    Ok(quote! { ::calimero_sdk::abi::TypeDef::Record { fields: #fields } })
+    Ok(quote! {
+        ::calimero_sdk::abi::TypeDef::Record {
+            doc: ::core::option::Option::None,
+            fields: #fields,
+        }
+    })
 }
 
 fn enum_def(enum_name: &str, data: &DataEnum) -> TokenStream {
@@ -159,6 +165,7 @@ fn enum_def(enum_name: &str, data: &DataEnum) -> TokenStream {
                     name: #name.to_owned(),
                     code: ::core::option::Option::None,
                     payload: #payload,
+                    doc: ::core::option::Option::None,
                 }
             }
         })
@@ -167,6 +174,7 @@ fn enum_def(enum_name: &str, data: &DataEnum) -> TokenStream {
     quote! {
         #(#synthesized)*
         ::calimero_sdk::abi::TypeDef::Variant {
+            doc: ::core::option::Option::None,
             variants: ::std::vec![#(#variants),*],
         }
     }
@@ -201,7 +209,10 @@ pub(crate) fn variant_payload(
     let record = format!("{}_{}", enum_name, variant.ident);
     let fields = fields_vec(&variant.fields, true);
     synthesized.push(quote! {
-        __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record { fields: #fields });
+        __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record {
+            doc: ::core::option::Option::None,
+            fields: #fields,
+        });
     });
 
     quote! {
@@ -236,6 +247,7 @@ fn fields_vec(fields: &Fields, payload: bool) -> TokenStream {
                 name: #name.to_owned(),
                 type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                 nullable: #nullable,
+                doc: ::core::option::Option::None,
             }
         }
     });

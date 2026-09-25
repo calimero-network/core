@@ -175,7 +175,9 @@ fn expand_refs(
                     // A `pattern` rides along on the expanded target: it narrows
                     // what the type accepts, so tightening or dropping one has to
                     // stay visible here rather than canonicalize away.
-                    TypeDef::Alias { target, pattern } => serde_json::to_value(target)
+                    TypeDef::Alias {
+                        target, pattern, ..
+                    } => serde_json::to_value(target)
                         .map(|value| merge_alias_pattern(value, pattern.as_deref())),
                     other => serde_json::to_value(other),
                 }
@@ -222,7 +224,7 @@ fn root_record_fields<'a>(manifest: &'a Manifest, which: &str) -> eyre::Result<&
         .as_deref()
         .ok_or_else(|| eyre::eyre!("{which} schema has no state_root"))?;
     match manifest.types.get(root) {
-        Some(TypeDef::Record { fields }) => Ok(fields),
+        Some(TypeDef::Record { fields, .. }) => Ok(fields),
         Some(_) => eyre::bail!("{which} state_root '{root}' is not a record type"),
         None => eyre::bail!("{which} state_root '{root}' is not defined in `types`"),
     }

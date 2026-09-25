@@ -259,6 +259,9 @@
         },
         "nullable": {
           "type": "boolean"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -277,6 +280,9 @@
         },
         "payload": {
           "$ref": "#/definitions/TypeRef"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -298,6 +304,9 @@
               "items": {
                 "$ref": "#/definitions/Field"
               }
+            },
+            "doc": {
+              "type": "string"
             }
           }
         },
@@ -317,6 +326,9 @@
               "items": {
                 "$ref": "#/definitions/Variant"
               }
+            },
+            "doc": {
+              "type": "string"
             }
           }
         },
@@ -338,11 +350,33 @@
               "type": "string",
               "format": "regex",
               "minLength": 1
+            },
+            "doc": {
+              "type": "string"
             }
           }
         },
         {
-          "$ref": "#/definitions/BytesType"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "bytes"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "encoding": {
+              "type": "string"
+            },
+            "doc": {
+              "type": "string"
+            }
+          }
         }
       ]
     },
@@ -362,6 +396,9 @@
         },
         "nullable": {
           "type": "boolean"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -429,6 +466,9 @@
             "same_app"
           ],
           "description": "Who may invoke this xcall entry point, enforced by the node. 'any_in_namespace' (the default, and the value for manifests compiled before this field existed) keeps the historical behaviour; 'same_app' (#[app::xcall(from_same_app)]) restricts callers to contexts running the same application id."
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -444,6 +484,9 @@
         },
         "payload": {
           "$ref": "#/definitions/TypeRef"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     }

@@ -370,6 +370,7 @@ impl PublicLogicMethod<'_> {
                     name: #arg_name.to_owned(),
                     type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                     nullable: #nullable,
+                    doc: ::core::option::Option::None,
                 }
             }
         });
@@ -455,6 +456,7 @@ impl PublicLogicMethod<'_> {
                 };
                 __builder.method(::calimero_sdk::abi::Method {
                     name: #name.to_owned(),
+                    doc: ::core::option::Option::None,
                     params: __params,
                     returns: ::core::option::Option::Some(__returns),
                     returns_nullable: #returns_nullable,

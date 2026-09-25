@@ -44,7 +44,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | Type | Kind | Purpose |
 | --- | --- | --- |
 | `Manifest` | struct | `schema_version`, `types: BTreeMap<String, TypeDef>`, `methods`, `events`, `state_root`, `state_version`, `migrations: Vec<MigrationEdgeAbi>` |
-| `TypeDef` | enum (`kind` tag) | `Record { fields }`, `Variant { variants }`, `Bytes { size, encoding }`, `Alias { target }` |
+| `TypeDef` | enum (`kind` tag) | `Record { doc, fields }`, `Variant { doc, variants }`, `Bytes { doc, size, encoding }`, `Alias { doc, target, pattern }` |
 | `TypeRef` | enum (untagged) | `Reference { $ref }`, `Scalar(ScalarType)`, `Collection { collection, crdt_type, inner_type }` |
 | `ScalarType` | enum (`kind` tag) | `Bool`, `I32`, `I64`, `U32`, `U64`, `F32`, `F64`, `String`, `Bytes { size, encoding }`, `Unit` |
 | `CollectionType` | enum (`kind` tag) | `List { items }`, `Map { key, value }` (key custom-(de)serialized to accept a bare `"string"`), `Record { fields }`, `Tuple { elements }` (positional, so `(K, V)` describes `[k, v]` rather than a record's `{"0":k,"1":v}`) |
@@ -52,7 +52,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | `CollectionCategory` | enum | `Convergent` / `Replayable` / `IdentityGated` - classification returned by `collection_category()`, exhaustively matched (no wildcard) so a new `CrdtCollectionType` variant fails to compile until categorized |
 | `MethodIntent` | enum, `#[default] Unspecified` | `ReadOnly` (`#[app::view]`), `Mutating`, `Unspecified` (fail-safe: treated as write lock) |
 | `XCallCallers` | enum, `#[default] AnyInNamespace` | Who may call an `#[app::xcall]` method: `AnyInNamespace` or `SameApp` (`from_same_app`) |
-| `Method` / `Parameter` / `Field` / `Variant` / `Error` / `Event` | structs | Manifest leaves; all serde-defaulted so old manifests round-trip |
+| `Method` / `Parameter` / `Field` / `Variant` / `Error` / `Event` | structs | Manifest leaves; all serde-defaulted so old manifests round-trip; each carries an optional `doc` (the item's rustdoc) |
 | `MigrationEdgeAbi` | struct | One `{ method, from_version }` hop; `from_version + 1` is the target |
 
 `collection_category()` is the single source of truth for migration safety, consumed by both `downgrade.rs` (the core L1 upgrade gate) and the `mero-abi diff` CI lint:
@@ -95,7 +95,7 @@ The `mero-abi` CLI (package name `mero-abi`, binary/command `calimero-abi`) is t
 
 ## Invariants and Gotchas
 
-- **Old manifests must keep deserializing.** Every field added after `wasm-abi/1` shipped (`intent`, `xcall_callable`, `xcall_callers`, `state_version`, `migrations`) is `#[serde(default, skip_serializing_if = ...)]` with a documented fail-safe default (`Unspecified` -> write lock, `AnyInNamespace` -> the historical open policy, `state_version` -> `1` via `state_version_or_default()`). Adding a field without a safe default and without the skip predicate breaks every already-compiled app's manifest.
+- **Old manifests must keep deserializing.** Every field added after `wasm-abi/1` shipped (`intent`, `xcall_callable`, `xcall_callers`, `state_version`, `migrations`, `doc`) is `#[serde(default, skip_serializing_if = ...)]` with a documented fail-safe default (`Unspecified` -> write lock, `AnyInNamespace` -> the historical open policy, `state_version` -> `1` via `state_version_or_default()`, `doc` -> absent means undocumented). Adding a field without a safe default and without the skip predicate breaks every already-compiled app's manifest.
 - **`CollectionCategory` match has no wildcard.** `collection_category()` and the two `_is_exhaustive` compile tripwires in `schema.rs`'s tests are written to fail to compile when a new `CrdtCollectionType` variant is added without updating both the classification and `wasm-abi.schema.json`'s enum list - don't add a wildcard arm to "fix" the compile error.
 - **`schema_version` matches by major, not exact string.** `SUPPORTED_SCHEMA_MAJOR = 1` in `validate.rs` accepts any `wasm-abi/1[.N]`; a genuinely breaking format change must bump the major, not just the minor, or old readers will silently accept an incompatible manifest.
 - **`read_embedded_state_schema` (non-versioned) is fail-open by design** - it collapses `UnsupportedVersion` to `None`. Anything making a security decision (the identity-downgrade / upgrade gate) must use `read_embedded_state_schema_versioned` and treat `UnsupportedVersion` as "present but opaque," not as "absent."

@@ -41,7 +41,7 @@ fn deserialize_type_def(
     manifest: &Manifest,
 ) -> Result<Value> {
     match type_def {
-        TypeDef::Record { fields } => {
+        TypeDef::Record { fields, .. } => {
             let mut obj = serde_json::Map::new();
             for field in fields {
                 let value = deserialize_type_ref(cursor, &field.type_, manifest)?;
@@ -49,7 +49,7 @@ fn deserialize_type_def(
             }
             Ok(json!(obj))
         }
-        TypeDef::Variant { variants } => {
+        TypeDef::Variant { variants, .. } => {
             let discriminant = u32::deserialize_reader(cursor)
                 .wrap_err("Failed to deserialize variant discriminant")?;
 
@@ -678,6 +678,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "BoolType",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::bool(),
                 pattern: None,
             },
@@ -690,6 +691,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "I32Type",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::i32(),
                 pattern: None,
             },
@@ -702,6 +704,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "U64Type",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::u64(),
                 pattern: None,
             },
@@ -714,6 +717,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "StringType",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::string(),
                 pattern: None,
             },
@@ -732,16 +736,19 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Person",
             TypeDef::Record {
+                doc: None,
                 fields: vec![
                     Field {
                         name: "name".to_owned(),
                         type_: TypeRef::string(),
                         nullable: None,
+                        doc: None,
                     },
                     Field {
                         name: "age".to_owned(),
                         type_: TypeRef::u32(),
                         nullable: None,
+                        doc: None,
                     },
                 ],
             },
@@ -771,16 +778,19 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Status",
             TypeDef::Variant {
+                doc: None,
                 variants: vec![
                     Variant {
                         name: "Active".to_owned(),
                         code: None,
                         payload: None,
+                        doc: None,
                     },
                     Variant {
                         name: "Inactive".to_owned(),
                         code: None,
                         payload: None,
+                        doc: None,
                     },
                 ],
             },
@@ -806,16 +816,19 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Result",
             TypeDef::Variant {
+                doc: None,
                 variants: vec![
                     Variant {
                         name: "Ok".to_owned(),
                         code: None,
                         payload: Some(TypeRef::u32()),
+                        doc: None,
                     },
                     Variant {
                         name: "Err".to_owned(),
                         code: None,
                         payload: Some(TypeRef::string()),
+                        doc: None,
                     },
                 ],
             },
@@ -855,6 +868,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Numbers",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::list(TypeRef::u32()),
                 pattern: None,
             },
@@ -875,6 +889,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "StringToU32Map",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::map(TypeRef::u32()),
                 pattern: None,
             },
@@ -910,16 +925,19 @@ mod tests {
         drop(manifest.types.insert(
             "Address".to_owned(),
             TypeDef::Record {
+                doc: None,
                 fields: vec![
                     Field {
                         name: "street".to_owned(),
                         type_: TypeRef::string(),
                         nullable: None,
+                        doc: None,
                     },
                     Field {
                         name: "city".to_owned(),
                         type_: TypeRef::string(),
                         nullable: None,
+                        doc: None,
                     },
                 ],
             },
@@ -929,16 +947,19 @@ mod tests {
         drop(manifest.types.insert(
             "Person".to_owned(),
             TypeDef::Record {
+                doc: None,
                 fields: vec![
                     Field {
                         name: "name".to_owned(),
                         type_: TypeRef::string(),
                         nullable: None,
+                        doc: None,
                     },
                     Field {
                         name: "address".to_owned(),
                         type_: TypeRef::reference("Address"),
                         nullable: None,
+                        doc: None,
                     },
                 ],
             },
@@ -971,6 +992,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "DynamicBytes",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::bytes(),
                 pattern: None,
             },
@@ -984,6 +1006,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "FixedBytes",
             TypeDef::Bytes {
+                doc: None,
                 size: Some(4),
                 encoding: None,
             },
@@ -1015,10 +1038,12 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Status",
             TypeDef::Variant {
+                doc: None,
                 variants: vec![Variant {
                     name: "Active".to_owned(),
                     code: None,
                     payload: None,
+                    doc: None,
                 }],
             },
         );
@@ -1040,16 +1065,19 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Person",
             TypeDef::Record {
+                doc: None,
                 fields: vec![
                     Field {
                         name: "name".to_owned(),
                         type_: TypeRef::string(),
                         nullable: None,
+                        doc: None,
                     },
                     Field {
                         name: "age".to_owned(),
                         type_: TypeRef::u32(),
                         nullable: None,
+                        doc: None,
                     },
                 ],
             },
@@ -1068,6 +1096,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "U32Type",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::u32(),
                 pattern: None,
             },
@@ -1090,6 +1119,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "UnitType",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::unit(),
                 pattern: None,
             },
@@ -1112,16 +1142,19 @@ mod tests {
         drop(manifest.types.insert(
             "Status".to_owned(),
             TypeDef::Variant {
+                doc: None,
                 variants: vec![
                     Variant {
                         name: "Pending".to_owned(),
                         code: None,
                         payload: None,
+                        doc: None,
                     },
                     Variant {
                         name: "Completed".to_owned(),
                         code: None,
                         payload: Some(TypeRef::u32()),
+                        doc: None,
                     },
                 ],
             },
@@ -1131,21 +1164,25 @@ mod tests {
         drop(manifest.types.insert(
             "Task".to_owned(),
             TypeDef::Record {
+                doc: None,
                 fields: vec![
                     Field {
                         name: "id".to_owned(),
                         type_: TypeRef::u32(),
                         nullable: None,
+                        doc: None,
                     },
                     Field {
                         name: "tags".to_owned(),
                         type_: TypeRef::list(TypeRef::string()),
                         nullable: None,
+                        doc: None,
                     },
                     Field {
                         name: "status".to_owned(),
                         type_: TypeRef::reference("Status"),
                         nullable: None,
+                        doc: None,
                     },
                 ],
             },
@@ -1179,6 +1216,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "EmptyList",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::list(TypeRef::string()),
                 pattern: None,
             },
@@ -1198,6 +1236,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "EmptyMap",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::map(TypeRef::u32()),
                 pattern: None,
             },
@@ -1222,6 +1261,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "AuthoredStringToU32",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::Collection {
                     collection: CollectionType::Map {
                         key: Box::new(TypeRef::string()),
@@ -1272,6 +1312,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "EmptyAuthored",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::Collection {
                     collection: CollectionType::Map {
                         key: Box::new(TypeRef::string()),
@@ -1301,6 +1342,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "AuthoredU32Vec",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::Collection {
                     collection: CollectionType::List {
                         items: Box::new(TypeRef::u32()),
@@ -1333,6 +1375,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Wrong",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::Collection {
                     collection: CollectionType::List {
                         items: Box::new(TypeRef::u32()),
@@ -1357,6 +1400,7 @@ mod tests {
         let manifest = create_manifest_with_type(
             "Wrong",
             TypeDef::Alias {
+                doc: None,
                 target: TypeRef::Collection {
                     collection: CollectionType::Map {
                         key: Box::new(TypeRef::string()),

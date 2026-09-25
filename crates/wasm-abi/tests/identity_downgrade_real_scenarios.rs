@@ -72,7 +72,7 @@ fn real_scenarios_round_trip_through_the_wasm_section() {
     let v1 = embed_then_read(&v1());
     let root = v1.state_root.as_deref().expect("v1 has a state_root");
     let fields = match v1.types.get(root) {
-        Some(calimero_wasm_abi::schema::TypeDef::Record { fields }) => fields,
+        Some(calimero_wasm_abi::schema::TypeDef::Record { fields, .. }) => fields,
         other => panic!("v1 state root is not a record: {other:?}"),
     };
     assert!(
