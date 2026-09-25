@@ -57,8 +57,9 @@ have a context whose state you can read and write from the command line.
    ```
 
    This writes a ready-to-build crate: `Cargo.toml`, `src/lib.rs`
-   (a working state + logic + a `#[cfg(test)]` TestHost test), and
-   `tests/converge.rs`.
+   (a working state + logic + a `#[cfg(test)]` TestHost test),
+   `tests/converge.rs`, and `GUIDE.md` (the app's guide for agents, with
+   the five sections the registry requires).
 
 2. Open the generated `Cargo.toml`. The load-bearing parts `cargo mero new`
    wrote for you:

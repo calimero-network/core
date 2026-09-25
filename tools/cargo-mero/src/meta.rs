@@ -948,6 +948,19 @@ mod tests {
     }
 
     #[test]
+    fn guide_text_is_read_back_byte_for_byte() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        let bytes = "\u{feff}## Overview\r\n";
+        std::fs::write(dir.join("GUIDE.md"), bytes).unwrap();
+
+        assert_eq!(
+            read_guide(&guide_meta_in(dir)).unwrap().as_deref(),
+            Some(bytes)
+        );
+    }
+
+    #[test]
     fn no_guide_key_reads_nothing_and_never_touches_disk() {
         let mut meta = parse_for_test(
             r#"
