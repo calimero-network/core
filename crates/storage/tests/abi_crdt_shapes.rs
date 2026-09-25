@@ -227,7 +227,7 @@ fn rich_text_is_an_untagged_map_of_rendered_spans() {
     assert_eq!(*value, TypeRef::reference("Span"));
 
     <Span as AbiType>::register(&mut reg);
-    let TypeDef::Record { fields } = reg
+    let TypeDef::Record { fields, .. } = reg
         .into_types()
         .remove("Span")
         .expect("a span must be a named type")
@@ -254,7 +254,7 @@ fn rich_document_is_an_untagged_map_of_rendered_blocks() {
 
     <BlockView as AbiType>::register(&mut reg);
     let types = reg.into_types();
-    let TypeDef::Record { fields } = types
+    let TypeDef::Record { fields, .. } = types
         .get("BlockView")
         .expect("a block view must be a named type")
         .clone()

@@ -16,6 +16,7 @@ impl AbiType for Node {
 
     fn register(reg: &mut TypeRegistry) {
         reg.define("Node", |reg| TypeDef::Record {
+            doc: None,
             fields: vec![Field {
                 name: "children".to_owned(),
                 // recurses into Node again
@@ -27,6 +28,7 @@ impl AbiType for Node {
                     inner_type: None,
                 },
                 nullable: None,
+                doc: None,
             }],
         });
     }
@@ -51,8 +53,14 @@ fn recursive_type_terminates_and_is_defined_once() {
 #[test]
 fn define_is_idempotent_by_name() {
     let mut reg = TypeRegistry::new();
-    reg.define("A", |_| TypeDef::Record { fields: vec![] });
-    reg.define("A", |_| TypeDef::Record { fields: vec![] });
+    reg.define("A", |_| TypeDef::Record {
+        doc: None,
+        fields: vec![],
+    });
+    reg.define("A", |_| TypeDef::Record {
+        doc: None,
+        fields: vec![],
+    });
     assert_eq!(reg.into_types().len(), 1);
 }
 
@@ -60,8 +68,12 @@ fn define_is_idempotent_by_name() {
 #[should_panic(expected = "ABI type name collision: A")]
 fn same_name_with_a_different_shape_is_a_collision() {
     let mut reg = TypeRegistry::new();
-    reg.define("A", |_| TypeDef::Record { fields: vec![] });
+    reg.define("A", |_| TypeDef::Record {
+        doc: None,
+        fields: vec![],
+    });
     reg.define("A", |_| TypeDef::Bytes {
+        doc: None,
         size: Some(32),
         encoding: None,
     });

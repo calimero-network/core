@@ -271,6 +271,7 @@ pub fn infer_schema_from_database(
                             name: field_name.clone(),
                             type_: type_ref,
                             nullable: None,
+                            doc: None,
                         });
                     }
                 }
@@ -284,6 +285,7 @@ pub fn infer_schema_from_database(
     types.insert(
         state_root_type.clone(),
         TypeDef::Record {
+            doc: None,
             fields: fields.clone(),
         },
     );
