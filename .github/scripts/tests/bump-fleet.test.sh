@@ -84,7 +84,7 @@ expect_exit 4 "second run is a no-op" bash "$BUMP" --surface cargo --version 0.1
 echo "workspace monorepo (apps/*/logic, one shared pin)"
 # ─────────────────────────────────────────────────────────────────────────────
 D=$(mkfixture workspace)
-mkdir -p "$D/apps/one/logic/workflows/probes" "$D/apps/two/logic" \
+mkdir -p "$D/apps/one/logic/workflows/probes" "$D/apps/one/logic/workflows-parked" "$D/apps/two/logic" \
          "$D/.github/actions/install-cargo-mero"
 cat > "$D/Cargo.toml" <<'EOF'
 [workspace]
@@ -107,6 +107,7 @@ EOF
 done
 echo 'image: ghcr.io/calimero-network/merod:0.11.0-rc.1' > "$D/apps/one/logic/workflows/e2e.yml"
 echo 'image: ghcr.io/calimero-network/merod:0.11.0-rc.1' > "$D/apps/one/logic/workflows/probes/smoke.yml"
+echo 'image: ghcr.io/calimero-network/merod:0.11.0-rc.1' > "$D/apps/one/logic/workflows-parked/blocked.yml"
 printf 'inputs:\n  version:\n    default: "0.11.0-rc.1"\n' > "$D/.github/actions/install-cargo-mero/action.yml"
 commit "$D"
 
@@ -119,6 +120,9 @@ expect_file "$D/apps/one/logic/workflows/e2e.yml" 'merod:0.11.0-rc.2' "  scenari
 # The repo's own checker globs one level and never sees probes/; drift there is
 # invisible until a probe runs against a node two releases old.
 expect_file "$D/apps/one/logic/workflows/probes/smoke.yml" 'merod:0.11.0-rc.2' "  probes/ scenario moved too"
+# Parked scenarios are kept but not run by CI (mero-chat parks three). One left
+# on an old image fails for THAT reason the day it is un-parked.
+expect_file "$D/apps/one/logic/workflows-parked/blocked.yml" 'merod:0.11.0-rc.2' "  workflows-parked/ scenario moved too"
 expect_file "$D/.github/actions/install-cargo-mero/action.yml" '"0.11.0-rc.2"' "  cargo-mero default moved"
 expect_exit 4 "second run is a no-op" bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
 
