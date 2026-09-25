@@ -13,7 +13,8 @@ use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    GroupKeyring, MembershipRepository, NamespaceRepository, TeeAdmissionPolicyRead,
+    GroupKeyring, MembershipPolicy, MembershipRepository, NamespaceRepository,
+    TeeAdmissionPolicyRead,
 };
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
@@ -110,10 +111,36 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let (_signer, node_sk) = match self.resolve_signer(&group_id) {
+        let (signer, node_sk) = match self.resolve_signer(&group_id) {
             Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+
+        // Every member node receives the announce, but only an admin or an
+        // already-admitted TEE may vouch for it — peers refuse the op from
+        // anyone else (`require_tee_attestation_verifier`). Stand down here,
+        // before publishing an op that could never apply anywhere. Not an
+        // error: on most member nodes this is the expected outcome, and the
+        // admission is left to a node that may vouch.
+        let signer_account =
+            match crate::member_account::require(&self.datastore, &group_id, &signer) {
+                Ok(account) => account,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+        match MembershipPolicy::new(&self.datastore, group_id)
+            .is_tee_attestation_verifier(&signer_account)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                debug!(
+                    %member,
+                    ?group_id,
+                    "not an admin or admitted TEE here; leaving the TEE admission to one"
+                );
+                return ActorResponse::reply(Ok(()));
+            }
+            Err(err) => return ActorResponse::reply(Err(err)),
+        }
 
         let policy = match calimero_governance_store::read_tee_admission_policy(
             &self.datastore,
