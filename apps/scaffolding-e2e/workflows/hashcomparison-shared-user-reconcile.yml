@@ -33,6 +33,15 @@ description: >
          - `authored_insert` → AuthoredMap → per-entry owner
            (a second User-typed wire path with a different
            collection shape)
+         - `authored_sorted_insert` → AuthoredSortedMap → per-entry
+           owner AND a node-local ordered index. The only
+           collection that is both, and the intersection is the
+           point: a remote apply mutates entries host-side
+           without going through `insert`, so it leaves the
+           index marker stale and the next ORDERED read has to
+           notice and rebuild. That is the #3333 shape, which
+           was only ever exercised over unsigned `SortedSet`
+           entries — never over User-signed ones.
        Each write is REPEATED once so the stored SignatureData
        carries an incremented nonce — pre-redesign this was a
        second source of payload-vs-stored drift on the sync path.
@@ -271,6 +280,45 @@ steps:
       key: "profile-bio"
       value: "bio-final"
 
+  # AuthoredSortedMap. Three keys under one prefix and one outside it, so the
+  # post-heal read can be an ORDERED, PREFIX-SCOPED read rather than a point
+  # lookup — a point lookup would pass off a stale index.
+  - name: Node-1 inserts authored-sorted entries (User entities + ordered index)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: authored_sorted_insert
+    args:
+      key: "doc/a"
+      value: "sorted-a"
+
+  - name: Node-1 inserts a second authored-sorted entry under the same prefix
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: authored_sorted_insert
+    args:
+      key: "doc/b"
+      value: "sorted-b"
+
+  - name: Node-1 inserts an authored-sorted entry OUTSIDE the prefix
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: authored_sorted_insert
+    args:
+      key: "other/z"
+      value: "sorted-z"
+
+  - name: Node-1 updates an authored-sorted entry (fresh nonce)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: authored_sorted_update
+    args:
+      key: "doc/a"
+      value: "sorted-a-final"
+
   # --- Phase 4: heal the partition. node-2's tree state and node-1's
   #     now diverge on the three entities written above. With both
   #     peers `has_state = true` and divergence local, the
@@ -376,6 +424,59 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{authored_owner_from_node2}}, {"output": "{{node1_account}}"})'
+
+  # AuthoredSortedMap, read back ORDERED and prefix-scoped. A point `get` would
+  # be served straight from the entry and say nothing about the index; this read
+  # seeks the node-local ordered index, which the remote apply left stale and
+  # the rebuild-on-read has to have repaired. `other/z` is in the collection and
+  # must NOT appear — a rebuild that over-collected would be just as wrong as
+  # one that under-collected.
+  - name: Read AuthoredSortedMap prefix from node-2 (ordered, index-backed)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: authored_sorted_prefix
+    args:
+      prefix: "doc/"
+    outputs:
+      authored_sorted_prefix_from_node2: result
+
+  - name: Assert the ordered prefix read reconciled, and stayed scoped
+    type: json_assert
+    statements:
+      - 'json_equal({{authored_sorted_prefix_from_node2}}, {"output": ["doc/a", "doc/b"]})'
+
+  - name: Read the updated AuthoredSortedMap value from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: authored_sorted_get
+    args:
+      key: "doc/a"
+    outputs:
+      authored_sorted_read_from_node2: result
+
+  - name: Assert the updated value reconciled
+    type: json_assert
+    statements:
+      - 'json_equal({{authored_sorted_read_from_node2}}, {"output": "sorted-a-final"})'
+
+  # The provenance half: ordering is node-local and derived, so it must not have
+  # cost the entry its owner stamp on the way across.
+  - name: Read AuthoredSortedMap entry owner from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: authored_sorted_get_owner
+    args:
+      key: "doc/a"
+    outputs:
+      authored_sorted_owner_from_node2: result
+
+  - name: Assert AuthoredSortedMap entry owner is node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{authored_sorted_owner_from_node2}}, {"output": "{{node1_account}}"})'
 
   # And the pre-partition baseline state is still present on
   # node-2 — reconcile must not have wiped pre-divergence writes.
