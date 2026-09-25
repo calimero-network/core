@@ -6,9 +6,9 @@
 //! file is what catches it.
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, GCounter,
-    LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, FrozenStorage,
+    FrozenValue, GCounter, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage,
+    SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeRef};
@@ -103,6 +103,16 @@ fn sorted_map_is_a_map_with_no_inner_type() {
 fn authored_map_is_a_map_with_no_inner_type() {
     let (c, crdt, inner) = parts(ref_of::<AuthoredMap<String, u64>>());
     assert_eq!(crdt, Some(CrdtCollectionType::AuthoredMap));
+    assert_eq!(inner, None);
+    assert!(matches!(c, CollectionType::Map { .. }));
+}
+
+#[test]
+fn authored_sorted_map_is_a_map_with_no_inner_type() {
+    // Same shape as `AuthoredMap` — the ordering is a node-local index, so the
+    // only thing that distinguishes them in the ABI is the tag.
+    let (c, crdt, inner) = parts(ref_of::<AuthoredSortedMap<String, u64>>());
+    assert_eq!(crdt, Some(CrdtCollectionType::AuthoredSortedMap));
     assert_eq!(inner, None);
     assert!(matches!(c, CollectionType::Map { .. }));
 }

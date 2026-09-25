@@ -13,7 +13,9 @@ use std::ops::Bound;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
-use calimero_storage::collections::{Root, SortedMap, UnorderedMap, UnorderedSet, Vector};
+use calimero_storage::collections::{
+    AuthoredMap, AuthoredSortedMap, Root, SortedMap, UnorderedMap, UnorderedSet, Vector,
+};
 use calimero_storage::store::{Key, StorageAdaptor};
 
 type IndexKey = (Id, Vec<u8>);
@@ -528,4 +530,124 @@ fn profile_cold_positional_get() {
             cold as f64 / target as f64
         );
     }
+}
+
+/// The authored pair, and the reason `AuthoredSortedMap` exists.
+///
+/// `AuthoredMap`'s only iteration is `entries()`, which loads every entry in
+/// the collection. An app with hierarchical keys that wants one slice —
+/// `"<game>/<ply>/<account>/<nonce>"`, `"<room>/<ts>/<author>"` — therefore
+/// pays for the whole collection on every read.
+///
+/// On an authored collection that is not merely slow, it is a liveness bug,
+/// and the two halves of the ownership model are what make it one:
+///
+///   * any member may INSERT under any key (insert is open by design), and
+///   * only an entry's OWN owner may ever REMOVE it.
+///
+/// So a member acting in bad faith can grow the collection without bound and
+/// nobody else can shrink it — not the app, not the other members. With only a
+/// full scan available, every honest reader then pays for that junk on every
+/// read, permanently. The entries never have to be BELIEVED to do the damage;
+/// an app that correctly ignores all of them still reads all of them.
+///
+/// This measures both halves of that claim in counted store reads (stable in
+/// CI, unlike a wall clock): the slice cost against a growing collection, and
+/// then the flood — the same one-entry slice with 2,000 unrelated entries
+/// piled up under another prefix by someone else.
+#[test]
+fn profile_authored_prefix_slice() {
+    const PREFIX: &[u8] = b"game/0000/";
+    const SLICE: usize = 8;
+
+    // Both maps get the same keys: a small slice under the prefix we read, and
+    // a growing tail under another one.
+    fn key(bucket: usize, n: usize) -> String {
+        format!("game/{bucket:04}/alice/{n:08}")
+    }
+
+    let mut am = Root::new(AuthoredMap::<String, MsgLite, Counting>::new);
+    let mut asm = Root::new(AuthoredSortedMap::<String, MsgLite, Counting>::new);
+    for n in 0..SLICE {
+        am.insert(key(0, n), make_msg(n, false)).expect("insert");
+        asm.insert(key(0, n), make_msg(n, false)).expect("insert");
+    }
+
+    println!("\n=== D. AuthoredMap::entries vs AuthoredSortedMap::prefix (slice = {SLICE}) ===");
+    println!("      N |  entries() |  prefix() | note");
+    let mut scan: Vec<(usize, usize)> = Vec::new();
+    let mut seek: Vec<(usize, usize)> = Vec::new();
+    let mut n = SLICE;
+    for &target in &[250_usize, 1_000, 4_000] {
+        while n < target {
+            am.insert(key(1, n), make_msg(n, false)).expect("insert");
+            asm.insert(key(1, n), make_msg(n, false)).expect("insert");
+            n += 1;
+        }
+
+        // Warm read: pays the index rebuild if the marker went stale on write,
+        // so what is measured below is the steady state a serving node is in.
+        let _ = asm.prefix(PREFIX).expect("warm").count();
+
+        reset();
+        let hits = am
+            .entries()
+            .expect("entries")
+            .filter(|(k, _)| k.as_bytes().starts_with(PREFIX))
+            .count();
+        let scanned = reads();
+        assert_eq!(hits, SLICE);
+
+        reset();
+        let hits = asm.prefix(PREFIX).expect("prefix").count();
+        let sought = reads();
+        assert_eq!(hits, SLICE);
+
+        println!("{target:>7} | {scanned:>10} | {sought:>9} | same {SLICE} entries returned");
+        scan.push((target, scanned));
+        seek.push((target, sought));
+    }
+
+    let (n0, scan0) = scan[0];
+    let (n1, scan1) = *scan.last().expect("samples");
+    let (_, seek0) = seek[0];
+    let (_, seek1) = *seek.last().expect("samples");
+    println!(
+        "  growth: N x{:.0} -> entries() x{:.2}, prefix() x{:.2}  (flat would be x1.0)",
+        n1 as f64 / n0 as f64,
+        scan1 as f64 / scan0 as f64,
+        seek1 as f64 / seek0 as f64,
+    );
+
+    // The scan is linear in the whole collection...
+    assert!(
+        scan1 > scan0 * 4,
+        "AuthoredMap::entries is supposed to be linear in N — that is the \
+         problem being measured: {scan0} reads at N={n0}, {scan1} at N={n1}"
+    );
+    // ...and the seek is flat in it.
+    assert!(
+        seek1 <= seek0 * 2,
+        "AuthoredSortedMap::prefix must be flat in N: {seek0} reads at N={n0}, \
+         {seek1} at N={n1}"
+    );
+
+    // The flood, which is the case that actually ends an app: entries nobody
+    // can delete, written under a prefix nobody reads. The slice must not
+    // notice them at all.
+    for i in 0..2_000 {
+        asm.insert(key(9, 900_000 + i), make_msg(i, false))
+            .expect("insert");
+    }
+    let _ = asm.prefix(PREFIX).expect("warm").count();
+    reset();
+    let hits = asm.prefix(PREFIX).expect("prefix").count();
+    let flooded = reads();
+    assert_eq!(hits, SLICE);
+    println!("  +2000 junk entries under another prefix -> {flooded} reads (was {seek1})");
+    assert!(
+        flooded <= seek1 * 2,
+        "a flood outside the prefix must not reach the slice: {seek1} reads before, \
+         {flooded} after"
+    );
 }

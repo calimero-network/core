@@ -78,6 +78,8 @@ pub use access_control::AccessControl;
 mod authored_common;
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
+pub mod authored_sorted_map;
+pub use authored_sorted_map::AuthoredSortedMap;
 pub mod authored_vector;
 pub use authored_vector::AuthoredVector;
 pub mod frozen;

@@ -14,9 +14,9 @@ use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, 
 use super::crdt_meta::Mergeable;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, LwwRegister,
-    ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector,
-    WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, FrozenStorage,
+    FrozenValue, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
+    UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -135,6 +135,21 @@ where
 {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         map_ref::<V>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <V as AbiType>::register(reg);
+    }
+}
+
+impl<K, V, S> AbiType for AuthoredSortedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize + AbiType,
+    S: StorageAdaptor,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<V>(reg, Some(CrdtCollectionType::AuthoredSortedMap))
     }
 
     fn register(reg: &mut TypeRegistry) {

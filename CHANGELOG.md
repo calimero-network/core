@@ -4,6 +4,48 @@
 
 ### Added
 
+- **`AuthoredSortedMap<K, V>`** — an `AuthoredMap` with an ordered view, so a
+  reader can `prefix` / `range` / `page` / `keys` instead of walking the whole
+  collection. Same per-entry `StorageType::User { owner }` stamp, same
+  owner-gated `update` / `remove`, same merge — and the same `CrdtType::UserStorage`
+  on the wire, deliberately: the ordering is the node-local derived index
+  `SortedMap` already maintains, never replicated, so two nodes holding the same
+  entries with one collection each agree on the root hash. No new `CrdtType`
+  variant, so no borsh discriminant change and nothing for a mixed-version peer
+  to reject. The ABI gains `CrdtCollectionType::AuthoredSortedMap`, classified
+  `IdentityGated` like the other authored collections; an older reader grades an
+  unknown tag `Unresolvable` and so still fails closed.
+
+  This is a **liveness** fix more than a speed one, because the two halves of
+  the ownership model compound: anyone may insert under any key (insert is open
+  by design), and only an entry's own owner may ever remove it. A member acting
+  in bad faith can therefore grow an `AuthoredMap` without bound and nobody else
+  can shrink it — not the app, not the other members — and with `entries()` the
+  only iteration, every honest reader pays for that on every read, forever. The
+  entries never have to be *believed* to do the damage: an app that correctly
+  ignores all of them still reads all of them.
+
+  Measured in `crates/storage/tests/read_cost_profile.rs`, fetching an 8-entry
+  slice by prefix, in counted store reads:
+
+  | entries in the collection | `AuthoredMap::entries()` | `AuthoredSortedMap::prefix()` |
+  |---|---|---|
+  | 250 | 500 | 17 |
+  | 1,000 | 2,000 | 17 |
+  | 4,000 | 8,000 | 17 |
+
+  Linear against flat, and 2,000 further entries piled under a prefix nobody
+  reads leave the slice at 17. A writer who targets your specific prefix can
+  still crowd it — no collection prevents that — but an untargeted flood stops
+  mattering. `AuthoredMap` keeps its no-index write cost; reach for the sorted
+  one when keys are hierarchical and reads are slices of them.
+
+- **`AuthoredMap::new()` is now generic over the storage adaptor**, matching
+  `UnorderedMap` and `SortedMap`. It was pinned to `MainStorage`, so the type
+  could not be instantiated with a test adaptor at all — which is why its read
+  cost had never been measured. Purely a widening: `MainStorage` stays the
+  default type parameter, so every existing call site is unchanged.
+
 - **`grantedOnGroupId` on the relay descriptor** (`GET admin-api/contexts/:id/intents`),
   optional. `canAuthorOnBehalf` answers whether this node may execute a delegated
   write in the group owning this context; this says **where** the grant lives,

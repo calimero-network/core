@@ -35,10 +35,22 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
+| `AuthoredMap<K,V>`         | Map, entry owned by inserter | Entry-wise, owner-gated at apply | Structured |
+| `AuthoredSortedMap<K,V>`   | `AuthoredMap` + ordered index | Identical to `AuthoredMap`†    | Structured |
+| `AuthoredVector<T>`        | List, slot owned by author | Element-wise, owner-gated at apply | Structured |
 | `UserStorage`              | Per-user data            | LWW per user                      | Blob       |
 | `FrozenStorage`            | Immutable data           | First-write-wins                  | Blob       |
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
+
+†`AuthoredSortedMap` reports `CrdtType::UserStorage`, the SAME variant as
+`AuthoredMap`, on purpose: its ordering is a node-local derived index that is
+never replicated, so two nodes holding the same entries — one using each
+collection — must agree on the root hash, and do. Reach for it when the keys are
+hierarchical and reads are slices: `entries()` on an authored collection is
+linear in everything anyone has ever written, and on an authored collection
+nobody can delete anyone else's entries, so that is a liveness floor and not
+just a speed one. Measured in `tests/read_cost_profile.rs`.
 
 ## AI Agent Mental Model: CRDT Merge Architecture
 
@@ -180,6 +192,10 @@ src/
 │   ├── counter.rs            # GCounter/PnCounter CRDT
 │   ├── lww_register.rs       # Last-write-wins register
 │   ├── unordered_map.rs      # Unordered map
+│   ├── sorted_map.rs         # Ordered map (node-local index: range/prefix/page)
+│   ├── authored_map.rs       # Map with per-entry ownership
+│   ├── authored_sorted_map.rs# Per-entry ownership + the ordered index
+│   ├── authored_vector.rs    # List with per-element ownership
 │   ├── unordered_set.rs      # Unordered set
 │   ├── vector.rs             # Vector CRDT
 │   ├── rga.rs                # RGA (replicated growable array)

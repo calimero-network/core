@@ -12,9 +12,9 @@ use std::fs;
 use std::path::Path;
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, LwwRegister,
-    ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
-    UserStorage, Vector, WriterSetCell,
+    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, FrozenStorage,
+    FrozenValue, LwwRegister, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet,
+    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::AbiType;
 
@@ -45,6 +45,7 @@ fn every_mergeable_implementor_has_an_abi_type_impl() {
     let declared = assert_covered!(
         AccessControl => AccessControl,
         AuthoredMap => AuthoredMap<String, u64>,
+        AuthoredSortedMap => AuthoredSortedMap<String, u64>,
         AuthoredVector => AuthoredVector<u64>,
         Box => Box<u64>,
         Counter => Counter,
