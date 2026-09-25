@@ -46,6 +46,14 @@ description: >
 
 force_pull_image: false
 
+# Passed verbatim to each node container as RUST_LOG. Global `info` keeps the
+# log readable; the one raised channel is the announce handler, whose four
+# decline paths — announcement unreadable, not an availability member, blob
+# already held, prefetch slots busy — all log at `debug`. At `info` a failed
+# prefetch says nothing about WHY, which is exactly the state this scenario was
+# stuck in: `prefetching announced blob` at 0 hits and a silent log.
+log_level: "info,calimero_node::handlers::blob_announce=debug"
+
 # Individually defined so exactly one node boots as `merod run --mock-tee`.
 # Explicit ports are required in this form — the dict path does not stride
 # `base_port` per node, so omitting them collides every node on one port.
@@ -160,9 +168,21 @@ steps:
   # announce is one-shot and has no catch-up path, so an availability node that
   # is not yet following the context when the blob is announced never hears
   # about it. That is a documented limitation of the design, not of this test.
-  - name: Let the replica auto-follow the context
-    type: wait
-    seconds: 20
+  # Gated on the condition itself, not on a sleep. `is_availability_node_for`
+  # begins with `find_owned_identity(context_id)`: a node with no identity for
+  # this context is not a member of it, so the announcement is dropped — and
+  # dropped silently, since that path logs at `debug`. The announce is one-shot,
+  # so missing it once means the prefetch never happens however long anything
+  # downstream waits. A fixed 20s could not express "once the replica is
+  # actually following"; this can.
+  - name: The replica holds an identity for the context, so an announce can reach it
+    type: assert_api_response
+    node: blob-tee-replica
+    path: /admin-api/contexts/{{context_id}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
 
   # ---------- Upload, and let the availability node prefetch ----------
 
