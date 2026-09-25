@@ -28,6 +28,8 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
+| `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
+| `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
 | `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
 | `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
 | `access-control`         | Permission management  | Authorization patterns |

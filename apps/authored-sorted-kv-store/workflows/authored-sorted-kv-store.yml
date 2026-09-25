@@ -1,0 +1,299 @@
+name: AuthoredSortedMap across two nodes
+description: >
+  Two nodes, two accounts, one shared keyspace — the three properties of
+  AuthoredSortedMap that only a real network can show.
+
+  1. AUTHORED STATE REPLICATES. Every entry here is StorageType::User, signed
+     per action and verified against its owner inside Interface::apply_action
+     on the receiving node. If that were wrong, the very first cross-node read
+     below would come back empty rather than fail loudly, so this leg is the
+     one that proves the stamp survives a wire.
+
+  2. THE OWNER GATE HOLDS ACROSS NODES. Node 2 is a full member and may insert
+     anything it likes; it still cannot edit or retract node 1's note. The
+     local check inside `edit` binds only the node running it, so refusing it
+     HERE — from a different node, a different account — is the assertion that
+     means something.
+
+  3. THE SLICE DOES NOT PAY FOR THE FLOOD. Insert is open on a shared keyspace
+     and only an entry's own author may ever remove it, so a member acting in
+     bad faith can grow the collection permanently and nobody can prune it.
+     Node 2 writes 150 notes under a topic nobody reads; node 1's topic read is
+     an index seek and comes back unchanged. That is the difference between
+     AuthoredSortedMap and AuthoredMap, stated as behaviour a node can check.
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 180
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: authored-node
+
+steps:
+  - name: Login on authored-node-1
+    type: login
+    node: authored-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on authored-node-2
+    type: login
+    node: authored-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on authored-node-1
+    type: install_application
+    node: authored-node-1
+    path: "../../dist/com.calimero.authored-sorted-kv-store-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create mesh with authored-node-2
+    type: create_mesh
+    context_node: authored-node-1
+    application_id: '{{app_id}}'
+    nodes:
+      - authored-node-2
+    outputs:
+      context_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{node1_key}})"
+
+  # ── 1. authored state replicates ────────────────────────────────────────
+
+  - name: Node 1 posts to `news`
+    type: call
+    node: authored-node-1
+    context_id: '{{context_id}}'
+    method: post
+    args:
+      topic: "news"
+      seq: 1
+      text: "from node one"
+    outputs:
+      node1_key_path: result
+
+  - name: Assert node 1 got a key back
+    type: assert
+    statements:
+      - "is_set({{node1_key_path}})"
+
+  - name: Wait for the note to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - authored-node-1
+      - authored-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the topic
+    type: call
+    node: authored-node-2
+    context_id: '{{context_id}}'
+    method: read_topic
+    args:
+      topic: "news"
+    outputs:
+      n2_topic: result
+
+  # `key_matches_owner` is the interesting field: node 2 is comparing the
+  # account NAMED IN THE KEY against the owner stamp core verified when it
+  # applied the delta. They agree, so the note is what it says it is — and
+  # node 2 worked that out for itself rather than taking node 1's word.
+  - name: Assert node 2 sees node 1's note, and its authorship checks out
+    type: assert
+    statements:
+      - 'contains({{n2_topic}}, "from node one")'
+      - 'regex({{n2_topic}}, key_matches_owner.: *true)'
+
+  # ── 2. the owner gate holds across nodes ────────────────────────────────
+
+  - name: Node 2 tries to edit node 1's note
+    type: call
+    node: authored-node-2
+    context_id: '{{context_id}}'
+    method: edit
+    args:
+      key: "{{node1_key_path}}"
+      text: "node two was here"
+    expected_failure: true
+    outputs:
+      edit_error: error
+
+  - name: Assert the edit was refused
+    type: assert
+    statements:
+      - "is_set({{edit_error}})"
+
+  - name: Node 2 tries to retract node 1's note
+    type: call
+    node: authored-node-2
+    context_id: '{{context_id}}'
+    method: retract
+    args:
+      key: "{{node1_key_path}}"
+    expected_failure: true
+    outputs:
+      retract_error: error
+
+  - name: Assert the retraction was refused
+    type: assert
+    statements:
+      - "is_set({{retract_error}})"
+
+  - name: Node 1 reads its note back
+    type: call
+    node: authored-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: "{{node1_key_path}}"
+    outputs:
+      n1_after_attack: result
+
+  - name: Assert the note is untouched
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_after_attack}}, {"output": "from node one"})'
+
+  # Node 2 is not locked out of the keyspace — it may write as much as it
+  # likes, under its OWN account. Open insert is the point; the gate is on
+  # somebody else's entry, not on participation.
+  - name: Node 2 posts to the same topic, at the same seq
+    type: call
+    node: authored-node-2
+    context_id: '{{context_id}}'
+    method: post
+    args:
+      topic: "news"
+      seq: 1
+      text: "from node two"
+    outputs:
+      node2_key_path: result
+
+  # The same `seq` on the same topic, and neither write was refused: the key
+  # carries the author, so two writers never contend for one key. Without that,
+  # one of these two is wedged out of the topic permanently, because only an
+  # entry's owner may ever remove it.
+  - name: Assert the two notes landed on different keys
+    type: assert
+    statements:
+      - "{{node1_key_path}} != {{node2_key_path}}"
+
+  - name: Wait for node 2's note to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - authored-node-1
+      - authored-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 1 reads the topic
+    type: call
+    node: authored-node-1
+    context_id: '{{context_id}}'
+    method: read_topic
+    args:
+      topic: "news"
+    outputs:
+      n1_topic: result
+
+  - name: Assert node 1 sees both notes
+    type: assert
+    statements:
+      - 'contains({{n1_topic}}, "from node one")'
+      - 'contains({{n1_topic}}, "from node two")'
+
+  # ── 3. the slice does not pay for the flood ─────────────────────────────
+
+  - name: Node 2 floods a topic nobody reads
+    type: call
+    node: authored-node-2
+    context_id: '{{context_id}}'
+    method: flood
+    args:
+      topic: "spam"
+      from: 0
+      n: 150
+    outputs:
+      total_after_flood: result
+
+  - name: Assert the collection really did grow
+    type: json_assert
+    statements:
+      - 'json_equal({{total_after_flood}}, {"output": 152})'
+
+  - name: Wait for the flood to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - authored-node-1
+      - authored-node-2
+    timeout: 120
+    trigger_sync: true
+
+  - name: Node 1 counts the whole collection
+    type: call
+    node: authored-node-1
+    context_id: '{{context_id}}'
+    method: count_all
+    outputs:
+      n1_total: result
+
+  # Node 1 holds all 152 — nothing was rejected, and nothing can be removed by
+  # anyone but each entry's own author. This is the state an app is stuck with.
+  - name: Assert node 1 holds every entry
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_total}}, {"output": 152})'
+
+  - name: Node 1 reads `news` again, with 150 unread entries in the collection
+    type: call
+    node: authored-node-1
+    context_id: '{{context_id}}'
+    method: read_topic
+    args:
+      topic: "news"
+    outputs:
+      n1_topic_after: result
+
+  # Two notes, exactly as before the flood. The 150 entries under `spam/` are
+  # in storage, in the root hash, and unremovable — and the index seek does not
+  # touch them. On an AuthoredMap this read would have walked all 152.
+  - name: Assert the slice is unmoved by the flood
+    type: assert
+    statements:
+      - 'contains({{n1_topic_after}}, "from node one")'
+      - 'contains({{n1_topic_after}}, "from node two")'
+      - 'not_contains({{n1_topic_after}}, "spam/")'
+
+  - name: Node 1 narrows to its own notes
+    type: call
+    node: authored-node-1
+    context_id: '{{context_id}}'
+    method: my_notes
+    args:
+      topic: "news"
+    outputs:
+      n1_mine: result
+
+  # Narrowing the prefix by the caller's own account seeks straight to their
+  # slice: node 1 gets its one note and never reads node 2's.
+  - name: Assert node 1 sees only its own note
+    type: assert
+    statements:
+      - 'contains({{n1_mine}}, "news/")'
+      - 'not_contains({{n1_mine}}, "spam/")'

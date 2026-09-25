@@ -246,6 +246,12 @@ against the writer set / owner. A forged write does not survive convergence.
   Adding 2,000 entries under a prefix nobody reads leaves the slice at 17. A
   writer who targets your specific prefix can still crowd it — no collection can
   prevent that — but an untargeted flood stops mattering.
+
+  Worked example in `apps/authored-sorted-kv-store`, with
+  `workflows/authored-sorted-kv-store.yml` driving the same three properties
+  across two real nodes: that authored state replicates at all, that the owner
+  gate is refused from the *other* node, and that a flood under an unread topic
+  leaves the slice unchanged.
   </Aside>
 
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
