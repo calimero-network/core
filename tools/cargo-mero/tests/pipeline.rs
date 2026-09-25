@@ -211,6 +211,11 @@ fn multi_service_bundle() {
     let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
     assert_eq!(manifest["services"].as_array().unwrap().len(), 2);
     assert_eq!(manifest["appVersion"], "0.1.0");
+    assert_eq!(
+        manifest["metadata"]["guide"],
+        include_str!("fixtures/multi-app/GUIDE.md"),
+        "the workspace-table guide must resolve against the workspace root"
+    );
     assert_eq!(manifest["signature"]["algorithm"], "ed25519");
     assert!(
         mero_sign::verify_manifest(&manifest).unwrap(),
@@ -284,6 +289,11 @@ fn bundle_produces_signed_mpk() {
             .is_some_and(|icon| icon.starts_with("data:image/png;base64,")),
         "icon must be encoded as a PNG data URI: {}",
         manifest["metadata"]["icon"]
+    );
+    assert_eq!(
+        manifest["metadata"]["guide"],
+        include_str!("fixtures/demo-app/GUIDE.md"),
+        "the package-table guide must ship as the file's full text"
     );
     assert_no_nulls(&manifest, "$");
 }

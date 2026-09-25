@@ -141,6 +141,7 @@ The workspace table wins over the package table when both are present.
 | `description`         | `metadata.description` | omitted                          |
 | `author`              | `metadata.author`      | omitted                          |
 | `icon`                | `metadata.icon`        | required unless `--no-icon` (see below) |
+| `guide`               | `metadata.guide`       | omitted (see below)              |
 | `license`             | `metadata.license`     | omitted                          |
 | `tags`                | `metadata.tags`        | empty                            |
 | `min-runtime-version` | `minRuntimeVersion`    | `0.1.0`                          |
@@ -151,6 +152,9 @@ The workspace table wins over the package table when both are present.
 | `services`            | `services[]`           | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
 
 `icon` is a filesystem path, resolved relative to the directory of the table that declares it (the crate's own directory for `[package.metadata.calimero]`, the workspace root for `[workspace.metadata.calimero]`); `cargo mero bundle` reads the PNG at that path and writes the base64-encoded `data:` URI into the manifest, so the `Cargo.toml` value and the `manifest.json` value are never the same string.
+`guide` is a path to the app's Markdown guide for agents, resolved exactly like `icon`; `cargo mero bundle` reads the file as UTF-8 and writes its full text into `metadata.guide`.
+A missing or unreadable file fails the bundle and names the path it tried.
+cargo-mero does not check the guide's content; the app registry defines its required sections when you publish.
 `slug` is the deep-link handler slug (`https://links.calimero.network/<slug>/...`, `calimero://<slug>/...`); it defaults to `package` when not set.
 `author` is not just displayed: the registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) on publish, and refuses a new version of the package when it doesn't match.
 

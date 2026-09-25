@@ -225,6 +225,18 @@ pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Res
     Ok(bundle_meta)
 }
 
+/// The `guide` file's text, resolved against the declaring table's directory
+/// the same way `icon` is; `None` when no guide is configured.
+pub fn read_guide(meta: &BundleMeta) -> Result<Option<String>> {
+    let Some(rel) = meta.guide.as_deref() else {
+        return Ok(None);
+    };
+    let path = meta.manifest_dir.join(rel);
+    std::fs::read_to_string(&path)
+        .map(Some)
+        .map_err(|e| eyre!("failed to read guide {path}: {e}"))
+}
+
 /// Read `[workspace.package].version` from the virtual-workspace root manifest.
 /// cargo_metadata 0.20 doesn't surface this key, so parse it directly; `None`
 /// when the file is unreadable or the key is absent.
@@ -850,5 +862,102 @@ mod tests {
 
         let bundle = load(&metadata, &metadata.workspace_root).unwrap();
         assert_eq!(bundle.manifest_dir, member_dir);
+    }
+
+    // Decoy copies prove the join: the package table must read the member's
+    // file, the workspace table the root's, whatever dir `load` was handed.
+    #[test]
+    fn guide_resolves_against_the_table_that_declares_it() {
+        let package_tmp = tempfile::tempdir().unwrap();
+        let package_root = Utf8Path::from_path(package_tmp.path()).unwrap();
+        write_workspace(
+            package_root,
+            "[workspace]\nmembers = [\"member\"]\n",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [package.metadata.calimero]\npackage = \"com.example.member\"\nguide = \"GUIDE.md\"\n",
+        );
+        std::fs::write(package_root.join("GUIDE.md"), "workspace root copy").unwrap();
+        std::fs::write(package_root.join("member/GUIDE.md"), "member copy").unwrap();
+        let package_metadata = cargo_metadata_for(package_root);
+        let package_bundle = load(&package_metadata, &member_dir(&package_metadata)).unwrap();
+        assert_eq!(
+            read_guide(&package_bundle).unwrap().as_deref(),
+            Some("member copy")
+        );
+
+        let workspace_tmp = tempfile::tempdir().unwrap();
+        let workspace_root = Utf8Path::from_path(workspace_tmp.path()).unwrap();
+        write_workspace(
+            workspace_root,
+            "[workspace]\nmembers = [\"member\"]\n\n\
+             [workspace.metadata.calimero]\npackage = \"com.example.workspace\"\nguide = \"docs/GUIDE.md\"\n",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        std::fs::create_dir_all(workspace_root.join("docs")).unwrap();
+        std::fs::write(workspace_root.join("docs/GUIDE.md"), "workspace copy").unwrap();
+        let workspace_metadata = cargo_metadata_for(workspace_root);
+        let workspace_bundle = load(&workspace_metadata, &member_dir(&workspace_metadata)).unwrap();
+        assert_eq!(
+            read_guide(&workspace_bundle).unwrap().as_deref(),
+            Some("workspace copy")
+        );
+    }
+
+    fn guide_meta_in(dir: &Utf8Path) -> BundleMeta {
+        let mut meta = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            guide = "GUIDE.md"
+        "#,
+        )
+        .expect("parses");
+        meta.manifest_dir = dir.to_owned();
+        meta
+    }
+
+    #[test]
+    fn a_missing_guide_is_an_error_naming_the_resolved_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+
+        let err = read_guide(&guide_meta_in(dir))
+            .expect_err("a missing guide must fail the bundle")
+            .to_string();
+
+        assert!(
+            err.contains(dir.join("GUIDE.md").as_str()),
+            "error must name the resolved path: {err}"
+        );
+    }
+
+    #[test]
+    fn a_guide_that_is_not_utf8_is_an_error_naming_the_resolved_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        std::fs::write(dir.join("GUIDE.md"), [0xff, 0xfe, 0xfd]).unwrap();
+
+        let err = read_guide(&guide_meta_in(dir))
+            .expect_err("a non-UTF-8 guide must fail the bundle")
+            .to_string();
+
+        assert!(
+            err.contains(dir.join("GUIDE.md").as_str()),
+            "error must name the resolved path: {err}"
+        );
+    }
+
+    #[test]
+    fn no_guide_key_reads_nothing_and_never_touches_disk() {
+        let mut meta = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+        "#,
+        )
+        .expect("parses");
+        meta.manifest_dir = Utf8PathBuf::from("/no/such/manifest/dir");
+
+        assert_eq!(read_guide(&meta).unwrap(), None);
     }
 }
