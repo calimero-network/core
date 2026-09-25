@@ -292,9 +292,7 @@ fn test_data_persistence() {
 #[test]
 fn test_approximate_size_scopes_to_range() {
     // Verify the range scoping: we want prefix `0x10..` to report ≈ the
-    // in-range payload without leaking bytes from `0x20..`. RocksDB's
-    // `get_approximate_sizes_cf` samples SST metadata so the reported
-    // value may be 0 in-memory (nothing flushed). We still assert the
+    // in-range payload without leaking bytes from `0x20..`. We assert the
     // in-range probe ≤ total-range probe to catch range inversion bugs.
     let dir = TempDir::with_prefix("_calimero_store_approx_size").expect("tempdir");
     let dir_path = dir.path().to_owned().try_into().expect("path conversion");
@@ -442,5 +440,62 @@ fn flush_drains_every_column_family_not_only_default() {
         active_entries(&db),
         0,
         "flush must drain non-default column families, else their WAL is never released"
+    );
+}
+
+#[test]
+fn approximate_size_counts_unflushed_and_flushed_bytes() {
+    // SST sampling alone reports 0 for data still buffered in a memtable, so
+    // a range written since the last flush must be counted from the memtable.
+    let dir = TempDir::with_prefix("_calimero_store_approx_memtable").expect("tempdir");
+    let dir_path = dir.path().to_owned().try_into().expect("path conversion");
+    let config = StoreConfig::new(dir_path);
+    let db = RocksDB::open(&config).expect("db open");
+
+    let payload = vec![0xCD_u8; 1024];
+    for i in 0..16u8 {
+        let key = [0x10, i];
+        db.put(
+            Column::Identity,
+            Slice::from(&key[..]),
+            Slice::from(payload.as_slice()),
+        )
+        .expect("put in-range key");
+        let key = [0x20, i];
+        db.put(
+            Column::Identity,
+            Slice::from(&key[..]),
+            Slice::from(payload.as_slice()),
+        )
+        .expect("put out-of-range key");
+    }
+
+    let probe = |db: &RocksDB, start: &[u8], end: &[u8]| {
+        db.approximate_size(Column::Identity, Slice::from(start), Slice::from(end))
+            .expect("approximate_size")
+    };
+    let written = 16 * (2 + payload.len() as u64);
+
+    let unflushed = probe(&db, &[0x10], &[0x11]);
+    assert_eq!(
+        unflushed, written,
+        "unflushed bytes must be counted exactly once, and only in range"
+    );
+    assert_eq!(
+        probe(&db, &[0xFF], &[0x00]),
+        0,
+        "a wrapped (all-zero) end is an open upper bound, and nothing sorts after 0xFF here"
+    );
+    assert_eq!(
+        probe(&db, &[0x20], &[0x00]),
+        written,
+        "a wrapped end reaches the end of the column"
+    );
+
+    db.flush().expect("flush");
+
+    assert!(
+        probe(&db, &[0x10], &[0x11]) > 0,
+        "flushed bytes must still be counted from the SST estimate"
     );
 }
