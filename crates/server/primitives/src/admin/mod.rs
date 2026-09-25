@@ -3329,6 +3329,24 @@ impl Validate for SetTeeAdmissionPolicyApiRequest {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetTeeAdmissionPolicyApiResponse {}
 
+/// Which admitted TEEs may author as the TEE authority. An empty
+/// `allowed_mrtd` turns TEE authorship off.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTeeAuthoringPolicyApiRequest {
+    #[serde(default)]
+    pub allowed_mrtd: Vec<String>,
+}
+
+impl Validate for SetTeeAuthoringPolicyApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetTeeAuthoringPolicyApiResponse {}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTeeAdmissionPolicyApiResponse {

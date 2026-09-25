@@ -386,6 +386,7 @@ async fn create_context(
         node_client.clone(),
         false, // init always writes state
         None,  // context init is never an xcall
+        false, // nor a TEE trigger
     )
     .await?;
 

@@ -1438,6 +1438,7 @@ mod shared_storage_replay_protection {
 mod shared_storage_rotation_authentication {
     use std::collections::BTreeSet;
 
+    use calimero_account::AccountId;
     use ed25519_dalek::SigningKey;
 
     use crate::address::Id;
@@ -1609,6 +1610,75 @@ mod shared_storage_rotation_authentication {
             }
             other => panic!("expected Shared storage_type, got {other:?}"),
         }
+    }
+
+    /// A `TeeOnly` cell's writer set is `{TEE_AUTHORITY}`. The merge accepts a
+    /// write whose signer the node resolved to that account — which it does only
+    /// for an attested TEE authority — and drops a member's write signed with
+    /// the member's own key, however honestly resolved.
+    #[test]
+    fn tee_only_write_accepted_only_from_a_signer_resolved_to_the_tee_authority() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let tee_sk = make_signing_key(0x7E);
+        let member_sk = make_signing_key(0x4D);
+        let writers: BTreeSet<_> = [AccountId::TEE_AUTHORITY].into_iter().collect();
+        let id = Id::new([0x7E; 32]);
+
+        // The TEE's first write: the node resolved the TEE's key to the TEE
+        // authority, so it is a writer.
+        let nonce1 = env::time_now();
+        let deal = build_signed_shared_action(
+            true,
+            id,
+            b"deal-1".to_vec(),
+            writers.clone(),
+            nonce1,
+            &tee_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(deal, &apply_ctx_for(AccountId::TEE_AUTHORITY)).unwrap();
+
+        // A member forges a different deal into the same cell.
+        let forged = build_signed_shared_action(
+            false,
+            id,
+            b"deal-rigged".to_vec(),
+            writers.clone(),
+            nonce1 + 1_000_000,
+            &member_sk,
+            vec![],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(crate::entities::full_mask(writers.clone())),
+            delta_id: None,
+            delta_hlc: None,
+            signer_account: Some(account_of_key(&member_sk)),
+        };
+        let result = MainInterface::apply_action(forged, &ctx);
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "a member's write to TeeOnly state must be dropped, got {result:?}"
+        );
+
+        // The TEE's next write still lands.
+        let next = build_signed_shared_action(
+            false,
+            id,
+            b"deal-2".to_vec(),
+            writers.clone(),
+            nonce1 + 2_000_000,
+            &tee_sk,
+            vec![],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(crate::entities::full_mask(writers)),
+            delta_id: None,
+            delta_hlc: None,
+            signer_account: Some(AccountId::TEE_AUTHORITY),
+        };
+        MainInterface::apply_action(next, &ctx).unwrap();
     }
 
     #[test]

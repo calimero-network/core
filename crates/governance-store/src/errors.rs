@@ -330,6 +330,14 @@ pub enum NamespaceError {
          set it on the namespace root"
     )]
     TeePolicyNotOnSubgroup(String),
+
+    /// `TeeAuthoringPolicySet` rejected because it was emitted on a subgroup —
+    /// like the admission policy, it is namespace-scoped and set on the root.
+    #[error(
+        "TeeAuthoringPolicySet rejected on subgroup {0}: policy is namespace-scoped, \
+         set it on the namespace root"
+    )]
+    TeeAuthoringPolicyNotOnSubgroup(String),
 }
 
 /// Errors raised by `CapabilitiesRepository` and the higher-level

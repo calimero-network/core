@@ -47,6 +47,10 @@ pub enum Modifer {
         /// application id may call (`XCallCallers::SameApp` in the ABI).
         from_same_app: bool,
     },
+    /// `#[app::tee]` — fired only by the node's TEE scheduler. The attribute
+    /// itself injects the runtime guard; this marker exists so `#[app::logic]`
+    /// can reject it alongside `init`, `view` and `xcall`.
+    Tee,
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -597,6 +601,9 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                     "view" => {
                         modifiers.push(Modifer::View);
                     }
+                    "tee" => {
+                        modifiers.push(Modifer::Tee);
+                    }
                     "xcall" => {
                         // Validate the optional caller-policy arg so a typo is a
                         // compile error rather than silently falling back to the
@@ -646,6 +653,10 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 input.item,
                 ParseError::XCallAndViewConflict,
             ));
+        }
+        let is_tee = modifiers.iter().any(|m| matches!(m, Modifer::Tee));
+        if is_tee && (is_init || is_view || is_xcall) {
+            errors.subsume(SynError::new_spanned(input.item, ParseError::TeeConflict));
         }
 
         match (&input.item.vis, is_init) {

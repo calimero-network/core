@@ -162,6 +162,8 @@ pub enum ParseError<'a> {
     XCallAndInitConflict,
     #[error("`#[app::xcall]` and `#[app::view]` are mutually exclusive — xcall is fire-and-forget, so a read-only target's return value would be discarded")]
     XCallAndViewConflict,
+    #[error("`#[app::tee]` cannot be combined with `#[app::init]`, `#[app::view]` or `#[app::xcall]` — a TEE method is fired only by the node's TEE scheduler, and it exists to write TEE-only state")]
+    TeeConflict,
     #[error(
         "`#[derive(AbiType)]` is not supported on unions - a union's active field is not known \
          statically, so it has no single shape to describe in the ABI.\n\n\

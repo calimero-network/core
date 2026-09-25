@@ -37,6 +37,37 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Returns `1` when this run was fired by the node's TEE scheduler as the TEE
+    /// authority, `0` otherwise.
+    ///
+    /// Set by the node, never from guest memory, so an `#[app::tee]` method can
+    /// trust it to refuse a call that arrived any other way.
+    pub fn tee_origin(&mut self) -> VMLogicResult<u32> {
+        Ok(u32::from(self.borrow_logic().context.tee_trigger))
+    }
+
+    /// Fills a guest buffer with randomness drawn inside the enclave.
+    ///
+    /// The same OS RNG as [`random_bytes`](Self::random_bytes), but a separate
+    /// import on purpose: `random_bytes` on a member's node yields whatever that
+    /// member chooses, so trusting it for a game is a bug. This one exists only
+    /// in a TEE-triggered run, so a value an app got from it came from an
+    /// attested enclave no member controls.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::TeeOnly` outside a TEE-triggered run.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
+    pub fn tee_random_bytes(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
+        if !self.borrow_logic().context.tee_trigger {
+            return Err(HostError::TeeOnly {
+                function: "tee_random_bytes",
+            }
+            .into());
+        }
+        self.random_bytes(dest_ptr)
+    }
+
     /// Gets the current Unix timestamp in nanoseconds.
     ///
     /// This function obtains the current time as a nanosecond timestamp, as
@@ -215,6 +246,55 @@ mod tests {
             random_data, initial_pattern,
             "The data buffer should have been overwritten with random bytes, but it was not."
         );
+    }
+
+    /// `tee_random_bytes` traps outside a TEE-triggered run and fills the buffer
+    /// inside one; `tee_origin` reports which of the two the run is.
+    #[test]
+    fn test_tee_random_bytes_only_in_a_tee_triggered_run() {
+        let buf_ptr = 10u64;
+        let data_ptr = 200u64;
+        let data_len = 32u64;
+        let initial_pattern = vec![0xAB; data_len as usize];
+
+        for tee_trigger in [false, true] {
+            let mut storage = SimpleMockStorage::new();
+            let limits = VMLimits::default();
+            let mut context = VMContext::new(
+                Cow::Owned(vec![]),
+                [0u8; DIGEST_SIZE],
+                [0u8; DIGEST_SIZE],
+                calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
+            );
+            context.tee_trigger = tee_trigger;
+            let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+
+            assert_eq!(host.tee_origin().unwrap(), u32::from(tee_trigger));
+
+            host.borrow_memory()
+                .write(data_ptr, &initial_pattern)
+                .unwrap();
+            prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
+            let result = host.tee_random_bytes(buf_ptr);
+
+            let mut data = vec![0u8; data_len as usize];
+            host.borrow_memory().read(data_ptr, &mut data).unwrap();
+            if tee_trigger {
+                assert!(result.is_ok());
+                assert_ne!(data, initial_pattern, "buffer must be filled");
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(VMLogicError::HostError(HostError::TeeOnly { .. }))
+                ));
+                assert_eq!(data, initial_pattern, "buffer must be left untouched");
+            }
+        }
     }
 
     /// Tests the `time_now()` host function.

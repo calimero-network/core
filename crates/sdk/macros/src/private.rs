@@ -136,6 +136,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "is single-owner shared storage (a SharedStorage alias); its data syncs, so it cannot live in a private namespace.",
     ),
     (
+        "TeeOnly",
+        "is TEE-authority shared storage (a PermissionedStorage alias); its data syncs, so it cannot live in a private namespace.",
+    ),
+    (
         "AccessControl",
         "is a writer-set-guarded role registry backed by shared storage; its data syncs, so it cannot live in a private namespace.",
     ),

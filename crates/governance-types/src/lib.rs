@@ -696,6 +696,15 @@ pub enum GroupOp {
         /// signer is `device` itself, which a paired device holding no root is.
         root_proof: Option<Box<SignedDeviceLabel>>,
     },
+    /// TEE authoring policy: which admitted TEE nodes may author state as the
+    /// TEE authority (`AccountId::TEE_AUTHORITY`) — the only writer of an app's
+    /// `TeeOnly` storage. A TEE qualifies when the MRTD recorded on its
+    /// `MemberJoinedViaTeeAttestation` is in `allowed_mrtd`.
+    ///
+    /// Namespace-root only and admin-only, like [`GroupOp::TeeAdmissionPolicySet`];
+    /// the last op on the root's log wins. An empty `allowed_mrtd` disables TEE
+    /// authorship (fail closed) rather than allowing every admitted TEE.
+    TeeAuthoringPolicySet { allowed_mrtd: Vec<String> },
 }
 
 impl GroupOp {
@@ -741,6 +750,7 @@ impl GroupOp {
             GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
             GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
             GroupOp::AccountDeviceLabelled { .. } => "account_device_labelled",
+            GroupOp::TeeAuthoringPolicySet { .. } => "tee_authoring_policy_set",
         }
     }
 }
@@ -2233,6 +2243,17 @@ impl GroupOp {
                     for s in list {
                         check_bound(name, s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
                     }
+                }
+                Ok(())
+            }
+            Self::TeeAuthoringPolicySet { allowed_mrtd } => {
+                check_bound(
+                    "allowed_mrtd",
+                    allowed_mrtd.len(),
+                    bounds::MAX_TEE_ALLOWED_ENTRIES,
+                )?;
+                for s in allowed_mrtd {
+                    check_bound("allowed_mrtd", s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
                 }
                 Ok(())
             }

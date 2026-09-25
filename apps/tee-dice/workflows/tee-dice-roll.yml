@@ -1,0 +1,250 @@
+name: TEE Dice — A Roll Only The Enclave Can Write
+description: >
+  A member asks for a dice roll; the namespace's attested TEE authority
+  resolves it inside the enclave and writes the face into `TeeOnly` state; the
+  member's node accepts that write. This is TEE authorship end to end: a
+  `ReadOnlyTee` replica, admitted by (mock) attestation, authors state only
+  after an admin names its MRTD in the namespace's TEE authoring policy.
+
+  WHY THIS GOES RED WITHOUT TEE AUTHORSHIP. Before it, a `ReadOnlyTee` member
+  could not author at all: the local execute path discarded its writes and
+  every receive path dropped its deltas. The roll would stay unresolved on
+  every node, and the "Firing TEE trigger" line would not exist.
+
+  THE NEGATIVE CONTROL runs first: with no authoring policy the replica is a
+  member but not an authority, so the first roll must stay unresolved. Only
+  after the policy lands is a second roll resolved, which is what proves the
+  policy — not mere membership — is what grants authorship.
+
+  NODES MUST BE BUILT WITH `--features mock-attestation`, as for
+  blob-presence-tee-serves. No `login` steps: the `tee_*` steps and the policy
+  script talk to the admin API with no Authorization header.
+
+  Run locally, with a mock-attestation merod:
+    cargo build -p merod --release --features mock-attestation
+    cd apps/tee-dice
+    merobox bootstrap run workflows/tee-dice-roll.yml \
+      --image merod:local-mock-tee --e2e-mode
+
+force_pull_image: false
+
+log_level: "info,calimero_node::handlers::state_delta=debug"
+
+nodes:
+  tee-dice-owner:
+    port: 2428
+    rpc_port: 2528
+  tee-dice-player:
+    port: 2429
+    rpc_port: 2529
+  tee-dice-enclave:
+    port: 2430
+    rpc_port: 2530
+    mock_tee: true
+
+steps:
+  - name: Install tee-dice on the owner
+    type: install_application
+    node: tee-dice-owner
+    path: "../../dist/com.calimero.tee-dice-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: tee-dice-owner
+    application_id: "{{app_id}}"
+    nodes:
+      - tee-dice-player
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{namespace_id}})"
+
+  # ---------- Admit the enclave (read-only, by attestation) ----------
+
+  # The mock quote reports the all-zero 48 bytes for every register.
+  - name: Accept mock attestation at the namespace root
+    type: set_tee_admission_policy
+    node: tee-dice-owner
+    group_id: "{{namespace_id}}"
+    accept_mock: true
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  - name: Let the policy settle
+    type: wait
+    seconds: 8
+
+  - name: TEE fleet-join attempt 1
+    type: tee_fleet_join
+    node: tee-dice-enclave
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: TEE fleet-join attempt 2
+    type: tee_fleet_join
+    node: tee-dice-enclave
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: TEE fleet-join attempt 3
+    type: tee_fleet_join
+    node: tee-dice-enclave
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: Let root membership settle
+    type: wait
+    seconds: 10
+
+  - name: Assert the enclave is a ReadOnlyTee member of the namespace root
+    type: assert_tee_member
+    node: tee-dice-owner
+    group_id: "{{namespace_id}}"
+    account: "{{tee_account}}"
+    role: ReadOnlyTee
+
+  - name: The enclave follows the context
+    type: assert_api_response
+    node: tee-dice-enclave
+    path: /admin-api/contexts/{{context_id}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
+
+  # ---------- Negative control: a member is not an authority ----------
+
+  - name: The player asks for a roll before any authoring policy
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: roll
+    args:
+      roll_id: "before-policy"
+      sides: 6
+
+  - name: Give the enclave time to (not) act
+    type: wait
+    seconds: 15
+
+  - name: The pre-policy roll stays unresolved
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: get_roll
+    args:
+      roll_id: "before-policy"
+    outputs:
+      unresolved: result
+
+  - name: Assert it was not resolved
+    type: json_assert
+    statements:
+      - 'json_equal({{unresolved}}, {"output": null})'
+
+  # ---------- Grant authorship, then roll ----------
+
+  - name: Name the mock MRTD in the TEE authoring policy
+    type: script
+    script: scripts/set-tee-authoring-policy.sh
+    target: local
+    args:
+      - "http://localhost:2528"
+      - "{{namespace_id}}"
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  - name: Let the authoring policy reach the enclave
+    type: wait
+    seconds: 10
+
+  - name: The player asks for a roll
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: roll
+    args:
+      roll_id: "after-policy"
+      sides: 6
+
+  - name: The enclave fired the TEE trigger
+    type: assert_log_present
+    nodes:
+      - tee-dice-enclave
+    patterns:
+      - "Firing TEE trigger"
+    tail_lines: 20000
+    timeout: 60
+    check_interval: 2
+
+  - name: Wait for the TEE's write to reach the player
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - tee-dice-owner
+      - tee-dice-player
+      - tee-dice-enclave
+    timeout: 60
+    check_interval: 2
+
+  - name: The player sees the roll resolved by the TEE
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: is_resolved
+    args:
+      roll_id: "after-policy"
+    outputs:
+      resolved: result
+
+  - name: Assert the roll was resolved
+    type: json_assert
+    statements:
+      - 'json_equal({{resolved}}, {"output": true})'
+
+  - name: The pre-policy roll is still unresolved — authority is not retroactive
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: is_resolved
+    args:
+      roll_id: "before-policy"
+    outputs:
+      still_unresolved: result
+
+  - name: Assert the pre-policy roll stayed unresolved
+    type: json_assert
+    statements:
+      - 'json_equal({{still_unresolved}}, {"output": false})'
+
+  - name: The member-side TEE handler was skipped, never run
+    type: assert_log_absent
+    nodes:
+      - tee-dice-owner
+      - tee-dice-player
+    patterns:
+      - "is an #[app::tee] method"
+    tail_lines: 20000
+
+  - name: No panics
+    type: assert_log_absent
+    nodes:
+      - tee-dice-owner
+      - tee-dice-player
+      - tee-dice-enclave
+    patterns:
+      - "panicked at"
+    tail_lines: 20000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

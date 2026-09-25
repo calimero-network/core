@@ -267,7 +267,7 @@ pub(crate) async fn apply_authorized_state_delta(
     // through, since the cross-DAG check via `membership_status_at` returns
     // `Member(role)` with a wildcard role that the drain matches against.
     if NamespaceRepository::new(node_clients.context.datastore())
-        .is_read_only_for_context(&context_id, &author_id)
+        .rejects_state_writes_from(&context_id, &author_id)
         .unwrap_or_else(|err| {
             warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
             true
@@ -798,6 +798,7 @@ pub(crate) async fn apply_authorized_state_delta(
                     &node_clients.context,
                     &context_id,
                     &our_identity,
+                    &delta_id,
                     payload,
                 )
                 .await?;
@@ -948,10 +949,27 @@ fn arm_signer_resolver_for_cut(
     let store = datastore.clone();
     delta_store.arm_signer_resolver(std::sync::Arc::new(
         move |key: &calimero_primitives::identity::PublicKey| {
-            projections
+            let account = projections
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .device_account_at_cut(&store, group, key, &heads)
+                .device_account_at_cut(&store, group, key, &heads)?;
+            // An attested TEE authority signs as the TEE authority, the one
+            // writer of `TeeOnly` state. Its node only signs deltas for TEE-
+            // triggered runs, which run as that account, so this is the same
+            // resolution its own apply used. A lookup failure refuses (`None`)
+            // rather than falling back to the TEE's own account, which would
+            // quietly change which writer sets it matches.
+            match calimero_governance_store::is_tee_authority(&store, &group, &account) {
+                Ok(true) => Some(calimero_account::AccountId::TEE_AUTHORITY),
+                Ok(false) => Some(account),
+                Err(err) => {
+                    tracing::warn!(
+                        %err,
+                        "TEE authority lookup failed while resolving a signer; refusing"
+                    );
+                    None
+                }
+            }
         },
     ));
 }
@@ -1095,7 +1113,7 @@ pub async fn handle_state_delta(
     // covered), but doing it here too avoids paying for drain plus the
     // cross-DAG membership lookup on a delta we'll reject anyway.
     if NamespaceRepository::new(node_clients.context.datastore())
-        .is_read_only_for_context(&context_id, &author_id)
+        .rejects_state_writes_from(&context_id, &author_id)
         .unwrap_or_else(|err| {
             warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
             true
@@ -1690,7 +1708,7 @@ async fn request_missing_deltas(
                     // membership check on the catchup path even
                     // though gossip rejects the same envelope.
                     if NamespaceRepository::new(&datastore)
-                        .is_read_only_for_context(&context_id, &response_author)
+                        .rejects_state_writes_from(&context_id, &response_author)
                         .unwrap_or_else(|err| {
                             warn!(%context_id, %response_author, %err, "ReadOnly lookup failed; failing closed");
                             true
@@ -2014,7 +2032,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // same per-context role gate; otherwise a peer that became ReadOnly
     // between authoring and replay slips a write through.
     match NamespaceRepository::new(context_client.datastore())
-        .is_read_only_for_context(&context_id, &buffered.author_id)
+        .rejects_state_writes_from(&context_id, &buffered.author_id)
     {
         Ok(true) => {
             warn!(
@@ -2366,6 +2384,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                         &context_client,
                         &context_id,
                         &our_identity,
+                        &delta_id,
                         &events,
                     )
                     .await?;

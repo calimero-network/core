@@ -1,8 +1,9 @@
-use crate::NamespaceRepository;
+use crate::{MembershipPath, MembershipRepository, NamespaceRepository};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
+use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -163,6 +164,109 @@ pub fn read_tee_admission_policy(
         }
         None => Ok(TeeAdmissionPolicyRead::NotSet),
     }
+}
+
+/// Read the TEE authoring policy that applies to `group_id`: the MRTDs whose
+/// admitted TEEs may author as [`AccountId::TEE_AUTHORITY`].
+///
+/// Namespace-scoped like the admission policy: resolves to the root and takes
+/// the **last** `TeeAuthoringPolicySet` on its log. No op, or an op with an empty
+/// list, both read as an empty allowlist, which every caller treats as "TEE
+/// authorship is off" — this policy fails closed.
+pub fn read_tee_authoring_policy(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<String>> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let mut allowed = Vec::new();
+    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
+        let Ok(op) = decode_group_op(&root, *seq, bytes, "read_tee_authoring_policy") else {
+            continue;
+        };
+        if let GroupOp::TeeAuthoringPolicySet { allowed_mrtd } = op.op {
+            allowed = allowed_mrtd;
+        }
+    }
+    Ok(allowed)
+}
+
+/// Whether `account` is a **TEE authority** for `group_id`: a TEE admitted to
+/// the namespace by attestation (a direct `ReadOnlyTee` row at the root), still
+/// a member of `group_id`, whose recorded MRTD the namespace's authoring policy
+/// allows.
+///
+/// The MRTD is the one recorded on the admission op, which every peer verified
+/// against the quote at apply — never a value the writer asserts now.
+///
+/// Evaluated against this node's current governance state, not at a delta's
+/// causal cut. Two peers that have folded a policy change to different depths
+/// can therefore briefly disagree about a TEE write near that change; see the
+/// TEE authorship design notes for the at-cut follow-up.
+pub fn is_tee_authority(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+) -> EyreResult<bool> {
+    // A point lookup first: this runs for every signer the receive path
+    // resolves, and nearly every one is an ordinary member. Only a direct
+    // `ReadOnlyTee` row at the root — which attestation admission alone mints,
+    // and removal deletes — earns the op-log scans below.
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let membership = MembershipRepository::new(store);
+    if membership.role_of(&root, account)? != Some(GroupMemberRole::ReadOnlyTee) {
+        return Ok(false);
+    }
+    // Still a member where it writes: a Restricted subgroup it was never
+    // admitted to is not one.
+    if membership.check_path(group_id, account)? == MembershipPath::None {
+        return Ok(false);
+    }
+    let allowed = read_tee_authoring_policy(store, group_id)?;
+    if allowed.is_empty() {
+        return Ok(false);
+    }
+    Ok(
+        tee_admission_record(store, &root, account)?.is_some_and(|record| {
+            record.role == GroupMemberRole::ReadOnlyTee && allowed.contains(&record.mrtd)
+        }),
+    )
+}
+
+/// [`is_tee_authority`] for the device key that signed a delta in `context_id`.
+///
+/// `false` for a context owned by no group, and for a key bound to no account in
+/// the namespace: neither can name an attested TEE.
+pub fn is_tee_authority_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    author: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    let Some(account) = crate::member_account_in_namespace(store, &group_id, author)? else {
+        return Ok(false);
+    };
+    is_tee_authority(store, &group_id, &account)
+}
+
+/// Every TEE authority for `context_id`, in account order. The TEE scheduler
+/// ranks these to decide which one fires a trigger.
+pub fn tee_authorities_for_context(
+    store: &Store,
+    context_id: &ContextId,
+) -> EyreResult<Vec<AccountId>> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(Vec::new());
+    };
+    let root = NamespaceRepository::new(store).resolve(&group_id)?;
+    let mut authorities = Vec::new();
+    for account in tee_admission_records(store, &root)?.into_keys() {
+        if is_tee_authority(store, &group_id, &account)? {
+            authorities.push(account);
+        }
+    }
+    Ok(authorities)
 }
 
 /// Check whether a TEE attestation quote hash has already been used in a
@@ -495,9 +599,12 @@ mod tests {
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
 
-    use super::{tee_admission_record, tee_admission_records};
+    use super::{
+        is_tee_authority, read_tee_authoring_policy, tee_admission_record, tee_admission_records,
+    };
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
+    use crate::MembershipRepository;
 
     fn tee_join_op(
         signer_sk: &PrivateKey,
@@ -524,6 +631,107 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn authoring_policy_op(
+        signer_sk: &PrivateKey,
+        ns_gid: ContextGroupId,
+        nonce: u64,
+        allowed_mrtd: &[&str],
+    ) -> SignedGroupOp {
+        SignedGroupOp::sign(
+            signer_sk,
+            ns_gid,
+            vec![],
+            nonce,
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: allowed_mrtd.iter().map(|m| (*m).to_owned()).collect(),
+            },
+        )
+        .unwrap()
+    }
+
+    /// A TEE is an authority exactly while it is still a `ReadOnlyTee` member
+    /// and the latest authoring policy names the MRTD its admission recorded.
+    #[test]
+    fn tee_authority_follows_the_latest_policy_and_membership() {
+        let store = test_store();
+        let mut rng = rand::rng();
+        let ns_gid = ContextGroupId::from([0xAC; 32]);
+        let tee = AccountId::from([0x42; 32]);
+        let signer_sk = PrivateKey::random(&mut rng);
+        let membership = MembershipRepository::new(&store);
+
+        // `tee_join_op` records MRTD "m1".
+        let log = |seq: u64, op: &SignedGroupOp| {
+            append_op_log_entry(&store, &ns_gid, seq, &borsh::to_vec(op).unwrap()).unwrap();
+        };
+        log(1, &tee_join_op(&signer_sk, ns_gid, 1, tee, [0x07; 32]));
+        membership
+            .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        assert!(
+            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
+            "no policy: TEE authorship is off"
+        );
+
+        log(2, &authoring_policy_op(&signer_sk, ns_gid, 2, &["m2"]));
+        assert!(
+            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
+            "a policy that does not name the recorded MRTD admits no authority"
+        );
+
+        log(
+            3,
+            &authoring_policy_op(&signer_sk, ns_gid, 3, &["m2", "m1"]),
+        );
+        assert!(is_tee_authority(&store, &ns_gid, &tee).unwrap());
+        assert_eq!(
+            read_tee_authoring_policy(&store, &ns_gid).unwrap(),
+            ["m2", "m1"]
+        );
+
+        log(4, &authoring_policy_op(&signer_sk, ns_gid, 4, &[]));
+        assert!(
+            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
+            "an empty list turns TEE authorship back off"
+        );
+
+        log(5, &authoring_policy_op(&signer_sk, ns_gid, 5, &["m1"]));
+        assert!(is_tee_authority(&store, &ns_gid, &tee).unwrap());
+        membership.remove_member(&ns_gid, &tee).unwrap();
+        assert!(
+            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
+            "the admission record outlives a removal; the authority must not"
+        );
+    }
+
+    /// An ordinary member is never an authority, even with an admission record
+    /// and a matching policy: only the attestation-minted `ReadOnlyTee` role is.
+    #[test]
+    fn a_member_with_a_matching_record_is_not_a_tee_authority() {
+        let store = test_store();
+        let mut rng = rand::rng();
+        let ns_gid = ContextGroupId::from([0xAD; 32]);
+        let member = AccountId::from([0x43; 32]);
+        let signer_sk = PrivateKey::random(&mut rng);
+
+        for (seq, op) in [
+            tee_join_op(&signer_sk, ns_gid, 1, member, [0x08; 32]),
+            authoring_policy_op(&signer_sk, ns_gid, 2, &["m1"]),
+        ]
+        .iter()
+        .enumerate()
+        {
+            append_op_log_entry(&store, &ns_gid, seq as u64 + 1, &borsh::to_vec(op).unwrap())
+                .unwrap();
+        }
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &member, GroupMemberRole::Member)
+            .unwrap();
+
+        assert!(!is_tee_authority(&store, &ns_gid, &member).unwrap());
     }
 
     #[test]

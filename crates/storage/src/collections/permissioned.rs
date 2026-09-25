@@ -106,6 +106,14 @@ pub trait Authorizer {
     /// Is `who` permitted to perform `op`, given the resource's current
     /// capability map (each writer with its [`OpMask`])? Pure: no I/O.
     fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool;
+
+    /// Whether [`PermissionedStorage::get_mut`] also runs the `Op::Write` guard.
+    ///
+    /// Off by default: in-place edits of a collection value are guarded at merge
+    /// only, as they always have been. A policy whose writes a member must never
+    /// see land even locally (a forged move in a game would otherwise show on the
+    /// forger's own node until sync repaired it) turns it on.
+    const GUARD_IN_PLACE_EDITS: bool = false;
 }
 
 /// Membership policy: any writer may perform any op. This is exactly what the
@@ -135,6 +143,25 @@ impl Authorizer for OwnerAcl {
         // an API-surface + constructor invariant, not a different merge rule.
         WriterSetAcl::authorize(who, op, caps)
     }
+}
+
+/// TEE-authority policy: only [`AccountId::TEE_AUTHORITY`] may write, and only
+/// while it holds the writer set. The API-side mirror of what merge enforces for
+/// a [`TeeOnly`] cell: its writer set is `{TEE_AUTHORITY}`, frozen, and a node
+/// resolves a signer to that account only for an attested TEE that the
+/// namespace's TEE authoring policy allows.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TeeAuthorityAcl;
+
+impl Authorizer for TeeAuthorityAcl {
+    fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool {
+        match op {
+            Op::Read => true,
+            _ => *who == AccountId::TEE_AUTHORITY && WriterSetAcl::authorize(who, op, caps),
+        }
+    }
+
+    const GUARD_IN_PLACE_EDITS: bool = true;
 }
 
 /// Operation-granular policy: a writer is authorised for `op` only if its
@@ -359,9 +386,16 @@ where
     /// guarded at merge. Only collections (which implement [`Data`]) get this;
     /// a scalar value is edited via [`insert`](Self::insert).
     ///
+    /// Under a policy that sets [`Authorizer::GUARD_IN_PLACE_EDITS`] (such as
+    /// [`TeeAuthorityAcl`]) this also refuses a caller who may not write.
+    ///
     /// # Errors
-    /// Currently infallible; the `Result` is preserved for forward compat.
+    /// `ActionNotAllowed` if the policy guards in-place edits and the executor
+    /// may not write; otherwise any error loading the value.
     pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
+        if A::GUARD_IN_PLACE_EDITS {
+            self.guard(Op::Write)?;
+        }
         self.inner.get_mut()
     }
 }
@@ -439,6 +473,26 @@ pub type Ownable<T> = PermissionedStorage<T, OwnerAcl>;
 /// policy — `SharedStorage<T>` and `PermissionedStorage<T, WriterSetAcl>` are the
 /// same type. The ergonomic name most apps use.
 pub type SharedStorage<T> = PermissionedStorage<T, WriterSetAcl>;
+
+/// State only an attested TEE may write: [`PermissionedStorage`] under
+/// [`TeeAuthorityAcl`], with the frozen writer set `{TEE_AUTHORITY}`.
+///
+/// Every member reads it; nobody but a TEE running an `#[app::tee]` method can
+/// change it. A member's write is refused locally by the guard and, more
+/// importantly, dropped at merge on every honest peer, because no member's
+/// signing key resolves to [`AccountId::TEE_AUTHORITY`].
+pub type TeeOnly<T> = PermissionedStorage<T, TeeAuthorityAcl>;
+
+impl<T> PermissionedStorage<T, TeeAuthorityAcl>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + Default,
+{
+    /// A new TEE-only cell. The writer set is frozen, so it can never be
+    /// rotated away from the TEE authority.
+    pub fn new_tee_only() -> Self {
+        Self::new(BTreeSet::from([AccountId::TEE_AUTHORITY]), true)
+    }
+}
 
 impl<T> PermissionedStorage<T, OwnerAcl>
 where
@@ -519,7 +573,9 @@ mod tests {
     use borsh::{BorshDeserialize, BorshSerialize};
     use serial_test::serial;
 
-    use super::{Op, Ownable, PermissionedStorage, ProtocolAuthorizer};
+    use super::{
+        Authorizer, Op, Ownable, PermissionedStorage, ProtocolAuthorizer, TeeAuthorityAcl, TeeOnly,
+    };
     use crate::collections::crdt_meta::{MergeError, Mergeable};
     use crate::collections::Root;
     use crate::entities::{Data, OpMask};
@@ -610,6 +666,44 @@ mod tests {
         assert!(p.insert(TestVal(2)).is_err());
         assert!(!p.can(&pk(BOB), Op::Write));
         assert!(p.guard(Op::Write).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn tee_only_is_writable_by_the_tee_authority_alone() {
+        env::reset_for_testing();
+        env::set_account_id(*AccountId::TEE_AUTHORITY.as_bytes());
+        let mut p = Root::new(TeeOnly::<TestVal>::new_tee_only);
+
+        // The TEE authority writes; the set is frozen, so it cannot hand that off.
+        p.insert(TestVal(7)).unwrap();
+        assert_eq!(p.get().unwrap(), &TestVal(7));
+        assert!(p.is_frozen());
+        assert!(p.rotate_writers(writers(&[ALICE])).is_err());
+
+        // A member reads it but cannot write it, not even as an admin would.
+        env::set_account_id(ALICE);
+        assert_eq!(p.get().unwrap(), &TestVal(7));
+        assert!(p.insert(TestVal(8)).is_err());
+        assert!(p.can(&pk(ALICE), Op::Read));
+        assert!(!p.can(&pk(ALICE), Op::Write));
+    }
+
+    #[test]
+    fn tee_authority_acl_refuses_any_other_writer_in_the_set() {
+        // Even a writer set that somehow named another account alongside the
+        // TEE authority must not let that account write through this policy.
+        let caps = [pk(ALICE), AccountId::TEE_AUTHORITY]
+            .into_iter()
+            .map(|a| (a, OpMask::FULL))
+            .collect();
+        assert!(TeeAuthorityAcl::authorize(
+            &AccountId::TEE_AUTHORITY,
+            Op::Write,
+            &caps
+        ));
+        assert!(!TeeAuthorityAcl::authorize(&pk(ALICE), Op::Write, &caps));
+        assert!(!TeeAuthorityAcl::authorize(&pk(ALICE), Op::Admin, &caps));
     }
 
     #[test]

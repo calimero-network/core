@@ -686,6 +686,16 @@ impl Message for SetTeeAdmissionPolicyRequest {
 }
 
 #[derive(Debug)]
+pub struct SetTeeAuthoringPolicyRequest {
+    pub group_id: ContextGroupId,
+    pub allowed_mrtd: Vec<String>,
+}
+
+impl Message for SetTeeAuthoringPolicyRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
 pub struct AdmitTeeNodeRequest {
     pub group_id: ContextGroupId,
     /// The replica's identity KEY, not its account.

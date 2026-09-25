@@ -31,6 +31,7 @@ pub mod set_member_capabilities;
 pub mod set_member_metadata;
 pub mod set_subgroup_visibility;
 pub mod set_tee_admission_policy;
+pub mod set_tee_authoring_policy;
 pub mod sync_group;
 pub mod update_member_role;
 pub mod upgrade_group;

@@ -15,6 +15,7 @@ on:
       - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
+      - "apps/tee-dice/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -44,6 +45,7 @@ on:
       - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
+      - "apps/tee-dice/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -358,6 +360,12 @@ jobs:
       - name: Build kv-store-with-shared-storage bundle
         run: (cd apps/kv-store-with-shared-storage && cargo mero bundle --dev --no-icon)
 
+      - name: Build tee-dice app
+        run: cargo mero build --manifest-path apps/tee-dice/Cargo.toml
+
+      - name: Build tee-dice bundle
+        run: (cd apps/tee-dice && cargo mero bundle --dev --no-icon)
+
       - name: Build components-demo app
         run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
@@ -458,6 +466,9 @@ jobs:
             apps/kv-store-with-shared-storage/res/*.wasm
             apps/kv-store-with-shared-storage/res/abi.json
             apps/kv-store-with-shared-storage/res/state-schema.json
+            apps/tee-dice/res/*.wasm
+            apps/tee-dice/res/abi.json
+            apps/tee-dice/res/state-schema.json
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
@@ -787,6 +798,12 @@ jobs:
           - workflow: blob-presence-tee-serves
             file: workflows/blob-presence-tee-serves.yml
             app: blobs
+            image: merod:local-mock-tee
+          # A mock-TEE replica resolves a member's dice roll into TeeOnly state, but only once the
+          # namespace's TEE authoring policy names its MRTD: TEE authorship end to end.
+          - workflow: tee-dice-roll
+            file: workflows/tee-dice-roll.yml
+            app: tee-dice
             image: merod:local-mock-tee
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml

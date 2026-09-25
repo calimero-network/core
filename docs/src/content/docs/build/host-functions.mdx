@@ -172,7 +172,9 @@ verification.
 | Function | What it does | Gotcha |
 |----------|--------------|--------|
 | `env::time_now() -> u64` | The current Unix timestamp in **nanoseconds**. | Wall-clock; differs node-to-node. Non-deterministic — see the caution above. |
-| `env::random_bytes(buf: &mut [u8])` | Fills `buf` with random bytes from the host. | Non-deterministic in production. Under the test harness it is a deterministic, **non-cryptographic** PRNG — don't rely on it for security in tests. |
+| `env::random_bytes(buf: &mut [u8])` | Fills `buf` with random bytes from the host. | Non-deterministic in production. Under the test harness it is a deterministic, **non-cryptographic** PRNG — don't rely on it for security in tests. On a member's node it returns whatever that member chooses, so never trust it for a game. |
+| `env::tee_random_bytes(buf: &mut [u8])` | Fills `buf` with randomness drawn inside an attested TEE. | Traps outside a TEE-triggered run (an `#[app::tee]` method the TEE scheduler fired). See [TEE authorship](/protocol/tee-authorship/). |
+| `env::tee_origin() -> bool` | Whether this run was fired by the TEE scheduler as the TEE authority. | Set by the node, never by a caller. `#[app::tee]` checks it for you. |
 
 ## Cross-context calls
 

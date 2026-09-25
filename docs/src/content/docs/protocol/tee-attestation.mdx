@@ -225,7 +225,7 @@ offline.
 `ReadOnlyTee` is one of the group member roles ([identities](/protocol/identities/) covers the keypair model). Its constraints:
 
 - **Directly-rowed, never inherited.** A `ReadOnlyTee` membership is always a stored `(member, group)` row written by admission; it is never conferred by the inherited-membership parent-walk. A replica is a member only of the scopes it was explicitly admitted to.
-- **Read-only.** The role cannot author governance ops or state deltas. The state-delta receive path rejects any delta whose author's materialized role is `ReadOnly` or `ReadOnlyTee`, in every apply path (gossip, parent-fetch, buffered). It exists to decrypt and serve, not to mutate.
+- **Read-only, unless the namespace grants authorship.** The role cannot author governance ops or state deltas. The state-delta receive path rejects any delta whose author's materialized role is `ReadOnly` or `ReadOnlyTee`, in every apply path (gossip, parent-fetch, buffered). It exists to decrypt and serve, not to mutate. The one exception is a TEE whose recorded MRTD the namespace's TEE authoring policy names: it may author as the TEE authority, and only from an `#[app::tee]` method its own scheduler fired. See [TEE authorship](/protocol/tee-authorship/).
 - **Attestation-only assignment.** `MemberJoinedViaTeeAttestation` is the only op that mints the role. Manually setting a member to `ReadOnlyTee` via `update_member_role` is rejected — "can only be assigned via TEE attestation admission".
 - **Auto-follow on.** Admission plus the replica's self-signed op leave both auto-follow flags set, so the replica tracks new contexts and subgroups in the scopes it holds.
 

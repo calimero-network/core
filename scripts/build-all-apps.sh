@@ -14,6 +14,7 @@ APPS=(
     "apps/kv-store-with-handlers/Cargo.toml"
     "apps/kv-store-with-shared-storage/Cargo.toml"
     "apps/kv-store-with-user-and-frozen-storage/Cargo.toml"
+    "apps/tee-dice/Cargo.toml"
     "apps/kv-store/Cargo.toml"
     "apps/migrations/migration-suite-v1/Cargo.toml"
     "apps/migrations/migration-suite-v2-add-field/Cargo.toml"

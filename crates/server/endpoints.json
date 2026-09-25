@@ -100,5 +100,6 @@
   "PUT /admin-api/groups/{group_id}/metadata",
   "PUT /admin-api/groups/{group_id}/settings/default-capabilities",
   "PUT /admin-api/groups/{group_id}/settings/subgroup-visibility",
-  "PUT /admin-api/groups/{group_id}/settings/tee-admission-policy"
+  "PUT /admin-api/groups/{group_id}/settings/tee-admission-policy",
+  "PUT /admin-api/groups/{group_id}/settings/tee-authoring-policy"
 ]

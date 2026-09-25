@@ -101,6 +101,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             delegation,
             xcall_depth,
             read_as,
+            tee_trigger,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -929,6 +930,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         xcall_origin,
                         delegation.as_deref(),
                         read_as,
+                        tee_trigger,
                     )
                     .await?;
 
@@ -2043,13 +2045,59 @@ async fn internal_execute(
     // Mutually exclusive with `delegation` by construction: a read carries no
     // warrant and a warranted write sets no `read_as`.
     read_as: Option<calimero_account::AccountId>,
+    // The node's TEE scheduler fired this run. Only honoured on a node whose key
+    // is an attested TEE authority for the context; see `tee_authority` below.
+    tee_trigger: bool,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
     Option<[u8; 64]>,
     Option<GovernanceParentEdge>,
 )> {
+    // A TEE trigger runs as the TEE authority, and only on a node that is one.
+    //
+    // Checked here, under the execution lock and against this node's governance
+    // state, rather than trusted from the request: `tee_trigger` names what the
+    // caller wants, and this decides whether the node may give it. Peers repeat
+    // the same check before they accept the delta, so a node that lies here
+    // gains nothing but a delta nobody applies.
+    //
+    // The three other principal-changing inputs are unreachable from the only
+    // caller that sets `tee_trigger`, and are refused rather than composed: a
+    // TEE write on a member's behalf, or into another context, is not a thing
+    // this prototype defines.
+    let tee_authority = if tee_trigger {
+        if is_state_op || delegation.is_some() || read_as.is_some() || xcall_origin.is_some() {
+            bail!(ExecuteError::Unauthorized {
+                context_id: context.id,
+                public_key: executor,
+            });
+        }
+        if !calimero_governance_store::is_tee_authority_for_context(
+            &datastore,
+            &context.id,
+            &executor,
+        )? {
+            warn!(
+                context_id = %context.id,
+                %executor,
+                "TEE trigger refused: this node is not an attested TEE authority for the context"
+            );
+            bail!(ExecuteError::Unauthorized {
+                context_id: context.id,
+                public_key: executor,
+            });
+        }
+        true
+    } else {
+        false
+    };
+
+    // A TEE authority is a `ReadOnlyTee` member, and that role stays read-only
+    // for everything EXCEPT a TEE-triggered run: an ordinary JSON-RPC call on a
+    // TEE node still has its writes discarded here.
     let executor_is_read_only = !is_state_op
+        && !tee_authority
         && NamespaceRepository::new(&datastore)
             .is_read_only_for_context(&context.id, &executor)
             .unwrap_or(false);
@@ -2105,6 +2153,13 @@ async fn internal_execute(
     // is the whole reason the principal can differ from the signer without a
     // caller being able to choose it.
     let principal = match delegation {
+        // A TEE-triggered run is attributed to the TEE authority, not to this
+        // node's own account: that is the account `TeeOnly` writer sets name, and
+        // the one peers resolve this node's signing key to once they have checked
+        // the same authority. The device stays this node's key, which signs.
+        None if tee_authority => {
+            Principal::new(calimero_account::AccountId::TEE_AUTHORITY, executor)
+        }
         // A delegated READ: the account comes from the authenticated session,
         // the device from this node. Those halves may differ here, where they
         // may not for a write, because the rule they would break —
@@ -2183,6 +2238,7 @@ async fn internal_execute(
         node_client.clone(),
         is_read_only_call,
         xcall_origin,
+        tee_authority,
     )
     .await?;
 
@@ -2724,6 +2780,7 @@ pub(crate) async fn execute(
     node_client: NodeClient,
     is_read_only_call: bool,
     xcall_origin: Option<ContextId>,
+    tee_trigger: bool,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
@@ -2759,6 +2816,7 @@ pub(crate) async fn execute(
                     Some(&mut private_storage),
                     Some(node_client),
                     xcall_origin,
+                    tee_trigger,
                 )?
             } else {
                 module.run_with_origin(
@@ -2771,6 +2829,7 @@ pub(crate) async fn execute(
                     Some(&mut private_storage),
                     Some(node_client),
                     xcall_origin,
+                    tee_trigger,
                 )?
             };
             Ok((outcome, storage, private_storage))
