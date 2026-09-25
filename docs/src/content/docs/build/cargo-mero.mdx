@@ -77,7 +77,7 @@ meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a 
 <Steps>
 
 1. **Scaffold.**
-   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`. There is no build script - `cargo mero build` emits the ABI itself.
+   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), `tests/converge.rs`, and `GUIDE.md` (the app's guide for agents, with the five sections the registry requires). There is no build script - `cargo mero build` emits the ABI itself.
 
    ```
    $ cargo mero new my-app

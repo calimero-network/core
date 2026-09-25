@@ -46,7 +46,7 @@ meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a 
 ```
 
 **1. `cargo mero new my-app`**
-Scaffolds a crate: `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`. No build script: the ABI is emitted by `build` below.
+Scaffolds a crate: `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), `tests/converge.rs`, and `GUIDE.md` (the app's guide for agents, with the five sections the registry requires). No build script: the ABI is emitted by `build` below.
 
 **2. `cargo mero build`**
 Takes the ABI manifest the app itself builds, compiles to `wasm32-unknown-unknown`, copies the wasm into `res/`, size-optimizes it with `wasm-opt -Oz` (release only), and embeds the (canonicalized) full ABI as the wasm `calimero_abi_v1` custom section.
