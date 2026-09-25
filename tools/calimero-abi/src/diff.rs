@@ -16,6 +16,8 @@ use calimero_wasm_abi::schema::{
     collection_category, CollectionCategory, CrdtCollectionType, Field, Manifest, TypeDef, TypeRef,
 };
 
+const DOC_KEY: &str = "doc"; // prose on an ABI item, never part of a type's shape
+
 /// Classification of a single field-level change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindingClass {
@@ -200,6 +202,9 @@ fn expand_refs(
             }
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
+                if k == DOC_KEY {
+                    continue;
+                }
                 let _ = out.insert(k, expand_refs(v, manifest, path)?);
             }
             Ok(Value::Object(out))
@@ -716,5 +721,53 @@ mod tests {
             !obj.contains_key("$ref"),
             "$ref replaced by $resolved: {out}"
         );
+    }
+
+    const UNDOCUMENTED: &str = r#"{"schema_version":"wasm-abi/1","types":{
+        "Inner":{"kind":"record","fields":[{"name":"a","type":{"kind":"u64"}}]},
+        "Kind":{"kind":"variant","variants":[{"name":"A"}]},
+        "Root":{"kind":"record","fields":[
+            {"name":"data","type":{"$ref":"Inner"}},
+            {"name":"kind","type":{"$ref":"Kind"}}]}
+    },"methods":[],"events":[],"state_root":"Root"}"#;
+
+    const DOCUMENTED: &str = r#"{"schema_version":"wasm-abi/1","types":{
+        "Inner":{"kind":"record","doc":"Inner data.","fields":[{"name":"a","type":{"kind":"u64"},"doc":"The a."}]},
+        "Kind":{"kind":"variant","doc":"A kind.","variants":[{"name":"A","doc":"The A."}]},
+        "Root":{"kind":"record","doc":"Root.","fields":[
+            {"name":"data","type":{"$ref":"Inner"},"doc":"Data."},
+            {"name":"kind","type":{"$ref":"Kind"}}]}
+    },"methods":[],"events":[],"state_root":"Root"}"#;
+
+    #[test]
+    fn doc_only_changes_are_not_findings() {
+        let undocumented = manifest_raw(UNDOCUMENTED);
+        let documented = manifest_raw(DOCUMENTED);
+        assert!(diff_checked(&documented, &undocumented).unwrap().is_empty());
+        assert!(diff_checked(&undocumented, &documented).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_real_change_beside_a_doc_change_is_still_breaking() {
+        let current = manifest_raw(&DOCUMENTED.replace(
+            r#"{"name":"a","type":{"kind":"u64"},"doc":"The a."}"#,
+            r#"{"name":"a","type":{"kind":"string"},"doc":"The a."}"#,
+        ));
+        let findings = diff_checked(&current, &manifest_raw(UNDOCUMENTED)).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].field, "data");
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn doc_key_is_the_key_the_schema_serializes() {
+        let field = Field {
+            name: "a".to_owned(),
+            type_: TypeRef::u64(),
+            nullable: None,
+            doc: Some("x".to_owned()),
+        };
+        let value = serde_json::to_value(field).unwrap();
+        assert_eq!(value[DOC_KEY], "x", "{value}");
     }
 }

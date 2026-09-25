@@ -91,7 +91,7 @@ The `mero-abi` CLI (package name `mero-abi`, binary/command `calimero-abi`) is t
 - `extract` / `types` / `state` - read a compiled wasm and print/emit its ABI (via `extract.rs`, using `Manifest` and `extract_state_schema`)
 - `inspect` - dump a wasm's sections (`inspect.rs`)
 - `embed <wasm> <schema>` - calls `embed::write_embedded_state_schema` in place (`embed.rs`)
-- `diff <current> <baseline>` - loads two `state-schema.json` files and reports breaking changes plus unsafe identity downgrades, built on `calimero_wasm_abi::schema` and (per its own help text) the same downgrade semantics `downgrade.rs` implements
+- `diff <current> <baseline>` - loads two `state-schema.json` files and reports breaking changes plus unsafe identity downgrades, built on `calimero_wasm_abi::schema` and (per its own help text) the same downgrade semantics `downgrade.rs` implements; `doc` keys are ignored, so a doc-only edit is never a finding
 
 ## Invariants and Gotchas
 
