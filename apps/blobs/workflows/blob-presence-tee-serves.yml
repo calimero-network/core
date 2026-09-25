@@ -205,10 +205,6 @@ steps:
     outputs:
       source_sha256: sha256
 
-  - name: Give the announce and the prefetch time to complete
-    type: wait
-    seconds: 30
-
   # The discriminator. This line is emitted by the prefetch path only; a binary
   # without it never fetches a blob it was not asked for, so this assertion
   # fails before the owner is even stopped.
@@ -219,6 +215,13 @@ steps:
     patterns:
       - "prefetching announced blob"
     tail_lines: 20000
+    # `timeout` rather than the fixed wait that used to precede this. A log
+    # line appears when the node gets there, not when the workflow reaches
+    # the step, so a sleep has to be sized by guess — too short fails on a
+    # slow runner, too long taxes every run. Polling returns as soon as the
+    # line is there.
+    timeout: 60
+    check_interval: 2
 
   # ---------- Fault: the only other holder goes away ----------
 

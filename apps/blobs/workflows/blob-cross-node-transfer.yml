@@ -79,10 +79,6 @@ steps:
   # every fetch below died `NotFound { closest_peers: [] }` while the mesh above
   # converged normally. Assert kad populated, so that regression fails here with
   # a named cause instead of as a timeout inside a download step.
-  - name: Give kad time to populate from identify
-    type: wait
-    seconds: 30
-
   - name: Precondition — node 1's kad routing table is populated
     type: assert_log_present
     nodes:
@@ -90,6 +86,13 @@ steps:
     patterns:
       - "RoutingUpdated"
     tail_lines: 20000
+    # `timeout` rather than the fixed wait that used to precede this. A log
+    # line appears when the node gets there, not when the workflow reaches
+    # the step, so a sleep has to be sized by guess — too short fails on a
+    # slow runner, too long taxes every run. Polling returns as soon as the
+    # line is there.
+    timeout: 60
+    check_interval: 2
 
   - name: Precondition — node 2's kad routing table is populated
     type: assert_log_present
