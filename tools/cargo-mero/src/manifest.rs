@@ -102,7 +102,7 @@ pub fn render(
             tags: meta.tags.clone(),
             license: meta.license.clone(),
             category: meta.category.clone(),
-            guide: None,
+            guide: meta.guide.clone(),
         }),
         // Sibling of `metadata` so it stays outside app-id derivation. Defaults
         // to the package, which is what the deep-link resolver matches on.
@@ -144,6 +144,7 @@ mod tests {
             description: Some("A demo app".into()),
             author: Some("Alice".into()),
             icon: None,
+            guide: None,
             slug: None,
             license: None,
             category: None,
@@ -254,6 +255,25 @@ mod tests {
     }
 
     #[test]
+    fn guide_renders_inside_metadata() {
+        let mut meta = single_meta();
+        meta.guide = Some("## Overview\nA demo app.\n".into());
+        let artifacts = vec![StagedArtifact {
+            service_name: None,
+            wasm: artifact_from_bytes("app.wasm", b"wasm-bytes"),
+            abi: None,
+        }];
+
+        let manifest = render(&meta, &artifacts, None).unwrap();
+
+        assert_eq!(manifest["metadata"]["guide"], "## Overview\nA demo app.\n");
+        assert!(
+            manifest.get("guide").is_none(),
+            "guide belongs inside metadata"
+        );
+    }
+
+    #[test]
     fn multi_service_manifest_shape() {
         let meta = BundleMeta {
             package: "com.example.suite".into(),
@@ -261,6 +281,7 @@ mod tests {
             description: None,
             author: None,
             icon: None,
+            guide: None,
             slug: None,
             license: None,
             category: None,

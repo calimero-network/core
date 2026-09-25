@@ -13,6 +13,7 @@ fn full_meta() -> BundleMeta {
         description: Some("A demo app".into()),
         author: Some("Acme".into()),
         icon: Some("data:image/png;base64,iVBORw0KGgo=".into()),
+        guide: Some("## Overview\nA demo app.\n".into()),
         slug: Some("com.example.demo".into()),
         license: Some("MIT".into()),
         // Populated, not None: this fixture exists to prove every field
@@ -52,6 +53,7 @@ fn sparse_meta() -> BundleMeta {
         description: None,
         author: None,
         icon: None,
+        guide: None,
         slug: None,
         license: None,
         category: None,
@@ -96,6 +98,7 @@ fn omitted_optional_fields_serialize_without_nulls() {
     let meta = m.metadata.expect("metadata");
     assert!(meta.author.is_none());
     assert!(meta.license.is_none());
+    assert!(meta.guide.is_none());
 }
 
 #[test]
@@ -108,6 +111,7 @@ fn every_field_survives_a_round_trip_through_the_node_type() {
     assert_eq!(meta.author.as_deref(), Some("Acme"));
     assert_eq!(meta.license.as_deref(), Some("MIT"));
     assert_eq!(meta.tags, vec!["social".to_owned()]);
+    assert_eq!(meta.guide.as_deref(), Some("## Overview\nA demo app.\n"));
     assert!(meta
         .icon
         .expect("icon")

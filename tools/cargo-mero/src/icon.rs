@@ -127,6 +127,7 @@ mod tests {
             description: None,
             author: None,
             icon: icon.map(str::to_owned),
+            guide: None,
             slug: None,
             license: None,
             category: None,

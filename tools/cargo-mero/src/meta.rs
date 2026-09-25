@@ -33,6 +33,8 @@ pub struct BundleMeta {
     pub author: Option<String>,
     /// Unresolved path from `[..metadata.calimero]`; not yet encoded.
     pub icon: Option<String>,
+    /// Unresolved path from `[..metadata.calimero]`; `bundle` replaces it with the file's text.
+    pub guide: Option<String>,
     pub slug: Option<String>,
     pub license: Option<String>,
     /// Primary storefront category. Exactly one, from `CATEGORIES`.
@@ -68,6 +70,7 @@ struct RawCalimeroMeta {
     description: Option<String>,
     author: Option<String>,
     icon: Option<String>,
+    guide: Option<String>,
     slug: Option<String>,
     license: Option<String>,
     category: Option<String>,
@@ -317,6 +320,7 @@ fn load_from_values(
         description: raw.description,
         author: raw.author,
         icon: raw.icon,
+        guide: raw.guide,
         slug: raw.slug,
         license: raw.license,
         category,
@@ -582,6 +586,7 @@ mod tests {
             [package.metadata.calimero]
             package = "com.example.demo"
             icon = "assets/icon.png"
+            guide = "GUIDE.md"
             slug = "demo"
             license = "MIT"
             tags = ["social", "chat"]
@@ -590,6 +595,7 @@ mod tests {
         "#;
         let meta = parse_for_test(toml).expect("parses");
         assert_eq!(meta.icon.as_deref(), Some("assets/icon.png"));
+        assert_eq!(meta.guide.as_deref(), Some("GUIDE.md"));
         assert_eq!(meta.slug.as_deref(), Some("demo"));
         assert_eq!(meta.license.as_deref(), Some("MIT"));
         assert_eq!(meta.tags, vec!["social".to_owned(), "chat".to_owned()]);
@@ -650,6 +656,20 @@ mod tests {
         let err = parse_for_test(toml).expect_err("a typo must not be silently dropped");
         assert!(
             err.to_string().contains("catagory") || err.to_string().contains("unknown field"),
+            "unhelpful error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_misspelt_guide_key_is_still_a_hard_error() {
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            guides = "GUIDE.md"
+        "#;
+        let err = parse_for_test(toml).expect_err("a typo must not be silently dropped");
+        assert!(
+            err.to_string().contains("guides") || err.to_string().contains("unknown field"),
             "unhelpful error: {err}"
         );
     }
