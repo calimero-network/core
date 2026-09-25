@@ -102,6 +102,7 @@ pub fn render(
             tags: meta.tags.clone(),
             license: meta.license.clone(),
             category: meta.category.clone(),
+            guide: None,
         }),
         // Sibling of `metadata` so it stays outside app-id derivation. Defaults
         // to the package, which is what the deep-link resolver matches on.
