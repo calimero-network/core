@@ -20,17 +20,8 @@ fn test_schema_validation_basic() {
     // Add a simple method
     manifest.methods.push(calimero_wasm_abi::schema::Method {
         name: "test_method".to_string(),
-        doc: None,
-        params: vec![],
         returns: Some(calimero_wasm_abi::schema::TypeRef::u32()),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
-        returns_doc: None,
-        destructive: false,
-        idempotent: false,
+        ..Default::default()
     });
 
     // Serialize to JSON
@@ -102,17 +93,8 @@ fn test_schema_validation_shared_storage_crdt_type() {
     };
     manifest.methods.push(Method {
         name: "shared".to_string(),
-        doc: None,
-        params: vec![],
         returns: Some(shared),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
-        returns_doc: None,
-        destructive: false,
-        idempotent: false,
+        ..Default::default()
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
@@ -332,22 +314,14 @@ fn test_schema_validation_tuple() {
     };
     manifest.methods.push(calimero_wasm_abi::schema::Method {
         name: "sorted_scores_range".to_string(),
-        doc: None,
-        params: vec![],
         returns: Some(calimero_wasm_abi::schema::TypeRef::list(
             calimero_wasm_abi::schema::TypeRef::tuple(vec![
                 calimero_wasm_abi::schema::TypeRef::string(),
                 calimero_wasm_abi::schema::TypeRef::u64(),
             ]),
         )),
-        returns_nullable: None,
-        errors: vec![],
         intent: MethodIntent::ReadOnly,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
-        returns_doc: None,
-        destructive: false,
-        idempotent: false,
+        ..Default::default()
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
@@ -420,15 +394,10 @@ fn test_schema_validation_doc_on_every_object() {
             nullable: None,
             doc: doc(),
         }],
-        returns: None,
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
-        returns_doc: None,
-        destructive: false,
-        idempotent: false,
+        returns_doc: doc(),
+        destructive: true,
+        idempotent: true,
+        ..Default::default()
     });
     manifest.events.push(Event {
         name: "E".to_owned(),
