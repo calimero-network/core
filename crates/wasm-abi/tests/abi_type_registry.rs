@@ -80,6 +80,29 @@ fn same_name_with_a_different_shape_is_a_collision() {
 }
 
 #[test]
+fn same_name_same_shape_different_doc_is_not_a_collision() {
+    let mut reg = TypeRegistry::new();
+    reg.define("A", |_| TypeDef::Record {
+        doc: Some("User id.".to_owned()),
+        fields: vec![],
+    });
+    reg.define("A", |_| TypeDef::Record {
+        doc: Some("Order id.".to_owned()),
+        fields: vec![],
+    });
+    let types = reg.into_types();
+    assert_eq!(types.len(), 1);
+    assert_eq!(
+        types["A"],
+        TypeDef::Record {
+            doc: Some("User id.".to_owned()),
+            fields: vec![],
+        },
+        "the first-registered doc wins"
+    );
+}
+
+#[test]
 fn scalar_types_register_no_definition() {
     let mut reg = TypeRegistry::new();
     let r = <String as AbiType>::type_ref(&mut reg);
