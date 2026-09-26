@@ -429,6 +429,11 @@
             "same_app"
           ],
           "description": "Who may invoke this xcall entry point, enforced by the node. 'any_in_namespace' (the default, and the value for manifests compiled before this field existed) keeps the historical behaviour; 'same_app' (#[app::xcall(from_same_app)]) restricts callers to contexts running the same application id."
+        },
+        "tee_every_secs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Period, in seconds, of a timer-driven TEE trigger declared via #[app::tee(every = \"..\")]. The node's TEE scheduler fires the method once per period on one TEE authority. Absent for every other method, including event-driven TEE triggers."
         }
       }
     },

@@ -33,6 +33,9 @@ pub const TEE_FIRED_EVENT_KIND: &str = "calimero:tee-fired";
 /// Domain separator for [`event_trigger_id`].
 const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event.v1";
 
+/// Domain separator for [`timer_trigger_id`].
+const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer.v1";
+
 /// Domain separator for the fired-marker's store key.
 const FIRED_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.fired.v1";
 
@@ -46,6 +49,24 @@ const FIRED_SCOPE: [u8; 16] = *b"calimero-teefire";
 #[must_use]
 pub fn event_trigger_id(cause: &[u8; 32], method: &str) -> TeeTriggerId {
     domain_hash(EVENT_TRIGGER_DOMAIN, &[cause.as_slice(), method.as_bytes()])
+}
+
+/// The trigger an `#[app::tee(every = "..")]` method `method` fires for its
+/// `tick`th period in `context_id`.
+///
+/// Every TEE authority derives the same id for the same tick, which is what
+/// lets one of them stand down when another has fired it. The context is part
+/// of the id because, unlike a delta, a tick is not unique to one context.
+#[must_use]
+pub fn timer_trigger_id(context_id: &ContextId, method: &str, tick: u64) -> TeeTriggerId {
+    domain_hash(
+        TIMER_TRIGGER_DOMAIN,
+        &[
+            AsRef::<[u8; 32]>::as_ref(context_id).as_slice(),
+            method.as_bytes(),
+            &tick.to_le_bytes(),
+        ],
+    )
 }
 
 fn fired_key(context_id: &ContextId, trigger: &TeeTriggerId) -> GenericKey {
@@ -123,6 +144,16 @@ mod tests {
         assert_eq!(a, event_trigger_id(&[1; 32], "resolve"));
         assert_ne!(a, event_trigger_id(&[2; 32], "resolve"));
         assert_ne!(a, event_trigger_id(&[1; 32], "deal"));
+    }
+
+    #[test]
+    fn a_timer_id_names_the_context_the_method_and_the_tick() {
+        let ctx = ContextId::from([1; 32]);
+        let a = timer_trigger_id(&ctx, "tick", 7);
+        assert_eq!(a, timer_trigger_id(&ctx, "tick", 7));
+        assert_ne!(a, timer_trigger_id(&ctx, "tick", 8));
+        assert_ne!(a, timer_trigger_id(&ctx, "sweep", 7));
+        assert_ne!(a, timer_trigger_id(&ContextId::from([2; 32]), "tick", 7));
     }
 
     #[test]
