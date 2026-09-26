@@ -1477,3 +1477,120 @@ async fn child_of_genesis_applies_after_its_parent() {
     assert!(applied, "child of an applied genesis must apply");
     assert_eq!(applier.get_applied().await, vec![[10; 32], [11; 32]]);
 }
+
+// ============================================================
+// Refused parents (core#4070)
+// ============================================================
+
+/// A child pending on a parent the caller then refuses is released: it applies
+/// without the parent, and the parent is no longer reported as missing.
+#[tokio::test]
+async fn test_refusing_a_parent_releases_its_pending_child() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let child = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    assert!(!dag.add_delta(child, &applier).await.unwrap());
+    assert_eq!(
+        dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT),
+        vec![[1; 32]]
+    );
+
+    let cascaded = dag.refuse_delta([1; 32], &applier).await.unwrap();
+
+    assert_eq!(cascaded, vec![[2; 32]]);
+    assert_eq!(applier.get_applied().await, vec![[2; 32]]);
+    assert!(dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT).is_empty());
+    assert_eq!(dag.pending_stats().count, 0);
+    // The refused delta never applied, so nothing retired ITS parent (genesis
+    // here) from the heads. The next local delta cites it as well, which every
+    // peer already holds.
+    let mut heads = dag.get_heads();
+    heads.sort();
+    assert_eq!(heads, vec![[0; 32], [2; 32]]);
+}
+
+/// A child arriving after its parent was refused applies at once, and the
+/// refused parent is never asked for.
+#[tokio::test]
+async fn test_a_child_of_a_refused_delta_applies_on_arrival() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    assert!(dag
+        .refuse_delta([1; 32], &applier)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(dag.is_refused(&[1; 32]));
+
+    let child = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    assert!(dag.add_delta(child, &applier).await.unwrap());
+
+    assert_eq!(applier.get_applied().await, vec![[2; 32]]);
+    assert!(dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT).is_empty());
+}
+
+/// Refusing does not bar the id: the caller authorizes what it adds, and an id
+/// need not name its author, so a copy of the content the caller does accept
+/// still applies.
+#[tokio::test]
+async fn test_a_refused_id_the_caller_later_adds_still_applies() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    assert!(dag
+        .refuse_delta([1; 32], &applier)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let accepted = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    assert!(dag.add_delta(accepted, &applier).await.unwrap());
+
+    assert!(dag.is_applied(&[1; 32]));
+    assert_eq!(applier.get_applied().await, vec![[1; 32]]);
+}
+
+/// A delta already applied here is too late to refuse: its descendants may
+/// depend on it, so it stays applied and nothing is recorded.
+#[tokio::test]
+async fn test_an_applied_delta_cannot_be_refused() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    assert!(dag.add_delta(delta, &applier).await.unwrap());
+
+    assert!(dag
+        .refuse_delta([1; 32], &applier)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!dag.is_refused(&[1; 32]));
+    assert!(dag.is_applied(&[1; 32]));
+}
+
+/// A pending copy of the refused delta is dropped, and its own pending child
+/// is released with it.
+#[tokio::test]
+async fn test_refusing_a_pending_delta_drops_it_and_releases_its_child() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // [1] waits on a parent that never comes; [2] waits on [1].
+    let refused = CausalDelta::new_test([1; 32], vec![[9; 32]], TestPayload { value: 1 });
+    let child = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    assert!(!dag.add_delta(refused, &applier).await.unwrap());
+    assert!(!dag.add_delta(child, &applier).await.unwrap());
+
+    let cascaded = dag.refuse_delta([1; 32], &applier).await.unwrap();
+
+    assert_eq!(cascaded, vec![[2; 32]]);
+    assert!(!dag.has_delta(&[1; 32]));
+    assert_eq!(applier.get_applied().await, vec![[2; 32]]);
+    assert!(
+        dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT).is_empty(),
+        "the refused delta's own missing parent is no longer wanted"
+    );
+}

@@ -2516,6 +2516,31 @@ impl SyncManager {
                                 continue;
                             }
 
+                            // A revoked device passes the cut check below by
+                            // citing heads from before its revocation.
+                            if crate::handlers::state_delta::is_revoked_signer(
+                                &datastore_for_heads,
+                                &context_id,
+                                &author,
+                            ) {
+                                warn!(
+                                    %context_id,
+                                    %author,
+                                    head_id = ?head_id,
+                                    "DAG-catchup: rejecting delta from a revoked device"
+                                );
+                                crate::handlers::state_delta::refuse_delta(
+                                    &delta_store_ref,
+                                    &self.node_client,
+                                    &self.context_client,
+                                    &context_id,
+                                    Some(our_identity),
+                                    storage_delta.id,
+                                )
+                                .await;
+                                continue;
+                            }
+
                             {
                                 use crate::handlers::state_delta::{
                                     authorize_delta_at_edge_projected, resolve_cut_membership,

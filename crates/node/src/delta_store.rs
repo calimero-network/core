@@ -3603,6 +3603,62 @@ impl DeltaStore {
         inflight.iter().copied().collect()
     }
 
+    /// Refuse delta `delta_id` on this node: it is never applied here, and the
+    /// pending deltas waiting on it apply without it (see
+    /// [`calimero_dag::DagStore::refuse_delta`]).
+    ///
+    /// For a caller whose authorization refused the delta outright. Without it
+    /// an honest delta written on top of a refused one pends until
+    /// `cleanup_stale` drops it, and every sync until then asks peers for a
+    /// parent this node will only refuse again (core#4070).
+    ///
+    /// The released deltas are persisted with the new heads, exactly as
+    /// `get_missing_parents` persists its cascade. Returns the events those
+    /// deltas carry, for the caller to hand to `execute_cascaded_events`.
+    pub async fn refuse_delta(&self, delta_id: [u8; 32]) -> Vec<([u8; 32], Vec<u8>)> {
+        let (cascaded_bodies, heads, hold) = {
+            let mut dag = self.dag.write().await;
+            let lock_start = std::time::Instant::now();
+            // Read back what applied from the pending set rather than the
+            // cascade's return value, so a cascade that fails partway still
+            // persists the deltas it did apply.
+            let pending_before: HashSet<[u8; 32]> =
+                dag.get_pending_delta_ids().into_iter().collect();
+            if let Err(e) = dag.refuse_delta(delta_id, &*self.applier).await {
+                warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    delta_id = %Hash::from(delta_id),
+                    "cascade after refusing a delta failed; the next sync retries it"
+                );
+            }
+            let pending_after: HashSet<[u8; 32]> =
+                dag.get_pending_delta_ids().into_iter().collect();
+            let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = pending_before
+                .difference(&pending_after)
+                .filter(|id| dag.is_applied(id))
+                .filter_map(|id| dag.get_delta(id).map(|d| (*id, d.clone())))
+                .collect();
+            (cascaded_bodies, dag.get_heads(), lock_start.elapsed())
+        };
+        self.record_dag_write_lock_hold("refuse_delta", hold, None, cascaded_bodies.len());
+
+        if cascaded_bodies.is_empty() {
+            return Vec::new();
+        }
+        info!(
+            context_id = %self.applier.context_id,
+            delta_id = %Hash::from(delta_id),
+            released = cascaded_bodies.len(),
+            "Refused delta released the pending deltas built on it"
+        );
+        // Cascade-only: no primary, so `committed` is not consulted, as in
+        // `get_missing_parents`.
+        self.persist_cascaded_deltas_and_update_heads(&cascaded_bodies, Vec::new(), heads)
+            .await
+            .forwarded_events
+    }
+
     /// Cleanup stale pending deltas (timeout eviction)
     pub async fn cleanup_stale(&self, max_age: Duration) -> usize {
         let mut dag = self.dag.write().await;

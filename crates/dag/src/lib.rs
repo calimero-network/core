@@ -40,6 +40,12 @@ pub const MAX_PENDING_DELTAS: usize = 10_000;
 /// "not found", which is the cue for HashComparison/Snapshot).
 pub const MAX_PRUNED_TRACKED: usize = 100_000;
 
+/// Maximum number of refused delta ids remembered by [`DagStore::refuse_delta`].
+/// Bounded FIFO like [`MAX_PRUNED_TRACKED`]. An id that ages out is only
+/// forgotten locally: the next child naming it asks for it again, the caller
+/// refuses it again, and it is re-recorded.
+pub const MAX_REFUSED_TRACKED: usize = 100_000;
+
 /// Type of delta - regular operation or checkpoint (snapshot boundary)
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
@@ -380,6 +386,18 @@ pub struct DagStore<T> {
     /// reaches [`MAX_PRUNED_TRACKED`].
     pruned_order: VecDeque<[u8; 32]>,
 
+    /// Ids of deltas the caller refused (see [`Self::refuse_delta`]).
+    /// Like a pruned ancestor, a refused parent counts as satisfied and is never
+    /// requested: a delta that builds on it applies without its effects. Without
+    /// this a child naming a refused parent pends until `cleanup_stale` drops
+    /// it, and every sync in between asks peers for a parent this node will
+    /// only refuse again. Bounded FIFO via `refused_order`.
+    refused: HashSet<[u8; 32]>,
+
+    /// Arrival-order index into `refused` for O(1) FIFO eviction once the set
+    /// reaches [`MAX_REFUSED_TRACKED`].
+    refused_order: VecDeque<[u8; 32]>,
+
     /// Maximum number of items returned by query methods to prevent resource exhaustion.
     /// Even if a caller requests more, the DAG will cap the result at this size.
     /// By default, equal to `MAX_DELTA_QUERY_SIZE`.
@@ -411,6 +429,8 @@ impl<T: Clone> DagStore<T> {
             root,
             pruned: HashSet::new(),
             pruned_order: VecDeque::new(),
+            refused: HashSet::new(),
+            refused_order: VecDeque::new(),
             delta_query_limit: MAX_DELTA_QUERY_LIMIT,
             max_pending: MAX_PENDING_DELTAS,
         }
@@ -725,6 +745,13 @@ impl<T: Clone> DagStore<T> {
                 return true;
             }
 
+            // A refused parent counts as satisfied too, for a different reason:
+            // it will never apply here, so waiting for it would strand every
+            // delta that builds on it. See [`Self::refuse_delta`].
+            if self.refused.contains(p) {
+                return true;
+            }
+
             // Parent must be both applied and exist in the DAG
             self.applied.contains(p) && self.deltas.contains_key(p)
         })
@@ -877,6 +904,11 @@ impl<T: Clone> DagStore<T> {
                     continue;
                 }
 
+                // Nor one this node refused: it would only be refused again.
+                if self.refused.contains(parent) {
+                    continue;
+                }
+
                 // Only return parents that aren't in the DAG at all
                 // Parents that are in the DAG but pending will cascade when ready
                 if !self.deltas.contains_key(parent) {
@@ -951,7 +983,9 @@ impl<T: Clone> DagStore<T> {
                 p.delta
                     .parents
                     .iter()
-                    .filter(|&parent| !self.applied.contains(parent))
+                    .filter(|&parent| {
+                        !self.applied.contains(parent) && !self.refused.contains(parent)
+                    })
                     .count()
             })
             .sum();
@@ -1167,6 +1201,67 @@ impl<T: Clone> DagStore<T> {
         }
 
         pruned
+    }
+
+    /// Refuse delta `id`: it will never be applied on this node, and every
+    /// pending delta that waits on it is released.
+    ///
+    /// For a caller whose authorization refused the delta outright, from state
+    /// that will not change back. Children written on top of it by other authors
+    /// then apply without its effects instead of pending until `cleanup_stale`
+    /// drops them.
+    ///
+    /// This does not bar `id` from a later [`Self::add_delta`]. The caller
+    /// authorizes whatever it adds, and a delta's id need not name its author:
+    /// a copy of the same content it accepts from someone else still applies. A delta already applied here is left alone and nothing
+    /// cascades: it is too late to refuse, and its descendants may already
+    /// depend on it. A pending copy of `id` is dropped.
+    ///
+    /// The refused delta never applies, so nothing retires its own parents from
+    /// the heads. They stay heads until something else builds on them; the next
+    /// local delta cites them too, and every peer already holds them.
+    ///
+    /// Returns the ids of the pending deltas that applied as a result, in order.
+    ///
+    /// # Errors
+    /// Propagates an apply failure from the cascade.
+    pub async fn refuse_delta<A: DeltaApplier<T> + Sync>(
+        &mut self,
+        id: [u8; 32],
+        applier: &A,
+    ) -> Result<Vec<[u8; 32]>, DagError>
+    where
+        T: Send + Sync,
+    {
+        if self.applied.contains(&id) {
+            return Ok(Vec::new());
+        }
+        let _ = self.remove_pending(&id);
+        let _ = self.deltas.remove(&id);
+        self.remember_refused(id);
+
+        let seed = self.pending_children.remove(&id).unwrap_or_default();
+        self.cascade_ready(seed, applier).await
+    }
+
+    /// Whether `id` was refused by [`Self::refuse_delta`] and is still tracked.
+    pub fn is_refused(&self, id: &[u8; 32]) -> bool {
+        self.refused.contains(id)
+    }
+
+    /// Record `id` as refused, bounding the tracking set with FIFO eviction.
+    fn remember_refused(&mut self, id: [u8; 32]) {
+        if !self.refused.insert(id) {
+            return;
+        }
+        self.refused_order.push_back(id);
+        while self.refused.len() > MAX_REFUSED_TRACKED {
+            if let Some(oldest) = self.refused_order.pop_front() {
+                let _ = self.refused.remove(&oldest);
+            } else {
+                break;
+            }
+        }
     }
 
     /// Record `id` as a deliberately-pruned ancestor, bounding the tracking set

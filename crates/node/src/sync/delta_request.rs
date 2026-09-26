@@ -85,6 +85,9 @@ enum VerifiedParent {
     },
     /// Rejected — drop this delta and continue with the next one.
     Skip,
+    /// Signed by a revoked device. Dropped like `Skip`, and also recorded as
+    /// refused, so the deltas built on it stop waiting for it.
+    Refuse,
 }
 
 /// Run the same chain as `request_dag_heads_and_sync`'s head-pull
@@ -228,6 +231,19 @@ fn verify_fetched_parent(
             "DAG-catchup parent-pull: rejecting delta from ReadOnly member"
         );
         return VerifiedParent::Skip;
+    }
+
+    // A revoked device passes the cut check below by citing heads from before
+    // its revocation. `Refuse` rather than `Skip`: the caller records it, so the
+    // pending delta that asked for this parent applies without it.
+    if crate::handlers::state_delta::is_revoked_signer(datastore, context_id, &fetched.author_id) {
+        warn!(
+            %context_id,
+            author = %fetched.author_id,
+            delta_id = ?delta_id,
+            "DAG-catchup parent-pull: rejecting delta from a revoked device"
+        );
+        return VerifiedParent::Refuse;
     }
 
     // Resolve membership at the cited cut FROM THE PROJECTION (F5 #29b), parity
@@ -397,6 +413,18 @@ impl SyncManager {
                         ) {
                             VerifiedParent::Apply { position } => position,
                             VerifiedParent::Skip => continue,
+                            VerifiedParent::Refuse => {
+                                crate::handlers::state_delta::refuse_delta(
+                                    &delta_store,
+                                    &self.node_client,
+                                    &self.context_client,
+                                    &context_id,
+                                    Some(our_identity),
+                                    missing_id,
+                                )
+                                .await;
+                                continue;
+                            }
                         };
 
                         // Check what parents THIS delta needs (identify grandparents).

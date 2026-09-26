@@ -113,6 +113,23 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
                 continue;
             }
         };
+        // The one exception to forward-only below: a revoked device cites heads
+        // from before its revocation, so the cut check would re-apply its write.
+        // It passed the gossip check when buffered, but the revocation may have
+        // folded since (see `revoked_signer`). Dropped, not recorded as refused:
+        // the envelope signature has not been verified on this path, and the
+        // delta's id does not bind its author.
+        if super::is_revoked_signer(datastore, context_id, &buffered.author_id) {
+            warn!(
+                %context_id,
+                delta_id = ?buffered.id,
+                author = %buffered.author_id,
+                outcome = "revoked_device",
+                "governance-pending drain: author is a revoked device; dropping"
+            );
+            crate::node_metrics::record_governance_drain_outcome("revoked_device");
+            continue;
+        }
         // Forward-only invariant — see the gossip-receive site in
         // `apply_authorized_state_delta` for the full contract. The
         // governance-pending drain MUST resolve against the buffered delta's

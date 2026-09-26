@@ -23,6 +23,7 @@ use crate::peer_identity_cache::ObservedMembership;
 mod buffering;
 mod crypto;
 mod events;
+mod revoked_signer;
 mod store_setup;
 mod verify;
 
@@ -43,6 +44,7 @@ use events::{
 };
 // `choose_owned_identity` is also reached by the sibling `buffering` module via
 // `super::` (re-exported through this import).
+pub(crate) use revoked_signer::{is_revoked_signer, refuse_delta};
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
 pub(crate) use verify::{authorize_delta_at_edge_projected, DeltaAuthOutcome};
 
@@ -278,6 +280,37 @@ pub(crate) async fn apply_authorized_state_delta(
             %author_id,
             "Rejecting state delta from ReadOnly member"
         );
+        return Ok(());
+    }
+
+    // The revoked-device refusal, for the same reason as the ReadOnly check
+    // above: the absorb drains re-apply through here without re-authorizing, and
+    // the revocation may have folded since the delta was first accepted (see
+    // `revoked_signer`). The gossip entry and the governance-pending drain drop
+    // such a delta before this, without recording it; the envelope signature has
+    // verified by here, so this one records the refusal.
+    if is_revoked_signer(node_clients.context.datastore(), &context_id, &author_id) {
+        warn!(
+            %context_id,
+            %author_id,
+            delta_id = ?delta_id,
+            "Rejecting state delta from a revoked device at apply"
+        );
+        if let Some(delta_store) = node_state
+            .delta_stores
+            .get(&context_id)
+            .map(|entry| entry.clone())
+        {
+            refuse_delta(
+                &delta_store,
+                &node_clients.node,
+                &node_clients.context,
+                &context_id,
+                None,
+                delta_id,
+            )
+            .await;
+        }
         return Ok(());
     }
 
@@ -1136,10 +1169,11 @@ pub async fn handle_state_delta(
     // peers we've already explicitly removed.
     //
     // It also refuses the signing key of a device the namespace has revoked
-    // (while no live binding speaks for that key). Here the filter is the only
-    // refusal on this path, not a shortcut: the cross-DAG check authorizes at the
-    // governance heads the author cites, and a revoked device that has not yet
-    // folded its own revocation cites heads from before it (core#4070).
+    // (while no live binding speaks for that key). That refusal is NOT recorded
+    // in the DAG here: the envelope signature is not verified yet, and a delta's
+    // id does not bind its author, so recording it would let anyone get an
+    // honest delta refused by naming a revoked author. The paths that verify
+    // first record it (see `revoked_signer`, core#4070).
     //
     // Skipped for non-group contexts (`is_author_denied_for_context`
     // returns `Ok(false)` when there's no owning group). Lookup
@@ -1728,6 +1762,22 @@ async fn request_missing_deltas(
                         continue;
                     }
 
+                    // A revoked device passes the cut check below by citing
+                    // heads from before its revocation (see `revoked_signer`).
+                    // Refused and recorded, so the pending delta that asked for
+                    // this parent applies without it; the released deltas'
+                    // events go back to the caller with the rest.
+                    if is_revoked_signer(&datastore, &context_id, &response_author) {
+                        warn!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            author = %response_author,
+                            "parent-fetch: rejecting delta from a revoked device"
+                        );
+                        cascaded_events.extend(delta_store.refuse_delta(missing_id).await);
+                        continue;
+                    }
+
                     // Cross-DAG authorization against the governance parent
                     // edge: derives the group from the context (folding in the
                     // old group-id anti-bypass) and resolves membership at the
@@ -2061,6 +2111,33 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             );
             return Err(err);
         }
+    }
+
+    // A revoked device passes the cut check below by citing heads from before
+    // its revocation (see `revoked_signer`).
+    if is_revoked_signer(context_client.datastore(), &context_id, &buffered.author_id) {
+        warn!(
+            %context_id,
+            author = %buffered.author_id,
+            delta_id = ?delta_id,
+            "Rejecting buffered state delta from a revoked device"
+        );
+        if let Some(delta_store) = node_state
+            .delta_stores
+            .get(&context_id)
+            .map(|entry| entry.clone())
+        {
+            refuse_delta(
+                &delta_store,
+                &node_client,
+                &context_client,
+                &context_id,
+                Some(our_identity),
+                delta_id,
+            )
+            .await;
+        }
+        return Ok(false);
     }
 
     // Apply-time cross-DAG membership check, parallel to `handle_state_delta`.
