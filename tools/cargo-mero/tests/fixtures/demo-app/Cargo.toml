@@ -22,6 +22,7 @@ package = "com.example.demo-app"
 name = "Demo App"
 description = "cargo-mero pipeline fixture"
 icon = "default"
+guide = "GUIDE.md"
 
 [profile.app-release]
 inherits = "release"

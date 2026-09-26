@@ -19,7 +19,7 @@ use tar::Builder;
 use tempfile::TempDir;
 
 mod common;
-use common::{create_test_bundle, create_test_node_client};
+use common::{create_test_bundle, create_test_node_client, pack_entries};
 
 /// Signs a manifest JSON value and adds the signature field.
 /// This is a convenience wrapper around the shared sign_manifest_json function.
@@ -352,6 +352,55 @@ async fn test_bundle_no_metadata() {
         metadata_json["version"], "1.0.0",
         "Version should match manifest"
     );
+}
+
+/// The node stores a bundle's display metadata as opaque bytes and serves them
+/// back untouched, so a guide in the manifest must reach `get_application`.
+#[tokio::test]
+async fn test_bundle_guide_reaches_stored_metadata() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    let guide = "## Overview\nA test app.\n\n## Procedures\n### Store a value\nCall `set`.\n";
+    let wasm_content: &[u8] = b"guide wasm bytecode";
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.guide",
+        "appVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
+        "metadata": { "name": "Guide App", "guide": guide },
+        "wasm": {
+            "path": "app.wasm",
+            "hash": artifact_hash(wasm_content),
+            "size": wasm_content.len(),
+        },
+    });
+    sign_manifest(&mut manifest, &SigningKey::generate(&mut UnwrapErr(SysRng)));
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+
+    let name = "com.example.guide-1.0.0.mpk";
+    let _bundle = pack_entries(
+        &temp_dir,
+        name,
+        &[
+            ("manifest.json", manifest_bytes.as_slice()),
+            ("app.wasm", wasm_content),
+        ],
+    );
+    let bundle_path: Utf8PathBuf = temp_dir.path().join(name).try_into().unwrap();
+
+    let application_id = node_client
+        .install_application_from_path(bundle_path)
+        .await
+        .expect("Bundle installation should succeed");
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(metadata["guide"], guide);
 }
 
 #[tokio::test]

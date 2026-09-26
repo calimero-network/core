@@ -46,6 +46,10 @@ pub struct BundleMetadata {
     /// `deny_unknown_fields`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// The app's Markdown guide for agents, the full text of the file its
+    /// `guide` metadata key names. The registry, not this crate, owns its format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guide: Option<String>,
 }
 
 /// Declarative interfaces (intents) implemented or required by the application
@@ -336,6 +340,9 @@ impl BundleManifest {
             if let Some(ref v) = m.license {
                 obj.insert("license".into(), serde_json::Value::String(v.clone()));
             }
+            if let Some(ref v) = m.guide {
+                obj.insert("guide".into(), serde_json::Value::String(v.clone()));
+            }
         }
 
         if let Some(ref l) = self.links {
@@ -524,5 +531,54 @@ mod tests {
             ApplicationId::for_bundle(&with.package, "did:key:z6MkExample").expect("with"),
             ApplicationId::for_bundle(&without.package, "did:key:z6MkExample").expect("without"),
         );
+    }
+
+    /// A manifest without a guide must serialize exactly as it did before the
+    /// field existed: an emitted `"guide": null` would change every signed payload.
+    #[test]
+    fn absent_guide_leaves_the_manifest_bytes_unchanged() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&manifest).unwrap(),
+            r#"{"version":"1.0","package":"com.example.deeplink","appVersion":"1.0.0","minRuntimeVersion":"0.1.0","metadata":{"name":"Mero Chat","tags":[]},"wasm":{"path":"app.wasm","hash":"00","size":10}}"#
+        );
+    }
+
+    // Value equality, not bytes: the workspace enables serde_json's
+    // `preserve_order`, so the stored key order depends on the build.
+    #[test]
+    fn absent_guide_leaves_the_stored_metadata_unchanged() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_slice(&manifest.to_metadata_json().unwrap()).unwrap();
+        assert_eq!(
+            stored,
+            serde_json::json!({
+                "package": "com.example.deeplink",
+                "version": "1.0.0",
+                "name": "Mero Chat"
+            })
+        );
+    }
+
+    #[test]
+    fn guide_rides_in_the_manifest_and_the_stored_metadata() {
+        let guide = "## Overview\nA chat app.\n\n## Procedures\n### Send a message\nCall `send`.\n";
+        let mut manifest: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+        manifest.metadata.as_mut().expect("metadata").guide = Some(guide.to_owned());
+
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(json["metadata"]["guide"], guide);
+        let reparsed: BundleManifest = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            reparsed.metadata.expect("metadata").guide.as_deref(),
+            Some(guide)
+        );
+
+        let stored: serde_json::Value =
+            serde_json::from_slice(&manifest.to_metadata_json().unwrap()).unwrap();
+        assert_eq!(stored["guide"], guide);
     }
 }

@@ -108,6 +108,7 @@ mod tests {
             "src/lib.rs",
             "tests/converge.rs",
             "README.md",
+            "GUIDE.md",
             ".gitignore",
         ] {
             assert!(dir.join(rel).exists(), "missing {rel}");
@@ -147,6 +148,42 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_writes_a_guide_with_the_required_sections() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().join("my-app")).unwrap();
+        scaffold("my-app", &dir);
+
+        let guide = fs::read_to_string(dir.join("GUIDE.md")).expect("scaffold must write GUIDE.md");
+        let lines: Vec<&str> = guide.lines().map(str::trim_end).collect();
+        for heading in [
+            "## Overview",
+            "## Context model",
+            "## Getting started",
+            "## Procedures",
+            "## Rules and limits",
+        ] {
+            assert!(lines.contains(&heading), "GUIDE.md is missing `{heading}`");
+        }
+        let procedures = lines
+            .iter()
+            .skip_while(|l| **l != "## Procedures")
+            .skip(1)
+            .take_while(|l| !l.starts_with("## "));
+        assert_eq!(
+            procedures.filter(|l| l.starts_with("### ")).count(),
+            1,
+            "`## Procedures` must carry one `###` example"
+        );
+        assert!(!guide.contains("{{"), "no placeholders left in GUIDE.md");
+
+        let cargo = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            cargo.contains("guide = \"GUIDE.md\""),
+            "Cargo.toml must point at the guide"
+        );
+    }
+
+    #[test]
     fn scaffold_is_valid_cargo_metadata() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = Utf8PathBuf::from_path_buf(tmp.path().join("my-app")).unwrap();
@@ -171,6 +208,12 @@ mod tests {
         let dir_ref = pkg.manifest_path.parent().unwrap();
         let bundle = crate::meta::load(&meta, dir_ref).unwrap();
         assert_eq!(bundle.package, "com.example.my-app");
+
+        // The scaffolded key must resolve to the scaffolded file, as `bundle` reads it.
+        assert_eq!(
+            crate::meta::read_guide(&bundle).unwrap(),
+            Some(fs::read_to_string(dir.join("GUIDE.md")).unwrap())
+        );
     }
 
     #[test]

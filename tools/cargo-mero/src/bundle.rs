@@ -31,8 +31,9 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     let metadata = workspace::metadata_for(args.manifest_path.as_deref(), &args.features)?;
     let base = base_dir(&metadata, args);
     let mut bundle_meta = resolve_meta(&metadata, &base, args)?;
-    // Resolved before the build so a missing icon fails fast, same as signing.
+    // Resolved before the build so a missing icon or guide fails fast, same as signing.
     bundle_meta.icon = icon::resolve(&bundle_meta, args.no_icon)?;
+    bundle_meta.guide = meta::read_guide(&bundle_meta)?;
     if args.no_abi {
         eprintln!("warning: bundling without an ABI; this app cannot be migrated");
     }
