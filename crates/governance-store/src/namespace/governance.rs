@@ -1955,9 +1955,24 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
             .map(|(pk, _sk)| pk);
 
-        let entries = NamespaceOpLogService::new(self.store, self.namespace_id)
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let entries = op_log
             .collect_sealed_root_ops()
             .map_err(|e| eyre::eyre!("collect_sealed_root_ops: {e}"))?;
+        // Causal order, not the op log's key order. The log is keyed by delta id,
+        // a content hash, so walking it replays a namespace's joins in an order
+        // unrelated to the order they happened in — and a join's apply gate reads
+        // state an EARLIER join wrote: `require_inviter_permission` resolves the
+        // inviter's key through the binding the inviter's own join recorded, and
+        // `verify_admitter_endorsement` does the same for the endorser (a TEE
+        // replica's admission, say). Replayed ahead of those, the join is refused
+        // with "inviter lacks permission", the refusal is logged and skipped, and
+        // nothing re-drives it — so a replica that took the namespace key late
+        // holds no binding for a member every keyed peer has, and refuses every
+        // invitation that member mints. The group-op pass has ordered this way
+        // since it was found there; the root pass is the same replay.
+        let entries = super::retry::order_causally(&op_log, entries)
+            .map_err(|e| eyre::eyre!("order sealed root ops causally: {e}"))?;
 
         let mut applied = 0usize;
         let mut divergence: Option<super::super::DivergenceReport> = None;

@@ -529,27 +529,41 @@ impl<'a> NamespaceMembershipService<'a> {
     /// An invitation names the inviter by KEY (it is signed with it), while the
     /// capability is granted to an account, so the key is resolved first. An
     /// inviter this namespace has no binding for holds no capability under any
-    /// principal it knows, and is refused with the same message — the grant it
-    /// would need does not exist rather than merely not matching.
+    /// principal it knows, and is refused as lacking permission too — the grant
+    /// it would need does not exist rather than merely not matching.
+    ///
+    /// The two refusals share the "lacks permission" wording but say which one
+    /// applied, because they call for different fixes. An inviter bound to no
+    /// account is a question about THIS node's view — it has not folded the
+    /// inviter's join — and one bound to an account without the capability is a
+    /// question about the grant. An admitter hands this text back to a joiner
+    /// verbatim, and from the joiner's side the two were indistinguishable.
     fn require_inviter_permission(
         &self,
         group_id: &ContextGroupId,
         inviter_pk: &PublicKey,
     ) -> EyreResult<()> {
-        let inviter = crate::member_account_in_namespace(self.store, group_id, inviter_pk)?;
-        let permitted = match inviter {
-            Some(inviter) => MembershipRepository::new(self.store).is_admin_or_has_capability(
-                group_id,
-                &inviter,
-                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
-            )?,
-            None => false,
-        };
-        if !permitted {
+        let Some(inviter) = crate::member_account_in_namespace(self.store, group_id, inviter_pk)?
+        else {
             bail!(
-                "invitation inviter {} lacks permission for group {:?}",
+                "invitation inviter {} lacks permission for group {:?}: this node binds that key \
+                 to no account in the namespace, so it holds no grant for it (this node has not \
+                 applied the inviter's join)",
                 inviter_pk,
                 group_id
+            );
+        };
+        if !MembershipRepository::new(self.store).is_admin_or_has_capability(
+            group_id,
+            &inviter,
+            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+        )? {
+            bail!(
+                "invitation inviter {} lacks permission for group {:?}: account {:?} is neither \
+                 an admin of the group nor holds CAN_INVITE_MEMBERS in it",
+                inviter_pk,
+                group_id,
+                inviter
             );
         }
         Ok(())
