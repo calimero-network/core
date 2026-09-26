@@ -1,4 +1,5 @@
 [
+  "DELETE /admin-api/groups/{group_id}/settings/tee-authoring-policy",
   "GET /admin-api/account/applications",
   "GET /admin-api/account/devices",
   "GET /admin-api/certificate",
@@ -29,6 +30,5 @@
   "PUT /admin-api/groups/{group_id}/members/{account}/auto-follow",
   "PUT /admin-api/groups/{group_id}/members/{account}/capabilities",
   "PUT /admin-api/groups/{group_id}/members/{account}/metadata",
-  "PUT /admin-api/groups/{group_id}/members/{account}/role",
-  "PUT /admin-api/groups/{group_id}/settings/tee-authoring-policy"
+  "PUT /admin-api/groups/{group_id}/members/{account}/role"
 ]

@@ -566,6 +566,7 @@ pub(crate) async fn apply_authorized_state_delta(
         &node_clients.context.datastore_handle().into_inner(),
         &context_id,
         governance_position.as_ref(),
+        calimero_storage::logical_clock::physical_time_secs(&delta.hlc),
     );
     let add_result = delta_store_ref
         .add_delta_with_events(
@@ -914,6 +915,8 @@ fn arm_signer_resolver_for_cut(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
     governance_position: Option<&calimero_context_config::types::GovernanceParentEdge>,
+    // The delta's own clock, in seconds: when its TEE evidence is judged.
+    delta_secs: u32,
 ) {
     let group = match calimero_governance_store::get_group_for_context(datastore, context_id) {
         Ok(Some(group)) => group,
@@ -958,7 +961,7 @@ fn arm_signer_resolver_for_cut(
             projections
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .writer_account_at_cut(&store, group, key, &heads)
+                .writer_account_at_cut(&store, group, key, &heads, u64::from(delta_secs))
         },
     ));
 }
@@ -1124,6 +1127,12 @@ pub async fn handle_state_delta(
     // member would be rejected there too), but the deny-list lookup is
     // O(1) and saves the drain + prefix-walk cost for traffic from
     // peers we've already explicitly removed.
+    //
+    // It also refuses the signing key of a device the namespace has revoked
+    // (while no live binding speaks for that key). Here the filter is the only
+    // refusal on this path, not a shortcut: the cross-DAG check authorizes at the
+    // governance heads the author cites, and a revoked device that has not yet
+    // folded its own revocation cites heads from before it (core#4070).
     //
     // Skipped for non-group contexts (`is_author_denied_for_context`
     // returns `Ok(false)` when there's no owning group). Lookup

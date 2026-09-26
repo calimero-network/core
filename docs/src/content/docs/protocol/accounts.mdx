@@ -691,6 +691,8 @@ The two halves are different in kind on purpose. *Which* account a key speaks fo
 
 Because the lookup reads **live** bindings, which exclude revoked and superseded devices, revocation withdraws authorship and not merely delivery.
 
+**A state delta is the exception, and the receive filter covers it.** The cross-DAG check on a state delta resolves the author at the governance heads *the author cites*, so a device that was offline when it was revoked, and writes before it folds its own revocation, cites heads from before it and passes that check. So `apply_revocation` also records the signing key the deleted binding named, and the state-delta receive filter drops any delta signed by such a key while no live binding speaks for it. The "while" matters: a device's signing key is its node's namespace identity, which a re-paired node keeps under its fresh device, so a key bound again is not refused — whichever of the two operations arrives first. The filter guards the broadcast path. Deltas pulled by DAG catch-up are still judged at their cited cut ([#4070](https://github.com/calimero-network/core/issues/4070)).
+
 ## What an app sees
 
 The two ids reach app code as two host functions, and the choice between them is the whole model in one line:
@@ -739,7 +741,7 @@ Recovery means *prove who you are, then enrol fresh* — not *restore the old ma
 | --- | --- |
 | `crates/account` | The primitives: `AccountId`, `DeviceId`, `AccountGenesis`, `DeviceCert`, `RootKeyHandoff`, `DeviceRevocation`, and their sign/verify functions. No storage, no policy. |
 | `crates/governance-store/src/node_device.rs` | This node's own secrets: the `NodeAccountRoot` and `NodeDeviceIdentity` singletons, plus the `NodeAccountDeviceCert` rows that keep the certificates this account signed. Node-local, never gossiped. |
-| `crates/governance-store/src/account_bindings.rs` | The replicated view: device bindings, revocation tombstones, per-account root keys, and the endorser set. |
+| `crates/governance-store/src/account_bindings.rs` | The replicated view: device bindings, revocation tombstones and the signing keys they withdrew, per-account root keys, and the endorser set. |
 | `crates/governance-store/src/ops/group/account_ops.rs` | Apply handlers for link, revoke, and rotate — the authorization gates. |
 | `crates/governance-store/src/group_keys.rs` | Both wrap modes, the device-first recipient resolution, and the pull-path equivalent. |
 | `crates/governance-store/src/device_link.rs` | The one publish path that links a device - the link plus its key delivery - and the decision about whether a namespace needs one. |

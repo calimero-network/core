@@ -152,8 +152,11 @@ pub struct ScopeState {
     /// storage root already reflects, and hashing it would make every node
     /// that predates this plane report a divergence.
     tee_authoring_policy: Option<(Stamp, Vec<String>)>,
-    /// Each TEE member's latest verified evidence, an LWW register per member.
-    tee_evidence: BTreeMap<AccountId, (Stamp, calimero_authz::TeeEvidence)>,
+    /// Every verified evidence of each TEE member, keyed by the moment it was
+    /// appraised at. Grow-only like the account plane, so the fold is
+    /// order-independent; which one counts depends on the time it is read for,
+    /// so the reader decides.
+    tee_evidence: BTreeMap<AccountId, BTreeMap<u64, calimero_authz::TeeEvidence>>,
 }
 
 /// The result of walking a cut's causal ancestry: the ops reached, and what
@@ -506,19 +509,24 @@ impl ScopeState {
                 member,
                 attested_key,
                 mrtd,
+                attested_at,
                 ..
             } => {
-                if wins(stamp, self.tee_evidence.get(member).map(|(seen, _)| seen)) {
-                    let _ = self.tee_evidence.insert(
-                        *member,
-                        (
-                            stamp,
-                            calimero_authz::TeeEvidence {
-                                attested_key: *attested_key,
-                                mrtd: mrtd.clone(),
-                            },
-                        ),
-                    );
+                let candidate = calimero_authz::TeeEvidence {
+                    attested_key: *attested_key,
+                    mrtd: mrtd.clone(),
+                    attested_at: *attested_at,
+                };
+                // Two appraisals dated the same second: keep the greater, so
+                // every fold order lands on one.
+                let slot = self.tee_evidence.entry(*member).or_default();
+                match slot.get(attested_at) {
+                    Some(held)
+                        if (*held.attested_key, &held.mrtd)
+                            >= (*candidate.attested_key, &candidate.mrtd) => {}
+                    _ => {
+                        let _ = slot.insert(*attested_at, candidate);
+                    }
                 }
             }
             // A graph-only node: present in the log so an ancestry walk can
@@ -926,7 +934,7 @@ impl ScopeState {
             tee_evidence: self
                 .tee_evidence
                 .iter()
-                .map(|(member, (_, evidence))| (*member, evidence.clone()))
+                .map(|(member, all)| (*member, all.values().cloned().collect()))
                 .collect(),
         }
     }

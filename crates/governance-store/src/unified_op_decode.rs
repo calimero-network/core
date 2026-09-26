@@ -343,6 +343,7 @@ pub(crate) fn group_op_payload(
                 member: *member,
                 attested_key: *attested_key,
                 mrtd: verdict.mrtd,
+                attested_at: *attested_at,
             },
             Err(err) => {
                 tracing::warn!(

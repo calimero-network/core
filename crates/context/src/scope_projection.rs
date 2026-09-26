@@ -1762,6 +1762,11 @@ impl ScopeProjections {
     /// [`AccountId::TEE_AUTHORITY`] when that account is a TEE authority at the
     /// cut and `key` is the one its evidence binds.
     ///
+    /// `at_secs` is the time the write is judged at: the delta's own clock,
+    /// which its signature covers. Evidence counts while it is current then
+    /// (`TEE_EVIDENCE_MAX_AGE_SECS`), so its lapse is decided by the delta and
+    /// not by how late each peer happens to read it.
+    ///
     /// The at-cut counterpart of `calimero_governance_store::writer_account`.
     /// Every input to the authority comes from the fold of the cut's ancestry —
     /// the `ReadOnlyTee` role at the namespace root, the authoring policy, the
@@ -1777,6 +1782,7 @@ impl ScopeProjections {
         group: ContextGroupId,
         key: &PublicKey,
         heads: &[[u8; 32]],
+        at_secs: u64,
     ) -> Option<AccountId> {
         let namespace_id = NamespaceRepository::new(store)
             .resolve(&group)
@@ -1788,7 +1794,9 @@ impl ScopeProjections {
         // `account` is who `key` speaks for at this cut, so evidence for
         // `account` that names `key` is neither relabelled from another TEE nor
         // for a key the quote does not bind.
-        if tee_evidence_key(&view, ContextGroupId::from(namespace_id), &account) != Some(*key) {
+        if tee_evidence_key(&view, ContextGroupId::from(namespace_id), &account, at_secs)
+            != Some(*key)
+        {
             return Some(account);
         }
         // Still a member where it writes: a Restricted subgroup it was never
@@ -2488,13 +2496,21 @@ fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<Acco
 }
 
 /// The attested key of `account`'s evidence, when `view` makes `account` a TEE
-/// authority candidate: a direct `ReadOnlyTee` member of the namespace `root`,
-/// under a non-empty authoring policy that names its evidence's MRTD.
+/// authority candidate at `at_secs`: a direct `ReadOnlyTee` member of the
+/// namespace `root`, whose most recent appraisal not dated beyond `at_secs`
+/// (plus the allowed skew) is still current then, under a non-empty authoring
+/// policy that names its MRTD.
+///
+/// The same rule as the live `tee_authority_key`, with the delta's time in
+/// place of the reader's clock.
 fn tee_evidence_key(
     view: &calimero_authz::AclView,
     root: ContextGroupId,
     account: &AccountId,
+    at_secs: u64,
 ) -> Option<PublicKey> {
+    use calimero_governance_store::{TEE_EVIDENCE_MAX_AGE_SECS, TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS};
+
     let is_tee = view
         .groups
         .get(&root)
@@ -2504,8 +2520,16 @@ fn tee_evidence_key(
         return None;
     }
     view.tee_evidence
-        .get(account)
-        .filter(|evidence| view.tee_authoring_policy.contains(&evidence.mrtd))
+        .get(account)?
+        .iter()
+        .filter(|evidence| {
+            evidence.attested_at <= at_secs.saturating_add(TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS)
+        })
+        .max_by_key(|evidence| evidence.attested_at)
+        .filter(|evidence| {
+            at_secs.saturating_sub(evidence.attested_at) <= TEE_EVIDENCE_MAX_AGE_SECS
+                && view.tee_authoring_policy.contains(&evidence.mrtd)
+        })
         .map(|evidence| evidence.attested_key)
 }
 

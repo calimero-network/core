@@ -123,6 +123,7 @@ fn op_payload_discriminants_are_pinned() {
             member: account,
             attested_key: calimero_primitives::identity::PublicKey::from([7; 32]),
             mrtd: "m".to_owned(),
+            attested_at: 1,
         },
     ];
 

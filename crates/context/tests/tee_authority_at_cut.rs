@@ -23,6 +23,10 @@ use rand::rngs::SysRng;
 
 const MRTD: &str = "approved-td";
 
+/// When every write in these tests is judged, and when their evidence is
+/// appraised unless a test says otherwise.
+const NOW: u64 = 1_800_000_000;
+
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
@@ -107,6 +111,16 @@ impl Namespace {
     }
 
     fn evidence(&mut self, parent: [u8; 32], member: AccountId, key: PublicKey) -> [u8; 32] {
+        self.evidence_at(parent, member, key, NOW)
+    }
+
+    fn evidence_at(
+        &mut self,
+        parent: [u8; 32],
+        member: AccountId,
+        key: PublicKey,
+        attested_at: u64,
+    ) -> [u8; 32] {
         self.fold(
             Some(parent),
             OpPayload::TeeAuthorityEvidence {
@@ -114,6 +128,7 @@ impl Namespace {
                 member,
                 attested_key: key,
                 mrtd: MRTD.to_owned(),
+                attested_at,
             },
         )
     }
@@ -129,8 +144,12 @@ impl Namespace {
     }
 
     fn writer(&self, key: &PublicKey, cut: [u8; 32]) -> Option<AccountId> {
+        self.writer_at(key, cut, NOW)
+    }
+
+    fn writer_at(&self, key: &PublicKey, cut: [u8; 32], at: u64) -> Option<AccountId> {
         self.proj
-            .writer_account_at_cut(&self.store, self.ns, key, &[cut])
+            .writer_account_at_cut(&self.store, self.ns, key, &[cut], at)
     }
 }
 
@@ -199,4 +218,54 @@ fn evidence_relabelled_for_another_account_is_not_an_authority() {
 
     assert_eq!(n.writer(&other, on), Some(other_account));
     assert_ne!(n.writer(&tee, on), Some(AccountId::TEE_AUTHORITY));
+}
+
+/// Evidence lapses by the delta's clock, not the reader's: a write judged
+/// within the evidence's window merges as the TEE authority, and one judged
+/// past it does not, on every node alike.
+#[test]
+fn evidence_lapses_by_the_time_the_write_is_judged_at() {
+    use calimero_governance_store::{TEE_EVIDENCE_MAX_AGE_SECS, TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS};
+
+    let mut n = Namespace::new(0x34);
+    let tee = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let (account, joined) = n.admit_tee(None, &tee, 0x45);
+    let evidenced = n.evidence(joined, account, tee);
+    let on = n.policy(evidenced, &[MRTD]);
+
+    assert_eq!(
+        n.writer_at(&tee, on, NOW + TEE_EVIDENCE_MAX_AGE_SECS),
+        Some(AccountId::TEE_AUTHORITY)
+    );
+    assert_eq!(
+        n.writer_at(&tee, on, NOW + TEE_EVIDENCE_MAX_AGE_SECS + 1),
+        Some(account),
+        "a write judged past the evidence's window is the TEE's own"
+    );
+    assert_eq!(
+        n.writer_at(&tee, on, NOW - TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS - 1),
+        Some(account),
+        "evidence dated ahead of the write by more than the skew does not count"
+    );
+}
+
+/// The most recent appraisal counts whatever order it was folded in, and
+/// evidence dated beyond the write cannot shadow the one current then.
+#[test]
+fn the_most_recent_appraisal_counts() {
+    use calimero_governance_store::TEE_EVIDENCE_MAX_AGE_SECS;
+
+    let mut n = Namespace::new(0x35);
+    let tee = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let (account, joined) = n.admit_tee(None, &tee, 0x46);
+    let fresh = n.evidence_at(joined, account, tee, NOW - 60);
+    let stale = n.evidence_at(fresh, account, tee, NOW - TEE_EVIDENCE_MAX_AGE_SECS - 60);
+    let future = n.evidence_at(stale, account, tee, NOW + 10 * TEE_EVIDENCE_MAX_AGE_SECS);
+    let on = n.policy(future, &[MRTD]);
+
+    assert_eq!(
+        n.writer(&tee, on),
+        Some(AccountId::TEE_AUTHORITY),
+        "an older appraisal folded later, and a future-dated one, leave the current one standing"
+    );
 }

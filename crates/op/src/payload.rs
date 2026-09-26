@@ -276,5 +276,9 @@ pub enum OpPayload {
         attested_key: PublicKey,
         /// The MRTD the verified quote reports.
         mrtd: String,
+        /// The moment the quote was appraised at, in seconds since the epoch.
+        /// The most recent appraisal counts, and its age decides whether it
+        /// still confers authority.
+        attested_at: u64,
     },
 }

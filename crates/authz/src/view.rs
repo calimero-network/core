@@ -89,8 +89,10 @@ pub struct AclView {
     /// The namespace's TEE authoring policy at the cut: the MRTDs whose attested
     /// TEEs may author as the TEE authority. Empty means TEE authorship is off.
     pub tee_authoring_policy: Vec<String>,
-    /// Each TEE member's latest verified attestation evidence at the cut.
-    pub tee_evidence: BTreeMap<AccountId, TeeEvidence>,
+    /// Every verified attestation evidence of each TEE member at the cut. The
+    /// reader picks which counts: the most recent appraisal, judged against
+    /// the time it is asked about.
+    pub tee_evidence: BTreeMap<AccountId, Vec<TeeEvidence>>,
 }
 
 /// What a TEE member's verified attestation evidence established, at a cut.
@@ -100,6 +102,8 @@ pub struct TeeEvidence {
     pub attested_key: PublicKey,
     /// The MRTD the quote reports.
     pub mrtd: String,
+    /// The moment the quote was appraised at, in seconds since the epoch.
+    pub attested_at: u64,
 }
 
 /// An account's resolved root key at a cut.

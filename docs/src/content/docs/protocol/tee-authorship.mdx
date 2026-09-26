@@ -58,7 +58,8 @@ The same four facts are checked in two ways, depending on who is asking:
 The receive path asks at the cut because peers apply governance at different
 speeds. The role, the authoring policy, the verified evidence, the key's
 binding and the membership where the delta writes all come from the fold of
-the delta's cited ancestry, so a policy change or a TEE removal the delta did
+the delta's cited ancestry, and the evidence's age is judged against the
+delta's own clock, so a policy change or a TEE removal the delta did
 not cite cannot change how its writes merge. Two peers holding that ancestry
 decide the write the same way, however far past the cut each has applied. To
 make that possible, the authoring policy and the evidence fold into the
@@ -85,8 +86,16 @@ curl -X PUT "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy" \
   -d '{ "allowedMrtd": ["<approved-td-measurement>"] }'
 ```
 
-An empty list turns TEE authorship off. There is no default: a namespace with no
-policy has no TEE authority, whatever TEEs it admitted.
+To turn it off, delete the policy:
+
+```bash
+curl -X DELETE "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy"
+```
+
+That publishes the same op as a `PUT` with an empty list, which also turns it
+off. Admitted TEEs stay members; they lose only the authority. There is no
+default: a namespace with no policy has no TEE authority, whatever TEEs it
+admitted.
 
 ## Attestation evidence
 
@@ -127,6 +136,35 @@ re-announce waits a minute, since right after an admission the admitter's own
 publish is usually still on its way, and the wait doubles after each one up to
 half an hour. It stops once the evidence is recorded. Whether the policy names
 the TEE's MRTD plays no part: the evidence is owed either way.
+
+### How long evidence lasts
+
+Evidence records the platform's TCB status at `attested_at`. A platform that
+later falls out of date would otherwise keep its authority for as long as its
+first evidence exists, so evidence lapses:
+
+| Rule | Value |
+| --- | --- |
+| Evidence confers authority for | 7 days after `attested_at` |
+| A TEE is appraised again once its latest evidence is | 1 day old |
+| Evidence dated ahead of the reader's clock by more than | 5 minutes is ignored |
+
+The refresh is the same exchange as the retry above: the TEE's evidence is
+owed once it is a day old, so it announces itself with a fresh quote, and an
+admitter publishes new evidence for an already-admitted TEE whose evidence is
+missing or a day old. A TEE whose platform has fallen out of date fails that
+appraisal, so nothing replaces its old evidence and its authority ends when
+that evidence lapses. The most recently appraised evidence counts, whatever
+order it was logged in.
+
+Age is never judged when a node applies the op, so every node keeps the same op
+log. A peer merging a TEE's delta judges it against the delta's own clock, which
+the delta signature covers, so every peer reaches the same verdict about that
+delta however late it reads it. Where a node decides for itself — whether to
+run a trigger, whether it is owed a refresh — it uses its own clock.
+`attested_at` is the admitter's clock, which is why a little skew is allowed.
+Evidence dated further ahead is ignored instead of being allowed to outlive its
+window, and it cannot shadow the evidence that is current.
 
 ## Joining from a snapshot
 
@@ -305,5 +343,4 @@ authority can write, not because it opened.
 | A card sealed to a player's device opens on that device only. | The player's other devices see that they hold cards, not which. | Seal to every device the account binds, as `tee_seal_to_member` would. |
 | Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
 | Two TEE authorities could create the same `TeeOnly` cell concurrently. | When `T` is a collection, each mints its own inner collection id and one of them is lost at merge. With one TEE per namespace, as in the demo, this cannot happen. | Derive the inner collection's id from the cell's id. |
-| `attested_at` is chosen by whoever assembles the evidence. | It must fall inside the collateral's validity window, but within that window the TCB status is as of that moment, not today. A platform that has since fallen out of date keeps its authority. | Re-appraise evidence against fresh collateral on a schedule, and expire authority that is not refreshed. |
 | `tee_authority_key`, the live check, scans the root's op log and re-verifies the evidence it finds. | Local execute, the TEE scheduler and the snapshot path pay one scan and one quote verification per TEE they ask about. A point-lookup pre-filter keeps ordinary members out of it; the receive path reads the projection instead. | Answer the live check from the projection too, at the node's own heads. |

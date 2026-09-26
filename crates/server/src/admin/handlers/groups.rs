@@ -4,6 +4,7 @@ pub mod create_group;
 pub mod create_group_invitation;
 pub mod delete_group;
 pub mod detach_context_from_group;
+pub mod disable_tee_authoring_policy;
 pub mod get_cascade_status;
 pub mod get_group_info;
 pub mod get_group_upgrade_status;

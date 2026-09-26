@@ -72,6 +72,61 @@ settings those streaming endpoints need.
 The libp2p swarm is encrypted independently (TLS / Noise over TCP, and QUIC),
 so swarm traffic does not need a TLS proxy — see [Networking](/operate/networking/).
 
+## Sealed transport: encrypting to the TEE
+
+On a TEE node, TLS at a reverse proxy leaves a gap. The proxy runs outside the
+enclave, so everything that crosses it is readable there: bearer tokens,
+JSON-RPC arguments, results. A genuine quote says what runs inside the TD. It
+says nothing about who reads the bytes on the way in. **Sealed transport**
+closes that gap by encrypting each request to a key that only the attested TD
+holds, so the proxy carries traffic it cannot read.
+
+- At startup the server makes an X25519 **transport key**. It lives only in the
+  process's memory, inside the TD, and a restart replaces it.
+- `POST /admin-api/tee/attest` with `bindTransportKey: true` returns the key as
+  `transportPublicKey` and commits to it in the quote's report data (see
+  [the attestation quote](/protocol/tee-attestation/#the-attestation-quote)).
+  The client verifies the quote with a verifier it trusts, then accepts the key.
+- The client wraps the whole HTTP request (method, path, headers, body), encrypts
+  it to that key under a one-time key of its own, and posts it to `/sealed/v1`
+  (`application/vnd.calimero.sealed`). The node opens it and routes the inner
+  request exactly like a direct one, so auth, permissions and limits apply
+  unchanged. The response comes back sealed under the same exchange
+  (X25519 → HKDF-SHA256 → AES-256-GCM).
+
+A proxy sees one opaque POST each way. It cannot read the request. It cannot
+forge a response the client accepts, because only the key holder can derive the
+response key. It cannot replay a request either: each one carries a timestamp
+that must be within five minutes of the node's clock, and each one-time key is
+accepted once.
+
+Refusals of the envelope itself come back in the clear, since there is nothing
+to seal them under. `409` with code `stale_transport_key` means the node has
+restarted, and the client must attest again. `400` covers `malformed`,
+`undecryptable`, `stale_request` and `replayed_request`.
+
+**Limits.** SSE streams and WebSockets cannot be buffered into one sealed reply.
+The node answers a sealed stream request with a `501` inside the envelope, so
+those still need TLS you trust. A sealed body, and the response sealed back, are
+each capped at 64 MiB.
+
+In mero-js, attest once and hand the sealing fetch to the client:
+
+```ts
+import { MeroJs, createSealedFetch, fetchAttestedTransportKey } from '@calimero-network/mero-js';
+
+const transportPublicKey = await fetchAttestedTransportKey(teeNode.admin, verifyWithMyVerifier);
+const mero = new MeroJs({
+  baseUrl,
+  fetch: createSealedFetch({ baseUrl, transportPublicKey }),
+});
+```
+
+`verifyWithMyVerifier` must verify the quote with something other than the node
+being attested (your own node's `/tee/verify-quote`, or `calimero-tee-verify`).
+It must also check that the report data is the nonce followed by the transport
+binding that `fetchAttestedTransportKey` passes to it.
+
 ## Key & identity storage
 
 Everything a node needs to prove who it is and to read its encrypted state lives
@@ -171,6 +226,18 @@ asked for, so merod also checks what the signed file says about itself: its
 `MERO_TEE_PROFILE` is set — its `profile` must match. The KMS is checked against
 the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
 describe the nodes that KMS serves and are never read here.
+
+Registers alone do not pin the KMS. A node's keys are derived from the KMS's
+dstack **app** key, so anything that runs under that app can derive them — and
+the app's owner can upgrade it to another compose file (a debug image with a
+shell) whose registers may still be allowlisted. So merod also checks *which
+compose file* the KMS runs: it replays the event log `/attest` returns,
+recomputing every RTMR3 event digest from the event itself, and trusts the
+`compose-hash` event only when the replay reproduces the quote's RTMR3. That hash
+must be in the policy's `kms_allowed_event_payload`, and a policy without one is
+refused. The pin says what the KMS runs; who else can run code under the same
+app ID is a deployment control (one app per profile, an on-chain compose-hash
+allowlist), covered in mero-tee's trust model.
 
 The release to verify against usually arrives from outside the TD (on the node
 image, instance metadata), and every old release's policy is still validly

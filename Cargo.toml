@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.11.0-rc.47"
+version = "0.11.0-rc.49"
 exclude = [
     "./crates/git-hooks",
     "./apps/abi_conformance",
@@ -125,6 +125,7 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/tee-attestation",
+    "./crates/tee-release",
 
     "./crates/store",
     "./crates/store/blobs",
@@ -393,6 +394,7 @@ calimero-store-encryption = { path = "./crates/store/encryption" }
 calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
+calimero-tee-release = { path = "./crates/tee-release" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-utils-fs = { path = "./crates/utils/fs" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }

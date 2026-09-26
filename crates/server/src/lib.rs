@@ -3,10 +3,11 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
-use tower as _;
+use tower::ServiceBuilder;
 
+use axum::extract::Request;
 use axum::http::Method;
-use axum::{Extension, Router};
+use axum::{Extension, Router, ServiceExt};
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
@@ -30,6 +31,7 @@ mod execute;
 pub mod jsonrpc;
 mod metrics;
 mod proof_auth;
+pub mod sealed;
 mod service_mounts;
 pub mod sse;
 mod subscription_grants;
@@ -112,12 +114,19 @@ pub struct AdminState {
     /// Node lifecycle signal driven by `run::start`; read by the readiness
     /// probe.
     pub readiness: Arc<NodeReadiness>,
+    /// Public half of this process's sealed-transport key, which
+    /// `/tee/attest` binds into the quote on request. See [`sealed`].
+    pub transport_public_key: [u8; 32],
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
     /// never enable in production. Sourced from `merod run --mock-tee`. Only
     /// present under the default-off `mock-attestation` feature.
     #[cfg(feature = "mock-attestation")]
     pub mock_tee: bool,
+    /// The mero-tee node release this node runs, from `MERO_TEE_VERSION`.
+    /// Fleet-join names it to admitters, which check the quote against that
+    /// release's signed measurements under a signed-release policy.
+    pub tee_release_version: Option<String>,
 }
 
 impl AdminState {
@@ -127,6 +136,7 @@ impl AdminState {
         ctx_client: ContextClient,
         node_client: NodeClient,
         readiness: Arc<NodeReadiness>,
+        transport_public_key: [u8; 32],
         #[cfg(feature = "mock-attestation")] mock_tee: bool,
     ) -> Self {
         Self {
@@ -134,9 +144,17 @@ impl AdminState {
             ctx_client,
             node_client,
             readiness,
+            transport_public_key,
             #[cfg(feature = "mock-attestation")]
             mock_tee,
+            tee_release_version: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_tee_release_version(mut self, tee_release_version: Option<String>) -> Self {
+        self.tee_release_version = tee_release_version;
+        self
     }
 }
 
@@ -225,14 +243,19 @@ pub async fn start(
         shutdown.clone(),
     )));
 
-    let shared_state = Arc::new(AdminState::new(
-        datastore.clone(),
-        ctx_client.clone(),
-        node_client.clone(),
-        readiness,
-        #[cfg(feature = "mock-attestation")]
-        mock_tee,
-    ));
+    let transport = Arc::new(sealed::SealedTransport::generate());
+    let shared_state = Arc::new(
+        AdminState::new(
+            datastore.clone(),
+            ctx_client.clone(),
+            node_client.clone(),
+            readiness,
+            transport.public_key(),
+            #[cfg(feature = "mock-attestation")]
+            mock_tee,
+        )
+        .with_tee_release_version(config.tee_release_version.clone()),
+    );
     let mounted = mount_runtime_services(
         app,
         &config,
@@ -267,7 +290,16 @@ pub async fn start(
         .layer(axum::middleware::from_fn(crate::metrics::track_request))
         .layer(Extension(http_metrics));
 
-    app = app.layer(build_cors_layer(&config.cors));
+    // The sealed envelope wraps the router from outside, so the request it opens
+    // is routed afresh. CORS goes outside that, so the envelope's own response —
+    // the only one a browser sees for a sealed call — carries the CORS headers.
+    let app = ServiceBuilder::new()
+        .layer(build_cors_layer(&config.cors))
+        .layer(axum::middleware::from_fn_with_state(
+            transport,
+            sealed::intercept,
+        ))
+        .service(app);
 
     let mut set = JoinSet::new();
 
@@ -279,7 +311,7 @@ pub async fn start(
         // the serve future resolves — so a termination signal drains requests
         // instead of the server task being dropped mid-response.
         drop(set.spawn(async move {
-            axum::serve(listener, app)
+            axum::serve(listener, ServiceExt::<Request>::into_make_service(app))
                 .with_graceful_shutdown(async move { shutdown.cancelled().await })
                 .await
         }));

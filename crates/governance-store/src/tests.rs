@@ -3726,6 +3726,99 @@ fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &
     append_op_log_entry(store, group, seq, &borsh::to_vec(&op).unwrap()).unwrap();
 }
 
+fn append_tee_release_policy_op(store: &Store, group: &ContextGroupId, seq: u64, profile: &str) {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let op = SignedGroupOp::sign(
+        &PrivateKey::random(&mut UnwrapErr(SysRng)),
+        group.to_bytes().into(),
+        vec![],
+        seq,
+        GroupOp::TeeReleaseAdmissionPolicySet {
+            allowed_profiles: vec![profile.to_owned()],
+            min_release_version: Some("2.3.72".to_owned()),
+            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(store, group, seq, &borsh::to_vec(&op).unwrap()).unwrap();
+}
+
+/// Both policy forms are one policy: whichever was set last is the one read,
+/// and a signed-release policy carries no measurement lists.
+#[test]
+fn tee_policy_newest_form_wins_between_lists_and_signed_release() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD4; 32]);
+
+    append_tee_policy_op(&store, &root, 1, "mrtd-listed");
+    append_tee_release_policy_op(&store, &root, 2, "locked-read-only");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+    else {
+        panic!("a policy is set")
+    };
+    let trust = policy
+        .release_trust
+        .expect("the newer op is the signed-release form");
+    assert_eq!(trust.allowed_profiles, vec!["locked-read-only".to_owned()]);
+    assert_eq!(trust.min_release_version.as_deref(), Some("2.3.72"));
+    assert!(
+        policy.allowed_mrtd.is_empty(),
+        "the older list policy must not leak into the signed-release one"
+    );
+    assert_eq!(policy.allowed_tcb_statuses, vec!["UpToDate".to_owned()]);
+
+    append_tee_policy_op(&store, &root, 3, "mrtd-again");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+    else {
+        panic!("a policy is set")
+    };
+    assert!(
+        policy.release_trust.is_none(),
+        "a later list policy replaces it"
+    );
+    assert_eq!(policy.allowed_mrtd, vec!["mrtd-again".to_owned()]);
+}
+
+/// A peer replaying an admission under a signed-release policy has neither the
+/// quote nor the release file the admitter checked, so it trusts the voucher
+/// for the measurements -- but the TCB rule needs only the op, and still holds.
+#[test]
+fn replica_under_signed_release_policy_checks_tcb_not_measurements() {
+    use crate::membership::TeeAttestationClaims;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xD5; 32]);
+    append_tee_release_policy_op(&store, &root, 1, "locked-read-only");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+    else {
+        panic!("a policy is set")
+    };
+    let claims = |tcb_status| TeeAttestationClaims {
+        mrtd: "any",
+        rtmr0: "any",
+        rtmr1: "any",
+        rtmr2: "any",
+        rtmr3: "any",
+        tcb_status,
+    };
+    let membership = MembershipPolicy::new(&store, root);
+
+    membership
+        .validate_tee_attestation_allowlists_record(&policy, &claims("UpToDate"))
+        .expect("measurements are the voucher's to check under a signed-release policy");
+    assert!(
+        membership
+            .validate_tee_attestation_allowlists_record(&policy, &claims("OutOfDate"))
+            .is_err(),
+        "a TCB status the policy does not allow is refused on replay"
+    );
+}
+
 #[test]
 fn tee_policy_lookup_from_subgroup_returns_root() {
     // Policy set on the root — a lookup via a nested subgroup resolves up
@@ -5940,6 +6033,76 @@ fn inherited_deny_does_not_drop_a_direct_member_of_the_owning_subgroup() {
             .is_author_denied_for_context(&other_ctx, &member_pk)
             .unwrap(),
         "a subgroup they hold no direct row in stays fast-dropped by the root inherited-deny"
+    );
+}
+
+/// core#4070. The cross-DAG check authorizes a delta at the governance heads
+/// its author cites, so a revoked device that has not folded its own revocation
+/// passes it. The receive filter is what refuses it: the key the revoked device
+/// signed under is denied while no live binding speaks for it.
+#[test]
+fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
+    use super::test_fixtures::join_account_for;
+    use calimero_primitives::identity::PrivateKey;
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xA7u8; 32]);
+    let ctx = ContextId::from([0xA8u8; 32]);
+    let laptop_pk = PublicKey::from([0xA9; 32]);
+    let account = enrol_member(&store, &ns_gid, &laptop_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+        .unwrap();
+    register_context_in_group(&store, &ns_gid, &ctx).unwrap();
+
+    let bindings = AccountBindingRepository::new(&store);
+    let denied = || {
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &laptop_pk)
+            .unwrap()
+    };
+    assert!(
+        !denied(),
+        "precondition: the bound device's writes are allowed"
+    );
+
+    // `enrol_member` derives the device id from the signing key.
+    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    bindings.apply_revocation(&ns_gid, laptop).unwrap();
+    assert!(
+        denied(),
+        "a revoked device's key must be refused at the receive filter, whatever heads it cites"
+    );
+
+    // The same node re-paired: a fresh device under the same account, signing with
+    // the same namespace identity. Its writes are the account's again.
+    let root_sk = PrivateKey::from(*laptop_pk);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let repaired = join_account_for(&root_sk, genesis, &laptop_pk, [0xAA; 32], 0);
+    let _bound = bindings
+        .apply_link(
+            &ns_gid,
+            &repaired.genesis,
+            &repaired.chain,
+            &repaired.statement,
+            0,
+        )
+        .unwrap()
+        .expect("a fresh device id links");
+    assert!(
+        !denied(),
+        "a key a live binding speaks for again must not stay denied"
+    );
+
+    // And in the other order: the revocation of the re-paired device's
+    // predecessor arriving after the new link must not silence it either.
+    bindings.apply_revocation(&ns_gid, laptop).unwrap();
+    assert!(
+        !denied(),
+        "denial must not depend on which op arrived first"
     );
 }
 
