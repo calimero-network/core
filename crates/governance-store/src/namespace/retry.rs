@@ -20,12 +20,33 @@ pub struct RetryCandidate {
     pub group_key: [u8; 32],
 }
 
-impl RetryCandidate {
+/// Something a retry pass replays: a buffered op, plus whatever the pass needs
+/// alongside it to open the op.
+///
+/// Both replay passes order through [`order_causally`] — the group-op pass and
+/// the sealed-root pass — and this is the one thing the ordering needs from
+/// either of them.
+pub(super) trait Replayable {
+    fn signed_op(&self) -> &SignedNamespaceOp;
+
     /// Order inside one causal layer: a signer's own ops in publish order, and
     /// signer bytes across signers so every replica breaks the tie the same way.
     fn tie_break(&self) -> TieBreak {
-        let signer_bytes: &[u8; 32] = self.signed_op.signer.as_ref();
-        (*signer_bytes, self.signed_op.nonce)
+        let op = self.signed_op();
+        let signer_bytes: &[u8; 32] = op.signer.as_ref();
+        (*signer_bytes, op.nonce)
+    }
+}
+
+impl Replayable for RetryCandidate {
+    fn signed_op(&self) -> &SignedNamespaceOp {
+        &self.signed_op
+    }
+}
+
+impl Replayable for super::op_log::StoredSignedGroupOp {
+    fn signed_op(&self) -> &SignedNamespaceOp {
+        &self.signed_op
     }
 }
 
@@ -398,14 +419,14 @@ impl<'a> NamespaceRetryService<'a> {
 /// Ancestry comes from the stored DAG rather than from a candidate's own
 /// `parent_op_hashes`, because the path between two buffered ops usually runs
 /// through ops that are not candidates (cleartext root ops, ops applied live).
-pub(super) fn order_causally(
+pub(super) fn order_causally<T: Replayable>(
     op_log: &NamespaceOpLogService<'_>,
-    candidates: Vec<RetryCandidate>,
-) -> EyreResult<Vec<RetryCandidate>> {
+    candidates: Vec<T>,
+) -> EyreResult<Vec<T>> {
     let mut index = HashMap::new();
     for (i, candidate) in candidates.iter().enumerate() {
         let hash = candidate
-            .signed_op
+            .signed_op()
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
         let _ = index.insert(hash, i);
@@ -414,7 +435,7 @@ pub(super) fn order_causally(
     let mut pending_ancestors = vec![0usize; candidates.len()];
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); candidates.len()];
     for (i, candidate) in candidates.iter().enumerate() {
-        for ancestor in candidate_ancestors(op_log, &index, &candidate.signed_op) {
+        for ancestor in candidate_ancestors(op_log, &index, candidate.signed_op()) {
             dependents[ancestor].push(i);
             pending_ancestors[i] += 1;
         }
@@ -442,7 +463,7 @@ pub(super) fn order_causally(
     stranded.sort_by_key(|i| candidates[*i].tie_break());
     order.extend(stranded);
 
-    let mut slots: Vec<Option<RetryCandidate>> = candidates.into_iter().map(Some).collect();
+    let mut slots: Vec<Option<T>> = candidates.into_iter().map(Some).collect();
     Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
 }
 

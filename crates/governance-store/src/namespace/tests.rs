@@ -11741,3 +11741,176 @@ fn a_buffered_link_folds_after_a_target_application_it_reaches_transitively() {
         replay_link_after_target_application(link_signer_sorts_first, true);
     }
 }
+
+/// An invitation signed by `inviter_sk` for the namespace root, naming
+/// `admitter` and admitting at `invited_role`, with the endorsement that
+/// admitter gives `member` for it.
+fn endorsed_invitation_from(
+    inviter_sk: &PrivateKey,
+    admitter_sk: &PrivateKey,
+    ns_id: calimero_governance_types::NamespaceId,
+    member: &calimero_account::AccountId,
+    invited_role: u8,
+    invitation_nonce: [u8; 32],
+) -> (
+    calimero_context_config::types::SignedGroupOpenInvitation,
+    Box<calimero_governance_types::AdmitterEndorsement>,
+) {
+    use sha2::{Digest, Sha256};
+
+    let mut signed = test_signed_invitation_with_admitters(
+        inviter_sk,
+        ContextGroupId::from(ns_id.to_bytes()),
+        0,
+        vec![crate::test_fixtures::account_for(&admitter_sk.public_key())],
+    );
+    signed.invitation.invited_role = invited_role;
+    signed.invitation.invitation_nonce = invitation_nonce;
+    let inv_bytes = borsh::to_vec(&signed.invitation).unwrap();
+    signed.inviter_signature = hex::encode(
+        inviter_sk
+            .sign(&Sha256::digest(&inv_bytes))
+            .unwrap()
+            .to_bytes(),
+    );
+    let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+        admitter_sk,
+        &ns_id.to_bytes(),
+        member,
+        &signed.invitation.invitation_nonce,
+    )
+    .expect("sign admitter endorsement");
+    (signed, Box::new(endorsement))
+}
+
+/// Parked relayed joins replay in causal order, not in the op log's key order.
+///
+/// THE FIELD FAILURE. A replica that takes the namespace key late — a TEE fleet
+/// node, admitted by attestation and handed the key by pull — parks every
+/// relayed join it received before then, and replays them when the key lands.
+/// Y's join names X as its inviter, so its apply gate resolves X's key through
+/// the binding X's OWN join records. The log is keyed by delta id, a content
+/// hash, so walking it in key order replays Y before X about half the time; Y
+/// is refused with "invitation inviter .. lacks permission", the refusal is
+/// logged and skipped, and nothing re-drives it. The replica then holds no
+/// binding for Y, and refuses every invitation Y mints with the same message —
+/// which is what an admitter hands back to a joiner as "invitation rejected".
+///
+/// Both orderings of the two delta ids are exercised, so a pass cannot come
+/// from a lucky draw of the hashes.
+async fn replay_relayed_joins_in_causal_order(dependent_sorts_first: bool) {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let case = format!("dependent join sorts first: {dependent_sorts_first}");
+    let (store, _node_client, _ack_router, ns_id, admin_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    // X joins as an admin, invited by the namespace admin; Y is invited by X.
+    // The admin names itself the admitter on both and endorses both.
+    let x_sk = PrivateKey::from([0x61u8; 32]);
+    let x = crate::test_fixtures::account_for(&x_sk.public_key());
+    let y_sk = PrivateKey::from([0x62u8; 32]);
+    let y = crate::test_fixtures::account_for(&y_sk.public_key());
+
+    let join = |sk: &PrivateKey, member, (signed_invitation, endorsement)| {
+        let mut op = SignedNamespaceOp::sign(
+            sk,
+            ns_id,
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                joined_at: 0,
+                account: crate::test_fixtures::real_join_account(&sk.public_key()),
+            }),
+        )
+        .expect("the joiner signs");
+        op.admitter_endorsement = Some(endorsement);
+        op
+    };
+    let x_join = join(
+        &x_sk,
+        x,
+        endorsed_invitation_from(&admin_sk, &admin_sk, ns_id, &x, 0, [0x71; 32]),
+    );
+    let y_join = join(
+        &y_sk,
+        y,
+        endorsed_invitation_from(&x_sk, &admin_sk, ns_id, &y, 1, [0x72; 32]),
+    );
+
+    // Sealed under a key this replica does not hold yet, and carried by a
+    // remote relayer (the retry pass skips this node's own ops). Y's envelope
+    // cites X's, which is how the relayer's DAG recorded them. The relayer's key
+    // is searched for one that puts the two delta ids in the order this case
+    // needs.
+    let namespace_key = [0x5Bu8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let envelope = |relayer: &PrivateKey, parents: Vec<[u8; 32]>, nonce: u64, inner| {
+        SignedNamespaceOp::sign(
+            relayer,
+            ns_id,
+            parents,
+            nonce,
+            NamespaceOp::RootRelaySealed {
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_relayed_op(&namespace_key, inner).expect("seal"),
+            },
+        )
+        .expect("the relayer signs the envelope")
+    };
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let (x_outer, y_outer) = (0u8..=255)
+        .find_map(|seed| {
+            let relayer = PrivateKey::from([seed; 32]);
+            let x_outer = envelope(&relayer, vec![], 1, &x_join);
+            let y_outer = envelope(&relayer, vec![x_outer.content_hash().unwrap()], 2, &y_join);
+            let y_first = y_outer.content_hash().unwrap() < x_outer.content_hash().unwrap();
+            (y_first == dependent_sorts_first).then_some((x_outer, y_outer))
+        })
+        .expect("some relayer key yields each ordering");
+
+    for outer in [&x_outer, &y_outer] {
+        let parked = gov.apply_signed_op(outer).expect("the op is accepted");
+        assert!(
+            !parked.key_unwrap_failures.is_empty(),
+            "{case}: precondition: without the key the relay must park"
+        );
+    }
+
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("the key is delivered");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the retry pass runs");
+
+    let members = MembershipRepository::new(&store);
+    assert!(
+        members.is_member(&ns_gid, &x).expect("read membership"),
+        "{case}: the inviter's join must land"
+    );
+    assert!(
+        members.is_member(&ns_gid, &y).expect("read membership"),
+        "{case}: the join X invited must land too; replayed ahead of X's own join, \
+         its inviter resolves to no account and it is refused for good"
+    );
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &y_sk.public_key())
+            .expect("read binding"),
+        Some(y),
+        "{case}: and Y's key must be bound, or every invitation Y mints is refused here"
+    );
+}
+
+#[actix::test]
+async fn relayed_joins_replay_causally_when_the_dependent_sorts_first() {
+    replay_relayed_joins_in_causal_order(true).await;
+}
+
+#[actix::test]
+async fn relayed_joins_replay_causally_when_the_dependent_sorts_last() {
+    replay_relayed_joins_in_causal_order(false).await;
+}
