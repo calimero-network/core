@@ -19,6 +19,10 @@ pub enum StoreError {
     /// Arithmetic overflow occurred during size calculation.
     #[error("arithmetic overflow: {0}")]
     ArithmeticOverflow(String),
+    /// A value could not be sealed, or a sealed value did not open for this
+    /// run. See [`Sealed`](super::tee_secret::Sealed).
+    #[error("sealed value could not be sealed or opened here")]
+    SealFailed,
 }
 
 impl Serialize for StoreError {

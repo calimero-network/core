@@ -5,7 +5,10 @@
 //! Extracted from the state-delta handler; the orchestrators in `mod.rs`
 //! call these after a delta's storage actions have been applied.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::tee_trigger;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{
@@ -13,10 +16,13 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::logical_clock;
+use calimero_store::key::ContextDagDelta as ContextDagDeltaKey;
 use eyre::Result;
 use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
+use crate::tee_firing::{self, TeeFiring, TeeRun};
 
 use super::{application_bytecode_status, BytecodeStatus};
 
@@ -155,7 +161,7 @@ pub(super) async fn execute_cascaded_events(
                         %context_id,
                         delta_id = ?cascaded_id,
                         phase = phase,
-                        "One or more handlers failed; keeping events in DB for restart replay"
+                        "One or more handlers failed or wait for their turn; keeping events in DB for restart replay"
                     );
                 }
 
@@ -239,18 +245,24 @@ pub(super) async fn execute_cascaded_events(
 ///
 /// ## TEE handlers
 ///
-/// A handler named `tee:<method>` is a **TEE trigger**: it runs on exactly one
-/// node — the TEE authority [`elected_tee_for`] picks for this delta — through
-/// [`ContextClient::execute_tee_trigger`], as `AccountId::TEE_AUTHORITY`. Every
-/// other receiver skips it, and a skip counts as success: it is not this node's
-/// to run, so there is nothing to replay on restart.
+/// A handler named `tee:<method>` is a **TEE trigger**: it runs on one node, a
+/// TEE authority, through [`ContextClient::execute_tee_trigger`], as
+/// `AccountId::TEE_AUTHORITY`. The authorities are ranked per delta; the first
+/// fires at once and each later one waits its turn and fires only if no firing
+/// has reached it (see [`crate::tee_firing`]). A
+/// node that is no authority skips the handler, and a skip counts as success:
+/// it is not this node's to run, so there is nothing to replay on restart.
+///
+/// A waiting authority returns `Ok(false)` so the events stay in the DB: a
+/// restart before its turn comes replays them, and the replay finds the
+/// trigger fired, or waits again.
 ///
 /// Returns `Ok(true)` if every handler in the payload ran successfully,
-/// `Ok(false)` if at least one handler errored (individual errors are
-/// logged but swallowed so later handlers in the list still run). Callers
-/// use the bool to decide whether it's safe to clear the persisted events
-/// blob via `mark_events_executed` — clearing after a partial failure
-/// would prevent restart-replay of the failed handlers (#2194 review).
+/// `Ok(false)` if at least one handler errored or waits for its turn
+/// (individual errors are logged but swallowed so later handlers in the list
+/// still run). Callers use the bool to decide whether it's safe to clear the
+/// persisted events blob via `mark_events_executed` — clearing after a partial
+/// failure would prevent restart-replay of the failed handlers (#2194 review).
 pub(super) async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
     context_id: &ContextId,
@@ -260,21 +272,24 @@ pub(super) async fn execute_event_handlers_parsed(
     cause: &[u8; 32],
     events_payload: &[ExecutionEvent],
 ) -> Result<bool> {
+    record_fired_markers(context_client, context_id, cause, events_payload);
+
     let mut all_succeeded = true;
     // Resolved once per delta, and only if it carries a TEE handler.
-    let mut elected_tee: Option<bool> = None;
+    let mut rank: Option<Option<usize>> = None;
     for event in events_payload {
         if let Some(tee_method) = event
             .handler
             .as_deref()
             .and_then(|handler| handler.strip_prefix(TEE_HANDLER_PREFIX))
         {
-            let elected = match elected_tee {
-                Some(elected) => elected,
-                None => match elected_tee_for(context_client, context_id, our_identity, cause) {
-                    Ok(elected) => {
-                        elected_tee = Some(elected);
-                        elected
+            let our_rank = match rank {
+                Some(our_rank) => our_rank,
+                None => match tee_firing::tee_rank(context_client, context_id, our_identity, cause)
+                {
+                    Ok(our_rank) => {
+                        rank = Some(our_rank);
+                        our_rank
                     }
                     // Not a verdict, so neither "skip" nor abort: keep the
                     // events for replay and let the other handlers run.
@@ -285,26 +300,17 @@ pub(super) async fn execute_event_handlers_parsed(
                     }
                 },
             };
-            if !elected {
-                debug!(
-                    %context_id,
-                    tee_method,
-                    "Skipping TEE handler: this node is not the elected TEE authority"
-                );
-                continue;
-            }
-            info!(%context_id, tee_method, "Firing TEE trigger");
-            if let Err(err) = context_client
-                .execute_tee_trigger(
-                    context_id,
-                    our_identity,
-                    tee_method.to_owned(),
-                    event.data.clone(),
-                )
-                .await
-            {
-                warn!(tee_method, error = %err, "TEE trigger failed");
-                all_succeeded = false;
+            let firing = TeeFiring {
+                context_id: *context_id,
+                executor: *our_identity,
+                method: tee_method.to_owned(),
+                payload: event.data.clone(),
+                trigger: tee_trigger::event_trigger_id(cause, tee_method),
+            };
+            let age = our_rank.and_then(|_| delta_age(context_client, context_id, cause));
+            match firing.run(context_client, our_rank, age).await {
+                TeeRun::Settled | TeeRun::Fired => {}
+                TeeRun::Failed | TeeRun::Waiting => all_succeeded = false,
             }
             continue;
         }
@@ -350,45 +356,76 @@ pub(super) async fn execute_event_handlers_parsed(
 /// Handler-name prefix marking an event handler as a TEE trigger.
 const TEE_HANDLER_PREFIX: &str = "tee:";
 
-/// Domain separator for ranking TEE authorities per firing.
-const TEE_TRIGGER_RANK_DOMAIN: &[u8] = b"calimero.tee-trigger-rank.v1";
-
-/// Whether this node is the TEE authority that fires the TEE handlers of the
-/// delta `cause`.
-///
-/// Every authority ranks all of them by `H(cause ‖ account)` and the lowest
-/// fires. Ranking on the delta rather than on anything a TEE produces means no
-/// TEE can grind an outcome by choosing whether to fire, and needs no messages.
-/// There is no failover yet: if the elected TEE is down, the trigger waits for
-/// it (its events stay in the DB for replay when it catches up).
-fn elected_tee_for(
+/// How long ago, by this node's clock, the delta `delta_id` was authored, or
+/// `None` if that cannot be read. A clock ahead of ours reads as just now.
+fn delta_age(
     context_client: &ContextClient,
     context_id: &ContextId,
-    our_identity: &PublicKey,
-    cause: &[u8; 32],
-) -> Result<bool> {
-    let store = context_client.datastore();
-    if !calimero_governance_store::is_tee_authority_for_context(store, context_id, our_identity)? {
-        return Ok(false);
+    delta_id: &[u8; 32],
+) -> Option<Duration> {
+    let row = context_client
+        .datastore()
+        .handle()
+        .get(&ContextDagDeltaKey::new(*context_id, *delta_id))
+        .ok()??;
+    let sent =
+        UNIX_EPOCH + Duration::from_secs(u64::from(logical_clock::physical_time_secs(&row.hlc)));
+    Some(SystemTime::now().duration_since(sent).unwrap_or_default())
+}
+
+/// Record the triggers this delta says it fired, when an attested TEE key
+/// signed it.
+///
+/// Best-effort: a marker that is not recorded costs at most a duplicate firing
+/// by a fallback TEE, and failing the delta over it would be worse.
+fn record_fired_markers(
+    context_client: &ContextClient,
+    context_id: &ContextId,
+    delta_id: &[u8; 32],
+    events_payload: &[ExecutionEvent],
+) {
+    let mut markers = tee_trigger::fired_markers(
+        events_payload
+            .iter()
+            .map(|event| (event.kind.as_str(), event.data.as_slice())),
+    )
+    .peekable();
+    if markers.peek().is_none() {
+        return;
     }
-    let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
-    else {
-        return Ok(false);
+    let store = context_client.datastore();
+    let author = match store
+        .handle()
+        .get(&ContextDagDeltaKey::new(*context_id, *delta_id))
+    {
+        Ok(Some(row)) => row.author_id,
+        Ok(None) => None,
+        Err(err) => {
+            warn!(%context_id, error = %err, "Cannot read a delta's author to honour its TEE markers");
+            return;
+        }
     };
-    let Some(our_account) =
-        calimero_governance_store::member_account_in_namespace(store, &group_id, our_identity)?
-    else {
-        return Ok(false);
-    };
-    let leader = calimero_governance_store::tee_authorities_for_context(store, context_id)?
-        .into_iter()
-        .min_by_key(|account| {
-            calimero_primitives::identity::domain_hash(
-                TEE_TRIGGER_RANK_DOMAIN,
-                &[cause.as_slice(), account.as_bytes().as_slice()],
-            )
-        });
-    Ok(leader == Some(our_account))
+    // Anyone can emit an event of the marker's kind. Only one from a delta an
+    // attested TEE signed says a trigger fired; a member's would let them stall
+    // a game whose elected TEE is down. Attested rather than authorised, like
+    // the read-only gate: the marker must count on every peer that accepted
+    // the delta, whatever policy each has applied.
+    let signed_by_authority = author.is_some_and(|author| {
+        calimero_governance_store::is_attested_tee_key_for_context(store, context_id, &author)
+            .unwrap_or_else(|err| {
+                warn!(%context_id, error = %err, "TEE authority lookup failed for a fired marker");
+                false
+            })
+    });
+    if !signed_by_authority {
+        debug!(%context_id, "Ignoring TEE fired markers on a delta no attested TEE signed");
+        return;
+    }
+    for trigger in markers {
+        if let Err(err) = tee_trigger::record_tee_fired(store, context_id, &trigger) {
+            warn!(%context_id, error = %err, "Failed to record a TEE fired marker");
+        }
+    }
 }
 
 // ---- emit_state_mutation_event_parsed ----
@@ -403,8 +440,10 @@ pub(super) fn emit_state_mutation_event_parsed(
     node_client: &NodeClient,
     context_id: &ContextId,
     root_hash: Hash,
-    events_payload: Vec<ExecutionEvent>,
+    mut events_payload: Vec<ExecutionEvent>,
 ) {
+    // The TEE fired marker is node-to-node bookkeeping, not an app event.
+    events_payload.retain(|event| event.kind != tee_trigger::TEE_FIRED_EVENT_KIND);
     let state_mutation = ContextEvent {
         context_id: *context_id,
         payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(

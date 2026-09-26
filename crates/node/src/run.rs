@@ -369,6 +369,10 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
     );
 
+    // Fire `#[app::tee(every = "..")]` methods on the contexts this node is a
+    // TEE authority for. Idle on every other node: it finds no timers.
+    let tee_scheduler = crate::tee_scheduler::spawn(context_client.clone(), node_client.clone());
+
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
     // per-interval-sync `load_persisted_deltas` rescan that existed
@@ -722,6 +726,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         ("peer_identity_tick", peer_identity_tick),
         ("peer_identity_invalidation", peer_identity_invalidation),
         ("local_delta_drainer", drainer),
+        ("tee_scheduler", tee_scheduler),
     ] {
         handle.abort();
         if let Err(err) = handle.await {

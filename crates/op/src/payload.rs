@@ -14,6 +14,7 @@ use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyH
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
@@ -246,5 +247,38 @@ pub enum OpPayload {
         device: DeviceId,
         /// Epoch of the root-signed scope that stopped reaching this scope.
         scope_epoch: u32,
+    },
+
+    // ---- TEE authorship plane ----
+    /// Set the namespace's TEE authoring policy: the MRTDs whose attested TEEs
+    /// may author as the TEE authority. An empty list turns TEE authorship off.
+    ///
+    /// Folded so the authority can be resolved at a delta's cut rather than
+    /// against whatever this node has applied by now.
+    TeeAuthoringPolicySet {
+        /// The group the op was published on, always the namespace root.
+        group: ContextGroupId,
+        /// The MRTDs the policy allows.
+        allowed_mrtd: Vec<String>,
+    },
+    /// Attestation evidence for a TEE member, **already verified**.
+    ///
+    /// The governance op carries the raw quote and collateral; the producer
+    /// verifies them offline, the same way on every node, and folds only what
+    /// the quote proved. Evidence that does not verify is never produced as this
+    /// payload.
+    TeeAuthorityEvidence {
+        /// The group the op was published on, always the namespace root.
+        group: ContextGroupId,
+        /// The TEE member the evidence is for.
+        member: AccountId,
+        /// The key the verified quote binds.
+        attested_key: PublicKey,
+        /// The MRTD the verified quote reports.
+        mrtd: String,
+        /// The moment the quote was appraised at, in seconds since the epoch.
+        /// The most recent appraisal counts, and its age decides whether it
+        /// still confers authority.
+        attested_at: u64,
     },
 }

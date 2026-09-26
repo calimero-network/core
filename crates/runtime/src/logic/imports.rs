@@ -284,6 +284,9 @@ impl VMLogic<'_> {
             fn random_bytes(ptr: u64);
             fn tee_origin() -> u32;
             fn tee_random_bytes(ptr: u64);
+            fn tee_authority_keys(register_id: u64);
+            fn seal_to(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32;
+            fn open_sealed(sealed_ptr: u64, register_id: u64) -> u32;
             fn time_now(ptr: u64);
 
             fn ed25519_verify(signature_ptr: u64, public_key_ptr: u64, message_ptr: u64) -> u32;

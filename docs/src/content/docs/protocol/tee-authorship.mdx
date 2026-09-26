@@ -48,13 +48,30 @@ it checks that the key's account is a TEE authority:
   latest `TeeAuthoringPolicySet`;
 - and the signing key is the one key that evidence's quote binds.
 
-That check is `calimero_governance_store::tee_authority_key`, and
-`writer_account` applies it to a signer. It runs in two places:
+The same four facts are checked in two ways, depending on who is asking:
 
-| Where | What it decides |
-| --- | --- |
-| Local execute (`internal_execute`) | Whether a TEE-triggered run may go ahead. If so, the principal becomes `(TEE_AUTHORITY, this node's key)` and the read-only discard is lifted, for this run only. |
-| Receive path | `rejects_state_writes_from` lets a TEE authority's delta through the read-only gate. The signer resolver maps its key to `TEE_AUTHORITY`, so its `TeeOnly` writes match the writer set at merge. |
+| Where | Against | What it decides |
+| --- | --- | --- |
+| Local execute (`internal_execute`) and the TEE scheduler | This node's current governance state, through `calimero_governance_store::tee_authority_key` | Whether a TEE-triggered run may go ahead. If so, the principal becomes `(TEE_AUTHORITY, this node's key)` and the read-only discard is lifted, for this run only. |
+| Receive path | The delta's causal cut, through `ScopeProjections::writer_account_at_cut` | The signer resolver maps the TEE's key to `TEE_AUTHORITY`, so its `TeeOnly` writes match the writer set at merge. |
+
+The receive path asks at the cut because peers apply governance at different
+speeds. The role, the authoring policy, the verified evidence, the key's
+binding and the membership where the delta writes all come from the fold of
+the delta's cited ancestry, and the evidence's age is judged against the
+delta's own clock, so a policy change or a TEE removal the delta did
+not cite cannot change how its writes merge. Two peers holding that ancestry
+decide the write the same way, however far past the cut each has applied. To
+make that possible, the authoring policy and the evidence fold into the
+unified projection, and evidence is verified when its op is decoded, so the
+fold only ever holds what a quote proved.
+
+The read-only gate in front of the merge (`rejects_state_writes_from`) lets
+through any delta signed by an attested TEE key, whatever the policy says.
+Asking the live policy there would put a live read in front of the at-cut
+decision, and two peers on either side of a policy change would disagree about
+the whole delta. The attested `merod` only signs a TEE-triggered run it judged
+authorised, and the merge decides the rest.
 
 Every other write a `ReadOnlyTee` node attempts, such as an ordinary JSON-RPC
 call on it, is still discarded locally.
@@ -140,11 +157,14 @@ appraisal, so nothing replaces its old evidence and its authority ends when
 that evidence lapses. The most recently appraised evidence counts, whatever
 order it was logged in.
 
-Age is judged against the reading node's clock when it looks the authority up,
-never when it applies the op, so every node keeps the same op log. `attested_at`
-is the admitter's clock, which is why a little skew is allowed. Evidence dated
-further ahead is ignored instead of being allowed to outlive its window, and it
-cannot shadow the evidence that is current.
+Age is never judged when a node applies the op, so every node keeps the same op
+log. A peer merging a TEE's delta judges it against the delta's own clock, which
+the delta signature covers, so every peer reaches the same verdict about that
+delta however late it reads it. Where a node decides for itself — whether to
+run a trigger, whether it is owed a refresh — it uses its own clock.
+`attested_at` is the admitter's clock, which is why a little skew is allowed.
+Evidence dated further ahead is ignored instead of being allowed to outlive its
+window, and it cannot shadow the evidence that is current.
 
 ## Joining from a snapshot
 
@@ -211,42 +231,116 @@ impl TeeDice {
   authority's first write, which peers accept. Until that write reaches a
   node, read it with `try_get`, which returns `None`. `get` returns an error
   until then.
+- **`#[app::tee(every = "30s")]`** makes the method a timer (units `s`, `m`,
+  `h`, `d`). The period is recorded in the ABI and the node fires it once per
+  period; see [Timers](#timers). A timer method takes no arguments.
 - **`TestHost::call_as_tee`** runs a closure as the scheduler would, for native
-  tests.
+  tests. It runs as the device `testing::TEE_DEVICE_KEY`, the one TEE
+  authority key the mock reports.
 
 The [`tee-dice`](https://github.com/calimero-network/core/tree/master/apps/tee-dice)
-example and its `tee-dice-roll.yml` merobox scenario exercise all of it.
+example and its `tee-dice-roll.yml` merobox scenario exercise all of it. The
+[`tee-cards`](https://github.com/calimero-network/core/tree/master/apps/tee-cards)
+example adds a timer and [hidden values](#hidden-values).
 
 ## Firing: the `tee:` handler
 
 A TEE trigger is an event handler whose name starts with `tee:`. Handlers only
 run on receivers, never on the delta's author. For a `tee:` handler each
-receiver asks one question, in `events.rs`:
+receiver asks two questions, in `events.rs` and `tee_firing.rs`:
 
 <Steps>
 
 1. Is this node a TEE authority for the context? If not, skip. A skip counts as
    handled, so nothing is replayed on restart.
 
-2. Rank every TEE authority by `H(delta_id ‖ account)`. The lowest one fires.
-   The ranking depends on the triggering delta, not on anything a TEE produces,
-   so no TEE can grind an outcome by choosing whether to fire.
+2. Where does it rank? Every TEE authority ranks all of them by
+   `H(delta_id ‖ account)`, lowest first. The ranking depends on the
+   triggering delta, not on anything a TEE produces, so no TEE can grind an
+   outcome by choosing whether to fire.
 
-3. The elected TEE calls `ContextClient::execute_tee_trigger`, which runs the
-   method with `tee_trigger: true` after the authority check.
+3. The first-ranked TEE calls `ContextClient::execute_tee_trigger`, which runs
+   the method after the authority check. Every other TEE waits its turn, as
+   below.
 
 </Steps>
+
+### Failover
+
+The authority ranked `k` fires `k` turns after the delta arrives
+(`TEE_FAILOVER_GRACE`, 15 seconds a turn), and only if no firing has reached it
+by then. So when the elected TEE is down, the next one takes the trigger over
+a turn later, and a game stalls for seconds rather than until its TEE returns.
+
+Each firing is named by a `TeeTriggerId` (`H(delta_id ‖ method)` for an event
+trigger). The delta the run produces carries a `calimero:tee-fired` event with
+that id. A node that applies such a delta, when an attested TEE key signed it,
+records a node-local marker, and so does the TEE that fired; every TEE checks
+the marker before it fires. A waiting TEE keeps the delta's events in the DB,
+so a restart before its turn replays them and waits again, and a replay after
+the firing finds the marker and stands down.
+
+A delta a node is catching up on — one whose clock is more than a turn behind
+this node's — costs every rank one extra turn, the first-ranked included. That
+node was down or partitioned, and a fallback may have fired meanwhile; its
+delta is still on the way, and firing before it lands would double the
+trigger.
+
+Without a consensus round this is at-least-once, not exactly-once. See
+[Limits of this prototype](#limits-of-this-prototype).
+
+### Timers
+
+An `#[app::tee(every = "..")]` method is fired by the node's TEE scheduler
+(`tee_scheduler.rs`) with no member asking. It is how a game times out a turn.
+
+Every 30 seconds the scheduler reads the timer methods (`Method.tee_every_secs`
+in the ABI) of every context this node is a TEE authority for. Periods are
+counted from the Unix epoch, so every authority agrees which tick is current.
+The tick names the firing (`timer_trigger_id`, over the context, the method and
+the tick) and seeds the ranking, and from there a tick fires exactly like an
+event trigger, failover included. Only the current tick is offered: a node that
+was down does not replay the ticks it missed.
+
+## Hidden values
+
+A TEE that no member controls can also keep something from them. Three host
+functions, and two storage types built on them, cover a card game:
+
+| | What it does |
+| --- | --- |
+| `env::seal_to(key, bytes)` | Seals bytes to an Ed25519 key: an ephemeral key agreement, then AES-256-GCM. Any run may seal. |
+| `env::open_sealed(envelope)` | Opens an envelope with the run's executor key. |
+| `env::tee_authority_keys()` | The attested keys of the context's TEE authorities, in a TEE-triggered run. |
+| `Sealed<T>` | A `T` sealed to one or more keys (`to_key`, `to_keys`, `to_tee`); `open` returns it to the one reader it was made for. |
+| `TeeSecret<T>` | A `TeeOnly` cell holding a `Sealed<T>` that `set` seals to every TEE authority on each write, and `reveal` opens inside a TEE run. |
+
+A hand is dealt by sealing each card to the player's device key and writing it
+into `TeeOnly` state: every member replicates it, only the player's node opens
+it, in a run the player makes. The deck is a `TeeSecret`, which members store
+and cannot read.
+
+The node decides which runs may open. It gives the runtime the executor's key,
+except for a run on a TEE node that the TEE scheduler did not fire, so an
+ordinary JSON-RPC call there cannot read what is sealed to the TEE, and for a
+delegated run, whose principal is not the node the key belongs to. The key
+stays on the host; a guest only ever sees what an envelope opens to.
+
+Sealing proves confidentiality, never authorship. Anyone who knows a key can
+seal to it, so a dealt card is genuine because it sits where only the TEE
+authority can write, not because it opened.
 
 ## Limits of this prototype
 
 | Limit | Consequence | Planned fix |
 | --- | --- | --- |
-| The authority is evaluated on **current** governance state, not at the delta's causal cut. | Near a policy change or a TEE removal, two peers can briefly disagree about one TEE write. | Resolve the policy and admission record at the cut, as `device_account_at_cut` does for bindings. |
-| Receivers cannot tell a TEE-triggered delta from any other delta by a TEE authority. | The guarantee rests on the attested `merod` refusing to sign anything else, which it does. | A `calimero/tee/1` envelope domain that commits to the trigger. |
-| **No failover.** If the elected TEE is down, its trigger waits; the events stay in its DB for replay. | A game stalls while its TEE is offline. | Rank-*k* fallback after `k × grace`. |
-| Triggers are **event-driven only**: no cron and no governance-event triggers. | Timeouts must be requested by a member. | A scheduler actor fed by ABI-declared cron specs. |
-| No sealing to member keys and no TEE-only secrets yet. | Only public randomness, not hidden cards. | `tee_seal_to_member`, a namespace TEE vault key, and `TeeSecret<T>`. |
+| Firing is **at-least-once**. A TEE that is up but cut off from the others for longer than a turn is doubled by the next-ranked one. | Two firings of one trigger both write. Their `TeeOnly` writes converge like any concurrent writes, but a randomised value may change once. An app whose writes are keyed by the trigger (a roll id, a hand slot) keeps the first. | Ask the ranked authorities to agree on one firing before any writes, instead of only waiting for one. |
+| A firing that writes nothing produces no delta, so no fired marker. | Each later-ranked TEE runs it too, a turn apart. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | Publish the marker without a state write. |
+| A timer only fires the current tick. | A tick missed while every TEE was down is not replayed; the next one runs. | Declare catch-up per timer if an app needs it. |
+| The `calimero:tee-fired` marker rides in the delta's events, which its signature does not cover. | A group-key holder relaying a TEE's delta could add a marker, and stall a fallback for a trigger whose first-ranked TEE is down. It cannot forge a firing or change what was written. | Bind the events to the delta signature, as part of the `calimero/tee/1` envelope below. |
+| Receivers cannot tell a TEE-triggered delta from any other delta by a TEE authority. | The guarantee rests on the attested `merod` refusing to sign anything else, which it does. The read-only gate lets every attested TEE key through on the same basis. | A `calimero/tee/1` envelope domain that commits to the trigger. |
+| A `TeeSecret` is sealed to the TEE authorities of the moment it is written. | A TEE admitted later cannot open it until a TEE run writes it again, and it cannot take a trigger over that needs to read it. With one TEE per namespace, as in the demos, this cannot happen. | A namespace TEE vault key, sealed to each authority as it is admitted. |
+| A card sealed to a player's device opens on that device only. | The player's other devices see that they hold cards, not which. | Seal to every device the account binds, as `tee_seal_to_member` would. |
 | Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
 | Two TEE authorities could create the same `TeeOnly` cell concurrently. | When `T` is a collection, each mints its own inner collection id and one of them is lost at merge. With one TEE per namespace, as in the demo, this cannot happen. | Derive the inner collection's id from the cell's id. |
-| Evidence lapses by this node's clock, read when the authority is looked up. | Two nodes whose clocks differ can disagree about a TEE's writes for the width of that difference around the moment its evidence lapses, the same kind of disagreement as a policy change. | Resolve the authority at the delta's causal cut (above), judging the evidence's age against the cut rather than the reader's clock. |
-| `tee_authority_key` scans the root's op log and re-verifies the evidence it finds. | It costs one scan and one quote verification per resolved TEE signer. A point-lookup pre-filter keeps ordinary members out of it. | Materialise the policy and cache the verdict per evidence op. |
+| `tee_authority_key`, the live check, scans the root's op log and re-verifies the evidence it finds. | Local execute, the TEE scheduler and the snapshot path pay one scan and one quote verification per TEE they ask about. A point-lookup pre-filter keeps ordinary members out of it; the receive path reads the projection instead. | Answer the live check from the projection too, at the node's own heads. |

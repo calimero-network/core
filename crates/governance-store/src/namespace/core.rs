@@ -113,11 +113,13 @@ impl<'a> NamespaceRepository<'a> {
     /// read-only member's write — the receive-side gate.
     ///
     /// [`is_read_only_for_context`](Self::is_read_only_for_context), except for
-    /// an attested TEE authority. That member is `ReadOnlyTee`, and its node only
+    /// an attested TEE's own key. That member is `ReadOnlyTee`, and its node only
     /// signs a delta for a TEE-triggered run (the local execute path discards
     /// every other write it makes), so what reaches a peer from it is TEE
     /// authorship. Whether that write may touch `TeeOnly` state is decided
-    /// separately, at merge, by the signer resolving to `TEE_AUTHORITY`.
+    /// separately, at merge and at the delta's cut, by the signer resolving to
+    /// `TEE_AUTHORITY`; see [`crate::is_attested_tee_key_for_context`] for why
+    /// the authoring policy is not asked here.
     ///
     /// The local execute path keeps using `is_read_only_for_context`: there the
     /// question is whether THIS run may write, and the answer for a TEE is "only
@@ -130,7 +132,7 @@ impl<'a> NamespaceRepository<'a> {
         if !self.is_read_only_for_context(context_id, identity)? {
             return Ok(false);
         }
-        Ok(!crate::is_tee_authority_for_context(
+        Ok(!crate::is_attested_tee_key_for_context(
             self.store, context_id, identity,
         )?)
     }

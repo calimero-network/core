@@ -44,6 +44,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `AuthoredVector<T>`        | List, slot owned by author | Element-wise, owner-gated at apply | Structured |
 | `UserStorage`              | Per-user data            | LWW per user                      | Blob       |
 | `FrozenStorage`            | Immutable data           | First-write-wins                  | Blob       |
+| `TeeSecret<T>`             | Value only TEE authorities read | `TeeOnly` + LWW of a `Sealed<T>` | Blob |
 
 *Structured storage: Entries are separate entities with their own CrdtType, merged individually.
 
@@ -277,6 +278,7 @@ src/
 │   ├── decompose_impls.rs    # Decompose implementations
 │   ├── composite_key.rs      # Composite key
 │   ├── user.rs               # User collection
+│   ├── tee_secret.rs         # Sealed<T> and TeeSecret<T>: values sealed to members or to the TEE
 │   ├── error.rs              # Collection errors
 │   └── ...
 ├── address.rs                # Address types

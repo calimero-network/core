@@ -126,6 +126,10 @@ impl Drop for LiveGuard {
     }
 }
 
+/// The device key a [`TestHost::call_as_tee`] run executes as, and the one TEE
+/// authority key `env::tee_authority_keys` reports under the test harness.
+pub const TEE_DEVICE_KEY: [u8; 32] = [0xEE; 32];
+
 /// An in-process test host wrapping a single application state instance.
 ///
 /// Construct one with [`TestHost::new`], drive mutations with
@@ -385,6 +389,10 @@ where
     /// Runs `f` as the node's TEE scheduler would: a TEE-triggered run whose
     /// account is `AccountId::TEE_AUTHORITY`, so `#[app::tee]` methods accept it,
     /// `env::tee_random_bytes` works, and `TeeOnly` state is writable.
+    ///
+    /// The run's device is [`TEE_DEVICE_KEY`], the one TEE authority key the
+    /// mock reports, so a `TeeSecret` it writes opens in the next TEE run and in
+    /// no member's.
     pub fn call_as_tee<R>(&mut self, f: impl FnOnce(&mut S) -> R) -> R {
         struct TeeTriggerGuard;
         impl Drop for TeeTriggerGuard {
@@ -395,7 +403,7 @@ where
 
         let _tee = TeeTriggerGuard;
         host::set_tee_trigger(true);
-        let device = host::device_id();
+        let device = TEE_DEVICE_KEY;
         self.call_as_account(
             *calimero_primitives::identity::AccountId::TEE_AUTHORITY.as_bytes(),
             device,

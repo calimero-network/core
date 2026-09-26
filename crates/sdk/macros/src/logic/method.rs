@@ -49,8 +49,13 @@ pub enum Modifer {
     },
     /// `#[app::tee]` — fired only by the node's TEE scheduler. The attribute
     /// itself injects the runtime guard; this marker exists so `#[app::logic]`
-    /// can reject it alongside `init`, `view` and `xcall`.
-    Tee,
+    /// can reject it alongside `init`, `view` and `xcall`, and record a timer's
+    /// period in the ABI.
+    Tee {
+        /// `#[app::tee(every = "..")]` — fire once per this many seconds.
+        /// `None` for an event-driven TEE trigger.
+        every_secs: Option<u64>,
+    },
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -443,6 +448,14 @@ impl PublicLogicMethod<'_> {
             quote! { ::calimero_sdk::abi::XCallCallers::AnyInNamespace }
         };
 
+        let tee_every_secs = match self.modifiers.iter().find_map(|modifier| match modifier {
+            Modifer::Tee { every_secs } => *every_secs,
+            _ => None,
+        }) {
+            Some(secs) => quote! { ::core::option::Option::Some(#secs) },
+            None => quote! { ::core::option::Option::None },
+        };
+
         quote! {
             {
                 let __params = {
@@ -462,6 +475,7 @@ impl PublicLogicMethod<'_> {
                     intent: #intent,
                     xcall_callable: #xcall_callable,
                     xcall_callers: #xcall_callers,
+                    tee_every_secs: #tee_every_secs,
                 });
             }
         }
@@ -602,7 +616,14 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                         modifiers.push(Modifer::View);
                     }
                     "tee" => {
-                        modifiers.push(Modifer::Tee);
+                        let every_secs = match crate::tee::parse_tee_args(attr) {
+                            Ok(every_secs) => every_secs,
+                            Err(err) => {
+                                errors.subsume(err);
+                                None
+                            }
+                        };
+                        modifiers.push(Modifer::Tee { every_secs });
                     }
                     "xcall" => {
                         // Validate the optional caller-policy arg so a typo is a
@@ -654,7 +675,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ParseError::XCallAndViewConflict,
             ));
         }
-        let is_tee = modifiers.iter().any(|m| matches!(m, Modifer::Tee));
+        let is_tee = modifiers.iter().any(|m| matches!(m, Modifer::Tee { .. }));
         if is_tee && (is_init || is_view || is_xcall) {
             errors.subsume(SynError::new_spanned(input.item, ParseError::TeeConflict));
         }
@@ -759,6 +780,22 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ParseError::InitMethodWithoutInitAttribute,
             )),
             _ => {}
+        }
+
+        // A timer fires with no event behind it, so there is nothing to pass.
+        let is_timer = modifiers.iter().any(|m| {
+            matches!(
+                m,
+                Modifer::Tee {
+                    every_secs: Some(_)
+                }
+            )
+        });
+        if is_timer && !args.is_empty() {
+            errors.subsume(SynError::new_spanned(
+                &input.item.sig.inputs,
+                ParseError::TeeTimerTakesArguments,
+            ));
         }
 
         let mut ret = None;
