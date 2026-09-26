@@ -5,7 +5,7 @@ use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_runtime::RuntimeConfig;
 use calimero_server::admin::service::AdminConfig;
-use calimero_server::config::AuthMode;
+use calimero_server::config::{AuthMode, SealedConfig};
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -462,6 +462,11 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub embedded_auth: Option<AuthConfig>,
+
+    /// `[server.sealed]`: whether unsealed requests are refused. Left out of a
+    /// written config while it is the default.
+    #[serde(default, skip_serializing_if = "SealedConfig::is_default")]
+    pub sealed: SealedConfig,
 }
 
 impl ServerConfig {
@@ -481,6 +486,7 @@ impl ServerConfig {
             sse,
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
+            sealed: SealedConfig::new(false),
         }
     }
 
@@ -502,6 +508,7 @@ impl ServerConfig {
             sse,
             auth_mode,
             embedded_auth,
+            sealed: SealedConfig::new(false),
         }
     }
 
@@ -767,6 +774,34 @@ mod tests {
         assert!(
             network.discovery.mdns,
             "omitting [discovery] must not turn multicast off on an existing node"
+        );
+    }
+
+    /// Sealing stays opt-in: an existing config has no `[server.sealed]` and
+    /// must keep serving unsealed clients, and a node that has not turned it on
+    /// does not grow the section when its config is written back.
+    #[test]
+    fn server_sealed_is_off_unless_configured_and_written_only_when_on() {
+        let parse = |extra: &str| -> super::ServerConfig {
+            toml::from_str(&format!("listen = [\"/ip4/127.0.0.1/tcp/2528\"]\n{extra}"))
+                .expect("server config parses")
+        };
+
+        let absent = parse("");
+        assert!(!absent.sealed.required);
+        assert!(!toml::to_string(&absent).unwrap().contains("sealed"));
+
+        let required = parse("[sealed]\nrequired = true\n");
+        assert!(required.sealed.required);
+        assert!(toml::to_string(&required)
+            .unwrap()
+            .contains("[sealed]\nrequired = true"));
+
+        let typo: Result<super::ServerConfig, _> =
+            toml::from_str("listen = []\n[sealed]\nrequierd = true\n");
+        assert!(
+            typo.is_err(),
+            "a misspelled key must not silently leave sealing off"
         );
     }
 
