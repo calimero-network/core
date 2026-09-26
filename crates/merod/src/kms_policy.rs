@@ -769,10 +769,7 @@ mod tests {
             &candidates,
             release(&[
                 ("kms-attestation-policy.json", Ok("locked")),
-                (
-                    "kms-attestation-policy.debug-read-only.json",
-                    Ok("debug"),
-                ),
+                ("kms-attestation-policy.debug-read-only.json", Ok("debug")),
             ]),
         )
         .await
