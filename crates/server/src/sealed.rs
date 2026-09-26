@@ -59,13 +59,15 @@
 //!   resp head {"status": 200, "headers": [[name, value], ..]}
 //! ```
 
-use std::sync::{Arc, Mutex, PoisonError};
+use core::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
 
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING, UPGRADE,
+    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, RETRY_AFTER, TRANSFER_ENCODING,
+    UPGRADE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
@@ -73,12 +75,18 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use futures_util::{stream, StreamExt};
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::registry::Registry;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use rand::Rng;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zeroize::Zeroizing;
 
@@ -87,9 +95,9 @@ use self::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_
 
 mod session;
 
-/// Where a session is opened.
+/// Where a session is opened, under the node's mount (see [`SealedOptions`]).
 pub const HANDSHAKE_PATH: &str = "/sealed/v2/handshake";
-/// Where sealed requests are posted.
+/// Where sealed requests are posted, under the node's mount.
 pub const SEALED_PATH: &str = "/sealed/v2";
 /// Content type of every sealed body.
 pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
@@ -103,9 +111,25 @@ const TAG_LEN: usize = 16;
 
 /// Largest sealed request accepted.
 const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
-/// Largest piece of a response body sealed into one frame, so a client never
-/// holds more than this of an unauthenticated frame.
+/// Most data sealed into one frame, a head or a piece of body, so a client can
+/// refuse a larger frame before holding any of it.
 const MAX_FRAME_DATA: usize = 64 * 1024;
+
+/// Handshakes answered per second, node-wide, once the burst is spent. A
+/// handshake needs no credential, so this is what bounds the work a stranger can
+/// make the node do and how fast they can churn the session table. It is
+/// node-wide because the node cannot tell clients apart: behind a proxy every
+/// connection comes from the proxy. Per-client limits belong where client
+/// addresses are known.
+const HANDSHAKES_PER_SECOND: f64 = 100.0;
+const HANDSHAKE_BURST: f64 = 200.0;
+/// How often expired sessions are swept, which bounds how long their keys
+/// outlive them.
+const EXPIRY_SWEEP: Duration = Duration::from_secs(30);
+
+/// Unsealed paths still served when sealing is required, under the admin API:
+/// probes, and the attestation a client needs before it can seal anything.
+const UNSEALED_ADMIN_PATHS: [&str; 3] = ["/health", "/ready", "/tee/attest"];
 
 const FRAME_HEAD: u8 = 0;
 const FRAME_DATA: u8 = 1;
@@ -120,11 +144,40 @@ const X_ACCEL_BUFFERING: HeaderName = HeaderName::from_static("x-accel-buffering
 /// envelope in either direction.
 const HOP_HEADERS: [HeaderName; 5] = [CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING, UPGRADE];
 
+/// How this node serves the sealed transport.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct SealedOptions {
+    /// Refuse unsealed requests (`[server.sealed] required`).
+    pub required: bool,
+    /// The node's `NODE_PATH_PREFIX`, if any. The envelope is served both at
+    /// the root and under it, and a request opened there is routed under it,
+    /// exactly as a direct request through the same base URL would be.
+    pub path_prefix: Option<String>,
+}
+
+impl SealedOptions {
+    #[must_use]
+    pub const fn new(required: bool, path_prefix: Option<String>) -> Self {
+        Self {
+            required,
+            path_prefix,
+        }
+    }
+}
+
 /// This process's transport key, and the sessions opened to it.
 pub struct SealedTransport {
     secret: Zeroizing<[u8; 32]>,
     public: [u8; 32],
     sessions: Mutex<Sessions>,
+    handshakes: Mutex<HandshakeLimit>,
+    /// Where the envelope is served: the root, and the path prefix if any.
+    mounts: Vec<String>,
+    /// The unsealed paths still served when sealing is required; `None` when
+    /// it is not.
+    unsealed_allowed: Option<Vec<String>>,
+    metrics: SealedMetrics,
 }
 
 impl core::fmt::Debug for SealedTransport {
@@ -136,19 +189,40 @@ impl core::fmt::Debug for SealedTransport {
 }
 
 impl SealedTransport {
+    /// A new transport key, with the transport's metrics registered against
+    /// `registry`.
     #[must_use]
-    pub fn generate() -> Self {
+    pub fn generate(options: &SealedOptions, registry: &mut Registry) -> Self {
         let mut secret = Zeroizing::new([0u8; 32]);
         UnwrapErr(SysRng).fill_bytes(secret.as_mut());
-        Self::from_secret(secret)
+        Self::from_secret(secret, options, SealedMetrics::register(registry))
     }
 
-    fn from_secret(secret: Zeroizing<[u8; 32]>) -> Self {
+    fn from_secret(
+        secret: Zeroizing<[u8; 32]>,
+        options: &SealedOptions,
+        metrics: SealedMetrics,
+    ) -> Self {
         let public = MontgomeryPoint::mul_base_clamped(*secret).0;
+        let prefix = options.path_prefix.clone().unwrap_or_default();
+        let mut mounts = vec![String::new()];
+        if !prefix.is_empty() {
+            mounts.push(prefix.clone());
+        }
+        let unsealed_allowed = options.required.then(|| {
+            UNSEALED_ADMIN_PATHS
+                .iter()
+                .map(|path| format!("{prefix}/admin-api{path}"))
+                .collect()
+        });
         Self {
             secret,
             public,
             sessions: Mutex::default(),
+            handshakes: Mutex::new(HandshakeLimit::full(Instant::now())),
+            mounts,
+            unsealed_allowed,
+            metrics,
         }
     }
 
@@ -160,37 +234,189 @@ impl SealedTransport {
     fn sessions(&self) -> std::sync::MutexGuard<'_, Sessions> {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn record_session_count(&self, sessions: &Sessions) {
+        let _previous = self
+            .metrics
+            .sessions
+            .set(i64::try_from(sessions.len()).unwrap_or(i64::MAX));
+    }
+
+    /// Which envelope endpoint `path` names, and the mount it names it under.
+    fn route(&self, path: &str) -> Option<(Endpoint, &str)> {
+        self.mounts.iter().find_map(|mount| {
+            let endpoint = match path.strip_prefix(mount.as_str())? {
+                HANDSHAKE_PATH => Endpoint::Handshake,
+                SEALED_PATH => Endpoint::Exchange,
+                _ => return None,
+            };
+            Some((endpoint, mount.as_str()))
+        })
+    }
+
+    fn refuses_unsealed(&self, path: &str) -> bool {
+        self.unsealed_allowed
+            .as_ref()
+            .is_some_and(|allowed| !allowed.iter().any(|allowed| allowed == path))
+    }
+
+    fn refuse(&self, refusal: &Refusal) {
+        debug!(code = refusal.code, "refused a sealed request");
+        let _previous = self
+            .metrics
+            .refusals
+            .get_or_create(&RefusalLabels { code: refusal.code })
+            .inc();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Endpoint {
+    Handshake,
+    Exchange,
+}
+
+/// A token bucket over handshakes.
+struct HandshakeLimit {
+    tokens: f64,
+    refilled: Instant,
+}
+
+impl HandshakeLimit {
+    const fn full(now: Instant) -> Self {
+        Self {
+            tokens: HANDSHAKE_BURST,
+            refilled: now,
+        }
+    }
+
+    fn admit(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.refilled).as_secs_f64();
+        self.tokens = elapsed
+            .mul_add(HANDSHAKES_PER_SECOND, self.tokens)
+            .min(HANDSHAKE_BURST);
+        self.refilled = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RefusalLabels {
+    code: &'static str,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SealedMetrics {
+    handshakes: Counter,
+    requests: Counter,
+    refusals: Family<RefusalLabels, Counter>,
+    sessions: Gauge,
+}
+
+impl SealedMetrics {
+    fn register(registry: &mut Registry) -> Self {
+        let metrics = Self::default();
+        registry.register(
+            "sealed_handshakes",
+            "Sealed sessions opened",
+            metrics.handshakes.clone(),
+        );
+        registry.register(
+            "sealed_requests",
+            "Sealed requests opened and dispatched",
+            metrics.requests.clone(),
+        );
+        registry.register(
+            "sealed_refusals",
+            "Sealed-transport refusals, by code: of the envelope, of a handshake \
+             over the rate limit (busy), and of an unsealed request while sealing \
+             is required (sealed_required)",
+            metrics.refusals.clone(),
+        );
+        registry.register(
+            "sealed_sessions",
+            "Sealed sessions whose keys the node holds",
+            metrics.sessions.clone(),
+        );
+        metrics
+    }
+}
+
+/// Sweep expired sessions every [`EXPIRY_SWEEP`] until `shutdown`, so a
+/// session's keys are dropped when it expires, not whenever it is next named.
+/// Holds the transport weakly: it ends when the server does.
+pub async fn expire_sessions(transport: Weak<SealedTransport>, shutdown: CancellationToken) {
+    let mut ticker = tokio::time::interval(EXPIRY_SWEEP);
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            _ = ticker.tick() => {}
+        }
+        let Some(transport) = transport.upgrade() else {
+            return;
+        };
+        let mut sessions = transport.sessions();
+        sessions.expire(Instant::now());
+        transport.record_session_count(&sessions);
+    }
 }
 
 /// Route [`HANDSHAKE_PATH`] and [`SEALED_PATH`] through the envelope; pass
-/// everything else by.
+/// everything else by, unless sealing is required.
 ///
 /// This has to wrap the router from outside, not sit on a route: the inner
-/// request is handed back to the router to be routed afresh.
+/// request is handed back to the router to be routed afresh, and does not pass
+/// through here again.
 pub async fn intercept(
     State(transport): State<Arc<SealedTransport>>,
     request: Request,
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    if path != HANDSHAKE_PATH && path != SEALED_PATH {
+    let Some((endpoint, mount)) = transport.route(path) else {
+        if transport.refuses_unsealed(path) {
+            let refusal = Refusal {
+                status: StatusCode::FORBIDDEN,
+                code: "sealed_required",
+                message: "this node serves only sealed requests; attest, open a sealed \
+                          session and send the request through it",
+            };
+            transport.refuse(&refusal);
+            return refusal.into_response();
+        }
         return next.run(request).await;
-    }
+    };
     if request.method() != Method::POST {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-    let result = if path == HANDSHAKE_PATH {
-        handshake(&transport, request).await
-    } else {
-        open_and_dispatch(&transport, request, next).await
+    let mount = mount.to_owned();
+    let result = match endpoint {
+        Endpoint::Handshake => handshake(&transport, request).await,
+        Endpoint::Exchange => open_and_dispatch(&transport, request, &mount, next).await,
     };
     result.unwrap_or_else(|refusal| {
-        debug!(code = refusal.code, "refused a sealed request");
+        transport.refuse(&refusal);
         refusal.into_response()
     })
 }
 
 async fn handshake(transport: &SealedTransport, request: Request) -> Result<Response, Refusal> {
+    let admitted = transport
+        .handshakes
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .admit(Instant::now());
+    if !admitted {
+        return Err(Refusal {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "busy",
+            message: "too many sealed sessions are being opened; retry shortly",
+        });
+    }
     let body = to_bytes(request.into_body(), HANDSHAKE_LEN)
         .await
         .map_err(|_| malformed())?;
@@ -214,9 +440,12 @@ async fn handshake(transport: &SealedTransport, request: Request) -> Result<Resp
     let mut session_id: SessionId = [0; SESSION_ID_LEN];
     UnwrapErr(SysRng).fill_bytes(&mut session_id);
     let (message_2, keys) = session::respond(&transport.secret, message_1, &session_id)?;
-    transport
-        .sessions()
-        .insert(session_id, keys, Instant::now());
+    {
+        let mut sessions = transport.sessions();
+        sessions.insert(session_id, keys, Instant::now());
+        transport.record_session_count(&sessions);
+    }
+    let _previous = transport.metrics.handshakes.inc();
 
     let mut sealed = Vec::with_capacity(1 + message_2.len());
     sealed.push(VERSION);
@@ -227,6 +456,7 @@ async fn handshake(transport: &SealedTransport, request: Request) -> Result<Resp
 async fn open_and_dispatch(
     transport: &SealedTransport,
     request: Request,
+    mount: &str,
     next: Next,
 ) -> Result<Response, Refusal> {
     let (outer, body) = request.into_parts();
@@ -239,9 +469,12 @@ async fn open_and_dispatch(
         })?;
 
     let envelope = RequestEnvelope::parse(&sealed)?;
-    let (keys, expires) = transport
-        .sessions()
-        .keys(&envelope.session_id, Instant::now())?;
+    let (keys, expires) = {
+        let mut sessions = transport.sessions();
+        let found = sessions.keys(&envelope.session_id, Instant::now());
+        transport.record_session_count(&sessions);
+        found?
+    };
     let plaintext = open_request(&keys, &envelope)?;
     transport
         .sessions()
@@ -261,7 +494,12 @@ async fn open_and_dispatch(
         return Ok(seal_response(frames, refused, expires));
     }
 
-    let mut inner = inner_request(head, body)?;
+    let mut inner = inner_request(head, body, mount)?;
+    // A sealed request that names the envelope again would only open another.
+    if transport.route(inner.uri().path()).is_some() {
+        return Err(malformed());
+    }
+    let _previous = transport.metrics.requests.inc();
     // Whatever the server's own layers put on the outer request (connection
     // info, above all) belongs to the inner one: it is the same request.
     *inner.extensions_mut() = outer.extensions;
@@ -312,11 +550,17 @@ impl Refusal {
 
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(json!({ "error": { "code": self.code, "message": self.message } })),
         )
-            .into_response()
+            .into_response();
+        if self.status == StatusCode::SERVICE_UNAVAILABLE {
+            let _previous = response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 
@@ -442,7 +686,24 @@ fn seal_response(mut frames: FrameSealer, response: Response, expires: Instant) 
         headers: header_pairs(&parts.headers),
     };
     // SAFETY: a plain struct of an integer and strings always serializes.
-    let head = serde_json::to_vec(&head).expect("response head serializes");
+    let mut head = serde_json::to_vec(&head).expect("response head serializes");
+    let mut body = body;
+    // Every frame fits in 64 KiB, so a client can refuse anything larger
+    // without buffering it. Headers that do not fit are not sent at all.
+    if head.len() > MAX_FRAME_DATA {
+        let (parts, error) = plain_error(
+            StatusCode::BAD_GATEWAY,
+            "the response headers are too large to seal",
+        )
+        .into_parts();
+        head = serde_json::to_vec(&ResponseHead {
+            status: parts.status.as_u16(),
+            headers: header_pairs(&parts.headers),
+        })
+        // SAFETY: as above.
+        .expect("response head serializes");
+        body = error;
+    }
     let first = frames.seal(FRAME_HEAD, &head);
 
     let state = Streaming {
@@ -533,18 +794,18 @@ fn split_inner(plaintext: &[u8]) -> Result<(RequestHead, &[u8]), Refusal> {
     Ok((head, body))
 }
 
-fn inner_request(head: RequestHead, body: &[u8]) -> Result<Request, Refusal> {
+/// The inner request, routed under `mount` — the prefix the envelope arrived
+/// under — so it reaches the router exactly as a direct request through the
+/// client's base URL would.
+fn inner_request(head: RequestHead, body: &[u8], mount: &str) -> Result<Request, Refusal> {
     let method = Method::from_bytes(head.method.as_bytes()).map_err(|_| malformed())?;
-    let uri: Uri = head.path.parse().map_err(|_| malformed())?;
-    // Origin-form only: the router must see a path, and a sealed request that
-    // names the envelope again would only open another envelope.
-    if uri.scheme().is_some()
-        || !head.path.starts_with('/')
-        || uri.path() == SEALED_PATH
-        || uri.path() == HANDSHAKE_PATH
-    {
+    // Origin-form only: the router must see a path.
+    if !head.path.starts_with('/') {
         return Err(malformed());
     }
+    let uri: Uri = format!("{mount}{}", head.path)
+        .parse()
+        .map_err(|_| malformed())?;
     let mut request = Request::new(Body::from(Bytes::copy_from_slice(body)));
     *request.method_mut() = method;
     *request.uri_mut() = uri;

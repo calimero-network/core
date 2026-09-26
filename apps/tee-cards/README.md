@@ -36,3 +36,15 @@ cargo mero build
 ```
 
 Produces `res/tee_cards.wasm`.
+
+## End to end
+
+`workflows/tee-cards-failover.yml` runs two mock-TEE authorities: the timer
+shuffles the deck, one enclave is stopped, and every later draw is still dealt
+by the other. It needs a merod built with `--features mock-attestation`:
+
+```bash
+cargo build -p merod --release --features mock-attestation
+merobox bootstrap run workflows/tee-cards-failover.yml \
+  --image merod:local-mock-tee --e2e-mode
+```

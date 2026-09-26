@@ -57,6 +57,36 @@ pub struct CorsConfig {
     pub allow_private_network: bool,
 }
 
+/// How the node treats traffic that is not sealed to its attested transport key
+/// (`[server.sealed]`). See [`crate::sealed`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SealedConfig {
+    /// Refuse every request that is not sealed, except the few a client needs
+    /// before it can seal anything: health and readiness probes, and
+    /// `POST /admin-api/tee/attest`, which is how it learns the transport key.
+    ///
+    /// Off by default, so sealing stays opt-in per client and an unsealed client
+    /// still works. On a TEE node behind a proxy it does not trust, turn it on:
+    /// then a client that forgets to seal gets a `403 sealed_required` instead
+    /// of sending its bearer token through the proxy in the clear.
+    #[serde(default)]
+    pub required: bool,
+}
+
+impl SealedConfig {
+    #[must_use]
+    pub const fn new(required: bool) -> Self {
+        Self { required }
+    }
+
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        !self.required
+    }
+}
+
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {
@@ -132,6 +162,8 @@ pub struct ServerConfig {
 
     pub cors: CorsConfig,
 
+    pub sealed: SealedConfig,
+
     /// The mero-tee node release this node runs, when it is a fleet TEE node
     /// told so (`MERO_TEE_VERSION`). Not read from the config file.
     pub tee_release_version: Option<String>,
@@ -160,6 +192,7 @@ impl ServerConfig {
                 allowed_origins: None,
                 allow_private_network: true,
             },
+            sealed: SealedConfig::new(false),
             tee_release_version: None,
         }
     }
@@ -191,6 +224,7 @@ impl ServerConfig {
                 allowed_origins: None,
                 allow_private_network: true,
             },
+            sealed: SealedConfig::new(false),
             tee_release_version: None,
         }
     }
