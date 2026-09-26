@@ -848,8 +848,9 @@ pub struct TeeAttestRequest {
     /// data bytes `32..64` hold `attest_transport_binding(inner, key)`, where
     /// `inner` is what would have been there without it (the key binding, else
     /// the app hash, else zeros), and the response names the key as
-    /// `transportPublicKey`. A client that checks the binding can seal requests
-    /// to that key (`POST /sealed/v1`) and know only the attested TD reads them.
+    /// `transportPublicKey`. A client that checks the binding can open a sealed
+    /// session to that key (`POST /sealed/v2/handshake`) and know only the
+    /// attested TD reads its requests.
     #[serde(default)]
     pub bind_transport_key: bool,
 }

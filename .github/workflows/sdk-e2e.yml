@@ -40,6 +40,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SERVER_PORT: "2428"
+  TEE_SERVER_PORT: "2438"
   # Minted at init (no first-login bootstrap secret); CI-only values for an
   # ephemeral localhost node - the password is consumed at init, not stored.
   MERO_AUTH_ADMIN_USER: dev
@@ -85,7 +86,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build merod
-        run: cargo build -p merod --bin merod
+        # `mock-attestation` only lets a node opt into `--mock-tee`; the main node
+        # below runs without it, exactly as a default build would.
+        run: cargo build -p merod --bin merod --features mock-attestation
 
       - name: Resolve mero-js ref (paired)
         id: sdkref
@@ -135,6 +138,22 @@ jobs:
             if [ "$i" = "60" ]; then echo "merod did not become healthy"; exit 1; fi
           done
 
+      - name: Boot a mock-TEE merod (sealed transport suite)
+        # A second node that attests with a mock quote, so the SDK can attest its
+        # transport key and drive a whole session through /sealed/v2.
+        run: |
+          BIN="$PWD/target/debug/merod"
+          "$BIN" --node ci-tee init --server-port "$TEE_SERVER_PORT" --swarm-port 2538 --auth-mode embedded
+          "$BIN" --node ci-tee run --mock-tee &
+          echo "MEROD_TEE_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:$TEE_SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
+              echo "mock-TEE merod healthy"; break
+            fi
+            sleep 2
+            if [ "$i" = "60" ]; then echo "mock-TEE merod did not become healthy"; exit 1; fi
+          done
+
       - name: Verify the init-minted admin key answers a plain login
         # Confirms the init-minted key logs in before the SDK suite runs, so an
         # auth regression fails here with a clear message instead of buried in the suite.
@@ -158,6 +177,8 @@ jobs:
         working-directory: _mero-js
         env:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
+          # The sealed-transport suite runs against the mock-TEE node.
+          NODE_TEE_URL: "http://localhost:${{ env.TEE_SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
           # The warrant must be real merod output: the SDK cannot sign one, and
@@ -187,4 +208,6 @@ jobs:
         if: always()
         # Guard the PID — an unset MEROD_PID would make `kill 0` signal the whole
         # process group (it never defaults to 0).
-        run: '[ -n "${MEROD_PID:-}" ] && kill "$MEROD_PID" 2>/dev/null || true'
+        run: |
+          [ -n "${MEROD_PID:-}" ] && kill "$MEROD_PID" 2>/dev/null || true
+          [ -n "${MEROD_TEE_PID:-}" ] && kill "$MEROD_TEE_PID" 2>/dev/null || true
