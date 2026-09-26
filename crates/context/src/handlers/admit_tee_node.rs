@@ -440,18 +440,19 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(e) => return ActorResponse::reply(Err(e)),
         };
         if already_member {
-            // Admitted before, possibly by a build that published no evidence.
-            // Its re-announcement is the chance to publish it now, so a TEE
-            // admitted earlier can still become an authority.
-            let has_evidence = match calimero_governance_store::tee_authority_evidence(
+            // Admitted before. Its re-announcement is the chance to publish
+            // evidence that never landed, or to replace evidence old enough to
+            // be due for a refresh, so a TEE keeps its authority past the first
+            // evidence's lifetime.
+            let refresh_due = match calimero_governance_store::tee_evidence_refresh_due(
                 &self.datastore,
                 &group_id,
                 &member_account,
             ) {
-                Ok(found) => found.is_some(),
+                Ok(due) => due,
                 Err(e) => return ActorResponse::reply(Err(e)),
             };
-            let Some(evidence) = evidence.filter(|_| !has_evidence) else {
+            let Some(evidence) = evidence.filter(|_| refresh_due) else {
                 return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
             let datastore = self.datastore.clone();

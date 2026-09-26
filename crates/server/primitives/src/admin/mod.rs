@@ -844,6 +844,14 @@ pub struct TeeAttestRequest {
     /// attested machine. Off by default, so existing clients get the same quote.
     #[serde(default)]
     pub bind_node_key: bool,
+    /// Bind the node's X25519 transport key into the quote. When set, report
+    /// data bytes `32..64` hold `attest_transport_binding(inner, key)`, where
+    /// `inner` is what would have been there without it (the key binding, else
+    /// the app hash, else zeros), and the response names the key as
+    /// `transportPublicKey`. A client that checks the binding can seal requests
+    /// to that key (`POST /sealed/v1`) and know only the attested TD reads them.
+    #[serde(default)]
+    pub bind_transport_key: bool,
 }
 
 impl TeeAttestRequest {
@@ -852,6 +860,7 @@ impl TeeAttestRequest {
             nonce,
             application_id,
             bind_node_key: false,
+            bind_transport_key: false,
         }
     }
 
@@ -859,6 +868,13 @@ impl TeeAttestRequest {
     #[must_use]
     pub const fn with_node_key_binding(mut self) -> Self {
         self.bind_node_key = true;
+        self
+    }
+
+    /// Ask the node to bind its transport key into the quote.
+    #[must_use]
+    pub const fn with_transport_key_binding(mut self) -> Self {
+        self.bind_transport_key = true;
         self
     }
 }
@@ -1094,6 +1110,10 @@ pub struct TeeAttestResponseData {
     /// `bindNodeKey`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bound_public_key: Option<PublicKey>,
+    /// The node's X25519 transport key (hex) bound into the quote, present only
+    /// when the request set `bindTransportKey`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_public_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1103,12 +1123,18 @@ pub struct TeeAttestResponse {
 }
 
 impl TeeAttestResponse {
-    pub fn new(quote_b64: String, quote: Quote, bound_public_key: Option<PublicKey>) -> Self {
+    pub fn new(
+        quote_b64: String,
+        quote: Quote,
+        bound_public_key: Option<PublicKey>,
+        transport_public_key: Option<String>,
+    ) -> Self {
         Self {
             data: TeeAttestResponseData {
                 quote_b64,
                 quote,
                 bound_public_key,
+                transport_public_key,
             },
         }
     }

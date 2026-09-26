@@ -388,7 +388,8 @@ pub(crate) fn setup(
         )
         .route(
             "/groups/{group_id}/settings/tee-authoring-policy",
-            put(groups::set_tee_authoring_policy::handler),
+            put(groups::set_tee_authoring_policy::handler)
+                .delete(groups::disable_tee_authoring_policy::handler),
         )
         .route(
             "/groups/{group_id}/settings/subgroup-visibility",

@@ -1635,6 +1635,7 @@ dependencies = [
  "calimero-wasm-abi",
  "chrono",
  "color-eyre",
+ "curve25519-dalek 5.0.0",
  "eyre",
  "futures-util",
  "hex",
@@ -1644,6 +1645,7 @@ dependencies = [
  "prometheus-client",
  "rand 0.10.2",
  "reqwest 0.12.28",
+ "ring",
  "rust-embed",
  "serde",
  "serde_json",
@@ -1659,6 +1661,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

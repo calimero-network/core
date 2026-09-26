@@ -3,6 +3,7 @@
   "DELETE /admin-api/blobs/{blob_id}",
   "DELETE /admin-api/contexts/{context_id}",
   "DELETE /admin-api/groups/{group_id}",
+  "DELETE /admin-api/groups/{group_id}/settings/tee-authoring-policy",
   "DELETE /admin-api/namespaces/{namespace_id}",
   "GET /admin-api/account/applications",
   "GET /admin-api/account/devices",
