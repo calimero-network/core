@@ -91,7 +91,8 @@ STATE="/tmp/abi_conformance.state.json"
 # field and variant must still diff clean against itself.
 echo "Exercising doc-only diff (must be clean)..."
 SCHEMA_GOLDEN="apps/state-schema-conformance/state-schema.expected.json"
-DOCUMENTED="/tmp/state-schema.documented.json"
+DOCUMENTED="$(mktemp)"
+trap 'rm -f "$DOCUMENTED"' EXIT
 jq '.types |= map_values(. + {doc: "doc-only edit"}
     | if has("fields") then .fields |= map(. + {doc: "doc-only edit"}) else . end
     | if has("variants") then .variants |= map(. + {doc: "doc-only edit"}) else . end)' \
