@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_client::group::AdmitTeeNodeRequest;
+use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
@@ -137,7 +137,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     ?group_id,
                     "not an admin or admitted TEE here; leaving the TEE admission to one"
                 );
-                return ActorResponse::reply(Ok(()));
+                return ActorResponse::reply(Ok(TeeAdmissionOutcome::NotAVoucher));
             }
             Err(err) => return ActorResponse::reply(Err(err)),
         }
@@ -286,7 +286,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         match MembershipRepository::new(&self.datastore)
             .has_direct_member(&group_id, &member_account)
         {
-            Ok(true) => return ActorResponse::reply(Ok(())),
+            Ok(true) => return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember)),
             Ok(false) => {}
             Err(e) => return ActorResponse::reply(Err(e)),
         }
@@ -429,7 +429,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 // handler) has neither admin authority nor the member's
                 // signing key, so it can't do it here.
 
-                Ok(())
+                Ok(TeeAdmissionOutcome::Admitted)
             }
             .into_actor(self),
         )

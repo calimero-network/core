@@ -106,6 +106,14 @@ The `nonce` field's doc-comment in `snapshot.rs` calls it a "Group DAG head hash
 
 A single gossip publish into an empty mesh is lost forever — gossipsub has no replay, and a NAT'd owner's mesh forms only intermittently. So `fleet-join` **re-announces**: it republishes roughly every 2 s for up to ~30 s per call, runs a namespace bootstrap pull each cycle to seed the mesh, and polls for its own admission between announces. If the budget elapses without admission, the call returns `{ admitted: false, status: "announced" }` and the fleet sidecar retries.
 
+### Asking an admitter directly (the replica)
+
+The broadcast only works if a peer that may vouch is in the gossip mesh to hear it. When the only such peer is an owner's laptop behind a relay, that mesh may form late or never, and the miss is silent. So `fleet-join` also takes `admitter_addrs` — libp2p multiaddrs ending in `/p2p/<peer id>`, the shape an invitation's `admitter_addrs` has — and, when given any, **asks those peers directly** right after its first announce.
+
+The request (`InitPayload::TeeAdmissionRequest`) carries exactly what the announce carries, over the sync stream, with a proof of possession binding the requester's namespace key to its transport. The responder runs the same `verify_and_admit` the broadcast receiver runs, so the quote, the credential, the namespace policy and the vouching rule are decided exactly as below — and it answers (`TeeAdmissionResponse { admitted, reason }`). "Already a member" reads as admitted; a peer that may not vouch says so, and the replica asks the next address. The addresses therefore decide who is **asked**, never who may admit: a wrong or hostile one costs a dial and a refusal.
+
+On a direct admission the replica pulls namespace governance immediately, then continues the loop below. The broadcast keeps running either way, for peers that predate the request and for a node given no addresses. The fleet manager supplies the addresses: the namespace's admitted TEE nodes, then the owner's node.
+
 ### Verify and admit (the verifier)
 
 The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handlers/tee_attestation_admission.rs`). It rejects an announce that did not arrive on a well-formed `ns/<hex>` topic, verifies the quote (mock or real) against `SHA-256(public_key)`, drops it silently if invalid, then computes `quote_hash = SHA-256(quote_bytes)` and delegates to `admit_tee_node` with the extracted measurements.
@@ -286,7 +294,7 @@ The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (au
 | `GET /tee/info` | — | Returns `{ cloud_provider, os_image, mrtd }` for the host TEE. |
 | `POST /tee/attest` | `{ nonce, application_id? }` | Generates a TDX quote over `nonce \|\| app-hash`; rejects a mock result unless `--mock-tee`. |
 | `POST /tee/verify-quote` | `{ nonce, quote_b64, expected_application_hash? }` | Verifies a quote and reports per-check results. |
-| `POST /tee/fleet-join` (protected) | `{ group_id }` | Runs the full announce → admission → join loop above. |
+| `POST /tee/fleet-join` (protected) | `{ group_id, admitter_addrs? }` | Runs the full announce → admission → join loop above, asking `admitter_addrs` directly first when given. |
 
 The admission policy is set separately via `PUT /admin-api/.../groups/:group_id/settings/tee-admission-policy`, which publishes `TeeAdmissionPolicySet`.
 

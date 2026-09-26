@@ -717,8 +717,25 @@ pub struct AdmitTeeNodeRequest {
     pub is_mock: bool,
 }
 
+/// What a node did with a TEE admission request that passed verification.
+///
+/// Every refusal of the attestation itself is an `Err`. These are the answers
+/// that are not faults, and they have to be told apart: the broadcast receiver
+/// ignores all three, but a node that asked one peer directly needs to know
+/// whether it is in, or whether to ask the next one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TeeAdmissionOutcome {
+    /// This node published the admission.
+    Admitted,
+    /// The replica already holds a direct membership row here.
+    AlreadyMember,
+    /// This node is neither an admin of the group nor an admitted TEE in it,
+    /// so it may not vouch; peers would refuse an admission it signed.
+    NotAVoucher,
+}
+
 impl Message for AdmitTeeNodeRequest {
-    type Result = eyre::Result<()>;
+    type Result = eyre::Result<TeeAdmissionOutcome>;
 }
 
 /// Adopt an existing account on this node and mint a device for it - the first

@@ -7,6 +7,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::NamespaceRepository;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
+use calimero_node_primitives::client::TeeAdmissionParams;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
 #[cfg(feature = "mock-attestation")]
@@ -143,6 +144,17 @@ pub async fn handler(
     // outside the node that owns it.
     let account_id = account.statement.account;
 
+    // Kept for the direct request below, which carries the same attestation the
+    // broadcast does. Only built when there is someone to ask.
+    let direct_request = (!req.admitter_addrs.is_empty()).then(|| TeeAdmissionParams {
+        namespace_id: ns_id.to_bytes(),
+        admitter_addrs: req.admitter_addrs.clone(),
+        public_key: our_public_key,
+        quote_bytes: attestation.quote_bytes.clone(),
+        nonce,
+        account: account.clone(),
+    });
+
     let broadcast = BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,
         public_key: our_public_key,
@@ -219,6 +231,43 @@ pub async fn handler(
         %our_public_key,
         "TeeAttestationAnnounce broadcast; re-announcing until admission then joining contexts"
     );
+
+    // Ask the named admitters directly, the way an invitation's joiner does.
+    //
+    // The broadcast above only works if a peer allowed to vouch is in the
+    // gossip mesh to hear it, and when the only one is an owner's NAT'd laptop
+    // that mesh may never form — the miss is silent. A direct request dials the
+    // peer, gets a verdict back, and names why when it is refused. The broadcast
+    // stays as the fallback for peers that predate this request, and it keeps
+    // being re-announced below either way.
+    //
+    // Admission here is not the end of the job: this node still holds no
+    // governance state and no key, so pull right away rather than waiting a
+    // poll cycle. The loop below then confirms membership and joins contexts
+    // exactly as it does after a broadcast admission.
+    if let Some(params) = direct_request {
+        match state.node_client.request_tee_admission(params).await {
+            Ok(admitter) => {
+                info!(
+                    group_id = %req.group_id,
+                    %admitter,
+                    "admitted by a directly-asked admitter; pulling namespace governance"
+                );
+                if let Err(err) = state.node_client.sync_namespace(group_id_bytes).await {
+                    tracing::debug!(
+                        group_id = %req.group_id,
+                        error = ?err,
+                        "governance pull after direct admission failed; the loop retries it"
+                    );
+                }
+            }
+            Err(err) => warn!(
+                group_id = %req.group_id,
+                error = %format!("{err:#}"),
+                "no admitter admitted this node directly; relying on the broadcast"
+            ),
+        }
+    }
 
     // Poll for group admission, then auto-join all contexts in the namespace.
     //
