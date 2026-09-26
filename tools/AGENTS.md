@@ -89,7 +89,7 @@ cargo-mero/
 ### Common Gotchas
 
 - Four of the five `tests/pipeline.rs` end-to-end tests are `#[ignore]`d because they scaffold and compile fresh crates (slow, and `new_build_test_bundle_ladder` needs network for the git SDK deps); run those with `cargo test -p cargo-mero -- --ignored`. `bundle_produces_signed_mpk` runs in the default `cargo test -p cargo-mero` - its fixture uses path deps, so it needs no network.
-- Bumping the scaffolded SDK version touches two files in lockstep: `DEFAULT_SDK_VERSION` in `src/lib.rs` and the version assertions in `src/new.rs` tests.
+- The scaffolded SDK version (`DEFAULT_SDK_VERSION` in `src/lib.rs`) is derived at build time from `[workspace.metadata.workspaces].version` in the workspace root `Cargo.toml` (`build.rs`, via `calimero-build-utils`); nothing to bump by hand.
 - `services` lives under `[workspace.metadata.calimero]`, which wins when both are present, or under `[package.metadata.calimero]` for a crate that cannot own a workspace table of its own; either way a `crate` entry may name the declaring package itself, and two entries naming the same crate build it once and stage it under both names.
 - `--features` is resolved once and used for both the compile and the ABI extraction (`workspace::FeatureArgs` feeds `cargo build` and `cargo metadata`). Keep them together: a wasm and an embedded ABI that disagree fail silently, as a wrong migration plan.
 - A `#[cfg]` on an `#[app::logic]` method still lands in the ABI: the attribute macro sees the method before cfg is applied. Struct fields and enum variants are cfg-stripped before the derive runs, so those are honored.

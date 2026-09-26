@@ -1860,6 +1860,7 @@ name = "cargo-mero"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-build-utils",
  "calimero-bundle",
  "calimero-primitives",
  "calimero-wasm-abi",

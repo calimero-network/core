@@ -248,13 +248,13 @@ A `cargo-mero` tool previously lived in `calimero-network/core` (`tools/cargo-me
 It was removed in core#1518 with no documented rationale (template-only PR body, terse commit message); the removal landed the same day as unrelated tools-versioning/publishing cleanup in that directory, which is the likeliest driver rather than a flaw in the concept itself.
 The tool now lives back in core's workspace at `tools/cargo-mero`, versioned and released alongside the rest of core, so that prior friction does not recur.
 
-## Bumping the SDK version
+## The scaffolded SDK version
 
-The scaffolded SDK version has a single source of truth; a bump moves it and the test that pins the expected value:
-
-- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/lib.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (the SDK git tag) and that `cargo mero test`'s example dev-dep hint prints.
-- the version assertion in `tools/cargo-mero/src/new.rs` tests, which hardcodes the expected tag and so must be bumped in lockstep.
-- `new_build_test_bundle_ladder` in `tools/cargo-mero/tests/pipeline.rs`: it asserts the degraded no-ABI path, because every tag released so far predates `__calimero_abi`. Bumping to a tag that carries it turns those last assertions back into "bundle succeeds and writes the `.mpk`".
+`DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/lib.rs` is not hand-maintained: `build.rs`
+reads `[workspace.metadata.workspaces].version` from the workspace root `Cargo.toml` (via
+`calimero-build-utils`) and bakes it in as `env!("CALIMERO_SDK_DEFAULT_VERSION")`. That field
+is exactly the version release.yml reads to tag and publish each release, so a released
+`cargo-mero` binary always scaffolds against the SDK tag it was itself built and published under.
 
 Scaffolded apps carry no build script, so they no longer pin `calimero-wasm-abi`; the ABI comes from whichever `cargo mero` builds them.
 

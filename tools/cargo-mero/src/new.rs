@@ -91,7 +91,7 @@ mod tests {
     fn scaffold(name: &str, dir: &Utf8Path) {
         let args = NewArgs {
             name: name.to_owned(),
-            sdk_version: "0.11.0-rc.17".to_owned(),
+            sdk_version: crate::DEFAULT_SDK_VERSION.to_owned(),
             path: Some(dir.to_owned()),
         };
         run(&args).unwrap();
@@ -139,7 +139,10 @@ mod tests {
 
         let cargo = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         assert!(cargo.contains("name = \"my-app\""), "kebab crate name");
-        assert!(cargo.contains("tag = \"0.11.0-rc.17\""), "sdk git tag");
+        assert!(
+            cargo.contains(&format!("tag = \"{}\"", crate::DEFAULT_SDK_VERSION)),
+            "sdk git tag"
+        );
         assert!(cargo.contains("com.example.my-app"), "app id");
         assert!(!cargo.contains("{{"), "no placeholders left in Cargo.toml");
 
@@ -234,7 +237,7 @@ mod tests {
 
         let args = NewArgs {
             name: "my-app".to_owned(),
-            sdk_version: "0.11.0-rc.17".to_owned(),
+            sdk_version: crate::DEFAULT_SDK_VERSION.to_owned(),
             path: Some(dir),
         };
         assert!(run(&args).is_err());

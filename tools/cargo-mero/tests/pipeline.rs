@@ -8,13 +8,9 @@ use std::process::Command;
 use flate2::read::GzDecoder;
 
 /// A freshly scaffolded app must walk the whole new -> build -> test -> bundle
-/// ladder cleanly.
-///
-/// `cargo mero new` pins `DEFAULT_SDK_VERSION`, a released tag whose SDK builds
-/// no `__calimero_abi`. That is the degraded path: the wasm still builds, it
-/// just carries no ABI, and `bundle` then has nothing to ship. The two
-/// assertions at the end flip back once that pin names an SDK with the entry
-/// point (see "Bumping the SDK version" in the README).
+/// ladder cleanly: `cargo mero new` pins `DEFAULT_SDK_VERSION`, which is
+/// derived from the workspace's own release version, so it always names an
+/// already-published SDK tag that carries the `__calimero_abi` entry point.
 #[test]
 #[ignore = "slow: scaffolds and compiles a fresh app (needs network for git SDK deps)"]
 fn new_build_test_bundle_ladder() {
@@ -39,6 +35,7 @@ fn new_build_test_bundle_ladder() {
         "cargo mero build failed:\n{}",
         String::from_utf8_lossy(&build.stderr)
     );
+    assert!(app_dir.join("res/abi.json").exists());
 
     let test = Command::new(bin)
         .args(["mero", "test", "--manifest-path"])
@@ -47,29 +44,19 @@ fn new_build_test_bundle_ladder() {
         .unwrap();
     assert!(test.success(), "cargo mero test failed");
 
-    // A build that can extract no ABI says so and writes none, rather than
-    // shipping a wasm whose embedded section came from somewhere else.
-    assert!(
-        String::from_utf8_lossy(&build.stderr).contains("SDK provides no ABI entry point"),
-        "the build must name the missing entry point:\n{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
-    assert!(!app_dir.join("res/abi.json").exists());
-
     let bundle = Command::new(bin)
         .args(["mero", "bundle", "--dev", "--no-icon", "--manifest-path"])
         .arg(app_dir.join("Cargo.toml"))
         .output()
         .unwrap();
     assert!(
-        !bundle.status.success(),
-        "bundling an app with no ABI must fail"
-    );
-    assert!(
-        String::from_utf8_lossy(&bundle.stderr).contains("cannot be bundled"),
-        "bundle must say why:\n{}",
+        bundle.status.success(),
+        "cargo mero bundle failed:\n{}",
         String::from_utf8_lossy(&bundle.stderr)
     );
+    assert!(app_dir
+        .join("dist/com.example.ladder-app-0.1.0.mpk")
+        .exists());
 }
 
 /// The `calimero_abi_v1` section read back off the built wasm - the only copy
