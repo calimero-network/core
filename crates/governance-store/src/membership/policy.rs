@@ -9,10 +9,11 @@ use super::super::{
     read_tee_admission_policy, MembershipError, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
 };
 use super::policy_rules::{
-    validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
-    TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_MRTD_EMPTY, TEE_REJECT_RTMR0,
-    TEE_REJECT_RTMR1, TEE_REJECT_RTMR1_EMPTY, TEE_REJECT_RTMR2, TEE_REJECT_RTMR2_EMPTY,
-    TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY, TEE_REJECT_TCB_STATUS,
+    tcb_status_allowed, validate_tee_attestation_allowlists, MembershipPolicyRejection,
+    MembershipPolicyValidationError, TeeAllowlistPolicy, TeeAttestationClaims, TEE_REJECT_MRTD,
+    TEE_REJECT_MRTD_EMPTY, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR1_EMPTY,
+    TEE_REJECT_RTMR2, TEE_REJECT_RTMR2_EMPTY, TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY,
+    TEE_REJECT_TCB_STATUS,
 };
 use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
@@ -169,6 +170,25 @@ impl<'a> MembershipPolicy<'a> {
         policy: &TeeAdmissionPolicy,
         fields: &TeeAttestationClaims<'_>,
     ) -> EyreResult<()> {
+        // Under a signed-release policy the measurements are checked by the
+        // admitter against the release file it verified; a peer replaying the
+        // op has neither the quote nor the network to repeat that. It trusts
+        // the voucher for them, as every peer already does for the quote
+        // itself, and still holds the TCB rule, which needs only the op.
+        if policy.release_trust.is_some() {
+            if !tcb_status_allowed(
+                &policy.allowed_tcb_statuses,
+                fields.tcb_status,
+                false,
+                policy.accept_mock,
+            ) {
+                record_membership_policy_rejection(TEE_REJECT_TCB_STATUS);
+                bail!(MembershipPolicyValidationError {
+                    reason: MembershipPolicyRejection::TcbStatusNotAllowed,
+                });
+            }
+            return Ok(());
+        }
         let normalized_policy = TeeAllowlistPolicy {
             allowed_mrtd: policy.allowed_mrtd.clone(),
             allowed_rtmr0: policy.allowed_rtmr0.clone(),

@@ -131,6 +131,10 @@ pub struct ServerConfig {
     pub embedded_auth: Option<AuthConfig>,
 
     pub cors: CorsConfig,
+
+    /// The mero-tee node release this node runs, when it is a fleet TEE node
+    /// told so (`MERO_TEE_VERSION`). Not read from the config file.
+    pub tee_release_version: Option<String>,
 }
 
 impl ServerConfig {
@@ -156,6 +160,7 @@ impl ServerConfig {
                 allowed_origins: None,
                 allow_private_network: true,
             },
+            tee_release_version: None,
         }
     }
 
@@ -186,6 +191,7 @@ impl ServerConfig {
                 allowed_origins: None,
                 allow_private_network: true,
             },
+            tee_release_version: None,
         }
     }
 

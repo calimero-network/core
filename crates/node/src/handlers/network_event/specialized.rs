@@ -48,7 +48,23 @@ pub(super) fn handle_specialized_broadcast(
             nonce,
             node_type: _,
             account,
+        }
+        | BroadcastMessage::TeeReleaseAttestationAnnounce {
+            quote_bytes,
+            public_key,
+            nonce,
+            node_type: _,
+            account,
+            ..
         } => {
+            // The release, for the form that names one. The rest is shared:
+            // both forms are admitted by the same `verify_and_admit`.
+            let release_version = match message {
+                BroadcastMessage::TeeReleaseAttestationAnnounce {
+                    release_version, ..
+                } => Some(release_version.clone()),
+                _ => None,
+            };
             let topic_str = topic.as_str();
             // Fleet TEE nodes announce on the namespace governance topic
             // `ns/<hex(namespace_id)>` (see `NodeClient::publish_on_namespace`
@@ -80,24 +96,25 @@ pub(super) fn handle_specialized_broadcast(
                 %public_key,
                 nonce = %hex::encode(*nonce),
                 namespace_id = %hex::encode(namespace_id_bytes),
+                release = ?release_version,
                 "Received TEE attestation announce on namespace topic"
             );
 
             let context_client = this.clients.context.clone();
-            let quote_bytes = quote_bytes.clone();
-            let public_key = *public_key;
-            let nonce = *nonce;
-            let account = account.clone();
+            let claim = tee_attestation_admission::TeeAdmissionClaim {
+                quote_bytes: quote_bytes.clone(),
+                public_key: *public_key,
+                nonce: *nonce,
+                account: account.clone(),
+                release_version,
+            };
             let _ignored = ctx.spawn(
                 async move {
                     if let Err(err) = tee_attestation_admission::handle_tee_attestation_announce(
                         &context_client,
                         source,
-                        quote_bytes,
-                        public_key,
-                        nonce,
                         namespace_id_bytes,
-                        account,
+                        claim,
                     )
                     .await
                     {
