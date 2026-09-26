@@ -53,6 +53,7 @@ fn every_request_body_is_a_closed_set() {
         admin::SetMemberAutoFollowApiRequest,
         admin::SetDefaultCapabilitiesApiRequest,
         admin::SetTeeAdmissionPolicyApiRequest,
+        admin::SignedReleaseTeePolicy,
         admin::SetTeeAuthoringPolicyApiRequest,
         admin::SetSubgroupVisibilityApiRequest,
         admin::CreateGroupInvitationApiRequest,

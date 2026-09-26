@@ -154,7 +154,8 @@ pub use self::tee::{
     read_tee_admission_policy, read_tee_authoring_policy, tee_admission_record,
     tee_admission_records, tee_authorities_for_context, tee_authority_evidence, tee_authority_key,
     tee_evidence_owed, tee_evidence_refresh_due, writer_account, TeeAdmissionPolicy,
-    TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord, UndecodableOpLogEntry,
+    TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord, TeeReleaseTrust,
+    UndecodableOpLogEntry,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;

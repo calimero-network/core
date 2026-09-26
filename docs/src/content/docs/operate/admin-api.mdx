@@ -295,7 +295,7 @@ the path parameter — these are reproduced exactly as routed below.
 | PUT | `/admin-api/groups/:group_id/members/:identity/auto-follow` | Set a member's auto-follow flag. |
 | PUT | `/admin-api/groups/:group_id/settings/default-capabilities` | Set group default capabilities. |
 | GET | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Get the group's TEE admission policy. |
-| PUT | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Set the group's TEE admission policy. |
+| PUT | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Set the group's TEE admission policy: measurement lists, or `signedRelease` to admit any signed mero-tee release of the named profiles. |
 | PUT | `/admin-api/groups/:group_id/settings/subgroup-visibility` | Set subgroup visibility. |
 | POST | `/admin-api/groups/:group_id/invite` | Create a group invitation (legacy). |
 | POST | `/admin-api/groups/join` | Join a group (legacy). |

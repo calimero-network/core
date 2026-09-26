@@ -129,6 +129,9 @@ async fn announce(
         store,
         namespace,
         public_key,
+        // An admitted TEE is owed evidence, not admission: the admitter takes
+        // the already-member path, which checks no release.
+        None,
         #[cfg(feature = "mock-attestation")]
         mock_tee,
     ) {
@@ -142,20 +145,25 @@ async fn announce(
             return;
         }
     };
-    match node_client
-        .publish_on_namespace_now(namespace.to_bytes(), announcement.payload)
-        .await
-    {
-        Ok(mesh_peers) => info!(
-            namespace = %hex::encode(namespace.to_bytes()),
-            mesh_peers,
-            "TEE authority evidence is missing; re-announced so an admitter publishes it"
-        ),
-        Err(err) => debug!(
-            namespace = %hex::encode(namespace.to_bytes()),
-            ?err,
-            "TEE evidence retry: re-announce publish failed; retrying later"
-        ),
+    for payload in announcement.payloads {
+        match node_client
+            .publish_on_namespace_now(namespace.to_bytes(), payload)
+            .await
+        {
+            Ok(mesh_peers) => info!(
+                namespace = %hex::encode(namespace.to_bytes()),
+                mesh_peers,
+                "TEE authority evidence is missing; re-announced so an admitter publishes it"
+            ),
+            Err(err) => {
+                debug!(
+                    namespace = %hex::encode(namespace.to_bytes()),
+                    ?err,
+                    "TEE evidence retry: re-announce publish failed; retrying later"
+                );
+                return;
+            }
+        }
     }
 }
 

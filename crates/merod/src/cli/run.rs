@@ -229,7 +229,7 @@ impl RunCommand {
             warn!("{msg}");
         }
 
-        let server_config = ServerConfig::with_auth(
+        let mut server_config = ServerConfig::with_auth(
             server_source.listen,
             config.identity.keypair.clone(),
             calimero_server::config::ServiceConfigs {
@@ -241,6 +241,8 @@ impl RunCommand {
             server_source.auth_mode,
             server_source.embedded_auth,
         );
+        server_config.tee_release_version =
+            tee_release_version_from_env(|k| std::env::var(k).ok())?;
 
         // Create store config with optional encryption
         let datastore_path = path.join(config.datastore.path);
@@ -332,6 +334,26 @@ impl RunCommand {
     }
 }
 
+/// The mero-tee node release this node runs, from `MERO_TEE_VERSION`, which a
+/// fleet TEE node's `calimero-init` writes from the instance's
+/// `tee-release-version`. Fleet-join names it to admitters; an unset or empty
+/// value is `None`. A malformed one is refused rather than dropped, like the
+/// registry override below: a TEE that silently stops naming its release is
+/// refused by every signed-release namespace, with nothing in its own log.
+fn tee_release_version_from_env(
+    get: impl Fn(&str) -> Option<String>,
+) -> EyreResult<Option<String>> {
+    match get("MERO_TEE_VERSION") {
+        Some(raw) if !raw.trim().is_empty() => calimero_tee_release::normalize_release_version(
+            &raw,
+            calimero_tee_release::NODE_RELEASE_TAG_PREFIX,
+        )
+        .map(Some)
+        .map_err(|e| eyre::eyre!("MERO_TEE_VERSION is invalid: {e}")),
+        _ => Ok(None),
+    }
+}
+
 /// Applies `CALIMERO_REGISTRY_MODE`/`CALIMERO_REGISTRY_URL` over a loaded config.
 /// A malformed value errors instead of keeping config.toml's setting - a misconfigured node must not start.
 fn apply_registry_env(
@@ -399,6 +421,19 @@ mod tests {
 
     fn addr(s: &str) -> Multiaddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn tee_release_version_is_read_normalised_and_validated() {
+        let from = |v: &'static str| move |k: &str| (k == "MERO_TEE_VERSION").then(|| v.to_owned());
+        assert_eq!(tee_release_version_from_env(|_| None).unwrap(), None);
+        assert_eq!(tee_release_version_from_env(from("  ")).unwrap(), None);
+        assert_eq!(
+            tee_release_version_from_env(from("mero-tee-v2.3.72")).unwrap(),
+            Some("2.3.72".to_owned())
+        );
+        let err = tee_release_version_from_env(from("latest")).unwrap_err();
+        assert!(err.to_string().contains("MERO_TEE_VERSION"), "{err}");
     }
 
     #[test]

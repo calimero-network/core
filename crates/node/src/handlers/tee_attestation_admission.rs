@@ -30,6 +30,22 @@ pub(crate) fn public_key_binding_hash(public_key: &PublicKey) -> [u8; 32] {
     Sha256::digest(**public_key).into()
 }
 
+/// What a TEE sends to be admitted, however it arrives: the broadcast
+/// (`TeeAttestationAnnounce` / `TeeReleaseAttestationAnnounce`) or a direct
+/// request (`TeeAdmissionRequest` / `TeeReleaseAdmissionRequest`).
+#[derive(Debug)]
+pub(crate) struct TeeAdmissionClaim {
+    /// TDX quote whose `report_data` binds `nonce` and `public_key`.
+    pub quote_bytes: Vec<u8>,
+    /// The TEE's namespace identity.
+    pub public_key: PublicKey,
+    pub nonce: [u8; 32],
+    /// The TEE's account credential; must certify `public_key`.
+    pub account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+    /// The mero-tee node release it says it runs, when its form carries one.
+    pub release_version: Option<String>,
+}
+
 /// What became of one TEE admission request, however it arrived.
 ///
 /// The broadcast receiver and the direct-request responder both go through
@@ -79,25 +95,14 @@ impl TeeAdmissionVerdict {
 /// Verifies the TDX quote, checks measurements against the group's TEE admission
 /// policy, and publishes a `MemberJoinedViaTeeAttestation` governance op if valid.
 /// Nobody is waiting on the answer, so it is logged and dropped.
-pub async fn handle_tee_attestation_announce(
+pub(crate) async fn handle_tee_attestation_announce(
     context_client: &calimero_context_client::client::ContextClient,
     source: libp2p::PeerId,
-    quote_bytes: Vec<u8>,
-    public_key: PublicKey,
-    nonce: [u8; 32],
     group_id_bytes: [u8; 32],
-    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+    claim: TeeAdmissionClaim,
 ) -> eyre::Result<()> {
-    let verdict = verify_and_admit(
-        context_client,
-        source,
-        quote_bytes,
-        public_key,
-        nonce,
-        group_id_bytes,
-        account,
-    )
-    .await?;
+    let public_key = claim.public_key;
+    let verdict = verify_and_admit(context_client, source, group_id_bytes, claim).await?;
     tracing::debug!(%source, %public_key, ?verdict, "TEE attestation announce handled");
     Ok(())
 }
@@ -111,12 +116,16 @@ pub async fn handle_tee_attestation_announce(
 pub(crate) async fn verify_and_admit(
     context_client: &calimero_context_client::client::ContextClient,
     source: libp2p::PeerId,
-    quote_bytes: Vec<u8>,
-    public_key: PublicKey,
-    nonce: [u8; 32],
     group_id_bytes: [u8; 32],
-    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+    claim: TeeAdmissionClaim,
 ) -> eyre::Result<TeeAdmissionVerdict> {
+    let TeeAdmissionClaim {
+        quote_bytes,
+        public_key,
+        nonce,
+        account,
+        release_version,
+    } = claim;
     let group_id = ContextGroupId::from(group_id_bytes);
 
     // The credential arrives unauthenticated on a gossip message, so it is
@@ -214,6 +223,7 @@ pub(crate) async fn verify_and_admit(
             rtmr3,
             tcb_status,
             is_mock,
+            release_version,
             evidence: Some(
                 calimero_context_client::group::TeeAuthorityEvidencePayload {
                     quote: quote_bytes,

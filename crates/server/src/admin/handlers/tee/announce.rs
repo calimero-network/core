@@ -21,8 +21,11 @@ pub(crate) struct Announcement {
     pub quote_bytes: Vec<u8>,
     pub nonce: [u8; 32],
     pub account: Box<JoinAccountCredential>,
-    /// The borsh `TeeAttestationAnnounce`, ready to publish.
-    pub payload: Vec<u8>,
+    /// The borsh announcements, ready to publish: the
+    /// `TeeReleaseAttestationAnnounce` first when the release is known, then
+    /// the `TeeAttestationAnnounce` every admitter decodes, including those
+    /// that predate the release form.
+    pub payloads: Vec<Vec<u8>>,
 }
 
 /// Why an announcement could not be built. Each maps to the message fleet-join
@@ -47,7 +50,10 @@ impl AnnounceError {
 }
 
 /// Attest `public_key` with a fresh nonce and wrap it, with this replica's
-/// account credential, as a `TeeAttestationAnnounce`.
+/// account credential, as a `TeeAttestationAnnounce` -- and, when
+/// `release_version` names the mero-tee node release this replica runs, as a
+/// `TeeReleaseAttestationAnnounce` too, for admitters under a signed-release
+/// policy.
 ///
 /// `mock_tee` produces and accepts a mock quote; without it any mock result is
 /// refused, so a real deployment never announces one.
@@ -55,6 +61,7 @@ pub(crate) fn build(
     store: &Store,
     namespace_id: &ContextGroupId,
     public_key: PublicKey,
+    release_version: Option<&str>,
     #[cfg(feature = "mock-attestation")] mock_tee: bool,
 ) -> Result<Announcement, AnnounceError> {
     let pk_hash: [u8; 32] = Sha256::digest(*public_key).into();
@@ -96,22 +103,37 @@ pub(crate) fn build(
             AnnounceError::Credential
         })?;
 
-    let payload = borsh::to_vec(&BroadcastMessage::TeeAttestationAnnounce {
+    let mut messages = Vec::with_capacity(2);
+    if let Some(release_version) = release_version {
+        messages.push(BroadcastMessage::TeeReleaseAttestationAnnounce {
+            quote_bytes: attestation.quote_bytes.clone(),
+            public_key,
+            nonce,
+            node_type: SpecializedNodeType::ReadOnly,
+            account: account.clone(),
+            release_version: release_version.to_owned(),
+        });
+    }
+    messages.push(BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes.clone(),
         public_key,
         nonce,
         node_type: SpecializedNodeType::ReadOnly,
         account: account.clone(),
-    })
-    .map_err(|err| {
-        error!(error=?err, "Failed to serialize TeeAttestationAnnounce");
-        AnnounceError::Serialize
-    })?;
+    });
+    let payloads = messages
+        .iter()
+        .map(borsh::to_vec)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| {
+            error!(error=?err, "Failed to serialize TeeAttestationAnnounce");
+            AnnounceError::Serialize
+        })?;
 
     Ok(Announcement {
         quote_bytes: attestation.quote_bytes,
         nonce,
         account,
-        payload,
+        payloads,
     })
 }

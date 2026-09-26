@@ -852,7 +852,9 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn direct_tee_admission_reports_its_verdict() {
-    use crate::handlers::tee_attestation_admission::{verify_and_admit, TeeAdmissionVerdict};
+    use crate::handlers::tee_attestation_admission::{
+        verify_and_admit, TeeAdmissionClaim, TeeAdmissionVerdict,
+    };
     use calimero_context_client::group::TeeAdmissionOutcome;
 
     let node = boot_test_node().await;
@@ -867,11 +869,14 @@ async fn direct_tee_admission_reports_its_verdict() {
         verify_and_admit(
             &node.context_client,
             libp2p::PeerId::random(),
-            mock_quote_bytes(&nonce, &pk_hash),
-            announcer_pk,
-            nonce,
             gid.to_bytes(),
-            account,
+            TeeAdmissionClaim {
+                quote_bytes: mock_quote_bytes(&nonce, &pk_hash),
+                public_key: announcer_pk,
+                nonce,
+                account,
+                release_version: None,
+            },
         )
     };
 
@@ -948,7 +953,9 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
     use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
     use calimero_governance_store::{is_tee_authority, tee_authority_evidence, tee_evidence_owed};
 
-    use crate::handlers::tee_attestation_admission::{verify_and_admit, TeeAdmissionVerdict};
+    use crate::handlers::tee_attestation_admission::{
+        verify_and_admit, TeeAdmissionClaim, TeeAdmissionVerdict,
+    };
 
     let node = boot_test_node().await;
     let mut rng = UnwrapErr(SysRng);
@@ -984,6 +991,7 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
                 .unwrap_or_else(|| "Unknown".to_owned()),
             is_mock: true,
             evidence: None,
+            release_version: None,
         })
         .await
         .expect("the admission is accepted");
@@ -1024,11 +1032,14 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
         verify_and_admit(
             &node.context_client,
             libp2p::PeerId::random(),
-            mock_quote_bytes(&nonce, &pk_hash),
-            tee_pk,
-            nonce,
             gid.to_bytes(),
-            announce_credential(&tee_pk),
+            TeeAdmissionClaim {
+                quote_bytes: mock_quote_bytes(&nonce, &pk_hash),
+                public_key: tee_pk,
+                nonce,
+                account: announce_credential(&tee_pk),
+                release_version: None,
+            },
         )
     };
     let again = announce([0x42; 32])

@@ -319,6 +319,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::OpenSubgroupJoinRequest { .. }
             | InitPayload::RelaySealedJoinRequest { .. }
             | InitPayload::TeeAdmissionRequest { .. }
+            | InitPayload::TeeReleaseAdmissionRequest { .. }
     )
 }
 
@@ -3535,7 +3536,8 @@ impl SyncManager {
                 InitPayload::NamespaceJoinRequest { namespace_id, .. }
                 | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. }
                 | InitPayload::RelaySealedJoinRequest { namespace_id, .. }
-                | InitPayload::TeeAdmissionRequest { namespace_id, .. } => {
+                | InitPayload::TeeAdmissionRequest { namespace_id, .. }
+                | InitPayload::TeeReleaseAdmissionRequest { namespace_id, .. } => {
                     ContextId::from(*namespace_id)
                 }
                 _ => context_id,
@@ -3556,7 +3558,8 @@ impl SyncManager {
                 // The key being admitted must be the key that proved itself on
                 // this transport, or a dialer could prove one identity and
                 // relay another replica's attestation.
-                InitPayload::TeeAdmissionRequest { public_key, .. } => {
+                InitPayload::TeeAdmissionRequest { public_key, .. }
+                | InitPayload::TeeReleaseAdmissionRequest { public_key, .. } => {
                     *public_key == their_identity
                 }
                 _ => true,
@@ -3644,27 +3647,58 @@ impl SyncManager {
         // not membership-gated: the requester is by definition not a member yet.
         // What admits it is the attestation it carries, checked exactly as the
         // broadcast receiver checks it.
-        if let InitPayload::TeeAdmissionRequest {
-            namespace_id,
-            quote_bytes,
-            public_key,
-            nonce: attestation_nonce,
-            account,
-        } = payload
-        {
-            self.handle_tee_admission_request(
-                peer_id,
+        let tee_admission = match payload {
+            InitPayload::TeeAdmissionRequest {
+                namespace_id,
+                quote_bytes,
+                public_key,
+                nonce: attestation_nonce,
+                account,
+            } => Ok((
                 namespace_id,
                 quote_bytes,
                 public_key,
                 attestation_nonce,
                 account,
-                stream,
-                nonce,
-            )
-            .await?;
-            return Ok(Some(()));
-        }
+                None,
+            )),
+            InitPayload::TeeReleaseAdmissionRequest {
+                namespace_id,
+                quote_bytes,
+                public_key,
+                nonce: attestation_nonce,
+                account,
+                release_version,
+            } => Ok((
+                namespace_id,
+                quote_bytes,
+                public_key,
+                attestation_nonce,
+                account,
+                Some(release_version),
+            )),
+            other => Err(other),
+        };
+        let payload = match tee_admission {
+            Ok((namespace_id, quote_bytes, public_key, attestation_nonce, account, release)) => {
+                self.handle_tee_admission_request(
+                    peer_id,
+                    namespace_id,
+                    crate::handlers::tee_attestation_admission::TeeAdmissionClaim {
+                        quote_bytes,
+                        public_key,
+                        nonce: attestation_nonce,
+                        account,
+                        release_version: release,
+                    },
+                    stream,
+                    nonce,
+                )
+                .await?;
+                return Ok(Some(()));
+            }
+            Err(payload) => payload,
+        };
 
         // Both key-request variants land here. They differ only in whether the
         // reply carries this node's own device certificate: the requester asks
@@ -3929,7 +3963,8 @@ impl SyncManager {
             InitPayload::RelaySealedJoinRequest { .. } => {
                 unreachable!("handled by early return above")
             }
-            InitPayload::TeeAdmissionRequest { .. } => {
+            InitPayload::TeeAdmissionRequest { .. }
+            | InitPayload::TeeReleaseAdmissionRequest { .. } => {
                 unreachable!("handled by early return above")
             }
             InitPayload::GroupKeyRequest { .. }
@@ -4333,6 +4368,14 @@ mod init_pop_gate_tests {
                 public_key: [0; 32].into(),
                 nonce: [0; 32],
                 account: calimero_context::test_support::credential(&[0x42; 32].into()),
+            },
+            InitPayload::TeeReleaseAdmissionRequest {
+                namespace_id: [0; 32],
+                quote_bytes: vec![],
+                public_key: [0; 32].into(),
+                nonce: [0; 32],
+                account: calimero_context::test_support::credential(&[0x42; 32].into()),
+                release_version: "2.3.72".to_owned(),
             },
         ];
         for p in &requires {

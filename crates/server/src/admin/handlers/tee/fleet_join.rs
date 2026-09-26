@@ -61,10 +61,17 @@ pub async fn handler(
         "Using namespace identity for fleet join"
     );
 
+    // The node release this node runs, when merod was told it
+    // (`MERO_TEE_VERSION`). A namespace that admits TEEs by signed release
+    // checks the quote against that release's signed measurements; without it
+    // only a namespace with measurement lists can admit this node.
+    let release_version = state.tee_release_version.clone();
+
     let announcement = match super::announce::build(
         &state.store,
         &ns_id,
         our_public_key,
+        release_version.as_deref(),
         #[cfg(feature = "mock-attestation")]
         state.mock_tee,
     ) {
@@ -97,9 +104,10 @@ pub async fn handler(
         quote_bytes: announcement.quote_bytes.clone(),
         nonce: announcement.nonce,
         account: announcement.account.clone(),
+        release_version: release_version.clone(),
     });
 
-    let payload = announcement.payload;
+    let payloads = announcement.payloads;
 
     if let Err(err) = state.node_client.subscribe_namespace(group_id_bytes).await {
         error!(error=?err, "Failed to subscribe to namespace topic");
@@ -127,11 +135,7 @@ pub async fn handler(
     // empty mesh is non-fatal, fall through into the retry loop below; any
     // *other* publish error is a genuine transport failure and still bails
     // (a subscription with no chance of an announce is useless).
-    if let Err(err) = state
-        .node_client
-        .publish_on_namespace_now(group_id_bytes, payload.clone())
-        .await
-    {
+    if let Err(err) = publish_announcements(&state.node_client, group_id_bytes, &payloads).await {
         if calimero_network_primitives::client::is_no_peers_subscribed_error(&err) {
             info!(
                 group_id = %req.group_id,
@@ -381,10 +385,7 @@ pub async fn handler(
                 // cycle delivers a fresh copy to a mesh window that opens later.
                 // Best effort — a transport error here is logged, not fatal.
                 if tokio::time::Instant::now() < deadline {
-                    match state
-                        .node_client
-                        .publish_on_namespace_now(group_id_bytes, payload.clone())
-                        .await
+                    match publish_announcements(&state.node_client, group_id_bytes, &payloads).await
                     {
                         Ok(mesh_peers) => tracing::debug!(
                             group_id = %req.group_id,
@@ -450,4 +451,20 @@ pub async fn handler(
         }),
     }
     .into_response()
+}
+
+/// Publish each announcement form on the namespace topic, stopping at the
+/// first failure. Returns the mesh size the last publish saw.
+async fn publish_announcements(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    namespace_id: [u8; 32],
+    payloads: &[Vec<u8>],
+) -> eyre::Result<usize> {
+    let mut mesh_peers = 0;
+    for payload in payloads {
+        mesh_peers = node_client
+            .publish_on_namespace_now(namespace_id, payload.clone())
+            .await?;
+    }
+    Ok(mesh_peers)
 }

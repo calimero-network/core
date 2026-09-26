@@ -930,6 +930,28 @@ pub enum BroadcastMessage<'a> {
         /// awareness store is touched.
         signature: [u8; 64],
     },
+
+    /// [`Self::TeeAttestationAnnounce`] plus the mero-tee node release the
+    /// announcer runs, for namespaces that admit TEEs by signed release.
+    ///
+    /// A new variant rather than a new field, because a field would change
+    /// the old variant's encoding. The release is a claim: the admitter fetches
+    /// that release's signed measurements and refuses a quote that matches
+    /// none of them. A fleet node sends both announcements, so an admitter
+    /// that predates this variant, and cannot decode it, still sees the old
+    /// one.
+    ///
+    /// **Borsh ordering**: appended at the tail so every existing variant
+    /// discriminant is unchanged.
+    TeeReleaseAttestationAnnounce {
+        quote_bytes: Vec<u8>,
+        public_key: PublicKey,
+        nonce: [u8; 32],
+        node_type: SpecializedNodeType,
+        account: Box<calimero_governance_types::JoinAccountCredential>,
+        /// The node release, e.g. `2.3.72`.
+        release_version: String,
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs

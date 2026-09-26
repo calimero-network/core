@@ -105,6 +105,9 @@ pub struct TeeAdmissionParams {
     pub quote_bytes: Vec<u8>,
     pub nonce: [u8; 32],
     pub account: Box<calimero_governance_types::JoinAccountCredential>,
+    /// The mero-tee node release this node runs, when it knows it. Sent as
+    /// `InitPayload::TeeReleaseAdmissionRequest` when set.
+    pub release_version: Option<String>,
 }
 
 /// The reply half of the direct TEE admission channel: the peer that admitted

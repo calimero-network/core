@@ -237,6 +237,10 @@ async fn admit_member_into_subgroup(
         // is_mock flag. Mock-quote test paths admit via the allowlisted mock
         // MRTD regardless (accept_mock + allowed_mrtd), so false is correct here.
         is_mock: false,
+        // The root admission checked the release; its record keeps the
+        // measurements but not the version, and `admit_tee_node` does not
+        // re-check a release on this path.
+        release_version: None,
         evidence: None,
     };
 

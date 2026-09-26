@@ -177,6 +177,11 @@ impl Handler<NetworkEvent> for NodeManager {
                             &specialized_message,
                         );
                     }
+                    message @ BroadcastMessage::TeeReleaseAttestationAnnounce { .. } => {
+                        let _handled = specialized::handle_specialized_broadcast(
+                            self, ctx, source, &topic, &message,
+                        );
+                    }
                     BroadcastMessage::NamespaceGovernanceDelta {
                         namespace_id,
                         delta_id: _,

@@ -537,6 +537,25 @@ pub enum InitPayload {
         /// The requester's account credential; must certify `public_key`.
         account: Box<calimero_governance_types::JoinAccountCredential>,
     },
+
+    /// [`Self::TeeAdmissionRequest`] plus the mero-tee node release the
+    /// requester runs, which a namespace that admits TEEs by signed release
+    /// checks the quote against.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload` so every
+    /// existing variant discriminant is unchanged. An older responder cannot
+    /// decode this variant and drops the stream, and the requester moves on to
+    /// the next admitter, then to the broadcast, which also carries the old
+    /// form.
+    TeeReleaseAdmissionRequest {
+        namespace_id: [u8; 32],
+        quote_bytes: Vec<u8>,
+        public_key: PublicKey,
+        nonce: [u8; 32],
+        account: Box<calimero_governance_types::JoinAccountCredential>,
+        /// The node release, e.g. `2.3.72`.
+        release_version: String,
+    },
 }
 
 // =============================================================================
