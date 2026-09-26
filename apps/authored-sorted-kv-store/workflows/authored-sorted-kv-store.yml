@@ -81,13 +81,14 @@ steps:
       topic: "news"
       seq: 1
       text: "from node one"
-    # `output`, not `result`: `result` binds the whole {"output": ...} envelope,
-    # which is what `json_equal` wants but NOT what a method argument wants.
-    # Passing the envelope as `key` below would make the owner-gate steps fail
-    # on a malformed key rather than on the gate — and since they are
-    # `expected_failure`, they would have passed for the wrong reason.
+    # `result.output`, not `result`. A capture is a path into the raw JSON-RPC
+    # response (`{id, jsonrpc, result}`), so `result` binds the whole
+    # `{"output": ...}` envelope — right for `json_equal`, wrong for a method
+    # ARGUMENT. Passing the envelope as `key` below would make the owner-gate
+    # steps fail on a malformed key rather than on the gate, and since they are
+    # `expected_failure` they would have PASSED, proving nothing.
     outputs:
-      node1_key_path: output
+      node1_key_path: result.output
 
   - name: Assert node 1 got a key back
     type: assert
@@ -204,7 +205,7 @@ steps:
       seq: 1
       text: "from node two"
     outputs:
-      node2_key_path: output
+      node2_key_path: result.output
 
   # The same `seq` on the same topic, and neither write was refused: the key
   # carries the author, so two writers never contend for one key. Without that,
