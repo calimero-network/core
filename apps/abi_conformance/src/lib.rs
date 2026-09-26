@@ -100,13 +100,18 @@ pub enum ConformanceError {
 // Events
 #[app::event]
 pub enum Event {
+    /// Liveness signal with no payload.
     Ping,
     Named(String),
     Data(Vec<u8>),
     PersonUpdated(Person),
     ActionTaken(Action),
     TupleEvent(u32, String), // Tuple variant with multiple unnamed fields
-    StructEvent { id: u32, name: String }, // Struct variant with multiple named fields
+    // Struct variant with multiple named fields
+    StructEvent {
+        id: u32,
+        name: String,
+    },
 }
 
 // State.
@@ -114,16 +119,16 @@ pub enum Event {
 // Uses CRDT analogues of the previously-bare std types: `UnorderedMap` for the
 // map field and `Vector` for the list, with primitive values wrapped in
 // `LwwRegister` to satisfy the `V: Mergeable` bound. The full std-type matrix
-// is still exercised through the method signatures below — that's where ABI
+// is still exercised through the method signatures below - that's where ABI
 // generation actually has to handle them. State schemas are covered separately
 // by the `state-schema-conformance` app.
 #[app::state(emits = Event)]
 pub struct AbiState {
     counters: UnorderedMap<String, LwwRegister<u32>>,
-    // Key-ordered map — locks the `SortedMap` ABI collection marker.
+    // Key-ordered map - locks the `SortedMap` ABI collection marker.
     sorted_counters: SortedMap<String, LwwRegister<u32>>,
     users: Vector<LwwRegister<UserId32>>,
-    // Per-writer authored collections — lock the `AuthoredMap` and
+    // Per-writer authored collections - lock the `AuthoredMap` and
     // `AuthoredVector` ABI collection markers so every CRDT type the schema
     // declares is exercised by at least one emitted ABI.
     authored_counters: AuthoredMap<String, LwwRegister<u32>>,
@@ -361,7 +366,15 @@ impl AbiState {
     // Test methods using types from custom_types module
     // This verifies multi-file ABI generation works
 
-    /// Create a custom record from module
+    /// Create a custom record from module.
+    ///
+    /// # Arguments
+    /// * `name` - display name stored on the record.
+    /// * `value` - initial counter value; the record starts
+    ///   active regardless.
+    ///
+    /// # Errors
+    /// Never fails; the `Result` exercises the unwrap rule.
     pub fn create_custom_record(&self, name: String, value: u64) -> app::Result<CustomRecord> {
         Ok(CustomRecord {
             name,

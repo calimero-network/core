@@ -170,6 +170,35 @@ describe:
 `pattern` applies only to a one-field tuple struct
 ```
 
+## Doc comments
+
+Your `///` comments ship in the ABI.
+A method, parameter, type, field, enum variant, or event with a doc comment carries it as `doc`, so a client or an agent can learn what a method is for without your source.
+An item without a comment has no `doc` key, and editing a comment is never an ABI change: `cargo mero abi diff` ignores it.
+
+Rust does not allow `///` on a parameter, so parameters use rustdoc's `# Arguments` list:
+
+```rust
+/// Apply a batch of block edits.
+///
+/// # Arguments
+/// * `edits` - at most 512 per call.
+/// * `now` - caller's unix seconds; orders concurrent
+///   edits (last writer wins).
+///
+/// # Errors
+/// Fails if more than 512 edits are sent in one call.
+pub fn set_blocks(&mut self, edits: Vec<Edit>, now: u64) -> app::Result<u32>
+```
+
+Each entry becomes that parameter's `doc` and the section is removed from the method's own `doc`; `# Errors`, `# Examples`, and every other section stay.
+An indented line continues the entry above it.
+An entry that names something other than a parameter fails the build:
+
+```
+`# Arguments` names `edit`, which is not a parameter of `set_blocks`
+```
+
 ## Inspecting the ABI
 
 `cargo mero abi` reads a compiled module or the artifacts beside it:

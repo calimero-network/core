@@ -327,7 +327,8 @@
       "doc": "Custom enum in module",
       "variants": [
         {
-          "name": "Pending"
+          "name": "Pending",
+          "doc": "Waiting to start."
         },
         {
           "name": "Active",
@@ -401,19 +402,21 @@
     },
     {
       "name": "create_custom_record",
-      "doc": "Create a custom record from module",
+      "doc": "Create a custom record from module.\n\n# Errors\nNever fails; the `Result` exercises the unwrap rule.",
       "params": [
         {
           "name": "name",
           "type": {
             "kind": "string"
-          }
+          },
+          "doc": "display name stored on the record."
         },
         {
           "name": "value",
           "type": {
             "kind": "u64"
-          }
+          },
+          "doc": "initial counter value; the record starts active regardless."
         }
       ],
       "returns": {
@@ -1073,7 +1076,8 @@
       }
     },
     {
-      "name": "Ping"
+      "name": "Ping",
+      "doc": "Liveness signal with no payload."
     },
     {
       "name": "StructEvent",

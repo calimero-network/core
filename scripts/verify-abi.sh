@@ -77,10 +77,37 @@ if ! jq -e '.types | to_entries | all(.[]; (.value.kind!="map") or (.value.key==
     exit 1
 fi
 
+# Doc comments reach the ABI: a method keeps its prose minus `# Arguments`,
+# which moves onto the parameters; undocumented items carry no doc key.
+if ! jq -e '.methods[] | select(.name=="create_custom_record")
+    | (.doc | startswith("Create a custom record") and (contains("# Arguments") | not))
+      and .params[0].doc == "display name stored on the record."
+      and .params[1].doc == "initial counter value; the record starts active regardless."' \
+    "$OUT" >/dev/null; then
+    echo "ERROR: create_custom_record method/param docs not emitted as expected"
+    exit 1
+fi
+if ! jq -e '.types.CustomRecord.fields[0].doc == "A string field"' "$OUT" >/dev/null; then
+    echo "ERROR: CustomRecord.name field doc missing"
+    exit 1
+fi
+if ! jq -e '.types.Status.variants[0].doc == "Waiting to start."' "$OUT" >/dev/null; then
+    echo "ERROR: Status::Pending variant doc missing"
+    exit 1
+fi
+if ! jq -e '.events[] | select(.name=="Ping").doc == "Liveness signal with no payload."' "$OUT" >/dev/null; then
+    echo "ERROR: Ping event doc missing"
+    exit 1
+fi
+if ! jq -e '.methods[] | select(.name=="noop") | has("doc") | not' "$OUT" >/dev/null; then
+    echo "ERROR: undocumented noop must carry no doc key"
+    exit 1
+fi
+
 # Exercise the identity-downgrade lint (the gate's L2 implementation) so a build
 # break or panic in the diff path fails here too. A state schema diffed against
-# itself must report NO unsafe downgrade (exit 0). The positive case — a real
-# AuthoredMap->UnorderedMap downgrade IS caught — is gated on a real built
+# itself must report NO unsafe downgrade (exit 0). The positive case - a real
+# AuthoredMap->UnorderedMap downgrade IS caught - is gated on a real built
 # pair in .github/workflows/app-migration-e2e.yml (schema-downgrade-guard).
 echo "Exercising identity-downgrade lint (self-diff must be clean)..."
 STATE="/tmp/abi_conformance.state.json"

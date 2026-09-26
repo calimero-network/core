@@ -35,9 +35,14 @@ pub struct NestedRecord {
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum Status {
+    /// Waiting to start.
     Pending,
-    Active { timestamp: u64 },
-    Completed { result: String },
+    Active {
+        timestamp: u64,
+    },
+    Completed {
+        result: String,
+    },
 }
 
 /// Mergeable struct from module (tests CRDT in modules).
