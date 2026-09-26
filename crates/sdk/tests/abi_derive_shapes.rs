@@ -354,3 +354,78 @@ fn abi_name_attribute_renames_the_definition() {
         })
     );
 }
+
+/// A documented record.
+///
+/// Second paragraph.
+#[derive(AbiType)]
+struct Documented {
+    /// The first field.
+    a: u32,
+    b: String,
+}
+
+// Docs land on the type and on each documented field; an undocumented field
+// carries no `doc` key at all.
+#[test]
+fn record_and_field_docs_reach_the_manifest() {
+    assert_eq!(
+        derived::<Documented>(),
+        json!({
+            "Documented": {
+                "kind": "record",
+                "doc": "A documented record.\n\nSecond paragraph.",
+                "fields": [
+                    { "name": "a", "type": { "kind": "u32" }, "doc": "The first field." },
+                    { "name": "b", "type": { "kind": "string" } },
+                ],
+            }
+        })
+    );
+}
+
+/// A documented choice.
+#[derive(AbiType)]
+enum DocumentedChoice {
+    /// Nothing chosen.
+    Empty,
+    Named {
+        /// Who chose.
+        who: String,
+    },
+}
+
+#[test]
+fn variant_docs_and_payload_field_docs_reach_the_manifest() {
+    assert_eq!(
+        derived::<DocumentedChoice>(),
+        json!({
+            "DocumentedChoice": {
+                "kind": "variant",
+                "doc": "A documented choice.",
+                "variants": [
+                    { "name": "Empty", "doc": "Nothing chosen." },
+                    { "name": "Named", "payload": { "$ref": "DocumentedChoice_Named" } },
+                ],
+            },
+            "DocumentedChoice_Named": {
+                "kind": "record",
+                "fields": [{ "name": "who", "type": { "kind": "string" }, "doc": "Who chose." }],
+            },
+        })
+    );
+}
+
+/// An opaque handle.
+#[derive(AbiType)]
+struct Handle(String);
+
+#[test]
+fn alias_doc_reaches_the_manifest() {
+    assert_eq!(
+        derived::<Handle>(),
+        json!({
+            "Handle": { "kind": "alias", "doc": "An opaque handle.", "target": { "kind": "string" } }
+        })
+    );
+}

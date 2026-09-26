@@ -204,6 +204,7 @@ fn a_free_fn_migration_edge_reaches_the_manifest() {
             "types": {
                 "FreeFn": {
                     "kind": "record",
+                    "doc": "An app whose migration is a free `#[app::migrate] fn`: `migration = …` is\nwhat tells the state type about the edge.",
                     "fields": [{
                         "name": "total",
                         "type": {

@@ -166,24 +166,28 @@
     },
     "CustomRecord": {
       "kind": "record",
+      "doc": "A custom struct defined in a separate module\nThis tests that the ABI generator can discover types from module files",
       "fields": [
         {
           "name": "name",
           "type": {
             "kind": "string"
-          }
+          },
+          "doc": "A string field"
         },
         {
           "name": "value",
           "type": {
             "kind": "u64"
-          }
+          },
+          "doc": "A numeric counter"
         },
         {
           "name": "active",
           "type": {
             "kind": "bool"
-          }
+          },
+          "doc": "A flag"
         }
       ]
     },
@@ -246,12 +250,14 @@
     },
     "NestedRecord": {
       "kind": "record",
+      "doc": "Another custom type to test nested references",
       "fields": [
         {
           "name": "record",
           "type": {
             "$ref": "CustomRecord"
-          }
+          },
+          "doc": "Reference to CustomRecord"
         },
         {
           "name": "tags",
@@ -260,7 +266,8 @@
             "items": {
               "kind": "string"
             }
-          }
+          },
+          "doc": "A list of strings"
         }
       ]
     },
@@ -317,6 +324,7 @@
     },
     "Status": {
       "kind": "variant",
+      "doc": "Custom enum in module",
       "variants": [
         {
           "name": "Pending"

@@ -37,6 +37,7 @@ use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
 mod abi_type;
+mod doc;
 mod errors;
 mod event;
 mod forbidden_types;
