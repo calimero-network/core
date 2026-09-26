@@ -789,8 +789,22 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         }
 
         let docs = doc::method_docs(&input.item.attrs);
-        for (param, _) in &docs.params {
-            if !args.iter().any(|arg| arg.ident == param) {
+        for (index, (param, _)) in docs.params.iter().enumerate() {
+            let earlier = docs.params[..index]
+                .iter()
+                .filter(|(other, _)| other == param)
+                .count();
+            // One diagnostic per name: the unknown check on its first entry, the
+            // duplicate check on its second.
+            if earlier == 1 {
+                errors.subsume(SynError::new_spanned(
+                    name,
+                    ParseError::DuplicateArgumentDoc {
+                        name: param.clone(),
+                        method: name_str.clone(),
+                    },
+                ));
+            } else if earlier == 0 && !args.iter().any(|arg| arg.ident == param) {
                 errors.subsume(SynError::new_spanned(
                     name,
                     ParseError::UnknownArgumentDoc {
@@ -1010,6 +1024,35 @@ mod tests {
         assert_eq!(
             message,
             "`# Arguments` names `vaule`, which is not a parameter of `set`"
+        );
+    }
+
+    #[test]
+    fn an_arguments_entry_named_twice_is_an_error() {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let item: ImplItemFn = parse_quote! {
+            /// # Arguments
+            /// * `value` - the value to store.
+            /// * `value` - stored as is.
+            /// * `value` - reported once.
+            pub fn set(&mut self, value: u32) {}
+        };
+        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        }) else {
+            panic!("a parameter named twice in `# Arguments` must be rejected")
+        };
+        let messages: Vec<String> = errors
+            .take()
+            .expect("an error was recorded")
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect();
+        assert_eq!(
+            messages,
+            ["`# Arguments` names `value` more than once in `set`"]
         );
     }
 

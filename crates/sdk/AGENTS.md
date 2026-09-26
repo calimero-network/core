@@ -371,7 +371,7 @@ let executor = app::device_id();
 ### Doc comments reach the ABI
 
 `///` on a logic method, an `AbiType` type, field or variant, or an event variant is emitted as `doc` in the manifest.
-Parameter docs go in the method's `# Arguments` list (`` * `name` - text ``, indented lines continue an entry); any other non-blank line in that section, or an entry naming a non-parameter, is a compile error.
+Parameter docs go in the method's `# Arguments` list (`` * `name` - text ``, indented lines continue an entry); any other non-blank line in that section, an entry naming a non-parameter, or a parameter named twice is a compile error.
 `# Returns` becomes `returns_doc` and leaves `doc`; it is a compile error on a method whose success value is unit (including `app::Result<()>`), so use `# Errors` there.
 `#[app::destructive]` / `#[app::idempotent]` set the method's caller hints (compile errors on read-only methods and `init`).
 See `docs/src/content/docs/build/abi.mdx` ("Doc comments").

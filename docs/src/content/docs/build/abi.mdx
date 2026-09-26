@@ -207,6 +207,12 @@ An entry that names something other than a parameter fails the build:
 `# Arguments` names `edit`, which is not a parameter of `set_blocks`
 ```
 
+So does naming the same parameter twice:
+
+```
+`# Arguments` names `edits` more than once in `set_blocks`
+```
+
 A `# Returns` section becomes the method's `returns_doc` and is removed from its `doc`.
 A method whose success value is unit, including one returning `app::Result<()>`, has nothing to describe, so a `# Returns` on it fails the build; document its failures under `# Errors` instead.
 

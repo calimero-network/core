@@ -89,9 +89,10 @@ fn all() {
     // A union has no single shape to describe in the ABI.
     t.compile_fail("tests/macros/error_abi_type_union.rs");
     t.compile_fail("tests/macros/error_abi_pattern_on_record.rs");
-    // Doc text that would land nowhere in the ABI: stray or malformed `# Arguments` lines,
-    // an entry naming no parameter, or a `# Returns` on a method returning nothing.
+    // Doc text that would land nowhere in the ABI: stray or malformed `# Arguments` lines, an
+    // entry naming no parameter or naming one twice, or a `# Returns` on a unit method.
     t.compile_fail("tests/macros/error_unknown_argument_doc.rs");
+    t.compile_fail("tests/macros/error_duplicate_argument_doc.rs");
     t.compile_fail("tests/macros/error_malformed_argument_doc.rs");
     t.compile_fail("tests/macros/error_argument_doc_prose.rs");
     t.compile_fail("tests/macros/error_returns_doc_on_unit.rs");

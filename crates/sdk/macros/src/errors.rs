@@ -180,6 +180,8 @@ pub enum ParseError<'a> {
     ViewCannotMutate,
     #[error("`# Arguments` names `{name}`, which is not a parameter of `{method}`")]
     UnknownArgumentDoc { name: String, method: String },
+    #[error("`# Arguments` names `{name}` more than once in `{method}`")]
+    DuplicateArgumentDoc { name: String, method: String },
     #[error("`# Arguments` entry must look like: * `name` - description")]
     MalformedArgumentDoc,
     #[error("`# Returns` on `{method}`, which returns nothing")]
