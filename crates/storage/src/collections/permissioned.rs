@@ -99,8 +99,9 @@ impl Op {
     label = "not an `Authorizer`",
     note = "the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` \
             (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via \
-            `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` \
-            as a pure function of `(who, op, caps)` with no I/O."
+            `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE \
+            authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function \
+            of `(who, op, caps)` with no I/O."
 )]
 pub trait Authorizer {
     /// Is `who` permitted to perform `op`, given the resource's current
