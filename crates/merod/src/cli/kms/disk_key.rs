@@ -99,7 +99,7 @@ fn load_or_create_identity(path: &Utf8Path, create: bool) -> EyreResult<Keypair>
                     .wrap_err("could not encode the new disk identity")?,
             );
             write_private_new(path, &encoded)?;
-            info!(identity = %path, "Generated a new disk-unlock identity");
+            info!(%path, "Generated a new disk-unlock identity file");
             Ok(keypair)
         }
         Err(err) => Err(err).wrap_err_with(|| format!("could not read the disk identity {path}")),
