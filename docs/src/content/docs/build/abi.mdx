@@ -191,13 +191,29 @@ Rust does not allow `///` on a parameter, so parameters use rustdoc's `# Argumen
 pub fn set_blocks(&mut self, edits: Vec<Edit>, now: u64) -> app::Result<u32>
 ```
 
-Each entry becomes that parameter's `doc` and the section is removed from the method's own `doc`; `# Errors`, `# Examples`, and every other section stay.
+Each entry becomes that parameter's `doc` and the section is removed from the method's own `doc`; `# Errors`, `# Examples`, and any other section except `# Returns` stay.
 An indented line continues the entry above it.
 An entry that names something other than a parameter fails the build:
 
 ```
 `# Arguments` names `edit`, which is not a parameter of `set_blocks`
 ```
+
+A `# Returns` section becomes the method's `returns_doc` and is removed from its `doc`.
+A method whose success value is unit, including one returning `app::Result<()>`, has nothing to describe, so a `# Returns` on it fails the build; document its failures under `# Errors` instead.
+
+Two attributes tell callers how careful to be, and are recorded on the method:
+
+```rust
+/// Remove a board and every element on it.
+#[app::destructive]
+#[app::idempotent]
+pub fn delete_board(&mut self, id: String) -> app::Result<()>
+```
+
+`#[app::destructive]` means the call deletes or irreversibly overwrites data; `#[app::idempotent]` means repeating it with the same arguments changes nothing further.
+They are hints for clients and agents, not enforced by the node, and a method may carry both.
+Either one on a read-only method or on `init` fails the build.
 
 ## Inspecting the ABI
 

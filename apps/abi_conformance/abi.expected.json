@@ -425,6 +425,23 @@
       "intent": "read_only"
     },
     {
+      "name": "drop_counter",
+      "doc": "Remove a counter; its value is gone for good.",
+      "params": [
+        {
+          "name": "key",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "unit"
+      },
+      "intent": "mutating",
+      "destructive": true
+    },
+    {
       "name": "echo_bool",
       "params": [
         {
@@ -608,6 +625,7 @@
       "returns": {
         "$ref": "Status"
       },
+      "returns_doc": "The `Active` status stamped with `timestamp`.",
       "intent": "read_only"
     },
     {
@@ -1047,7 +1065,8 @@
         "kind": "unit"
       },
       "intent": "mutating",
-      "xcall_callable": true
+      "xcall_callable": true,
+      "idempotent": true
     }
   ],
   "events": [

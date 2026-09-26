@@ -396,6 +396,9 @@ impl AbiState {
     }
 
     /// Get status from module
+    ///
+    /// # Returns
+    /// The `Active` status stamped with `timestamp`.
     pub fn get_status(&self, timestamp: u64) -> app::Result<Status> {
         Ok(Status::Active { timestamp })
     }
@@ -412,7 +415,15 @@ impl AbiState {
 
     /// Cross-context entry point - must surface `xcall_callable: true` in the ABI.
     #[app::xcall]
+    #[app::idempotent]
     pub fn xcall_noop(&mut self) -> app::Result<()> {
+        Ok(())
+    }
+
+    /// Remove a counter; its value is gone for good.
+    #[app::destructive]
+    pub fn drop_counter(&mut self, key: String) -> app::Result<()> {
+        let _ = self.counters.remove(key.as_str())?;
         Ok(())
     }
 

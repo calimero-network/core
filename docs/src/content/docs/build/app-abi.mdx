@@ -57,9 +57,13 @@ Each method records its full call shape:
   lock. Absent on older modules (treated as a write, the fail-safe).
 - `xcall_callable` - `true` for methods marked `#[app::xcall]`, the cross-context
   entry points.
-- `doc` - the method's doc comment without its `# Arguments` section, whose
-  entries become each parameter's `doc`. Types, fields, enum variants and events
-  carry their own `doc` the same way. Absent when the item has no comment.
+- `doc` - the method's doc comment without its `# Arguments` and `# Returns`
+  sections; `# Arguments` entries become each parameter's `doc`. Types, fields,
+  enum variants and events carry their own `doc` the same way. Absent when the
+  item has no comment.
+- `returns_doc` - the method's `# Returns` section, describing its return value.
+- `destructive` / `idempotent` - `true` for methods marked `#[app::destructive]`
+  / `#[app::idempotent]`; hints for callers, absent otherwise.
 
 Argument and return types are either inline scalars (`bool`, `i32`, `u64`,
 `string`, `bytes`, `unit`, …), inline collections (`list`, `map`, `record`,

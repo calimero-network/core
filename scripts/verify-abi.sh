@@ -103,6 +103,20 @@ if ! jq -e '.methods[] | select(.name=="noop") | has("doc") | not' "$OUT" >/dev/
     echo "ERROR: undocumented noop must carry no doc key"
     exit 1
 fi
+if ! jq -e '.methods[] | select(.name=="get_status")
+    | .returns_doc == "The `Active` status stamped with `timestamp`." and (.doc | contains("# Returns") | not)' \
+    "$OUT" >/dev/null; then
+    echo "ERROR: get_status returns_doc missing or still inside doc"
+    exit 1
+fi
+if ! jq -e '.methods[] | select(.name=="drop_counter") | .destructive == true and (has("idempotent") | not)' "$OUT" >/dev/null; then
+    echo "ERROR: drop_counter (#[app::destructive]) missing destructive=true"
+    exit 1
+fi
+if ! jq -e '.methods[] | select(.name=="xcall_noop") | .idempotent == true and (has("destructive") | not)' "$OUT" >/dev/null; then
+    echo "ERROR: xcall_noop (#[app::idempotent]) missing idempotent=true"
+    exit 1
+fi
 
 # Exercise the identity-downgrade lint (the gate's L2 implementation) so a build
 # break or panic in the diff path fails here too. A state schema diffed against
