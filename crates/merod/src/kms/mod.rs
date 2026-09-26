@@ -29,6 +29,7 @@ use url::Url;
 use self::sealed::EphemeralSealKey;
 use crate::kms_policy::KmsAttestationPolicy;
 
+mod event_log;
 mod sealed;
 
 /// Request body for the Phala KMS challenge endpoint.
@@ -152,6 +153,10 @@ struct PhalaKmsAttestResponse {
     /// The KMS's X25519 transport key, which the quote's report data commits to.
     #[serde(default)]
     transport_public_key_b64: Option<String>,
+    /// dstack's event log for the quote, from which the KMS's compose hash is
+    /// read (see [`event_log`]).
+    #[serde(default)]
+    event_log: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +177,7 @@ struct NormalizedKmsAttestationPolicy {
     allowed_rtmr1: Vec<String>,
     allowed_rtmr2: Vec<String>,
     allowed_rtmr3: Vec<String>,
+    allowed_compose_hashes: Vec<String>,
     binding: [u8; 32],
     binding_b64: Option<String>,
 }
@@ -190,6 +196,8 @@ struct ExternalKmsAttestationPolicy {
     allowed_rtmr2: Option<Vec<String>>,
     #[serde(default)]
     allowed_rtmr3: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_compose_hashes: Option<Vec<String>>,
     #[serde(default)]
     binding_b64: Option<String>,
     // Canonical mero-tee policy schema nests allowlists under `policy`.
@@ -214,6 +222,9 @@ struct ExternalKmsAttestationPolicyValues {
     allowed_rtmr2: Option<Vec<String>>,
     #[serde(default)]
     allowed_rtmr3: Option<Vec<String>>,
+    /// Published release policies name the compose hashes this way.
+    #[serde(default, alias = "allowed_compose_hashes")]
+    kms_allowed_event_payload: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -741,8 +752,42 @@ async fn verify_kms_attestation_from_release_policy(
             allow_missing_tcb_status: is_mock,
         },
     )?;
+    if is_mock {
+        warn!("Mock KMS quote measures no compose file; skipping the compose-hash check");
+    } else {
+        enforce_kms_compose_hash(
+            &attest,
+            &verification_result,
+            &policy.allowed_compose_hashes,
+        )?;
+    }
     info!("KMS attestation verified successfully");
     Ok(kms_public)
+}
+
+/// Refuse a KMS that is not running a released compose file.
+///
+/// Node keys are derived from the KMS's dstack app key, so anything that runs
+/// under that app can derive them. Measurements alone do not pin the app: its
+/// owner can upgrade it to another compose file (a debug image with a shell,
+/// say). The compose hash is what does, once the event log it comes from
+/// replays to the verified quote's RTMR3.
+fn enforce_kms_compose_hash(
+    attest: &PhalaKmsAttestResponse,
+    verification_result: &VerificationResult,
+    allowed_compose_hashes: &[String],
+) -> Result<()> {
+    let identity = event_log::verified_app_identity(
+        attest.event_log.as_ref(),
+        &verification_result.quote.body.rtmr3,
+    )?;
+    event_log::enforce_compose_hash_allowlist(&identity, allowed_compose_hashes)?;
+    info!(
+        compose_hash = %identity.compose_hash,
+        app_id = identity.app_id.as_deref().unwrap_or("unmeasured"),
+        "KMS runs a released compose file"
+    );
+    Ok(())
 }
 
 /// How an attestation policy is enforced.
@@ -1231,7 +1276,12 @@ async fn verify_kms_attestation(
     // Without the `mock-attestation` feature there is no mock path: every quote
     // is verified with the real DCAP verifier.
     #[cfg(feature = "mock-attestation")]
-    let verification_result = if is_mock_quote(&quote_bytes) {
+    let is_mock = is_mock_quote(&quote_bytes);
+    #[cfg(not(feature = "mock-attestation"))]
+    let is_mock = false;
+
+    #[cfg(feature = "mock-attestation")]
+    let verification_result = if is_mock {
         if !policy.accept_mock {
             bail!("KMS returned mock attestation quote, but attestation.accept_mock is disabled");
         }
@@ -1273,6 +1323,20 @@ async fn verify_kms_attestation(
             accept_mock: policy.accept_mock,
         },
     )?;
+    if is_mock {
+        debug!("Mock KMS quote measures no compose file; skipping the compose-hash check");
+    } else if policy.allowed_compose_hashes.is_empty() {
+        warn!(
+            "tee.kms.phala.attestation.allowed_compose_hashes is empty: not checking which \
+             compose file the KMS runs, so its app owner could have upgraded it"
+        );
+    } else {
+        enforce_kms_compose_hash(
+            &attest_response,
+            &verification_result,
+            &policy.allowed_compose_hashes,
+        )?;
+    }
     info!("KMS self-attestation verified successfully");
 
     Ok(kms_public)
@@ -1396,6 +1460,7 @@ pub(crate) fn resolve_effective_attestation_config(
                 allowed_rtmr1: None,
                 allowed_rtmr2: None,
                 allowed_rtmr3: None,
+                kms_allowed_event_payload: None,
             });
         let nested_kms = external_policy
             .kms
@@ -1435,6 +1500,11 @@ pub(crate) fn resolve_effective_attestation_config(
             &mut effective_config.allowed_rtmr3,
             external_policy.allowed_rtmr3,
             nested_policy.allowed_rtmr3,
+        );
+        merge_external_allowlist(
+            &mut effective_config.allowed_compose_hashes,
+            external_policy.allowed_compose_hashes,
+            nested_policy.kms_allowed_event_payload,
         );
         if let Some(value) = external_policy
             .binding_b64
@@ -1677,6 +1747,8 @@ fn normalize_kms_attestation_policy(
     let allowed_rtmr1 = parse_measurement_allowlist(&config.allowed_rtmr1, "allowed_rtmr1")?;
     let allowed_rtmr2 = parse_measurement_allowlist(&config.allowed_rtmr2, "allowed_rtmr2")?;
     let allowed_rtmr3 = parse_measurement_allowlist(&config.allowed_rtmr3, "allowed_rtmr3")?;
+    let allowed_compose_hashes =
+        parse_compose_hash_allowlist(&config.allowed_compose_hashes, "allowed_compose_hashes")?;
 
     let binding = if let Some(binding_b64) = config.binding_b64.as_deref() {
         let binding_bytes = base64::engine::general_purpose::STANDARD
@@ -1697,12 +1769,26 @@ fn normalize_kms_attestation_policy(
         allowed_rtmr1,
         allowed_rtmr2,
         allowed_rtmr3,
+        allowed_compose_hashes,
         binding,
         binding_b64: config.binding_b64.clone(),
     })
 }
 
 fn parse_measurement_allowlist(values: &[String], field_name: &str) -> Result<Vec<String>> {
+    parse_hex_allowlist(values, field_name, 48, "TDX measurement")
+}
+
+fn parse_compose_hash_allowlist(values: &[String], field_name: &str) -> Result<Vec<String>> {
+    parse_hex_allowlist(values, field_name, 32, "compose hash")
+}
+
+fn parse_hex_allowlist(
+    values: &[String],
+    field_name: &str,
+    expected_bytes: usize,
+    what: &str,
+) -> Result<Vec<String>> {
     let mut normalized_values = Vec::with_capacity(values.len());
 
     for raw in values {
@@ -1711,9 +1797,9 @@ fn parse_measurement_allowlist(values: &[String], field_name: &str) -> Result<Ve
             continue;
         }
 
-        if normalized.len() != 96 {
+        if normalized.len() != expected_bytes * 2 {
             bail!(
-                "{field_name} contains invalid measurement length (expected 48 bytes for TDX measurement, got {} bytes)",
+                "{field_name} contains invalid {what} length (expected {expected_bytes} bytes, got {} bytes)",
                 normalized.len() / 2
             );
         }
@@ -2285,6 +2371,7 @@ mod tests {
             quote_b64: "A".repeat(MAX_KMS_ATTEST_QUOTE_B64_LEN + 1),
             report_data_hex: "00".repeat(64),
             transport_public_key_b64: None,
+            event_log: None,
         };
         let err = decode_kms_attestation_response(&oversized_quote)
             .expect_err("oversized quoteB64 must fail")
@@ -2295,6 +2382,7 @@ mod tests {
             quote_b64: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
             report_data_hex: "0".repeat(MAX_KMS_REPORT_DATA_HEX_LEN + 1),
             transport_public_key_b64: None,
+            event_log: None,
         };
         let err = decode_kms_attestation_response(&oversized_report)
             .expect_err("oversized reportDataHex must fail")
@@ -2477,7 +2565,8 @@ mod tests {
     "allowed_rtmr0": ["{rtmr0}"],
     "allowed_rtmr1": ["{rtmr1}"],
     "allowed_rtmr2": ["{rtmr2}"],
-    "allowed_rtmr3": ["{rtmr3}"]
+    "allowed_rtmr3": ["{rtmr3}"],
+    "kms_allowed_event_payload": ["{compose}"]
   }},
   "kms": {{
     "default_binding_b64": "{binding}"
@@ -2488,6 +2577,7 @@ mod tests {
             rtmr1 = "22".repeat(48),
             rtmr2 = "33".repeat(48),
             rtmr3 = "44".repeat(48),
+            compose = "55".repeat(32),
             binding = binding_b64
         ));
         let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
@@ -2506,7 +2596,70 @@ mod tests {
         assert_eq!(resolved.allowed_rtmr1, vec!["22".repeat(48)]);
         assert_eq!(resolved.allowed_rtmr2, vec!["33".repeat(48)]);
         assert_eq!(resolved.allowed_rtmr3, vec!["44".repeat(48)]);
+        assert_eq!(resolved.allowed_compose_hashes, vec!["55".repeat(32)]);
         assert_eq!(resolved.binding_b64, Some(binding_b64));
+    }
+
+    #[test]
+    fn test_normalize_kms_attestation_policy_rejects_malformed_compose_hash() {
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.allowed_compose_hashes = vec!["ab".repeat(48)];
+        let err = normalize_kms_attestation_policy(&cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("allowed_compose_hashes"), "{err}");
+
+        cfg.allowed_compose_hashes = vec![format!("0x{}", "AB".repeat(32))];
+        let policy = normalize_kms_attestation_policy(&cfg).unwrap();
+        assert_eq!(policy.allowed_compose_hashes, vec!["ab".repeat(32)]);
+    }
+
+    /// Only a KMS whose replayed RTMR3 event log measures a compose hash the
+    /// published release policy lists is trusted (mero-tee#338).
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn only_a_kms_running_a_released_compose_file_passes() {
+        let policy = crate::kms_policy::parse_policy_json(include_str!(
+            "../../testdata/kms-phala-attestation-policy-2.3.69.json"
+        ))
+        .unwrap();
+        let attest = |event_log| PhalaKmsAttestResponse {
+            quote_b64: String::new(),
+            report_data_hex: String::new(),
+            transport_public_key_b64: None,
+            event_log,
+        };
+        let mut verification_result = make_mock_verification_result();
+
+        let (log, rtmr3) = event_log::tests::event_log_for(&policy.allowed_compose_hashes[0]);
+        verification_result.quote.body.rtmr3 = rtmr3;
+        enforce_kms_compose_hash(
+            &attest(Some(log)),
+            &verification_result,
+            &policy.allowed_compose_hashes,
+        )
+        .expect("the released compose file must pass");
+
+        // The same app upgraded to another compose file: its registers may be
+        // allowlisted, its compose hash is not.
+        let (log, rtmr3) = event_log::tests::event_log_for(&"bb".repeat(32));
+        verification_result.quote.body.rtmr3 = rtmr3;
+        let err = enforce_kms_compose_hash(
+            &attest(Some(log)),
+            &verification_result,
+            &policy.allowed_compose_hashes,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a released one"), "{err}");
+
+        // A KMS that reports no event log cannot show what it runs.
+        let err = enforce_kms_compose_hash(
+            &attest(None),
+            &verification_result,
+            &policy.allowed_compose_hashes,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no eventLog"), "{err}");
     }
 
     #[test]
@@ -2826,6 +2979,7 @@ mod tests {
             allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
+            allowed_compose_hashes: vec!["aa".repeat(32)],
             default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
         }
     }
@@ -2904,6 +3058,7 @@ mod tests {
             allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
+            allowed_compose_hashes: Vec::new(),
             binding: [0x22; 32],
             binding_b64: None,
         }

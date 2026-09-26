@@ -51,6 +51,10 @@ pub struct KmsAttestationPolicy {
     pub allowed_rtmr1: Vec<String>,
     pub allowed_rtmr2: Vec<String>,
     pub allowed_rtmr3: Vec<String>,
+    /// Released KMS compose hashes (hex, lowercase, no 0x prefix), from
+    /// `policy.kms_allowed_event_payload`. The KMS's RTMR3 event log must
+    /// measure one of these (mero-tee#338).
+    pub allowed_compose_hashes: Vec<String>,
     /// Default binding for KMS /attest (base64).
     pub default_binding_b64: String,
 }
@@ -96,6 +100,11 @@ struct PolicySection {
     kms_allowed_rtmr2: Vec<String>,
     #[serde(default)]
     kms_allowed_rtmr3: Vec<String>,
+    /// The compose hashes of the released KMS compose files. The name is the
+    /// release workflow's: the hash is the payload of the RTMR3 `compose-hash`
+    /// event. No older layout carries it.
+    #[serde(default)]
+    kms_allowed_event_payload: Vec<String>,
     #[serde(default)]
     allowed_tcb_statuses: Vec<String>,
     #[serde(default)]
@@ -529,7 +538,7 @@ fn parse_policy_json_for_release(
 }
 
 #[cfg(test)]
-fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
+pub(crate) fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let root: PolicyJson =
         serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
     policy_from_root(root)
@@ -557,6 +566,7 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
         kms_allowed_rtmr1,
         kms_allowed_rtmr2,
         kms_allowed_rtmr3,
+        kms_allowed_event_payload,
         allowed_tcb_statuses,
         allowed_mrtd,
         allowed_rtmr0,
@@ -586,6 +596,7 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
     let allowed_rtmr1 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr1, allowed_rtmr1), 48)?;
     let allowed_rtmr2 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr2, allowed_rtmr2), 48)?;
     let allowed_rtmr3 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr3, allowed_rtmr3), 48)?;
+    let allowed_compose_hashes = parse_hex_array(&kms_allowed_event_payload, 32)?;
 
     if allowed_tcb_statuses.is_empty() {
         bail!(
@@ -606,6 +617,11 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
     }
     if allowed_rtmr3.is_empty() {
         bail!("Policy JSON missing policy.kms_allowed_rtmr3 (or policy.allowed_rtmr3) (at least one RTMR3 value is required)");
+    }
+    // Registers alone do not pin the KMS app: its owner can upgrade it to a new
+    // compose file, and that file decides who can derive node keys.
+    if allowed_compose_hashes.is_empty() {
+        bail!("Policy JSON missing policy.kms_allowed_event_payload (at least one released KMS compose hash is required)");
     }
 
     let default_binding_b64 = root.kms.default_binding_b64.trim().to_string();
@@ -634,6 +650,7 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
         allowed_rtmr1,
         allowed_rtmr2,
         allowed_rtmr3,
+        allowed_compose_hashes,
         default_binding_b64,
     })
 }
@@ -903,7 +920,8 @@ mod tests {
                     "allowed_rtmr0": ["{rtmr0}"],
                     "allowed_rtmr1": ["{rtmr1}"],
                     "allowed_rtmr2": ["{rtmr2}"],
-                    "allowed_rtmr3": ["{rtmr3}"]
+                    "allowed_rtmr3": ["{rtmr3}"],
+                    "kms_allowed_event_payload": ["{compose}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
@@ -914,6 +932,7 @@ mod tests {
             rtmr1 = "ef".repeat(48),
             rtmr2 = "12".repeat(48),
             rtmr3 = "34".repeat(48),
+            compose = "56".repeat(32),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
         );
 
@@ -924,6 +943,7 @@ mod tests {
         assert_eq!(policy.allowed_rtmr1, vec!["ef".repeat(48)]);
         assert_eq!(policy.allowed_rtmr2, vec!["12".repeat(48)]);
         assert_eq!(policy.allowed_rtmr3, vec!["34".repeat(48)]);
+        assert_eq!(policy.allowed_compose_hashes, vec!["56".repeat(32)]);
     }
 
     #[test]
@@ -936,7 +956,8 @@ mod tests {
                     "allowed_rtmr0": ["{rtmr0}"],
                     "allowed_rtmr1": ["{rtmr1}"],
                     "allowed_rtmr2": ["{rtmr2}"],
-                    "allowed_rtmr3": ["{rtmr3}"]
+                    "allowed_rtmr3": ["{rtmr3}"],
+                    "kms_allowed_event_payload": ["{compose}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
@@ -947,6 +968,7 @@ mod tests {
             rtmr1 = "ef".repeat(48),
             rtmr2 = "12".repeat(48),
             rtmr3 = "34".repeat(48),
+            compose = "56".repeat(32),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 31]),
         );
 
@@ -966,7 +988,8 @@ mod tests {
                     "allowed_rtmr0": [],
                     "allowed_rtmr1": ["{rtmr1}"],
                     "allowed_rtmr2": ["{rtmr2}"],
-                    "allowed_rtmr3": ["{rtmr3}"]
+                    "allowed_rtmr3": ["{rtmr3}"],
+                    "kms_allowed_event_payload": ["{compose}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
@@ -976,6 +999,7 @@ mod tests {
             rtmr1 = "ef".repeat(48),
             rtmr2 = "12".repeat(48),
             rtmr3 = "34".repeat(48),
+            compose = "56".repeat(32),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
         );
 
@@ -1047,6 +1071,22 @@ mod tests {
         // The node allowlists describe the nodes a KMS serves, not the KMS.
         assert!(!policy.allowed_mrtd.contains(&node_mrtd.to_owned()));
         assert_eq!(policy.allowed_tcb_statuses, vec!["uptodate", "outofdate"]);
+        let compose = raw["policy"]["kms_allowed_event_payload"][0]
+            .as_str()
+            .unwrap();
+        assert_eq!(policy.allowed_compose_hashes, vec![compose.to_owned()]);
+    }
+
+    #[test]
+    fn a_policy_that_pins_no_compose_hash_is_refused() {
+        let mut raw: serde_json::Value = serde_json::from_str(PUBLISHED_POLICY).unwrap();
+        raw["policy"]["kms_allowed_event_payload"] = serde_json::json!([]);
+        let err = parse_policy_json_for_release(&raw.to_string(), "2.3.69", None)
+            .expect_err("registers alone must not pin the KMS app");
+        assert!(
+            err.to_string().contains("kms_allowed_event_payload"),
+            "{err}"
+        );
     }
 
     #[test]

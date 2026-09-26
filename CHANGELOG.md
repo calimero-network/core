@@ -154,6 +154,21 @@
 
 ### Fixed
 
+- **merod refuses a KMS that is not running a released compose file**
+  (mero-tee#338). Node keys are derived from the KMS's dstack *app* key, so
+  anything running under that app can derive them, and the app owner can upgrade
+  the app to another compose file whose registers may still be allowlisted.
+  merod now replays the `eventLog` that `/attest` already returned, recomputing
+  every RTMR3 event digest from its contents, and trusts the `compose-hash` event
+  only if the replay reproduces the quote's RTMR3. The hash must be in the signed
+  release policy's `kms_allowed_event_payload`, and a policy without one is now
+  refused. Every published policy carries it (the 2.3.69 fixture does). A
+  config-only deployment can set the new
+  `tee.kms.phala.attestation.allowed_compose_hashes` (or the external policy's
+  `kms_allowed_event_payload`); when unset, merod warns and skips the check, so
+  existing configs keep working. **A mero-kms without `eventLog` in `/attest` is
+  refused on the release-policy path.**
+
 - **A snapshot whose applied state does not hash to the claimed boundary now
   fails for retry** instead of being published anyway. The receiver recomputed
   the root from the state that landed, compared it to the boundary the sender
