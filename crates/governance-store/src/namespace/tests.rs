@@ -1701,7 +1701,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     let tee_member_account = enrol_member(&store, &ns_gid, &tee_member);
 
     // Replica bootstrap state: namespace meta + the verifier recorded as an
-    // admin member (so `require_tee_attestation_verifier_membership` passes —
+    // admin member (so `require_tee_attestation_verifier` passes —
     // in the real fleet-join flow this row is seeded from the KeyDelivery
     // signer by `seed_bootstrap_admin_if_absent`), plus the group key the
     // replica received via KeyDelivery so it can decrypt the group ops.
@@ -1736,8 +1736,8 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
@@ -1838,6 +1838,120 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     );
 }
 
+/// Peers never see the quote behind a `MemberJoinedViaTeeAttestation` — only
+/// the measurements its signer claims — so who may sign it decides who gets the
+/// group key. A plain `Member` must not be able to admit an arbitrary key as a
+/// TEE by copying measurements the policy allows; an already-admitted TEE may
+/// vouch for the next one.
+#[test]
+fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+
+    let namespace_id = [0xB4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let member_sk = PrivateKey::random(&mut rng);
+    let tee_sk = PrivateKey::random(&mut rng);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    let member_account = enrol_member(&store, &ns_gid, &member_sk.public_key());
+    let tee_account = enrol_member(&store, &ns_gid, &tee_sk.public_key());
+    let forged_account = enrol_member(&store, &ns_gid, &PublicKey::from([0xF1; 32]));
+    let vouched_account = enrol_member(&store, &ns_gid, &PublicKey::from([0xF2; 32]));
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    let repo = MembershipRepository::new(&store);
+    repo.add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    repo.add_member(&ns_gid, &member_account, GroupMemberRole::Member)
+        .unwrap();
+    repo.add_member(&ns_gid, &tee_account, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    let group_key = [0x5Au8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let sign_group_op = |sk: &PrivateKey, nonce: u64, op: &GroupOp| {
+        SignedNamespaceOp::sign(
+            sk,
+            namespace_id.into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+    let join = |member: AccountId, quote_hash: [u8; 32]| GroupOp::MemberJoinedViaTeeAttestation {
+        member,
+        quote_hash,
+        mrtd: "m1".to_owned(),
+        rtmr0: "r0".to_owned(),
+        rtmr1: "r1".to_owned(),
+        rtmr2: "r2".to_owned(),
+        rtmr3: "r3".to_owned(),
+        tcb_status: "UpToDate".to_owned(),
+        role: GroupMemberRole::ReadOnlyTee,
+    };
+
+    let policy = GroupOp::TeeAdmissionPolicySet {
+        allowed_mrtd: vec!["m1".to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec!["r1".to_owned()],
+        allowed_rtmr2: vec!["r2".to_owned()],
+        allowed_rtmr3: vec!["r3".to_owned()],
+        allowed_tcb_statuses: vec![],
+        accept_mock: false,
+    };
+    gov.apply_signed_op(&sign_group_op(&admin_sk, 1, &policy))
+        .expect("the admin sets the TEE admission policy");
+
+    // A plain member forges an admission with policy-matching measurements.
+    let _refused = gov.apply_signed_op(&sign_group_op(
+        &member_sk,
+        1,
+        &join(forged_account, [0x01; 32]),
+    ));
+    assert_eq!(
+        repo.role_of(&ns_gid, &forged_account).unwrap(),
+        None,
+        "a plain member must not be able to admit a TEE"
+    );
+    assert!(
+        !is_tee_admitted_identity(&store, &ns_gid, &forged_account).unwrap(),
+        "a refused admission must leave no admission record"
+    );
+
+    // An already-admitted TEE vouches for the next one.
+    gov.apply_signed_op(&sign_group_op(
+        &tee_sk,
+        1,
+        &join(vouched_account, [0x02; 32]),
+    ))
+    .expect("an admitted TEE may vouch for another TEE");
+    assert_eq!(
+        repo.role_of(&ns_gid, &vouched_account).unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "a TEE vouched for by an admitted TEE is admitted"
+    );
+}
+
 #[test]
 fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // Regression: a TEE replica that bootstraps the namespace ROOT via the
@@ -1930,8 +2044,8 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
@@ -8428,8 +8542,8 @@ fn a_tee_admission_binds_the_replicas_device() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             // RTMR3 is mandatory: it is the only measurement that identifies the
             // image, since MRTD is shared by every profile of a release. This
             // fixture is about device binding, so it names the value its own
@@ -8472,8 +8586,8 @@ fn a_tee_admission_binds_the_replicas_device() {
                 quote_hash: [0x11; 32],
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
-                rtmr1: String::new(),
-                rtmr2: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
                 rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
@@ -8540,8 +8654,8 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             // RTMR3 is mandatory: it is the only measurement that identifies the
             // image, since MRTD is shared by every profile of a release. This
             // fixture is about device binding, so it names the value its own
@@ -8584,8 +8698,8 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
                 quote_hash: [0x11; 32],
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
-                rtmr1: String::new(),
-                rtmr2: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
                 rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,

@@ -563,12 +563,14 @@ fn provision_tee_owner_with_sk(
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
-            // RTMR3 is mandatory: it is the only measurement that identifies the
-            // image, since MRTD is shared by every profile of a release.
-            // `create_mock_quote` reports the same all-zero 48 bytes for every
-            // register, so the policy names that value here too.
+            // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
+            // measurement that identifies the image, since MRTD is shared by
+            // every profile of a release; RTMR1/RTMR2 pin the kernel and
+            // initrd that ran before RTMR3 was extended. `create_mock_quote`
+            // reports the same all-zero 48 bytes for every register, so the
+            // policy names that value for each.
+            allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+            allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
             allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,

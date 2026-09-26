@@ -112,11 +112,13 @@ pub enum MembershipError {
     #[error("identity {identity} exited group {group_id} and cannot re-enter by inheritance; they must be re-invited or re-added")]
     ReentryBlocked { group_id: String, identity: String },
 
-    /// TEE attestation submitted by a non-member. The verifier must
-    /// itself be a member of the group whose admission policy it
-    /// validates.
-    #[error("TEE attestation verifier must be a group member")]
-    TeeVerifierNotMember,
+    /// TEE attestation vouched for by someone who may not vouch for one. The
+    /// verifier must be an admin of the group whose admission policy it
+    /// validates, or a TEE node already admitted to it — plain membership is
+    /// not enough, because peers trust the verifier's claimed measurements
+    /// rather than re-checking the quote.
+    #[error("TEE attestation verifier must be a group admin or an admitted TEE node")]
+    TeeVerifierNotAuthorized,
 
     /// `MemberJoinedViaTeeAttestation` was applied against a group
     /// that has no `TeeAdmissionPolicySet` op on record. Without a

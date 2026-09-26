@@ -3322,6 +3322,29 @@ impl Validate for SetTeeAdmissionPolicyApiRequest {
                     .to_owned(),
             });
         }
+        // RTMR1 and RTMR2 are required for RTMR3's sake: `calimero-init`
+        // extends RTMR3 from public inputs, so it only names the image when the
+        // kernel (RTMR1) and the command line + initrd (RTMR2) that ran before
+        // it are pinned too. RTMR0 varies with machine shape and stays optional.
+        for (field, allowlist, what) in [
+            ("allowed_rtmr1", &self.allowed_rtmr1, "RTMR1 (the kernel)"),
+            (
+                "allowed_rtmr2",
+                &self.allowed_rtmr2,
+                "RTMR2 (the kernel command line and initrd)",
+            ),
+        ] {
+            if allowlist.is_empty() {
+                errors.push(ValidationError::InvalidFormat {
+                    field,
+                    reason: format!(
+                        "at least one {what} must be specified: RTMR3 is extended from public \
+                         inputs, so without it a custom kernel or initrd can reproduce a locked \
+                         image's RTMR3. Take the value from the release's published-mrtds.json"
+                    ),
+                });
+            }
+        }
         errors
     }
 }
@@ -3395,8 +3418,8 @@ mod tests {
         let req = SetTeeAdmissionPolicyApiRequest {
             allowed_mrtd: vec![],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["b1".to_owned()],
+            allowed_rtmr2: vec!["b2".to_owned()],
             allowed_rtmr3: vec!["74".to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,
@@ -3412,19 +3435,55 @@ mod tests {
         );
     }
 
-    /// And a fully-named policy still validates, mock or not.
+    /// And a fully-named policy still validates, mock or not. RTMR0 may stay
+    /// empty: it varies with machine shape, not image.
     #[test]
-    fn a_policy_naming_both_measurements_is_accepted() {
+    fn a_policy_naming_every_required_measurement_is_accepted() {
         let req = SetTeeAdmissionPolicyApiRequest {
             allowed_mrtd: vec!["c1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["b1".to_owned()],
+            allowed_rtmr2: vec!["b2".to_owned()],
             allowed_rtmr3: vec!["74".to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,
         };
         assert!(req.validate().is_empty());
+    }
+
+    /// RTMR3 is extended from public inputs, so a policy that pins it without
+    /// the kernel (RTMR1) and initrd (RTMR2) can be satisfied by a custom
+    /// kernel replaying a locked image's extension. Refused at write time, as
+    /// a `400`, so the operator learns now rather than at the first admission.
+    #[test]
+    fn a_policy_without_rtmr1_or_rtmr2_is_refused() {
+        for (empty, field) in [(1, "allowed_rtmr1"), (2, "allowed_rtmr2")] {
+            let req = SetTeeAdmissionPolicyApiRequest {
+                allowed_mrtd: vec!["c1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: if empty == 1 {
+                    vec![]
+                } else {
+                    vec!["b1".to_owned()]
+                },
+                allowed_rtmr2: if empty == 2 {
+                    vec![]
+                } else {
+                    vec!["b2".to_owned()]
+                },
+                allowed_rtmr3: vec!["74".to_owned()],
+                allowed_tcb_statuses: vec![],
+                accept_mock: false,
+            };
+            let errors = req.validate();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    ValidationError::InvalidFormat { field: f, .. } if *f == field
+                )),
+                "an empty {field} must be refused at write time; got {errors:?}"
+            );
+        }
     }
 
     /// The two shapes the route accepts. An empty `only` is refused by the

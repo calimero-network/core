@@ -62,8 +62,8 @@ pub(crate) fn apply(
     // This is the `cert.sign_pk == member` half of the join predicate. The other
     // half — that the OP was signed by that device — is deliberately absent
     // here and cannot be asked: a replica does not admit itself, so `op.signer`
-    // is the verifying member. `require_tee_attestation_verifier_membership`
-    // below is what stands in its place.
+    // is the verifying member. `require_tee_attestation_verifier` below is what
+    // stands in its place.
     if !calimero_op_adapter::join_credential_certifies(member, account) {
         bail!(MembershipError::TeeCredentialNotTheAttestedKey {
             member: format!("{member}"),
@@ -72,13 +72,13 @@ pub(crate) fn apply(
     let member_account = account.statement.account;
 
     let policy_gate = MembershipPolicy::new(store, group_id);
-    // The verifier vouched for the quote, and vouching is a membership act, so
-    // its key resolves to the account membership is recorded against. A key
+    // The verifier vouched for the quote, so its key resolves to the account
+    // whose authority is checked: an admin, or an already-admitted TEE. A key
     // bound to no account here vouches for nobody.
     let Some(verifier) = crate::member_account_in_namespace(store, &group_id, &signer)? else {
-        bail!(MembershipError::TeeVerifierNotMember);
+        bail!(MembershipError::TeeVerifierNotAuthorized);
     };
-    policy_gate.require_tee_attestation_verifier_membership(&verifier)?;
+    policy_gate.require_tee_attestation_verifier(&verifier)?;
     let policy = policy_gate.read_required_tee_admission_policy()?;
     policy_gate.validate_tee_attestation_allowlists(&policy, claims)?;
 
