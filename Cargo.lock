@@ -1152,6 +1152,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-storage",
  "calimero-store",
+ "calimero-tee-release",
  "calimero-utils-actix",
  "calimero-wasm-abi",
  "either",
@@ -1629,6 +1630,7 @@ dependencies = [
  "calimero-server-primitives",
  "calimero-store",
  "calimero-tee-attestation",
+ "calimero-tee-release",
  "calimero-utils-actix",
  "calimero-wasm-abi",
  "chrono",
@@ -1787,6 +1789,24 @@ dependencies = [
  "tdx_workload_attestation",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "calimero-tee-release"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "eyre",
+ "hex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sigstore",
+ "tokio",
+ "tracing",
+ "x509-cert 0.3.0",
 ]
 
 [[package]]
@@ -6109,6 +6129,7 @@ dependencies = [
  "calimero-store-encryption",
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
+ "calimero-tee-release",
  "calimero-utils-actix",
  "calimero-utils-fs",
  "camino",
@@ -6129,7 +6150,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "sigstore",
  "subtle",
  "tempfile",
  "tokio",
@@ -6137,7 +6157,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "x509-cert 0.3.0",
  "zeroize",
 ]
 

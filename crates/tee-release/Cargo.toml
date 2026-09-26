@@ -1,0 +1,26 @@
+[package]
+name = "calimero-tee-release"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Fetch and Sigstore-verify signed mero-tee release assets"
+publish = true
+
+[dependencies]
+base64.workspace = true
+eyre.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+sigstore = { version = "0.14.0", default-features = false, features = ["verify", "cosign", "sigstore-trust-root", "rustls-tls"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+x509-cert = "0.3.0"
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt"] }

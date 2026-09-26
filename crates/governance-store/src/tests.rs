@@ -3726,6 +3726,99 @@ fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &
     append_op_log_entry(store, group, seq, &borsh::to_vec(&op).unwrap()).unwrap();
 }
 
+fn append_tee_release_policy_op(store: &Store, group: &ContextGroupId, seq: u64, profile: &str) {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let op = SignedGroupOp::sign(
+        &PrivateKey::random(&mut UnwrapErr(SysRng)),
+        group.to_bytes().into(),
+        vec![],
+        seq,
+        GroupOp::TeeReleaseAdmissionPolicySet {
+            allowed_profiles: vec![profile.to_owned()],
+            min_release_version: Some("2.3.72".to_owned()),
+            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(store, group, seq, &borsh::to_vec(&op).unwrap()).unwrap();
+}
+
+/// Both policy forms are one policy: whichever was set last is the one read,
+/// and a signed-release policy carries no measurement lists.
+#[test]
+fn tee_policy_newest_form_wins_between_lists_and_signed_release() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD4; 32]);
+
+    append_tee_policy_op(&store, &root, 1, "mrtd-listed");
+    append_tee_release_policy_op(&store, &root, 2, "locked-read-only");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+    else {
+        panic!("a policy is set")
+    };
+    let trust = policy
+        .release_trust
+        .expect("the newer op is the signed-release form");
+    assert_eq!(trust.allowed_profiles, vec!["locked-read-only".to_owned()]);
+    assert_eq!(trust.min_release_version.as_deref(), Some("2.3.72"));
+    assert!(
+        policy.allowed_mrtd.is_empty(),
+        "the older list policy must not leak into the signed-release one"
+    );
+    assert_eq!(policy.allowed_tcb_statuses, vec!["UpToDate".to_owned()]);
+
+    append_tee_policy_op(&store, &root, 3, "mrtd-again");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+    else {
+        panic!("a policy is set")
+    };
+    assert!(
+        policy.release_trust.is_none(),
+        "a later list policy replaces it"
+    );
+    assert_eq!(policy.allowed_mrtd, vec!["mrtd-again".to_owned()]);
+}
+
+/// A peer replaying an admission under a signed-release policy has neither the
+/// quote nor the release file the admitter checked, so it trusts the voucher
+/// for the measurements -- but the TCB rule needs only the op, and still holds.
+#[test]
+fn replica_under_signed_release_policy_checks_tcb_not_measurements() {
+    use crate::membership::TeeAttestationClaims;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xD5; 32]);
+    append_tee_release_policy_op(&store, &root, 1, "locked-read-only");
+    let TeeAdmissionPolicyRead::Set(policy) = read_tee_admission_policy(&store, &root).unwrap()
+    else {
+        panic!("a policy is set")
+    };
+    let claims = |tcb_status| TeeAttestationClaims {
+        mrtd: "any",
+        rtmr0: "any",
+        rtmr1: "any",
+        rtmr2: "any",
+        rtmr3: "any",
+        tcb_status,
+    };
+    let membership = MembershipPolicy::new(&store, root);
+
+    membership
+        .validate_tee_attestation_allowlists_record(&policy, &claims("UpToDate"))
+        .expect("measurements are the voucher's to check under a signed-release policy");
+    assert!(
+        membership
+            .validate_tee_attestation_allowlists_record(&policy, &claims("OutOfDate"))
+            .is_err(),
+        "a TCB status the policy does not allow is refused on replay"
+    );
+}
+
 #[test]
 fn tee_policy_lookup_from_subgroup_returns_root() {
     // Policy set on the root — a lookup via a nested subgroup resolves up

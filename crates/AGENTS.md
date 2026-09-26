@@ -30,6 +30,7 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | `calimero-op-adapter` | `op-adapter/src/lib.rs` | Bridges per-plane ops onto the unified causal log |
 | `calimero-governance-store` | `governance-store/src/lib.rs` | Local group-governance apply pipeline & broadcast |
 | `calimero-tee-attestation` | `tee-attestation/src/lib.rs` | TEE (TDX) attestation generation & verification |
+| `calimero-tee-release` | `tee-release/src/lib.rs` | Fetch + Sigstore-verify signed mero-tee release assets |
 | `calimero-wasm-abi` | `wasm-abi/src/lib.rs` | WASM ABI schema: `AbiType`, validate, embed |
 
 ### Support Crates
@@ -199,6 +200,7 @@ Foundations & support:
 - [sys/AGENTS.md](sys/AGENTS.md) - WASM host ABI types
 - [wasm-abi/AGENTS.md](wasm-abi/AGENTS.md) - WASM ABI schema emit/validate/embed
 - [tee-attestation/AGENTS.md](tee-attestation/AGENTS.md) - TEE (TDX) attestation
+- [tee-release/AGENTS.md](tee-release/AGENTS.md) - Signed mero-tee release assets
 - [prelude/AGENTS.md](prelude/AGENTS.md) - Shared root-storage-key prelude
 - [storage-macros/AGENTS.md](storage-macros/AGENTS.md) - Storage derive macros
 - [build-utils/AGENTS.md](build-utils/AGENTS.md) - build.rs version/git helpers

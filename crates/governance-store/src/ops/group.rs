@@ -40,6 +40,7 @@ mod target_application_set;
 mod tee_admission_policy_set;
 mod tee_authoring_policy_set;
 mod tee_authority_evidence;
+mod tee_release_admission_policy_set;
 mod transfer_ownership;
 
 pub(crate) use context::GroupApplyCtx;
@@ -176,6 +177,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             capability,
         } => context_capability_revoked::apply(ctx, context_id, member, capability)?,
         GroupOp::TeeAdmissionPolicySet { .. } => tee_admission_policy_set::apply(ctx)?,
+        GroupOp::TeeReleaseAdmissionPolicySet {
+            allowed_profiles, ..
+        } => tee_release_admission_policy_set::apply(ctx, allowed_profiles)?,
         GroupOp::TeeAuthoringPolicySet { .. } => tee_authoring_policy_set::apply(ctx)?,
         GroupOp::TeeAuthorityEvidence {
             member,
