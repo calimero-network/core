@@ -381,6 +381,7 @@ Policy for verifying KMS self-attestation before requesting storage keys.
 | `allowed_rtmr2` | array of string (hex) | `[]` | Allowed KMS RTMR2 values. Required when `enabled` and not `accept_mock`. |
 | `allowed_rtmr3` | array of string (hex) | `[]` | Allowed KMS RTMR3 values. Required when `enabled` and not `accept_mock`. |
 | `allowed_compose_hashes` | array of string (hex) | `[]` | Released KMS compose hashes (32-byte SHA-256, the payload of the KMS's RTMR3 `compose-hash` event). When set, merod replays the KMS's RTMR3 event log against its quote and refuses any other compose file. Unset skips the check with a warning; the signed release policy always sets it. |
+| `backend` | `"dstack"` \| `"tdx"` | `"dstack"` | What kind of KMS this is. `tdx` is mero-kms as a GCP TDX cluster replica with no dstack: its RTMR3 is its image's boot measurement, so the five register allowlists pin it and `allowed_compose_hashes` must be empty. An external policy file sets it with `kms.backend`. |
 | `binding_b64` | string (base64) | unset | Optional 32-byte binding value for the `/attest` call. Defaults to the domain-separator binding. |
 | `policy_json_path` | path | unset | Path to an externally-generated attestation policy JSON (for startup scripts that fetch/verify signed policy artifacts). |
 

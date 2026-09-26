@@ -4,6 +4,16 @@
 
 ### Added
 
+- **merod verifies a KMS that runs as a TDX cluster, with no dstack**
+  (`tee.kms.phala.attestation.backend = "tdx"`, or `kms.backend = "tdx"` in the
+  release or external policy). mero-kms can now run as a locked GCP TDX image
+  whose keys derive from a root held only in its replicas' memory (mero-tee
+  `docs/design/gcp-tdx-kms.md`). Such a KMS has no dstack event log; its RTMR3 is
+  its image's own boot measurement, so merod pins it by all five registers and
+  skips the compose-hash check. A `tdx` policy that names a compose hash is
+  refused, and a policy without `kms.backend` is still a dstack policy that must
+  name one.
+
 - **`AuthoredSortedMap<K, V>`** — an `AuthoredMap` with an ordered view, so a
   reader can `prefix` / `range` / `page` / `keys` instead of walking the whole
   collection. Same per-entry `StorageType::User { owner }` stamp, same

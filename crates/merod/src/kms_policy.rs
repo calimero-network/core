@@ -7,6 +7,7 @@
 //! (requires policy in config.toml via apply-merod-kms-phala-attestation-config.sh).
 
 use base64::Engine;
+use calimero_config::KmsBackend;
 use eyre::{bail, Result as EyreResult};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -55,6 +56,8 @@ pub struct KmsAttestationPolicy {
     /// `policy.kms_allowed_event_payload`. The KMS's RTMR3 event log must
     /// measure one of these (mero-tee#338).
     pub allowed_compose_hashes: Vec<String>,
+    /// What kind of KMS the policy pins, from `kms.backend`.
+    pub backend: KmsBackend,
     /// Default binding for KMS /attest (base64).
     pub default_binding_b64: String,
 }
@@ -123,6 +126,9 @@ struct PolicySection {
 struct KmsSection {
     #[serde(default)]
     default_binding_b64: String,
+    /// `dstack` (the default, for files that predate the field) or `tdx`.
+    #[serde(default)]
+    backend: KmsBackend,
 }
 
 /// Read release version from environment with explicit precedence:
@@ -618,10 +624,19 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
     if allowed_rtmr3.is_empty() {
         bail!("Policy JSON missing policy.kms_allowed_rtmr3 (or policy.allowed_rtmr3) (at least one RTMR3 value is required)");
     }
-    // Registers alone do not pin the KMS app: its owner can upgrade it to a new
-    // compose file, and that file decides who can derive node keys.
-    if allowed_compose_hashes.is_empty() {
-        bail!("Policy JSON missing policy.kms_allowed_event_payload (at least one released KMS compose hash is required)");
+    let backend = root.kms.backend;
+    match backend {
+        // Registers alone do not pin a dstack KMS app: its owner can upgrade it
+        // to a new compose file, and that file decides who can derive node keys.
+        KmsBackend::Dstack if allowed_compose_hashes.is_empty() => {
+            bail!("Policy JSON missing policy.kms_allowed_event_payload (at least one released KMS compose hash is required)");
+        }
+        // A TDX replica's RTMR3 is its image's boot measurement, so the five
+        // registers pin its code; there is no compose file to name.
+        KmsBackend::Tdx if !allowed_compose_hashes.is_empty() => {
+            bail!("Policy JSON for a tdx KMS carries policy.kms_allowed_event_payload; a tdx KMS is pinned by its registers");
+        }
+        _ => {}
     }
 
     let default_binding_b64 = root.kms.default_binding_b64.trim().to_string();
@@ -651,6 +666,7 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
         allowed_rtmr2,
         allowed_rtmr3,
         allowed_compose_hashes,
+        backend,
         default_binding_b64,
     })
 }
@@ -944,6 +960,64 @@ mod tests {
         assert_eq!(policy.allowed_rtmr2, vec!["12".repeat(48)]);
         assert_eq!(policy.allowed_rtmr3, vec!["34".repeat(48)]);
         assert_eq!(policy.allowed_compose_hashes, vec!["56".repeat(32)]);
+    }
+
+    /// A policy built from the same registers, with `kms` extra fields and an
+    /// optional compose hash.
+    fn policy_with(kms_extra: &str, compose: Option<&str>) -> String {
+        let compose = compose
+            .map(|hash| format!(r#", "kms_allowed_event_payload": ["{hash}"]"#))
+            .unwrap_or_default();
+        format!(
+            r#"{{
+                "policy": {{
+                    "kms_allowed_tcb_statuses": ["UpToDate"],
+                    "kms_allowed_mrtd": ["{mrtd}"],
+                    "kms_allowed_rtmr0": ["{rtmr0}"],
+                    "kms_allowed_rtmr1": ["{rtmr1}"],
+                    "kms_allowed_rtmr2": ["{rtmr2}"],
+                    "kms_allowed_rtmr3": ["{rtmr3}"]{compose}
+                }},
+                "kms": {{
+                    "default_binding_b64": "{binding}"{kms_extra}
+                }}
+            }}"#,
+            mrtd = "ab".repeat(48),
+            rtmr0 = "cd".repeat(48),
+            rtmr1 = "ef".repeat(48),
+            rtmr2 = "12".repeat(48),
+            rtmr3 = "34".repeat(48),
+            binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+        )
+    }
+
+    #[test]
+    fn a_tdx_kms_policy_is_pinned_by_registers_alone() {
+        let policy = parse_policy_json(&policy_with(r#", "backend": "tdx""#, None))
+            .expect("a tdx policy needs no compose hash");
+        assert_eq!(policy.backend, KmsBackend::Tdx);
+        assert!(policy.allowed_compose_hashes.is_empty());
+        assert_eq!(policy.allowed_rtmr3, vec!["34".repeat(48)]);
+    }
+
+    #[test]
+    fn a_tdx_kms_policy_that_names_a_compose_hash_is_refused() {
+        let hash = "56".repeat(32);
+        let err = parse_policy_json(&policy_with(r#", "backend": "tdx""#, Some(&hash)))
+            .expect_err("a tdx KMS has no compose file")
+            .to_string();
+        assert!(err.contains("tdx"), "{err}");
+    }
+
+    /// Files published before `kms.backend` existed are dstack policies, and
+    /// still have to name a compose hash.
+    #[test]
+    fn a_policy_without_a_backend_is_a_dstack_policy() {
+        let hash = "56".repeat(32);
+        let policy = parse_policy_json(&policy_with("", Some(&hash))).expect("dstack policy");
+        assert_eq!(policy.backend, KmsBackend::Dstack);
+        assert!(parse_policy_json(&policy_with("", None)).is_err());
+        assert!(parse_policy_json(&policy_with(r#", "backend": "sgx""#, Some(&hash))).is_err());
     }
 
     #[test]

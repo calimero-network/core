@@ -183,6 +183,21 @@ pub struct KmsTlsConfig {
     pub client_key_path: Option<Utf8PathBuf>,
 }
 
+/// What kind of KMS merod verifies, which decides what pins the code it runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum KmsBackend {
+    /// mero-kms under Phala's dstack. Its RTMR3 varies per deployment, so the
+    /// code it runs is pinned by the compose hash its event log measures.
+    #[default]
+    Dstack,
+    /// mero-kms as a TDX cluster replica with no dstack. Its image's boot
+    /// measurement is in RTMR3, so the five registers alone pin its code, and
+    /// no compose hash applies.
+    Tdx,
+}
+
 /// Configuration for verifying KMS self-attestation (`POST /attest`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -232,6 +247,10 @@ pub struct KmsAttestationConfig {
     /// here for existing configs; the signed release policy always pins it.
     #[serde(default)]
     pub allowed_compose_hashes: Vec<String>,
+    /// What kind of KMS this is. `tdx` takes no compose hashes: its registers,
+    /// RTMR3 included, pin its code.
+    #[serde(default)]
+    pub backend: KmsBackend,
     /// Optional base64-encoded 32-byte binding value for `/attest`.
     ///
     /// If unset, merod uses the default domain separator binding.
@@ -258,6 +277,7 @@ impl Default for KmsAttestationConfig {
             allowed_rtmr2: Vec::new(),
             allowed_rtmr3: Vec::new(),
             allowed_compose_hashes: Vec::new(),
+            backend: KmsBackend::Dstack,
             binding_b64: None,
             policy_json_path: None,
         }
@@ -301,6 +321,13 @@ impl KmsAttestationConfig {
             bail!(
                 "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
                  but {field_name} is empty."
+            );
+        }
+
+        if self.backend == KmsBackend::Tdx && !self.allowed_compose_hashes.is_empty() {
+            bail!(
+                "tee.kms.phala.attestation.backend is \"tdx\", which pins the KMS by its \
+                 registers; allowed_compose_hashes only applies to a dstack KMS."
             );
         }
 
@@ -714,7 +741,9 @@ pub mod serde_identity {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_attestation_measurement, write_atomic, KmsAttestationConfig};
+    use super::{
+        normalize_attestation_measurement, write_atomic, KmsAttestationConfig, KmsBackend,
+    };
 
     /// An existing node whose `config.toml` has no `[discovery]` section must
     /// keep multicast after an upgrade. `discovery` is `#[serde(default)]`, so
@@ -753,6 +782,26 @@ mod tests {
             allowed_rtmr3: vec!["ab".repeat(48)],
             ..KmsAttestationConfig::default()
         }
+    }
+
+    #[test]
+    fn a_tdx_kms_takes_no_compose_hashes() {
+        let mut cfg = make_strict_production_config();
+        cfg.backend = KmsBackend::Tdx;
+        cfg.validate_enabled_policy()
+            .expect("registers alone pin a tdx KMS");
+        cfg.allowed_compose_hashes = vec!["cd".repeat(32)];
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("backend"), "{err}");
+    }
+
+    #[test]
+    fn the_backend_reads_from_toml_and_defaults_to_dstack() {
+        let dstack: KmsAttestationConfig = toml::from_str("enabled = true").unwrap();
+        assert_eq!(dstack.backend, KmsBackend::Dstack);
+        let tdx: KmsAttestationConfig = toml::from_str("backend = \"tdx\"").unwrap();
+        assert_eq!(tdx.backend, KmsBackend::Tdx);
+        assert!(toml::from_str::<KmsAttestationConfig>("backend = \"sgx\"").is_err());
     }
 
     #[test]

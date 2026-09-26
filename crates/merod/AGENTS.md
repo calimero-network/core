@@ -128,6 +128,14 @@ without one is refused. The config-policy path checks
 `tee.kms.phala.attestation.allowed_compose_hashes` when it is set, and warns when
 it is not. Mock quotes carry no event log and skip the check.
 
+**A TDX cluster KMS is pinned by its registers instead** (`KmsBackend::Tdx`,
+`kms.backend = "tdx"` in the release policy, `tee.kms.phala.attestation.backend`
+in config). mero-kms with `MERO_KMS_BACKEND=tdx` runs as a locked GCP TDX image
+with no dstack; its RTMR3 is the image's own boot measurement, fixed per image,
+so the five registers pin its code and there is no compose file. A `tdx` policy
+must not name a compose hash (refused), and a policy without `kms.backend` is a
+dstack policy, so files published before the field existed keep their check.
+
 **`merod kms disk-key`** fetches the key that unlocks the image's LUKS2 data disk,
 before that disk (and so this node's home) exists. It needs no `--node`. It uses a
 dedicated identity (`--identity`, created with `--create-identity`), not the

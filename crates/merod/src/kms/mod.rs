@@ -9,7 +9,7 @@
 
 use base64::Engine;
 use calimero_config::{
-    normalize_attestation_measurement, KmsAttestationConfig, KmsConfig, PhalaKmsConfig,
+    normalize_attestation_measurement, KmsAttestationConfig, KmsBackend, KmsConfig, PhalaKmsConfig,
 };
 use calimero_tee_attestation::{generate_attestation, verify_attestation, VerificationResult};
 #[cfg(feature = "mock-attestation")]
@@ -178,6 +178,7 @@ struct NormalizedKmsAttestationPolicy {
     allowed_rtmr2: Vec<String>,
     allowed_rtmr3: Vec<String>,
     allowed_compose_hashes: Vec<String>,
+    backend: KmsBackend,
     binding: [u8; 32],
     binding_b64: Option<String>,
 }
@@ -231,6 +232,8 @@ struct ExternalKmsAttestationPolicyValues {
 struct ExternalKmsAttestationPolicyKms {
     #[serde(default)]
     default_binding_b64: Option<String>,
+    #[serde(default)]
+    backend: Option<KmsBackend>,
 }
 
 const EXTERNAL_POLICY_ALLOWED_DIRS: &[&str] = &["/etc/calimero", "/run/calimero"];
@@ -752,14 +755,16 @@ async fn verify_kms_attestation_from_release_policy(
             allow_missing_tcb_status: is_mock,
         },
     )?;
-    if is_mock {
-        warn!("Mock KMS quote measures no compose file; skipping the compose-hash check");
-    } else {
-        enforce_kms_compose_hash(
+    match policy.backend {
+        KmsBackend::Tdx => info!("KMS is a TDX cluster replica, pinned by its five registers"),
+        _ if is_mock => {
+            warn!("Mock KMS quote measures no compose file; skipping the compose-hash check");
+        }
+        _ => enforce_kms_compose_hash(
             &attest,
             &verification_result,
             &policy.allowed_compose_hashes,
-        )?;
+        )?,
     }
     info!("KMS attestation verified successfully");
     Ok(kms_public)
@@ -1323,7 +1328,9 @@ async fn verify_kms_attestation(
             accept_mock: policy.accept_mock,
         },
     )?;
-    if is_mock {
+    if policy.backend == KmsBackend::Tdx {
+        info!("KMS is a TDX cluster replica, pinned by its five registers");
+    } else if is_mock {
         debug!("Mock KMS quote measures no compose file; skipping the compose-hash check");
     } else if policy.allowed_compose_hashes.is_empty() {
         warn!(
@@ -1466,6 +1473,7 @@ pub(crate) fn resolve_effective_attestation_config(
             .kms
             .unwrap_or(ExternalKmsAttestationPolicyKms {
                 default_binding_b64: None,
+                backend: None,
             });
 
         // Explicit `Some([])` from external policy intentionally clears the
@@ -1511,6 +1519,9 @@ pub(crate) fn resolve_effective_attestation_config(
             .or(nested_kms.default_binding_b64)
         {
             effective_config.binding_b64 = Some(value);
+        }
+        if let Some(backend) = nested_kms.backend {
+            effective_config.backend = backend;
         }
         // Mark policy as already resolved to avoid re-reading the JSON file on
         // subsequent startup preflight calls.
@@ -1749,6 +1760,12 @@ fn normalize_kms_attestation_policy(
     let allowed_rtmr3 = parse_measurement_allowlist(&config.allowed_rtmr3, "allowed_rtmr3")?;
     let allowed_compose_hashes =
         parse_compose_hash_allowlist(&config.allowed_compose_hashes, "allowed_compose_hashes")?;
+    if config.backend == KmsBackend::Tdx && !allowed_compose_hashes.is_empty() {
+        bail!(
+            "tee.kms.phala.attestation.backend is \"tdx\", which pins the KMS by its registers; \
+             allowed_compose_hashes only applies to a dstack KMS"
+        );
+    }
 
     let binding = if let Some(binding_b64) = config.binding_b64.as_deref() {
         let binding_bytes = base64::engine::general_purpose::STANDARD
@@ -1770,6 +1787,7 @@ fn normalize_kms_attestation_policy(
         allowed_rtmr2,
         allowed_rtmr3,
         allowed_compose_hashes,
+        backend: config.backend,
         binding,
         binding_b64: config.binding_b64.clone(),
     })
@@ -2600,6 +2618,54 @@ mod tests {
         assert_eq!(resolved.binding_b64, Some(binding_b64));
     }
 
+    /// An external policy for a TDX cluster KMS switches the effective config
+    /// to that backend, and one that also names a compose hash is refused as
+    /// soon as it is resolved.
+    #[test]
+    fn an_external_tdx_policy_sets_the_backend() {
+        let policy = |compose: &str| {
+            format!(
+                r#"{{
+  "policy": {{
+    "allowed_tcb_statuses": ["UpToDate"],
+    "allowed_mrtd": ["{mrtd}"],
+    "allowed_rtmr0": ["{rtmr}"],
+    "allowed_rtmr1": ["{rtmr}"],
+    "allowed_rtmr2": ["{rtmr}"],
+    "allowed_rtmr3": ["{rtmr}"]{compose}
+  }},
+  "kms": {{ "backend": "tdx" }}
+}}"#,
+                mrtd = "00".repeat(48),
+                rtmr = "11".repeat(48),
+            )
+        };
+        let config_for = |file: &NamedTempFile| {
+            let mut cfg = KmsAttestationConfig::default();
+            cfg.enabled = true;
+            cfg.policy_json_path = Some(
+                Utf8PathBuf::from_path_buf(file.path().to_path_buf())
+                    .expect("temp policy path should be valid utf-8"),
+            );
+            cfg
+        };
+
+        let file = write_temp_policy_file(&policy(""));
+        let resolved = resolve_effective_attestation_config(&config_for(&file)).unwrap();
+        assert_eq!(resolved.backend, KmsBackend::Tdx);
+        let normalized = normalize_kms_attestation_policy(&resolved).unwrap();
+        assert_eq!(normalized.backend, KmsBackend::Tdx);
+
+        let hash = "55".repeat(32);
+        let file = write_temp_policy_file(&policy(&format!(
+            r#", "kms_allowed_event_payload": ["{hash}"]"#
+        )));
+        let err = resolve_effective_attestation_config(&config_for(&file))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("tdx"), "{err}");
+    }
+
     #[test]
     fn test_normalize_kms_attestation_policy_rejects_malformed_compose_hash() {
         let mut cfg = KmsAttestationConfig::default();
@@ -2980,6 +3046,7 @@ mod tests {
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
             allowed_compose_hashes: vec!["aa".repeat(32)],
+            backend: KmsBackend::Dstack,
             default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
         }
     }
@@ -3059,6 +3126,7 @@ mod tests {
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
             allowed_compose_hashes: Vec::new(),
+            backend: KmsBackend::Dstack,
             binding: [0x22; 32],
             binding_b64: None,
         }
