@@ -91,7 +91,9 @@ src/
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
 ├── auth.rs                   # Authentication middleware
-├── sealed.rs                 # Sealed transport: /sealed/v1 envelope, wraps the router
+├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
+├── sealed/
+│   └── session.rs            # Noise NK handshake and the sessions it opens
 └── metrics.rs                # Prometheus metrics
 primitives/                   # calimero-server-primitives
 └── src/
@@ -276,21 +278,27 @@ covers the token path.
 
 ## Sealed transport
 
-`src/sealed.rs` lets a client encrypt a whole request to the node's X25519
-transport key, which `/tee/attest` binds into the quote on `bindTransportKey`. That
-way TLS that ends outside the TD cannot read the traffic. Three rules:
+`src/sealed.rs` lets a client encrypt its traffic end to end to the TD, so TLS
+that ends outside the TD cannot read it. The client opens a session with a Noise
+NK handshake (`sealed/session.rs`, via `snow`) to the node's X25519 transport
+key, which `/tee/attest` binds into the quote on `bindTransportKey`. Requests are
+sealed under the session and responses stream back in sealed frames. Four rules:
 
 - **It wraps the router from outside** (`lib.rs`, `ServiceBuilder` around the
   merged router), not as a route. The opened request is handed back to the router
   and routed afresh, so auth, permissions and metrics see it as a direct request.
   CORS sits outside the envelope so the sealed response carries it.
-- **The key is per process and never persisted.** A restart replaces it, and a
-  request sealed to the old key gets `409 stale_transport_key`, so the client
-  re-attests. Never let a client take a new key from that response: whoever sent
-  the response chose it.
-- **The wire format is shared with mero-js** (`src/sealed/sealed.ts`). The
-  vectors in `sealed/tests.rs` are repeated there verbatim, so change both or
-  neither.
+- **The transport key authenticates; it never encrypts.** Session keys come from
+  both sides' ephemeral keys, so dropping a session (`SESSION_LIFETIME`, or idle)
+  is what gives forward secrecy. Never send data under the static key alone: the
+  handshake refuses a message 1 with a payload for that reason.
+- **The key is per process and never persisted.** A restart replaces it: a
+  handshake to the old key gets `409 stale_transport_key`, so the client
+  re-attests, and a request in a dropped session gets `409 unknown_session`. Never
+  let a client take a new key from a response: whoever sent the response chose it.
+- **The wire format is shared with mero-js** (`src/sealed/sealed.ts`,
+  `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
+  verbatim, and mero-js runs the handshake itself, so change both or neither.
 
 ## Subscription authority
 

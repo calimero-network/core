@@ -1,4 +1,4 @@
-//! Sealed transport: requests encrypted to this node's attested key.
+//! Sealed transport: requests encrypted end to end to this node's attested key.
 //!
 //! The HTTP server speaks plain HTTP, and whatever TLS sits in front of it ends
 //! outside the TD — at a reverse proxy, a load balancer, a relay — wherever the
@@ -16,44 +16,53 @@
 //!   and commits to it in the quote's report data
 //!   ([`calimero_tee_attestation::attest_transport_binding`]). A client that
 //!   verifies the quote knows the key belongs to the attested TD.
+//! * The client opens a **session** with a Noise NK handshake to that key
+//!   ([`HANDSHAKE_PATH`]). The transport key only authenticates the node: the
+//!   session keys come from both sides' ephemeral keys, which are discarded once
+//!   the handshake ends. That is the forward secrecy — when a session is gone
+//!   (after [`SESSION_LIFETIME`] at most), nothing can open what was sent in it,
+//!   not even the transport key.
 //! * The client wraps a whole HTTP request — method, path, headers (the bearer
-//!   token among them) and body — encrypts it to that key under a one-time key of
-//!   its own, and posts the result to [`SEALED_PATH`]. [`intercept`] opens it,
-//!   dispatches the inner request through the same router every other request
-//!   takes (so auth, limits and metrics apply unchanged), and seals the response
-//!   back under the same exchange.
+//!   token among them) and body — seals it under the session and posts it to
+//!   [`SEALED_PATH`]. [`intercept`] opens it, dispatches the inner request
+//!   through the same router every other request takes (so auth, limits and
+//!   metrics apply unchanged), and streams the response back in sealed frames.
 //!
-//! A proxy sees one opaque POST each way. It cannot read the request, cannot
-//! forge a response the client accepts (only the transport key's holder can
-//! derive the response key), and cannot replay a request: each carries a
-//! timestamp and a one-time key, and a one-time key is accepted once.
+//! A proxy sees opaque POSTs. It cannot read a request or a response, cannot
+//! forge a response frame the client accepts, cannot reorder, drop or truncate
+//! frames unnoticed, and cannot replay a request: each carries an id its session
+//! accepts once.
 //!
-//! Streaming responses (SSE) and WebSocket upgrades cannot be buffered into one
-//! sealed reply, so they are refused inside the envelope rather than left to
-//! hang.
+//! Responses are framed rather than buffered, so a server-sent event stream is
+//! sealed like any other response, frame by frame, until its session expires.
+//! A WebSocket upgrade cannot cross a POST and is refused inside the envelope.
 //!
-//! Wire format (v1), which mero-js implements identically:
+//! Wire format (v2), which mero-js implements identically:
 //!
 //! ```text
-//! shared    = X25519(secret, peer public)            all-zero result refused
-//! prk       = HKDF-SHA256-Extract(salt = transport_pk || client_pk, ikm = shared)
-//! req key   = HKDF-Expand(prk, REQUEST_DOMAIN,  32)
-//! resp key  = HKDF-Expand(prk, RESPONSE_DOMAIN, 32)
-//! request   = 0x01 || transport_pk || client_pk || nonce(12)
-//!             || AES-256-GCM(req key, nonce, aad = the 77 bytes before it, inner request)
-//! response  = 0x01 || nonce(12)
-//!             || AES-256-GCM(resp key, nonce, aad = 0x01 || transport_pk || client_pk, inner response)
-//! inner     = u32 BE head length || head (JSON) || body
-//! req head  = {"method": "POST", "path": "/jsonrpc?x=y", "headers": [[name, value], ..], "ts": unix secs}
-//! resp head = {"status": 200, "headers": [[name, value], ..]}
+//! handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2",
+//!             the node's static key = the transport key
+//!   request   POST /sealed/v2/handshake
+//!             0x02 || transport_pk || Noise message 1 (e, es; empty payload)
+//!   response  0x02 || Noise message 2 (e, ee; payload = session_id(16) || lifetime secs, u32 BE)
+//!   keys      (req key, resp key) = Split()
+//!
+//! exchange    POST /sealed/v2
+//!   header    0x02 || session_id(16) || request_id (u64 BE; from 1, each used once)
+//!   request   header || AES-256-GCM(req key, nonce = request_id || 0u32, aad = header, inner)
+//!   response  frames, each u32 BE length || AES-256-GCM(resp key,
+//!             nonce = request_id || frame index (u32 BE, from 0), aad = header, kind || data)
+//!             kind 0 = head (JSON, first frame only), 1 = body bytes, 2 = end (empty)
+//!             a response that stops without an end frame was cut short
+//!   inner     u32 BE head length || head (JSON) || body
+//!   req head  {"method": "POST", "path": "/jsonrpc?x=y", "headers": [[name, value], ..]}
+//!   resp head {"status": 200, "headers": [[name, value], ..]}
 //! ```
 
-use core::time::Duration;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
     CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING, UPGRADE,
@@ -63,50 +72,59 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use curve25519_dalek::montgomery::MontgomeryPoint;
+use futures_util::{stream, StreamExt};
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use rand::Rng;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
-use ring::hkdf::{Salt, HKDF_SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::debug;
 use zeroize::Zeroizing;
 
+pub use self::session::SESSION_LIFETIME;
+use self::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_LEN};
+
+mod session;
+
+/// Where a session is opened.
+pub const HANDSHAKE_PATH: &str = "/sealed/v2/handshake";
 /// Where sealed requests are posted.
-pub const SEALED_PATH: &str = "/sealed/v1";
-/// Content type of both sealed bodies.
+pub const SEALED_PATH: &str = "/sealed/v2";
+/// Content type of every sealed body.
 pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 
-const VERSION: u8 = 1;
-const REQUEST_DOMAIN: &[u8] = b"calimero/sealed-http/v1/request";
-const RESPONSE_DOMAIN: &[u8] = b"calimero/sealed-http/v1/response";
-/// `version || transport_pk || client_pk || nonce`, the request's AAD.
-const REQUEST_HEADER_LEN: usize = 1 + 32 + 32 + NONCE_LEN;
+const VERSION: u8 = 2;
+/// `version || transport_pk || Noise message 1`.
+const HANDSHAKE_LEN: usize = 1 + 32 + MESSAGE_1_LEN;
+/// `version || session_id || request_id`, a request's AAD and its frames'.
+const HEADER_LEN: usize = 1 + SESSION_ID_LEN + 8;
 const TAG_LEN: usize = 16;
 
-/// Largest sealed body accepted, and largest inner response sealed back.
+/// Largest sealed request accepted.
 const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
-/// How far a request's timestamp may sit from this node's clock.
-const MAX_SKEW: Duration = Duration::from_secs(300);
-/// One-time keys remembered for replay detection before new requests are
-/// refused. Each is held only for its skew window, so reaching this takes over
-/// two hundred sealed requests a second, sustained.
-const MAX_REMEMBERED: usize = 1 << 17;
+/// Largest piece of a response body sealed into one frame, so a client never
+/// holds more than this of an unauthenticated frame.
+const MAX_FRAME_DATA: usize = 64 * 1024;
+
+const FRAME_HEAD: u8 = 0;
+const FRAME_DATA: u8 = 1;
+const FRAME_END: u8 = 2;
 
 const X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
+/// Tells nginx-style proxies not to buffer a response, which would hold back
+/// every frame of a sealed event stream.
+const X_ACCEL_BUFFERING: HeaderName = HeaderName::from_static("x-accel-buffering");
 
 /// Headers that describe the hop, not the message, and so never cross the
 /// envelope in either direction.
 const HOP_HEADERS: [HeaderName; 5] = [CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING, UPGRADE];
 
-/// This process's transport key, and the one-time keys already used with it.
+/// This process's transport key, and the sessions opened to it.
 pub struct SealedTransport {
     secret: Zeroizing<[u8; 32]>,
     public: [u8; 32],
-    /// One-time client key → the unix second after which its request would be
-    /// refused as stale anyway, so it can be forgotten.
-    seen: Mutex<HashMap<[u8; 32], u64>>,
+    sessions: Mutex<Sessions>,
 }
 
 impl core::fmt::Debug for SealedTransport {
@@ -130,7 +148,7 @@ impl SealedTransport {
         Self {
             secret,
             public,
-            seen: Mutex::new(HashMap::new()),
+            sessions: Mutex::default(),
         }
     }
 
@@ -139,41 +157,13 @@ impl SealedTransport {
         self.public
     }
 
-    /// Forget expired one-time keys, then remember this one. `Err` names why the
-    /// request must be refused.
-    fn remember(&self, client_public: [u8; 32], ts: u64, now: u64) -> Result<(), Refusal> {
-        if ts.abs_diff(now) > MAX_SKEW.as_secs() {
-            return Err(Refusal::bad_request(
-                "stale_request",
-                "the sealed request's timestamp is outside the accepted window",
-            ));
-        }
-        let mut seen = self
-            .seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if seen.contains_key(&client_public) {
-            return Err(Refusal::bad_request(
-                "replayed_request",
-                "this sealed request was already received",
-            ));
-        }
-        if seen.len() >= MAX_REMEMBERED {
-            seen.retain(|_, expiry| *expiry >= now);
-            if seen.len() >= MAX_REMEMBERED {
-                return Err(Refusal {
-                    status: StatusCode::SERVICE_UNAVAILABLE,
-                    code: "busy",
-                    message: "too many sealed requests in flight; retry shortly",
-                });
-            }
-        }
-        let _previous = seen.insert(client_public, ts.saturating_add(MAX_SKEW.as_secs()));
-        Ok(())
+    fn sessions(&self) -> std::sync::MutexGuard<'_, Sessions> {
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// Route [`SEALED_PATH`] through the envelope; pass everything else by.
+/// Route [`HANDSHAKE_PATH`] and [`SEALED_PATH`] through the envelope; pass
+/// everything else by.
 ///
 /// This has to wrap the router from outside, not sit on a route: the inner
 /// request is handed back to the router to be routed afresh.
@@ -182,19 +172,56 @@ pub async fn intercept(
     request: Request,
     next: Next,
 ) -> Response {
-    if request.uri().path() != SEALED_PATH {
+    let path = request.uri().path();
+    if path != HANDSHAKE_PATH && path != SEALED_PATH {
         return next.run(request).await;
     }
     if request.method() != Method::POST {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-    match open_and_dispatch(&transport, request, next).await {
-        Ok(response) => response,
-        Err(refusal) => {
-            debug!(code = refusal.code, "refused a sealed request");
-            refusal.into_response()
-        }
+    let result = if path == HANDSHAKE_PATH {
+        handshake(&transport, request).await
+    } else {
+        open_and_dispatch(&transport, request, next).await
+    };
+    result.unwrap_or_else(|refusal| {
+        debug!(code = refusal.code, "refused a sealed request");
+        refusal.into_response()
+    })
+}
+
+async fn handshake(transport: &SealedTransport, request: Request) -> Result<Response, Refusal> {
+    let body = to_bytes(request.into_body(), HANDSHAKE_LEN)
+        .await
+        .map_err(|_| malformed())?;
+    if body.len() != HANDSHAKE_LEN {
+        return Err(malformed());
     }
+    let (&[version], rest) = body.split_first_chunk::<1>().ok_or_else(malformed)?;
+    check_version(version)?;
+    let (transport_public, message_1) = rest.split_first_chunk::<32>().ok_or_else(malformed)?;
+    if *transport_public != transport.public {
+        // A restart replaced the key. The client has to attest again: taking a
+        // new key from this response would be taking it from whoever sent it.
+        return Err(Refusal {
+            status: StatusCode::CONFLICT,
+            code: "stale_transport_key",
+            message: "the handshake is addressed to a transport key this node no longer holds; \
+                      attest again for the current one",
+        });
+    }
+
+    let mut session_id: SessionId = [0; SESSION_ID_LEN];
+    UnwrapErr(SysRng).fill_bytes(&mut session_id);
+    let (message_2, keys) = session::respond(&transport.secret, message_1, &session_id)?;
+    transport
+        .sessions()
+        .insert(session_id, keys, Instant::now());
+
+    let mut sealed = Vec::with_capacity(1 + message_2.len());
+    sealed.push(VERSION);
+    sealed.extend_from_slice(&message_2);
+    Ok(sealed_response(Body::from(sealed)))
 }
 
 async fn open_and_dispatch(
@@ -212,25 +239,27 @@ async fn open_and_dispatch(
         })?;
 
     let envelope = RequestEnvelope::parse(&sealed)?;
-    if envelope.transport_public != transport.public {
-        // A restart replaced the key. The client has to attest again: taking a
-        // new key from this response would be taking it from whoever sent it.
-        return Err(Refusal {
-            status: StatusCode::CONFLICT,
-            code: "stale_transport_key",
-            message: "the request is sealed to a transport key this node no longer holds; \
-                      attest again for the current one",
-        });
+    let (keys, expires) = transport
+        .sessions()
+        .keys(&envelope.session_id, Instant::now())?;
+    let plaintext = open_request(&keys, &envelope)?;
+    transport
+        .sessions()
+        .admit(&envelope.session_id, envelope.request_id, Instant::now())?;
+    let (head, body) = split_inner(&plaintext)?;
+
+    let frames = FrameSealer::new(&keys, envelope.header, envelope.request_id);
+    if head
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(UPGRADE.as_str()))
+    {
+        let refused = plain_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "a WebSocket cannot be sealed; subscribe over server-sent events instead",
+        );
+        return Ok(seal_response(frames, refused, expires));
     }
-    let keys = ExchangeKeys::derive(
-        &transport.secret,
-        &envelope.client_public,
-        &transport.public,
-        &envelope.client_public,
-    )?;
-    let plaintext = keys.open_request(&envelope)?;
-    let (head, body) = split_inner::<RequestHead>(&plaintext)?;
-    transport.remember(envelope.client_public, head.ts, unix_now())?;
 
     let mut inner = inner_request(head, body)?;
     // Whatever the server's own layers put on the outer request (connection
@@ -248,8 +277,18 @@ async fn open_and_dispatch(
     }
 
     let response = next.run(inner).await;
-    let (status, headers, body) = buffer_response(response).await;
-    Ok(keys.seal_response(status, &headers, &body))
+    Ok(seal_response(frames, response, expires))
+}
+
+fn check_version(version: u8) -> Result<(), Refusal> {
+    if version == VERSION {
+        Ok(())
+    } else {
+        Err(Refusal::bad_request(
+            "unsupported_version",
+            "unsupported sealed transport version",
+        ))
+    }
 }
 
 /// A refusal of the envelope itself. It goes back in the clear: the request
@@ -286,143 +325,185 @@ const fn malformed() -> Refusal {
 }
 
 struct RequestEnvelope<'a> {
-    header: &'a [u8],
-    transport_public: [u8; 32],
-    client_public: [u8; 32],
-    nonce: [u8; NONCE_LEN],
+    header: [u8; HEADER_LEN],
+    session_id: SessionId,
+    request_id: u64,
     ciphertext: &'a [u8],
 }
 
 impl<'a> RequestEnvelope<'a> {
     fn parse(bytes: &'a [u8]) -> Result<Self, Refusal> {
-        if bytes.len() < REQUEST_HEADER_LEN + TAG_LEN {
+        if bytes.len() < HEADER_LEN + TAG_LEN {
             return Err(malformed());
         }
-        let (header, ciphertext) = bytes.split_at(REQUEST_HEADER_LEN);
+        let (header, ciphertext) = bytes
+            .split_first_chunk::<HEADER_LEN>()
+            .ok_or_else(malformed)?;
         let (&[version], rest) = header.split_first_chunk::<1>().ok_or_else(malformed)?;
-        if version != VERSION {
-            return Err(Refusal::bad_request(
-                "unsupported_version",
-                "unsupported sealed transport version",
-            ));
-        }
-        let (transport_public, rest) = rest.split_first_chunk::<32>().ok_or_else(malformed)?;
-        let (client_public, rest) = rest.split_first_chunk::<32>().ok_or_else(malformed)?;
-        let nonce = rest.first_chunk::<NONCE_LEN>().ok_or_else(malformed)?;
+        check_version(version)?;
+        let (session_id, request_id) = rest
+            .split_first_chunk::<SESSION_ID_LEN>()
+            .ok_or_else(malformed)?;
+        let request_id = u64::from_be_bytes(request_id.try_into().map_err(|_| malformed())?);
         Ok(Self {
-            header,
-            transport_public: *transport_public,
-            client_public: *client_public,
-            nonce: *nonce,
+            header: *header,
+            session_id: *session_id,
+            request_id,
             ciphertext,
         })
     }
 }
 
-/// The two one-use AEAD keys of one request/response exchange.
-struct ExchangeKeys {
-    request: LessSafeKey,
-    response: LessSafeKey,
-    response_aad: [u8; 65],
+fn aead_key(key: &[u8; 32]) -> LessSafeKey {
+    // SAFETY: AES-256-GCM takes exactly a 32-byte key.
+    LessSafeKey::new(UnboundKey::new(&AES_256_GCM, key).expect("32-byte AES-256-GCM key"))
 }
 
-impl ExchangeKeys {
-    /// `secret` is this side's X25519 secret and `peer` the other side's public
-    /// key; the node and a client arrive at the same keys.
-    fn derive(
-        secret: &[u8; 32],
-        peer: &[u8; 32],
-        transport_public: &[u8; 32],
-        client_public: &[u8; 32],
-    ) -> Result<Self, Refusal> {
-        let shared = Zeroizing::new(MontgomeryPoint(*peer).mul_clamped(*secret).0);
-        // A low-order point yields an all-zero secret that anybody can compute.
-        if shared.iter().all(|byte| *byte == 0) {
-            return Err(malformed());
-        }
-        let mut salt = [0u8; 64];
-        salt[..32].copy_from_slice(transport_public);
-        salt[32..].copy_from_slice(client_public);
-        let prk = Salt::new(HKDF_SHA256, &salt).extract(shared.as_ref());
-        let key = |domain: &[u8]| {
-            prk.expand(&[domain], &AES_256_GCM)
-                .map(|okm| LessSafeKey::new(UnboundKey::from(okm)))
-                .map_err(|_| malformed())
-        };
-        let mut response_aad = [0u8; 65];
-        response_aad[0] = VERSION;
-        response_aad[1..].copy_from_slice(&salt);
-        Ok(Self {
-            request: key(REQUEST_DOMAIN)?,
-            response: key(RESPONSE_DOMAIN)?,
-            response_aad,
-        })
-    }
+/// `request_id || index`: unique per key, since a session admits each request
+/// id once and numbers each response's frames from zero.
+fn nonce(request_id: u64, index: u32) -> Nonce {
+    let mut nonce = [0u8; NONCE_LEN];
+    nonce[..8].copy_from_slice(&request_id.to_be_bytes());
+    nonce[8..].copy_from_slice(&index.to_be_bytes());
+    Nonce::assume_unique_for_key(nonce)
+}
 
-    fn open_request(&self, envelope: &RequestEnvelope<'_>) -> Result<Zeroizing<Vec<u8>>, Refusal> {
-        let mut buffer = Zeroizing::new(envelope.ciphertext.to_vec());
-        let len = self
-            .request
-            .open_in_place(
-                Nonce::assume_unique_for_key(envelope.nonce),
-                Aad::from(envelope.header),
-                buffer.as_mut(),
-            )
-            .map_err(|_| {
-                Refusal::bad_request(
-                    "undecryptable",
-                    "the sealed request did not open under this node's transport key",
-                )
-            })?
-            .len();
-        buffer.truncate(len);
-        Ok(buffer)
-    }
-
-    fn seal_response(&self, status: StatusCode, headers: &HeaderMap, body: &[u8]) -> Response {
-        let mut nonce = [0u8; NONCE_LEN];
-        // Random rather than fixed: the response key is unique to the client's
-        // one-time key, but a node that somehow answered the same request twice
-        // must still never reuse a nonce under it.
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let sealed = self.seal_response_with(status, headers, body, nonce);
-        (
-            [
-                (CONTENT_TYPE, SEALED_CONTENT_TYPE),
-                (CACHE_CONTROL, "no-store"),
-            ],
-            sealed,
+fn open_request(
+    keys: &SessionKeys,
+    envelope: &RequestEnvelope<'_>,
+) -> Result<Zeroizing<Vec<u8>>, Refusal> {
+    let mut buffer = Zeroizing::new(envelope.ciphertext.to_vec());
+    let len = aead_key(&keys.request)
+        .open_in_place(
+            nonce(envelope.request_id, 0),
+            Aad::from(&envelope.header),
+            buffer.as_mut(),
         )
-            .into_response()
+        .map_err(|_| {
+            Refusal::bad_request(
+                "undecryptable",
+                "the sealed request did not open under its session",
+            )
+        })?
+        .len();
+    buffer.truncate(len);
+    Ok(buffer)
+}
+
+/// Seals one response's frames, numbering them.
+struct FrameSealer {
+    key: LessSafeKey,
+    aad: [u8; HEADER_LEN],
+    request_id: u64,
+    index: u32,
+}
+
+impl FrameSealer {
+    fn new(keys: &SessionKeys, aad: [u8; HEADER_LEN], request_id: u64) -> Self {
+        Self {
+            key: aead_key(&keys.response),
+            aad,
+            request_id,
+            index: 0,
+        }
     }
 
-    fn seal_response_with(
-        &self,
-        status: StatusCode,
-        headers: &HeaderMap,
-        body: &[u8],
-        nonce: [u8; NONCE_LEN],
-    ) -> Vec<u8> {
-        let head = ResponseHead {
-            status: status.as_u16(),
-            headers: header_pairs(headers),
-        };
-        let mut buffer = join_inner(&head, body);
-        self.response
-            .seal_in_place_append_tag(
-                Nonce::assume_unique_for_key(nonce),
-                Aad::from(&self.response_aad),
-                &mut buffer,
+    /// `None` once the frame index is spent — some four billion frames, far
+    /// past any session's lifetime.
+    fn seal(&mut self, kind: u8, data: &[u8]) -> Option<Bytes> {
+        let index = self.index;
+        self.index = index.checked_add(1)?;
+        let mut frame = Vec::with_capacity(4 + 1 + data.len() + TAG_LEN);
+        let len = u32::try_from(1 + data.len() + TAG_LEN).ok()?;
+        frame.extend_from_slice(&len.to_be_bytes());
+        frame.push(kind);
+        frame.extend_from_slice(data);
+        let tag = self
+            .key
+            .seal_in_place_separate_tag(
+                nonce(self.request_id, index),
+                Aad::from(&self.aad),
+                &mut frame[4..],
             )
-            // SAFETY: sealing fails only when the plaintext exceeds AES-GCM's
-            // ~64 GiB limit, and `buffer_response` caps it at MAX_SEALED_BYTES.
-            .expect("sealed response within AES-GCM's length limit");
-        let mut sealed = Vec::with_capacity(1 + NONCE_LEN + buffer.len());
-        sealed.push(VERSION);
-        sealed.extend_from_slice(&nonce);
-        sealed.extend_from_slice(&buffer);
-        sealed
+            .ok()?;
+        frame.extend_from_slice(tag.as_ref());
+        Some(Bytes::from(frame))
     }
+}
+
+/// Stream `response` back as sealed frames: its head, its body as it is
+/// produced, then an end frame. At `expires` the session's keys are due to be
+/// gone, so a response still streaming then is cut off without an end frame,
+/// and its client reconnects under a new session.
+fn seal_response(mut frames: FrameSealer, response: Response, expires: Instant) -> Response {
+    let (parts, body) = response.into_parts();
+    let head = ResponseHead {
+        status: parts.status.as_u16(),
+        headers: header_pairs(&parts.headers),
+    };
+    // SAFETY: a plain struct of an integer and strings always serializes.
+    let head = serde_json::to_vec(&head).expect("response head serializes");
+    let first = frames.seal(FRAME_HEAD, &head);
+
+    let state = Streaming {
+        frames,
+        body: body.into_data_stream(),
+        pending: Bytes::new(),
+        deadline: tokio::time::Instant::from_std(expires),
+        done: false,
+    };
+    let rest = stream::unfold(state, Streaming::next_frame);
+    let frames = stream::iter(first)
+        .chain(rest)
+        .map(Ok::<_, core::convert::Infallible>);
+    sealed_response(Body::from_stream(frames))
+}
+
+struct Streaming {
+    frames: FrameSealer,
+    body: BodyDataStream,
+    /// Body bytes read but not yet sealed, when a chunk is larger than a frame.
+    pending: Bytes,
+    deadline: tokio::time::Instant,
+    done: bool,
+}
+
+impl Streaming {
+    async fn next_frame(mut self) -> Option<(Bytes, Self)> {
+        if self.done {
+            return None;
+        }
+        if self.pending.is_empty() {
+            match tokio::time::timeout_at(self.deadline, self.body.next()).await {
+                Ok(Some(Ok(chunk))) => self.pending = chunk,
+                Ok(None) => {
+                    self.done = true;
+                    let end = self.frames.seal(FRAME_END, &[])?;
+                    return Some((end, self));
+                }
+                // The inner response failed, or the session expired: stop
+                // without an end frame, so the client knows it was cut short.
+                Ok(Some(Err(_))) | Err(_) => return None,
+            }
+        }
+        let piece = self
+            .pending
+            .split_to(self.pending.len().min(MAX_FRAME_DATA));
+        let frame = self.frames.seal(FRAME_DATA, &piece)?;
+        Some((frame, self))
+    }
+}
+
+fn sealed_response(body: Body) -> Response {
+    (
+        [
+            (CONTENT_TYPE, HeaderValue::from_static(SEALED_CONTENT_TYPE)),
+            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (X_ACCEL_BUFFERING, HeaderValue::from_static("no")),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -432,7 +513,6 @@ struct RequestHead {
     path: String,
     #[serde(default)]
     headers: Vec<(String, String)>,
-    ts: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -442,7 +522,7 @@ struct ResponseHead {
     headers: Vec<(String, String)>,
 }
 
-fn split_inner<'a, H: Deserialize<'a>>(plaintext: &'a [u8]) -> Result<(H, &'a [u8]), Refusal> {
+fn split_inner(plaintext: &[u8]) -> Result<(RequestHead, &[u8]), Refusal> {
     let (len, rest) = plaintext.split_first_chunk::<4>().ok_or_else(malformed)?;
     let len = usize::try_from(u32::from_be_bytes(*len)).map_err(|_| malformed())?;
     if len > rest.len() {
@@ -453,24 +533,16 @@ fn split_inner<'a, H: Deserialize<'a>>(plaintext: &'a [u8]) -> Result<(H, &'a [u
     Ok((head, body))
 }
 
-fn join_inner<H: Serialize>(head: &H, body: &[u8]) -> Vec<u8> {
-    // SAFETY: the heads are plain structs of strings and integers, which always
-    // serialize.
-    let head = serde_json::to_vec(head).expect("inner head serializes");
-    let len = u32::try_from(head.len()).unwrap_or(u32::MAX);
-    let mut out = Vec::with_capacity(4 + head.len() + body.len() + TAG_LEN);
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(&head);
-    out.extend_from_slice(body);
-    out
-}
-
 fn inner_request(head: RequestHead, body: &[u8]) -> Result<Request, Refusal> {
     let method = Method::from_bytes(head.method.as_bytes()).map_err(|_| malformed())?;
     let uri: Uri = head.path.parse().map_err(|_| malformed())?;
     // Origin-form only: the router must see a path, and a sealed request that
     // names the envelope again would only open another envelope.
-    if uri.scheme().is_some() || !head.path.starts_with('/') || uri.path() == SEALED_PATH {
+    if uri.scheme().is_some()
+        || !head.path.starts_with('/')
+        || uri.path() == SEALED_PATH
+        || uri.path() == HANDSHAKE_PATH
+    {
         return Err(malformed());
     }
     let mut request = Request::new(Body::from(Bytes::copy_from_slice(body)));
@@ -489,30 +561,8 @@ fn inner_request(head: RequestHead, body: &[u8]) -> Result<Request, Refusal> {
     Ok(request)
 }
 
-async fn buffer_response(response: Response) -> (StatusCode, HeaderMap, Bytes) {
-    let is_stream = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream"));
-    if is_stream {
-        return plain_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "a streaming response cannot be sealed; open the stream directly",
-        );
-    }
-    let (parts, body) = response.into_parts();
-    match to_bytes(body, MAX_SEALED_BYTES).await {
-        Ok(bytes) => (parts.status, parts.headers, bytes),
-        Err(_) => plain_error(StatusCode::BAD_GATEWAY, "the response is too large to seal"),
-    }
-}
-
-fn plain_error(status: StatusCode, message: &str) -> (StatusCode, HeaderMap, Bytes) {
-    let mut headers = HeaderMap::new();
-    let _previous = headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let body = json!({ "error": { "message": message } }).to_string();
-    (status, headers, Bytes::from(body))
+fn plain_error(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({ "error": { "message": message } }))).into_response()
 }
 
 fn header_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
@@ -523,12 +573,6 @@ fn header_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
             Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
         })
         .collect()
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 #[cfg(test)]
