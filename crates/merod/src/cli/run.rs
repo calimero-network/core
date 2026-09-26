@@ -234,6 +234,7 @@ impl RunCommand {
         );
         server_config.tee_release_version =
             tee_release_version_from_env(|k| std::env::var(k).ok())?;
+        server_config.sealed = server_source.sealed;
 
         // Create store config with optional encryption
         let datastore_path = path.join(config.datastore.path);
