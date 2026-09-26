@@ -356,7 +356,7 @@ unverified KMS would be readable by whoever runs that endpoint.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `url` | URL | — (required if present) | URL of the mero-kms service (the KMS cluster for this release). |
+| `url` | URL | — (required if present) | URL of the mero-kms service (the KMS cluster for this release). Its host may be a DNS name resolving to several replicas; merod gives each resolved address a share of a 10s connect timeout (~2s each with five) and moves on to the next, so a dead replica still in the record does not stall key fetch. |
 
 #### `[tee.kms.tls]`
 

@@ -1102,7 +1102,14 @@ async fn fetch_from_kms(
 
 fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
     let uses_https = kms.url.scheme().eq_ignore_ascii_case("https");
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+    // `tee.kms.url` may be a DNS name resolving to every replica of the KMS
+    // cluster, and a dead replica can stay in that record for about a minute.
+    // reqwest/hyper-util divides the connect timeout evenly across the resolved
+    // addresses, so with five replicas each gets ~2s before the next is tried,
+    // instead of one dead address consuming the whole request timeout.
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30));
 
     // Keep TLS invariants here even though startup config validation checks the
     // same constraints. This preserves fail-closed behavior if config is edited

@@ -126,6 +126,13 @@ they pin the code the KMS runs, and so who can derive node keys. There is no
 event log to replay and no compose hash. The default `/attest` binding is
 `SHA-256("mero-kms-attest-v1")`, in lockstep with mero-kms.
 
+**The KMS URL may resolve to several replicas.** `tee.kms.url` is typically a
+private DNS name with an A record per replica (TTL 30s), and a dead replica can
+stay in it for about a minute. `build_kms_http_client` sets a 10s
+`connect_timeout`, which reqwest/hyper-util divides evenly across the resolved
+addresses (~2s each with five), so a dead address falls through to the next
+instead of hanging until the 30s request timeout.
+
 **`merod kms disk-key`** fetches the key that unlocks the image's LUKS2 data disk,
 before that disk (and so this node's home) exists. It needs no `--node`. It uses a
 dedicated identity (`--identity`, created with `--create-identity`), not the
