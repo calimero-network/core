@@ -401,6 +401,7 @@
     },
     {
       "name": "create_custom_record",
+      "doc": "Create a custom record from module",
       "params": [
         {
           "name": "name",
@@ -576,6 +577,7 @@
     },
     {
       "name": "get_nested_record",
+      "doc": "Get a nested record from module",
       "params": [
         {
           "name": "name",
@@ -591,6 +593,7 @@
     },
     {
       "name": "get_status",
+      "doc": "Get status from module",
       "params": [
         {
           "name": "timestamp",
@@ -1026,6 +1029,7 @@
     },
     {
       "name": "view_constant",
+      "doc": "Read-only method - must surface `intent: read_only` in the ABI.",
       "params": [],
       "returns": {
         "kind": "u32"
@@ -1034,6 +1038,7 @@
     },
     {
       "name": "xcall_noop",
+      "doc": "Cross-context entry point - must surface `xcall_callable: true` in the ABI.",
       "params": [],
       "returns": {
         "kind": "unit"

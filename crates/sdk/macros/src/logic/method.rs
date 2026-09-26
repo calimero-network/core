@@ -7,6 +7,7 @@ use syn::{
 };
 
 use crate::abi_type::nullable;
+use crate::doc::{self, MethodDocs};
 use crate::errors::{Errors, ParseError};
 use crate::logic::arg::{LogicArg, LogicArgInput, LogicArgTyped, SelfType};
 use crate::logic::ty::{LogicTy, LogicTyInput};
@@ -69,6 +70,7 @@ pub struct PublicLogicMethod<'a> {
     has_refs: bool,
 
     modifiers: Vec<Modifer>,
+    docs: MethodDocs,
 }
 
 impl ToTokens for LogicMethod<'_> {
@@ -370,12 +372,13 @@ impl PublicLogicMethod<'_> {
             let arg_name = arg.ident.to_string();
             let ty = arg.ty.abi_ty();
             let nullable = nullable(&arg.ty.ty);
+            let doc = doc::tokens(self.docs.param(&arg_name));
             quote! {
                 ::calimero_sdk::abi::Parameter {
                     name: #arg_name.to_owned(),
                     type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                     nullable: #nullable,
-                    doc: ::core::option::Option::None,
+                    doc: #doc,
                 }
             }
         });
@@ -456,6 +459,7 @@ impl PublicLogicMethod<'_> {
             Some(secs) => quote! { ::core::option::Option::Some(#secs) },
             None => quote! { ::core::option::Option::None },
         };
+        let doc = doc::tokens(self.docs.doc.as_deref());
 
         quote! {
             {
@@ -476,6 +480,7 @@ impl PublicLogicMethod<'_> {
                     xcall_callable: #xcall_callable,
                     xcall_callers: #xcall_callers,
                     tee_every_secs: #tee_every_secs,
+                    doc: #doc,
                     ..::core::default::Default::default()
                 });
             }
@@ -755,6 +760,8 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             errors.subsume(SynError::new_spanned(name, ParseError::ReservedMethodName));
         }
 
+        let docs = doc::method_docs(&input.item.attrs);
+
         // A `#[app::view]` method is read-only (the node takes a shared read
         // lock), so a `&mut self` receiver is a contradiction.
         if is_view {
@@ -824,6 +831,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             ret,
             has_refs,
             modifiers,
+            docs,
         })))
     }
 }

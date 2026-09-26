@@ -391,13 +391,13 @@ impl AbiState {
     // and `#[app::xcall]` markers covered by the conformance golden, which
     // records each method's `intent` / `xcall_callable` flag.
 
-    /// Read-only method — must surface `intent: read_only` in the ABI.
+    /// Read-only method - must surface `intent: read_only` in the ABI.
     #[app::view]
     pub fn view_constant(&self) -> app::Result<u32> {
         Ok(42)
     }
 
-    /// Cross-context entry point — must surface `xcall_callable: true` in the ABI.
+    /// Cross-context entry point - must surface `xcall_callable: true` in the ABI.
     #[app::xcall]
     pub fn xcall_noop(&mut self) -> app::Result<()> {
         Ok(())
