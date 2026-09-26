@@ -465,8 +465,9 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 report.observe("admit_tee_node", "MemberJoinedViaTeeAttestation");
 
                 // After the admission, so peers apply it first. A failure is
-                // logged, not returned: the TEE is admitted either way, and its
-                // next announcement publishes the evidence again.
+                // logged, not returned: the TEE is admitted either way, and while
+                // authorship is on it keeps re-announcing until some admitter
+                // publishes the evidence (the server's `tee::evidence_retry`).
                 if let Some(evidence) = evidence {
                     if let Err(err) = publish_authority_evidence(
                         &datastore,
@@ -483,8 +484,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         warn!(
                             %member,
                             ?err,
-                            "TEE admitted, but publishing its authority evidence failed; its \
-                             next announcement retries"
+                            "TEE admitted, but publishing its authority evidence failed; the \
+                             TEE re-announces while authorship is on, which retries it"
                         );
                     }
                 }

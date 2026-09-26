@@ -310,6 +310,40 @@ pub fn tee_authority_evidence(
     Ok(latest)
 }
 
+/// Whether `account` is owed a [`GroupOp::TeeAuthorityEvidence`] it does not
+/// have yet: it was admitted to the namespace as a TEE (a direct `ReadOnlyTee`
+/// row at the root), TEE authorship is on there, and no verified evidence for
+/// it is on the log.
+///
+/// Only the TEE holds the quote the evidence carries, so only the TEE can make
+/// this right, by announcing itself again: the admitting side publishes the
+/// evidence for an already-admitted TEE that has none. Without that, one failed
+/// publish right after admission would leave the TEE unable to author for good,
+/// because it stops announcing once admitted.
+///
+/// Whether the policy names the TEE's MRTD is deliberately not part of this.
+/// Evidence is owed either way, and asking that would re-announce forever on a
+/// policy that simply does not list this image.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_evidence_owed(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+) -> EyreResult<bool> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    if MembershipRepository::new(store).role_of(&root, account)?
+        != Some(GroupMemberRole::ReadOnlyTee)
+    {
+        return Ok(false);
+    }
+    if read_tee_authoring_policy(store, &root)?.is_empty() {
+        return Ok(false);
+    }
+    Ok(tee_authority_evidence(store, &root, account)?.is_none())
+}
+
 /// Verify TEE authority evidence offline. The quote must bind `attested_key` the
 /// way fleet join binds it: SHA-256 of the key in report data bytes `32..64`.
 ///
@@ -729,7 +763,10 @@ mod tests {
 
     use calimero_primitives::identity::PublicKey;
 
-    use super::{is_tee_authority, tee_admission_record, tee_admission_records, writer_account};
+    use super::{
+        is_tee_authority, tee_admission_record, tee_admission_records, tee_evidence_owed,
+        writer_account,
+    };
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
     use crate::MembershipRepository;
@@ -897,6 +934,40 @@ mod tests {
         assert!(
             !f.is_authority(&f.tee),
             "the admission record outlives a removal; the authority must not"
+        );
+    }
+
+    /// Evidence is owed to an admitted TEE only while authorship is on and none
+    /// is recorded, whatever MRTD the policy names, and never to anyone else.
+    #[test]
+    fn evidence_is_owed_only_to_an_admitted_tee_without_it_while_authorship_is_on() {
+        let f = Fixture::new(0xAD);
+        let owed = |account: &AccountId| tee_evidence_owed(&f.store, &f.ns_gid, account).unwrap();
+        let (_key, member) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x73);
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &member, GroupMemberRole::Member)
+            .unwrap();
+
+        assert!(!owed(&f.tee), "authorship off: nothing is owed");
+        f.policy(&["another-image"]);
+        assert!(
+            owed(&f.tee),
+            "owed even when the policy does not name this TEE's image"
+        );
+        assert!(!owed(&member), "a member is never owed TEE evidence");
+
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        assert!(!owed(&f.tee), "recorded evidence settles it");
+
+        let g = Fixture::new(0xAE);
+        g.policy(&[MOCK_MRTD]);
+        assert!(tee_evidence_owed(&g.store, &g.ns_gid, &g.tee).unwrap());
+        MembershipRepository::new(&g.store)
+            .remove_member(&g.ns_gid, &g.tee)
+            .unwrap();
+        assert!(
+            !tee_evidence_owed(&g.store, &g.ns_gid, &g.tee).unwrap(),
+            "a removed TEE is owed nothing"
         );
     }
 

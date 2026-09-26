@@ -101,8 +101,16 @@ evidence whose `attested_key` does not speak for the account it names. Copying
 one TEE's evidence and relabelling it for another account does not work, and
 neither does evidence whose quote binds a different key.
 
-A TEE admitted by a build that published no evidence is not an authority until
-it announces itself again: the admitting node then publishes evidence for it.
+Only the TEE holds its quote, so only the TEE can put right evidence that
+never landed: a publish that failed right after admission, or an admission by a
+build that published none. A TEE therefore watches for it. While TEE authorship
+is on in a namespace it was admitted to, and no verified evidence for it is on
+the log, it announces itself again with a fresh quote, and an admitter that
+hears an already-admitted TEE with no evidence publishes it. The first
+re-announce waits a minute, since right after an admission the admitter's own
+publish is usually still on its way, and the wait doubles after each one up to
+half an hour. It stops once the evidence is recorded. Whether the policy names
+the TEE's MRTD plays no part: the evidence is owed either way.
 
 ## Joining from a snapshot
 
