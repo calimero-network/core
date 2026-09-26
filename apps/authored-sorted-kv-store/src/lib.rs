@@ -192,6 +192,21 @@ impl AuthoredSortedKvStore {
         Ok(notes)
     }
 
+    /// How many notes under `topic` have an owner stamp that matches the
+    /// account named in their key.
+    ///
+    /// The same check [`read_topic`](Self::read_topic) exposes per note, as a
+    /// number. A client auditing a topic wants the count, not to re-derive it
+    /// from the rendered rows — and an assertion about it should not depend on
+    /// how some harness renders a boolean.
+    pub fn verified_notes(&self, topic: String) -> app::Result<usize> {
+        Ok(self
+            .read_topic(topic)?
+            .iter()
+            .filter(|note| note.key_matches_owner)
+            .count())
+    }
+
     /// The notes under `topic` that the CALLER wrote.
     ///
     /// Narrowing the prefix by the caller's own account is the cheapest form of
@@ -267,6 +282,14 @@ mod tests {
         let notes = app.view(|s| s.read_topic("news".into())).expect("read");
         assert_eq!(notes.len(), 2);
         assert!(notes.iter().all(|n| n.key_matches_owner));
+
+        // Same judgement as a count. Both writers' rows are self-consistent, so
+        // a reader auditing the topic sees every row check out.
+        assert_eq!(
+            app.view(|s| s.verified_notes("news".into()))
+                .expect("count"),
+            2
+        );
     }
 
     #[test]

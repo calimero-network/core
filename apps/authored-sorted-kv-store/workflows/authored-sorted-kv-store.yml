@@ -81,8 +81,13 @@ steps:
       topic: "news"
       seq: 1
       text: "from node one"
+    # `output`, not `result`: `result` binds the whole {"output": ...} envelope,
+    # which is what `json_equal` wants but NOT what a method argument wants.
+    # Passing the envelope as `key` below would make the owner-gate steps fail
+    # on a malformed key rather than on the gate — and since they are
+    # `expected_failure`, they would have passed for the wrong reason.
     outputs:
-      node1_key_path: result
+      node1_key_path: output
 
   - name: Assert node 1 got a key back
     type: assert
@@ -112,11 +117,29 @@ steps:
   # account NAMED IN THE KEY against the owner stamp core verified when it
   # applied the delta. They agree, so the note is what it says it is — and
   # node 2 worked that out for itself rather than taking node 1's word.
-  - name: Assert node 2 sees node 1's note, and its authorship checks out
+  - name: Assert node 2 sees node 1's note
     type: assert
     statements:
       - 'contains({{n2_topic}}, "from node one")'
-      - 'regex({{n2_topic}}, key_matches_owner.: *true)'
+
+  # The authorship half, asserted as a NUMBER rather than by matching the
+  # rendered rows: merobox prints a result as a Python dict repr (`True`), not
+  # as JSON (`true`), so a pattern written against either rendering is a
+  # trap for whoever edits this next.
+  - name: Node 2 counts the notes whose authorship it could verify
+    type: call
+    node: authored-node-2
+    context_id: '{{context_id}}'
+    method: verified_notes
+    args:
+      topic: "news"
+    outputs:
+      n2_verified: result
+
+  - name: Assert node 2 verified node 1's authorship for itself
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_verified}}, {"output": 1})'
 
   # ── 2. the owner gate holds across nodes ────────────────────────────────
 
@@ -181,7 +204,7 @@ steps:
       seq: 1
       text: "from node two"
     outputs:
-      node2_key_path: result
+      node2_key_path: output
 
   # The same `seq` on the same topic, and neither write was refused: the key
   # carries the author, so two writers never contend for one key. Without that,
