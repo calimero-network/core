@@ -125,9 +125,13 @@ jobs:
           pnpm test:contract
 
       - name: Boot merod (embedded auth, single node)
+        # --device-key-login lets mero-js log in as an ACCOUNT, which
+        # POST /contexts/{context_id}/query requires; a password session gets a
+        # 401 there. `cli` is the audience the suite's login names.
         run: |
           BIN="$PWD/target/debug/merod"
-          "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded
+          "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded \
+            --device-key-login --device-key-login-audience cli
           "$BIN" --node ci-node run &
           echo "MEROD_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
