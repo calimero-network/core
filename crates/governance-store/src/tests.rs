@@ -6036,6 +6036,76 @@ fn inherited_deny_does_not_drop_a_direct_member_of_the_owning_subgroup() {
     );
 }
 
+/// core#4070. The cross-DAG check authorizes a delta at the governance heads
+/// its author cites, so a revoked device that has not folded its own revocation
+/// passes it. The receive filter is what refuses it: the key the revoked device
+/// signed under is denied while no live binding speaks for it.
+#[test]
+fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
+    use super::test_fixtures::join_account_for;
+    use calimero_primitives::identity::PrivateKey;
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xA7u8; 32]);
+    let ctx = ContextId::from([0xA8u8; 32]);
+    let laptop_pk = PublicKey::from([0xA9; 32]);
+    let account = enrol_member(&store, &ns_gid, &laptop_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+        .unwrap();
+    register_context_in_group(&store, &ns_gid, &ctx).unwrap();
+
+    let bindings = AccountBindingRepository::new(&store);
+    let denied = || {
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &laptop_pk)
+            .unwrap()
+    };
+    assert!(
+        !denied(),
+        "precondition: the bound device's writes are allowed"
+    );
+
+    // `enrol_member` derives the device id from the signing key.
+    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    bindings.apply_revocation(&ns_gid, laptop).unwrap();
+    assert!(
+        denied(),
+        "a revoked device's key must be refused at the receive filter, whatever heads it cites"
+    );
+
+    // The same node re-paired: a fresh device under the same account, signing with
+    // the same namespace identity. Its writes are the account's again.
+    let root_sk = PrivateKey::from(*laptop_pk);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let repaired = join_account_for(&root_sk, genesis, &laptop_pk, [0xAA; 32], 0);
+    let _bound = bindings
+        .apply_link(
+            &ns_gid,
+            &repaired.genesis,
+            &repaired.chain,
+            &repaired.statement,
+            0,
+        )
+        .unwrap()
+        .expect("a fresh device id links");
+    assert!(
+        !denied(),
+        "a key a live binding speaks for again must not stay denied"
+    );
+
+    // And in the other order: the revocation of the re-paired device's
+    // predecessor arriving after the new link must not silence it either.
+    bindings.apply_revocation(&ns_gid, laptop).unwrap();
+    assert!(
+        !denied(),
+        "denial must not depend on which op arrived first"
+    );
+}
+
 /// The inherited-deny column must be hash-neutral, like the direct deny-list —
 /// writing it must not perturb the group state hash (which reads only the
 /// GroupMeta and GroupMember rows). Otherwise the sign-time

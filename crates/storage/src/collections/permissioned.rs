@@ -99,13 +99,34 @@ impl Op {
     label = "not an `Authorizer`",
     note = "the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` \
             (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via \
-            `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` \
-            as a pure function of `(who, op, caps)` with no I/O."
+            `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE \
+            authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function \
+            of `(who, op, caps)` with no I/O."
 )]
 pub trait Authorizer {
     /// Is `who` permitted to perform `op`, given the resource's current
     /// capability map (each writer with its [`OpMask`])? Pure: no I/O.
     fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool;
+
+    /// Whether [`PermissionedStorage::get_mut`] also runs the `Op::Write` guard.
+    ///
+    /// Off by default: in-place edits of a collection value are guarded at merge
+    /// only, as they always have been. A policy whose writes a member must never
+    /// see land even locally (a forged move in a game would otherwise show on the
+    /// forger's own node until sync repaired it) turns it on.
+    const GUARD_IN_PLACE_EDITS: bool = false;
+
+    /// The fixed writer set of a cell whose genesis is deferred to its first
+    /// authorised write, or `None` (the default) for a cell created eagerly.
+    ///
+    /// An eager genesis is signed by whoever constructs the cell, usually the
+    /// context creator in `init`. Peers check that signature against the writer
+    /// set the genesis claims, so a policy whose writers exclude the creator must
+    /// defer genesis. Otherwise its initial state never reaches any other node.
+    #[must_use]
+    fn lazy_genesis_writers() -> Option<BTreeSet<AccountId>> {
+        None
+    }
 }
 
 /// Membership policy: any writer may perform any op. This is exactly what the
@@ -134,6 +155,29 @@ impl Authorizer for OwnerAcl {
         // cannot drift if the rule ever changes. The single-owner distinction is
         // an API-surface + constructor invariant, not a different merge rule.
         WriterSetAcl::authorize(who, op, caps)
+    }
+}
+
+/// TEE-authority policy: only [`AccountId::TEE_AUTHORITY`] may write, and only
+/// while it holds the writer set. The API-side mirror of what merge enforces for
+/// a [`TeeOnly`] cell: its writer set is `{TEE_AUTHORITY}`, frozen, and a node
+/// resolves a signer to that account only for an attested TEE that the
+/// namespace's TEE authoring policy allows.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TeeAuthorityAcl;
+
+impl Authorizer for TeeAuthorityAcl {
+    fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool {
+        match op {
+            Op::Read => true,
+            _ => *who == AccountId::TEE_AUTHORITY && WriterSetAcl::authorize(who, op, caps),
+        }
+    }
+
+    const GUARD_IN_PLACE_EDITS: bool = true;
+
+    fn lazy_genesis_writers() -> Option<BTreeSet<AccountId>> {
+        Some(BTreeSet::from([AccountId::TEE_AUTHORITY]))
     }
 }
 
@@ -190,9 +234,18 @@ where
     /// for nested fields; the `#[app::state]` macro canonicalises the id via
     /// [`reassign_deterministic_id`](Self::reassign_deterministic_id) after
     /// `init`.
+    ///
+    /// Under a policy with [`Authorizer::lazy_genesis_writers`], `writers` is
+    /// ignored: the policy fixes the set, and nothing is stored until the first
+    /// authorised write.
     pub fn new(writers: BTreeSet<AccountId>, frozen: bool) -> Self {
+        let inner = if A::lazy_genesis_writers().is_some() {
+            WriterSetCell::new_unmaterialized(frozen)
+        } else {
+            WriterSetCell::new(writers, frozen)
+        };
         Self {
-            inner: WriterSetCell::new(writers, frozen),
+            inner,
             _policy: PhantomData,
         }
     }
@@ -204,6 +257,11 @@ where
         writers: BTreeSet<AccountId>,
         frozen: bool,
     ) -> Self {
+        if A::lazy_genesis_writers().is_some() {
+            let mut this = Self::new(writers, frozen);
+            this.reassign_deterministic_id(field_name);
+            return this;
+        }
         Self {
             inner: WriterSetCell::new_with_field_name(field_name, writers, frozen),
             _policy: PhantomData,
@@ -220,7 +278,56 @@ where
     /// Whether `who` may perform `op` under policy `A`, against the current
     /// writer set. Pure; no side effects.
     pub fn can(&self, who: &AccountId, op: Op) -> bool {
-        A::authorize(who, op, &self.inner.capabilities())
+        A::authorize(who, op, &self.effective_capabilities())
+    }
+
+    /// The capability map `can` judges against. Before a lazily created cell's
+    /// genesis nothing is stored, so its policy's fixed writer set stands in.
+    fn effective_capabilities(&self) -> BTreeMap<AccountId, OpMask> {
+        match A::lazy_genesis_writers() {
+            Some(writers) if !matches!(self.inner.is_materialized(), Ok(true)) => {
+                crate::entities::full_mask(writers)
+            }
+            _ => self.inner.capabilities(),
+        }
+    }
+
+    /// Whether a lazily created cell holds a value its policy can trust.
+    ///
+    /// `Ok(false)` before genesis. After genesis the stored writer set must be
+    /// exactly the policy's set: an entity at this id claiming any other set was
+    /// planted by someone else (peers accept a first write from anyone in the set
+    /// it claims), and its contents are ignored.
+    ///
+    /// # Errors
+    /// Any error reading the index.
+    fn lazy_genesis_trusted(&self, writers: &BTreeSet<AccountId>) -> Result<bool, StoreError> {
+        if !self.inner.is_materialized()? {
+            return Ok(false);
+        }
+        if self.inner.writers() == *writers {
+            Ok(true)
+        } else {
+            Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "a cell at this id was created with a writer set its policy does not allow; \
+                 its contents are not trusted"
+                    .to_owned(),
+            )))
+        }
+    }
+
+    /// Create a lazily created cell on its first authorised write. A no-op for
+    /// an eager cell or one that already exists. Call after the write guard.
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if an untrusted entity already occupies the id.
+    fn ensure_genesis(&mut self) -> Result<(), StoreError> {
+        if let Some(writers) = A::lazy_genesis_writers() {
+            if !self.lazy_genesis_trusted(&writers)? {
+                self.inner.materialize(writers);
+            }
+        }
+        Ok(())
     }
 
     /// Fail-fast guard: `Ok(())` if the current executor may perform `op`,
@@ -254,7 +361,18 @@ where
     ///
     /// # Errors
     /// Currently infallible; the `Result` is preserved for forward compat.
+    ///
+    /// Under a policy with [`Authorizer::lazy_genesis_writers`], this is an
+    /// `InvalidData` error until the first write reaches this node. Use
+    /// [`TeeOnly::try_get`] to read `None` instead.
     pub fn get(&self) -> Result<&T, StoreError> {
+        if let Some(writers) = A::lazy_genesis_writers() {
+            if !self.lazy_genesis_trusted(&writers)? {
+                return Err(StoreError::StorageError(StorageError::InvalidData(
+                    "this cell has not been written yet".to_owned(),
+                )));
+            }
+        }
         self.inner.get()
     }
 
@@ -269,6 +387,7 @@ where
         // — the whole point of the seam. `WriterSetCell::insert` then performs
         // the authoritative membership check that peers re-verify at merge.
         self.guard(Op::Write)?;
+        self.ensure_genesis()?;
         self.inner.insert(value)
     }
 
@@ -359,9 +478,17 @@ where
     /// guarded at merge. Only collections (which implement [`Data`]) get this;
     /// a scalar value is edited via [`insert`](Self::insert).
     ///
+    /// Under a policy that sets [`Authorizer::GUARD_IN_PLACE_EDITS`] (such as
+    /// [`TeeAuthorityAcl`]) this also refuses a caller who may not write.
+    ///
     /// # Errors
-    /// Currently infallible; the `Result` is preserved for forward compat.
+    /// `ActionNotAllowed` if the policy guards in-place edits and the executor
+    /// may not write; otherwise any error loading the value.
     pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
+        if A::GUARD_IN_PLACE_EDITS || A::lazy_genesis_writers().is_some() {
+            self.guard(Op::Write)?;
+        }
+        self.ensure_genesis()?;
         self.inner.get_mut()
     }
 }
@@ -439,6 +566,45 @@ pub type Ownable<T> = PermissionedStorage<T, OwnerAcl>;
 /// policy — `SharedStorage<T>` and `PermissionedStorage<T, WriterSetAcl>` are the
 /// same type. The ergonomic name most apps use.
 pub type SharedStorage<T> = PermissionedStorage<T, WriterSetAcl>;
+
+/// State only an attested TEE may write: [`PermissionedStorage`] under
+/// [`TeeAuthorityAcl`], with the frozen writer set `{TEE_AUTHORITY}`.
+///
+/// Every member reads it; nobody but a TEE running an `#[app::tee]` method can
+/// change it. A member's write is refused locally by the guard and, more
+/// importantly, dropped at merge on every honest peer, because no member's
+/// signing key resolves to [`AccountId::TEE_AUTHORITY`].
+pub type TeeOnly<T> = PermissionedStorage<T, TeeAuthorityAcl>;
+
+impl<T> PermissionedStorage<T, TeeAuthorityAcl>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + Default,
+{
+    /// A new TEE-only cell. The writer set is frozen, so it can never be
+    /// rotated away from the TEE authority.
+    ///
+    /// Nothing is stored until the TEE authority's first write, which creates the
+    /// cell. That first write is signed by the TEE, so every peer accepts it; a
+    /// genesis signed by the context creator in `init` would be dropped, because
+    /// the creator is not a writer.
+    pub fn new_tee_only() -> Self {
+        Self::new(BTreeSet::from([AccountId::TEE_AUTHORITY]), true)
+    }
+
+    /// The value, or `None` until the TEE authority's first write reaches this
+    /// node. Reads never write, so this is safe in a view method.
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if an entity at this id claims a writer set other than
+    /// `{TEE_AUTHORITY}`; any storage error loading the value.
+    pub fn try_get(&self) -> Result<Option<&T>, StoreError> {
+        if self.lazy_genesis_trusted(&BTreeSet::from([AccountId::TEE_AUTHORITY]))? {
+            self.inner.get().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
 
 impl<T> PermissionedStorage<T, OwnerAcl>
 where
@@ -519,7 +685,10 @@ mod tests {
     use borsh::{BorshDeserialize, BorshSerialize};
     use serial_test::serial;
 
-    use super::{Op, Ownable, PermissionedStorage, ProtocolAuthorizer};
+    use super::{
+        Authorizer, Op, Ownable, PermissionedStorage, ProtocolAuthorizer, SharedStorage,
+        TeeAuthorityAcl, TeeOnly,
+    };
     use crate::collections::crdt_meta::{MergeError, Mergeable};
     use crate::collections::Root;
     use crate::entities::{Data, OpMask};
@@ -610,6 +779,92 @@ mod tests {
         assert!(p.insert(TestVal(2)).is_err());
         assert!(!p.can(&pk(BOB), Op::Write));
         assert!(p.guard(Op::Write).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn tee_only_is_writable_by_the_tee_authority_alone() {
+        env::reset_for_testing();
+        env::set_account_id(*AccountId::TEE_AUTHORITY.as_bytes());
+        let mut p = Root::new(TeeOnly::<TestVal>::new_tee_only);
+
+        // The TEE authority writes; the set is frozen, so it cannot hand that off.
+        p.insert(TestVal(7)).unwrap();
+        assert_eq!(p.get().unwrap(), &TestVal(7));
+        assert!(p.is_frozen());
+        assert!(p.rotate_writers(writers(&[ALICE])).is_err());
+
+        // A member reads it but cannot write it, not even as an admin would.
+        env::set_account_id(ALICE);
+        assert_eq!(p.get().unwrap(), &TestVal(7));
+        assert!(p.insert(TestVal(8)).is_err());
+        assert!(p.can(&pk(ALICE), Op::Read));
+        assert!(!p.can(&pk(ALICE), Op::Write));
+    }
+
+    #[test]
+    #[serial]
+    fn tee_only_created_by_a_member_stores_nothing_until_the_tee_writes() {
+        // The context creator builds the cell in `init`. Its genesis must not be
+        // stored or shipped then: it would be signed by the creator, who is not a
+        // writer, so every peer would drop it and the cell would never reach them.
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+        let mut p = Root::new(TeeOnly::<TestVal>::new_tee_only);
+
+        assert!(!p.inner.is_materialized().unwrap());
+        assert_eq!(p.try_get().unwrap(), None);
+        assert!(p.get().is_err(), "an unwritten cell has no value to lend");
+        assert!(p.insert(TestVal(8)).is_err());
+        assert!(
+            !p.inner.is_materialized().unwrap(),
+            "a refused write must not create the cell"
+        );
+
+        // The TEE authority's first write creates the cell, so a writer signs it.
+        env::set_account_id(*AccountId::TEE_AUTHORITY.as_bytes());
+        p.insert(TestVal(7)).unwrap();
+        assert!(p.inner.is_materialized().unwrap());
+        assert_eq!(p.writers(), BTreeSet::from([AccountId::TEE_AUTHORITY]));
+
+        env::set_account_id(ALICE);
+        assert_eq!(p.try_get().unwrap(), Some(&TestVal(7)));
+        assert_eq!(p.get().unwrap(), &TestVal(7));
+    }
+
+    #[test]
+    #[serial]
+    fn tee_only_refuses_an_entity_planted_at_its_id_with_another_writer_set() {
+        // A member creates a cell at the TEE cell's deterministic id first, with
+        // itself as writer. Peers accept that genesis, since the member is in the
+        // set it claims. The TeeOnly handle must not trust it or write into it.
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+        let _planted = Root::new(|| {
+            SharedStorage::<TestVal>::new_with_field_name("dice", writers(&[ALICE]), false)
+        });
+        let mut tee = TeeOnly::<TestVal>::new_with_field_name("dice", BTreeSet::new(), true);
+
+        assert!(tee.try_get().is_err());
+        env::set_account_id(*AccountId::TEE_AUTHORITY.as_bytes());
+        assert!(tee.insert(TestVal(7)).is_err());
+    }
+
+    #[test]
+    fn tee_authority_acl_refuses_any_other_writer_in_the_set() {
+        // Even a writer set that somehow named another account alongside the
+        // TEE authority must not let that account write through this policy.
+        let caps = [pk(ALICE), AccountId::TEE_AUTHORITY]
+            .into_iter()
+            .map(|a| (a, OpMask::FULL))
+            .collect();
+        assert!(TeeAuthorityAcl::authorize(
+            &AccountId::TEE_AUTHORITY,
+            Op::Write,
+            &caps
+        ));
+        assert!(!TeeAuthorityAcl::authorize(&pk(ALICE), Op::Write, &caps));
+        assert!(!TeeAuthorityAcl::authorize(&pk(ALICE), Op::Admin, &caps));
     }
 
     #[test]

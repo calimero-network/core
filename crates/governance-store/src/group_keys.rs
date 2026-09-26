@@ -486,11 +486,10 @@ impl<'a> GroupKeyring<'a> {
             .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
             .ok_or(KeyringError::DecryptionFailed)?;
         borsh::from_slice(&plaintext).map_err(|e| {
-            tracing::warn!(
-                plaintext_len = plaintext.len(),
-                prefix = ?plaintext.first(),
-                "decrypted relay payload does not match the current SignedNamespaceOp schema"
-            );
+            // The prefix is a byte of DECRYPTED plaintext, so it stays at
+            // `debug` (not shipped off the node); `warn` carries the length only.
+            tracing::warn!(plaintext_len = plaintext.len(), "decrypted relay payload does not match the current SignedNamespaceOp schema");
+            tracing::debug!(prefix = ?plaintext.first(), "decrypted relay payload does not match the current SignedNamespaceOp schema");
             eyre::eyre!("borsh decode SignedNamespaceOp: {e}")
         })
     }
@@ -556,11 +555,10 @@ impl<'a> GroupKeyring<'a> {
             .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
             .ok_or(KeyringError::DecryptionFailed)?;
         borsh::from_slice(&plaintext).map_err(|e| {
-            tracing::warn!(
-                plaintext_len = plaintext.len(),
-                prefix = ?plaintext.first(),
-                "decrypted root op does not match the current RootOp schema"
-            );
+            // The prefix is a byte of DECRYPTED plaintext, so it stays at
+            // `debug` (not shipped off the node); `warn` carries the length only.
+            tracing::warn!(plaintext_len = plaintext.len(), "decrypted root op does not match the current RootOp schema");
+            tracing::debug!(prefix = ?plaintext.first(), "decrypted root op does not match the current RootOp schema");
             eyre::eyre!("borsh decode RootOp: {e}")
         })
     }

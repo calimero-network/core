@@ -38,6 +38,8 @@ mod noop;
 mod subgroup_visibility_set;
 mod target_application_set;
 mod tee_admission_policy_set;
+mod tee_authoring_policy_set;
+mod tee_authority_evidence;
 mod tee_release_admission_policy_set;
 mod transfer_ownership;
 
@@ -178,6 +180,21 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::TeeReleaseAdmissionPolicySet {
             allowed_profiles, ..
         } => tee_release_admission_policy_set::apply(ctx, allowed_profiles)?,
+        GroupOp::TeeAuthoringPolicySet { .. } => tee_authoring_policy_set::apply(ctx)?,
+        GroupOp::TeeAuthorityEvidence {
+            member,
+            attested_key,
+            quote,
+            collateral,
+            attested_at,
+        } => tee_authority_evidence::apply(
+            ctx,
+            member,
+            attested_key,
+            quote,
+            collateral.as_deref(),
+            *attested_at,
+        )?,
         GroupOp::MemberJoinedViaTeeAttestation {
             member,
             quote_hash: _,

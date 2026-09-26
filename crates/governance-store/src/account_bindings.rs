@@ -35,7 +35,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupAccountEndorser, GroupAccountKey, GroupAccountKeyValue, GroupDeviceBinding,
-    GroupDeviceBindingValue, GroupDeviceScopeFloor, GroupRevokedDevice,
+    GroupDeviceBindingValue, GroupDeviceScopeFloor, GroupRevokedDevice, GroupRevokedSigner,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -281,6 +281,25 @@ impl<'a> AccountBindingRepository<'a> {
     /// Propagates the store read failure.
     pub fn is_revoked(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<bool> {
         let key = GroupRevokedDevice::new(group.to_bytes(), *device.as_bytes());
+        Ok(self.store.handle().has(&key)?)
+    }
+
+    /// Did `sign_pk` sign for a device that was revoked in `group`?
+    ///
+    /// Recorded by [`apply_revocation`](Self::apply_revocation) from the binding it
+    /// deletes. On its own this does not mean the key is withdrawn: a re-paired
+    /// node keeps its namespace identity under a fresh device, so a caller must
+    /// first ask whether a live binding speaks for the key, as
+    /// [`crate::DenyListRepository::is_author_denied_for_context`] does.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_signer_revoked(
+        &self,
+        group: &ContextGroupId,
+        sign_pk: &PublicKey,
+    ) -> EyreResult<bool> {
+        let key = GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
         Ok(self.store.handle().has(&key)?)
     }
 
@@ -833,7 +852,8 @@ impl<'a> AccountBindingRepository<'a> {
     }
 
     /// Remove every account row under `group` — bindings, revocation
-    /// tombstones, per-account root keys, and the scope floors.
+    /// tombstones and the signing keys they withdrew, per-account root keys, and
+    /// the scope floors.
     ///
     /// Used by the group teardown so the account plane does not outlive the group
     /// it describes. The tombstones matter most: they are **terminal**, so a group
@@ -858,6 +878,12 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let revoked_signers = collect_keys_with_prefix(
+            self.store,
+            GroupRevokedSigner::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_REVOKED_SIGNER_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
         let accounts = collect_keys_with_prefix(
             self.store,
             GroupAccountKey::new(gid, [0u8; 32]),
@@ -876,6 +902,9 @@ impl<'a> AccountBindingRepository<'a> {
             handle.delete(&key)?;
         }
         for key in revoked {
+            handle.delete(&key)?;
+        }
+        for key in revoked_signers {
             handle.delete(&key)?;
         }
         for key in accounts {
@@ -941,10 +970,22 @@ impl<'a> AccountBindingRepository<'a> {
     /// still win, and the tombstone is what the link consults. Dropping an
     /// early revocation would make the outcome depend on arrival order.
     ///
+    /// Also records the signing key the deleted binding named, since that is how a
+    /// state delta names its author (see [`GroupRevokedSigner`]). A revocation that
+    /// arrives before its link has no binding to read, and records no key; the link
+    /// is then refused, so the device never speaks for the account here at all.
+    ///
     /// # Errors
-    /// Propagates the store write failure.
+    /// Propagates the store read or write failure.
     pub fn apply_revocation(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<()> {
+        let bound = self.raw_binding(group, device)?;
         let mut handle = self.store.handle();
+        if let Some(bound) = bound {
+            handle.put(
+                &GroupRevokedSigner::new(group.to_bytes(), bound.sign_pk),
+                &(),
+            )?;
+        }
         handle.put(
             &GroupRevokedDevice::new(group.to_bytes(), *device.as_bytes()),
             &(),

@@ -6,15 +6,9 @@ use calimero_context_client::group::{JoinContextRequest, ListGroupContextsReques
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::NamespaceRepository;
-use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::client::TeeAdmissionParams;
-use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
-#[cfg(feature = "mock-attestation")]
-use calimero_tee_attestation::generate_mock_attestation;
-use calimero_tee_attestation::{build_report_data, generate_attestation};
 use reqwest::StatusCode;
-use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
 use crate::admin::handlers::validation::ValidatedJson;
@@ -67,88 +61,39 @@ pub async fn handler(
         "Using namespace identity for fleet join"
     );
 
-    let pk_hash: [u8; 32] = Sha256::digest(*our_public_key).into();
-    let nonce: [u8; 32] = rand::random();
-    let report_data = build_report_data(&nonce, Some(&pk_hash));
-
-    // Under --mock-tee, deliberately produce a mock quote (any OS, no TDX
-    // hardware) and accept it below. The real path is unchanged: it generates a
-    // hardware attestation and still rejects any mock result.
-    #[cfg(feature = "mock-attestation")]
-    let attestation = if state.mock_tee {
-        generate_mock_attestation(report_data)
-    } else {
-        match generate_attestation(report_data) {
-            Ok(result) => result,
-            Err(err) => {
-                error!(error=?err, "Failed to generate TDX attestation");
-                return ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to generate attestation".to_owned(),
-                }
-                .into_response();
-            }
-        }
-    };
-    #[cfg(not(feature = "mock-attestation"))]
-    let attestation = match generate_attestation(report_data) {
-        Ok(result) => result,
-        Err(err) => {
-            error!(error=?err, "Failed to generate TDX attestation");
-            return ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to generate attestation".to_owned(),
-            }
-            .into_response();
-        }
-    };
-
-    // Reject mock attestations only when NOT in mock-tee mode. In mock-tee mode
-    // the mock quote above is produced on purpose and accepted by the verifier's
-    // namespace policy. Without the `mock-attestation` feature there is no
-    // mock-tee mode, so any mock result is always rejected.
-    #[cfg(feature = "mock-attestation")]
-    let reject_mock = attestation.is_mock && !state.mock_tee;
-    #[cfg(not(feature = "mock-attestation"))]
-    let reject_mock = attestation.is_mock;
-    if reject_mock {
-        error!("Mock attestation generated -- fleet-join requires real TDX hardware");
-        return ApiError {
-            status_code: StatusCode::NOT_IMPLEMENTED,
-            message: "TDX attestation required -- mock not accepted for fleet join".to_owned(),
-        }
-        .into_response();
-    }
-
-    // The verifier publishes the admission op, but the credential is ours — so
-    // it has to travel with the announcement. Built locally: `ensure_enrolled`
-    // mints the device row without publishing or encrypting anything, which is
-    // exactly why a replica can produce one before it holds any scope key.
-    let account =
-        match calimero_context::join_credential::build(&state.store, &ns_id, &our_public_key) {
-            Ok(account) => account,
-            Err(err) => {
-                error!(error=?err, "fleet-join: could not build this replica's account credential");
-                return ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "could not build the account credential for this replica".to_owned(),
-                }
-                .into_response();
-            }
-        };
-
-    // Captured before `account` moves into the broadcast below. Reported because
-    // the caller cannot derive it: membership is recorded against the ACCOUNT a
-    // key speaks for, so a caller holding only `public_key` has nothing it can
-    // match a member listing against, and no endpoint maps one to the other from
-    // outside the node that owns it.
-    let account_id = account.statement.account;
-
     // The node release this node runs, when merod was told it
     // (`MERO_TEE_VERSION`). A namespace that admits TEEs by signed release
     // checks the quote against that release's signed measurements; without it
     // only a namespace with measurement lists can admit this node.
     let release_version = state.tee_release_version.clone();
+
+    let announcement = match super::announce::build(
+        &state.store,
+        &ns_id,
+        our_public_key,
+        release_version.as_deref(),
+        #[cfg(feature = "mock-attestation")]
+        state.mock_tee,
+    ) {
+        Ok(announcement) => announcement,
+        Err(err) => {
+            let status_code = match err {
+                super::announce::AnnounceError::MockRejected => StatusCode::NOT_IMPLEMENTED,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            return ApiError {
+                status_code,
+                message: err.message().to_owned(),
+            }
+            .into_response();
+        }
+    };
+
+    // Reported because the caller cannot derive it: membership is recorded
+    // against the ACCOUNT a key speaks for, so a caller holding only
+    // `public_key` has nothing it can match a member listing against, and no
+    // endpoint maps one to the other from outside the node that owns it.
+    let account_id = announcement.account.statement.account;
 
     // Kept for the direct request below, which carries the same attestation the
     // broadcast does. Only built when there is someone to ask.
@@ -156,50 +101,13 @@ pub async fn handler(
         namespace_id: ns_id.to_bytes(),
         admitter_addrs: req.admitter_addrs.clone(),
         public_key: our_public_key,
-        quote_bytes: attestation.quote_bytes.clone(),
-        nonce,
-        account: account.clone(),
+        quote_bytes: announcement.quote_bytes.clone(),
+        nonce: announcement.nonce,
+        account: announcement.account.clone(),
         release_version: release_version.clone(),
     });
 
-    // Both announcement forms when the release is known: the one that names
-    // it, for admitters under a signed-release policy, and the old one, which
-    // every admitter decodes -- including those that predate the new form and
-    // would otherwise not hear this node at all.
-    let mut announcements = Vec::with_capacity(2);
-    if let Some(release_version) = release_version {
-        announcements.push(BroadcastMessage::TeeReleaseAttestationAnnounce {
-            quote_bytes: attestation.quote_bytes.clone(),
-            public_key: our_public_key,
-            nonce,
-            node_type: SpecializedNodeType::ReadOnly,
-            account: account.clone(),
-            release_version,
-        });
-    }
-    announcements.push(BroadcastMessage::TeeAttestationAnnounce {
-        quote_bytes: attestation.quote_bytes,
-        public_key: our_public_key,
-        nonce,
-        node_type: SpecializedNodeType::ReadOnly,
-        account,
-    });
-
-    let payloads = match announcements
-        .iter()
-        .map(borsh::to_vec)
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(p) => p,
-        Err(err) => {
-            error!(error=?err, "Failed to serialize TeeAttestationAnnounce");
-            return ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to serialize announcement".to_owned(),
-            }
-            .into_response();
-        }
-    };
+    let payloads = announcement.payloads;
 
     if let Err(err) = state.node_client.subscribe_namespace(group_id_bytes).await {
         error!(error=?err, "Failed to subscribe to namespace topic");

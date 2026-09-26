@@ -119,6 +119,8 @@ pub enum MethodResolutionError {
 pub enum HostError {
     #[error("invalid register id: {id}")]
     InvalidRegisterId { id: u64 },
+    #[error("{function} is only available in a TEE-triggered execution")]
+    TeeOnly { function: &'static str },
     #[error("invalid memory access")]
     InvalidMemoryAccess,
     #[error(
@@ -265,6 +267,36 @@ impl From<&PanicLocation<'_>> for Location {
             file: location.file().to_owned(),
             line: location.line(),
             column: location.column(),
+        }
+    }
+}
+
+impl FunctionCallError {
+    /// This error with anything the GUEST wrote elided, for logs that leave the
+    /// node.
+    ///
+    /// Two variants carry text the application chose: [`Self::ExecutionError`]
+    /// holds the method's own error bytes and a guest [`HostError::Panic`] holds
+    /// its panic message. Either can contain application state or arguments
+    /// (`Err(format!("balance {x} < {amount}"))`), and a log line at `warn` or
+    /// above is shipped to whoever runs the node's observability. On a TEE node
+    /// that is exactly the party the application's data must not reach. Every
+    /// other variant is written by the node itself and is kept verbatim.
+    ///
+    /// Log this at `warn`/`error`; log the full error at `debug` if it is needed.
+    #[must_use]
+    pub fn redacted(&self) -> String {
+        match self {
+            Self::ExecutionError(bytes) => format!(
+                "the method call returned an error ({} bytes; content elided)",
+                bytes.len()
+            ),
+            Self::HostError(HostError::Panic {
+                context: PanicContext::Guest,
+                message,
+                ..
+            }) => format!("guest panicked ({} bytes; message elided)", message.len()),
+            other => other.to_string(),
         }
     }
 }

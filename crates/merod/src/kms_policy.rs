@@ -34,14 +34,44 @@ pub struct KmsAttestationPolicy {
 /// Root structure of the release policy JSON.
 #[derive(Debug, Deserialize)]
 struct PolicyJson {
+    /// What the file describes. A published release policy says `"kms"`; any
+    /// other value is a file for something else and must not be read as one.
+    #[serde(default)]
+    role: Option<String>,
+    /// The image profile whose KMS the file pins (`locked-read-only`, ...).
+    #[serde(default)]
+    profile: Option<String>,
+    /// The release the file belongs to, without the `mero-kms-v` prefix.
+    #[serde(default)]
+    tag: Option<String>,
     #[serde(default)]
     policy: PolicySection,
     #[serde(default)]
     kms: KmsSection,
 }
 
+/// The allowlists the KMS's own quote is checked against.
+///
+/// Published policies name these `kms_allowed_*` and carry the NODE allowlists
+/// beside them as `node_allowed_*`. Those describe the nodes the KMS serves, not
+/// the KMS, so they are deliberately not read here: a KMS whose measurements
+/// happened to match a node image would otherwise pass. The unprefixed
+/// `allowed_*` names are an older layout, read only when the prefixed ones are
+/// absent.
 #[derive(Debug, Deserialize, Default)]
 struct PolicySection {
+    #[serde(default)]
+    kms_allowed_tcb_statuses: Vec<String>,
+    #[serde(default)]
+    kms_allowed_mrtd: Vec<String>,
+    #[serde(default)]
+    kms_allowed_rtmr0: Vec<String>,
+    #[serde(default)]
+    kms_allowed_rtmr1: Vec<String>,
+    #[serde(default)]
+    kms_allowed_rtmr2: Vec<String>,
+    #[serde(default)]
+    kms_allowed_rtmr3: Vec<String>,
     #[serde(default)]
     allowed_tcb_statuses: Vec<String>,
     #[serde(default)]
@@ -116,14 +146,91 @@ pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestati
     let policy_body = fetch_verified_asset(&tag, POLICY_JSON_ASSET, &KMS_RELEASE_IDENTITY)
         .await
         .map_err(|e| eyre::eyre!("Policy fetch or signature verification failed: {}", e))?;
-    parse_policy_json(&policy_body)
+    let expected_profile = expected_profile_from_env();
+    parse_policy_json_for_release(&policy_body, &version, expected_profile.as_deref())
 }
 
+/// The image profile this node expects its KMS's policy to be for, from
+/// `MERO_TEE_PROFILE`. Unset means no profile check.
+fn expected_profile_from_env() -> Option<String> {
+    std::env::var("MERO_TEE_PROFILE")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Parse a release policy and check it is the file this node asked for.
+///
+/// Every release's policy is validly signed, so a signature says a file is SOME
+/// release's policy, not that it is this one's. The URL names the release, but
+/// the fields inside are what the signature covers, so they are checked too.
+fn parse_policy_json_for_release(
+    json_str: &str,
+    version: &str,
+    expected_profile: Option<&str>,
+) -> EyreResult<KmsAttestationPolicy> {
+    let root: PolicyJson =
+        serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
+    if let Some(tag) = root.tag.as_deref() {
+        let tag = tag.trim().strip_prefix("mero-kms-v").unwrap_or(tag.trim());
+        if tag != version {
+            bail!("Policy JSON is for release {tag}, not the requested {version}");
+        }
+    }
+    if let Some(expected) = expected_profile {
+        match root.profile.as_deref() {
+            Some(profile) if profile == expected => {}
+            Some(profile) => bail!(
+                "Policy JSON is for the {profile} profile, but this node expects {expected} \
+                 (MERO_TEE_PROFILE)"
+            ),
+            None => bail!(
+                "Policy JSON names no profile, but this node expects {expected} (MERO_TEE_PROFILE)"
+            ),
+        }
+    }
+    policy_from_root(root)
+}
+
+#[cfg(test)]
 fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let root: PolicyJson =
         serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
+    policy_from_root(root)
+}
 
-    let allowed_tcb_statuses: Vec<String> = if root.policy.allowed_tcb_statuses.is_empty() {
+/// The KMS allowlist under its published name, else under the older one.
+fn kms_allowlist(prefixed: Vec<String>, legacy: Vec<String>) -> Vec<String> {
+    if prefixed.is_empty() {
+        legacy
+    } else {
+        prefixed
+    }
+}
+
+fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
+    if let Some(role) = root.role.as_deref() {
+        if role != "kms" {
+            bail!("Policy JSON has role {role:?}; a KMS release policy has role \"kms\"");
+        }
+    }
+    let PolicySection {
+        kms_allowed_tcb_statuses,
+        kms_allowed_mrtd,
+        kms_allowed_rtmr0,
+        kms_allowed_rtmr1,
+        kms_allowed_rtmr2,
+        kms_allowed_rtmr3,
+        allowed_tcb_statuses,
+        allowed_mrtd,
+        allowed_rtmr0,
+        allowed_rtmr1,
+        allowed_rtmr2,
+        allowed_rtmr3,
+    } = root.policy;
+    let tcb_statuses = kms_allowlist(kms_allowed_tcb_statuses, allowed_tcb_statuses);
+
+    let allowed_tcb_statuses: Vec<String> = if tcb_statuses.is_empty() {
         // Default to UpToDate when not specified, matching production hardening
         // expectations for Intel TDX attestation status.
         DEFAULT_ALLOWED_TCB_STATUSES
@@ -131,39 +238,38 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
             .map(|status| (*status).to_owned())
             .collect()
     } else {
-        root.policy
-            .allowed_tcb_statuses
+        tcb_statuses
             .into_iter()
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .collect()
     };
 
-    let allowed_mrtd = parse_hex_array(&root.policy.allowed_mrtd, 48)?;
-    let allowed_rtmr0 = parse_hex_array(&root.policy.allowed_rtmr0, 48)?;
-    let allowed_rtmr1 = parse_hex_array(&root.policy.allowed_rtmr1, 48)?;
-    let allowed_rtmr2 = parse_hex_array(&root.policy.allowed_rtmr2, 48)?;
-    let allowed_rtmr3 = parse_hex_array(&root.policy.allowed_rtmr3, 48)?;
+    let allowed_mrtd = parse_hex_array(&kms_allowlist(kms_allowed_mrtd, allowed_mrtd), 48)?;
+    let allowed_rtmr0 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr0, allowed_rtmr0), 48)?;
+    let allowed_rtmr1 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr1, allowed_rtmr1), 48)?;
+    let allowed_rtmr2 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr2, allowed_rtmr2), 48)?;
+    let allowed_rtmr3 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr3, allowed_rtmr3), 48)?;
 
     if allowed_tcb_statuses.is_empty() {
         bail!(
-            "Policy JSON missing policy.allowed_tcb_statuses (at least one TCB status is required)"
+            "Policy JSON missing policy.kms_allowed_tcb_statuses (or policy.allowed_tcb_statuses) (at least one TCB status is required)"
         );
     }
     if allowed_mrtd.is_empty() {
-        bail!("Policy JSON missing policy.allowed_mrtd (at least one MRTD value is required)");
+        bail!("Policy JSON missing policy.kms_allowed_mrtd (or policy.allowed_mrtd) (at least one MRTD value is required)");
     }
     if allowed_rtmr0.is_empty() {
-        bail!("Policy JSON missing policy.allowed_rtmr0 (at least one RTMR0 value is required)");
+        bail!("Policy JSON missing policy.kms_allowed_rtmr0 (or policy.allowed_rtmr0) (at least one RTMR0 value is required)");
     }
     if allowed_rtmr1.is_empty() {
-        bail!("Policy JSON missing policy.allowed_rtmr1 (at least one RTMR1 value is required)");
+        bail!("Policy JSON missing policy.kms_allowed_rtmr1 (or policy.allowed_rtmr1) (at least one RTMR1 value is required)");
     }
     if allowed_rtmr2.is_empty() {
-        bail!("Policy JSON missing policy.allowed_rtmr2 (at least one RTMR2 value is required)");
+        bail!("Policy JSON missing policy.kms_allowed_rtmr2 (or policy.allowed_rtmr2) (at least one RTMR2 value is required)");
     }
     if allowed_rtmr3.is_empty() {
-        bail!("Policy JSON missing policy.allowed_rtmr3 (at least one RTMR3 value is required)");
+        bail!("Policy JSON missing policy.kms_allowed_rtmr3 (or policy.allowed_rtmr3) (at least one RTMR3 value is required)");
     }
 
     let default_binding_b64 = root.kms.default_binding_b64.trim().to_string();
@@ -227,6 +333,32 @@ fn normalize_release_version(raw: &str) -> EyreResult<String> {
     calimero_tee_release::normalize_release_version(raw, "mero-kms-v")
 }
 
+/// Refuse a release older than `minimum` (`MERO_TEE_MIN_VERSION`).
+///
+/// The release to verify the KMS against arrives from outside the TD (instance
+/// metadata, on the node image), and every release's policy is validly signed.
+/// Without a floor, naming an old release whose allowlists accept a KMS build
+/// since found wanting is a downgrade anyone who sets the metadata can perform.
+/// The image bakes its own version in as the floor: the KMS release that
+/// admits an image is always cut after that image was measured.
+fn enforce_minimum_release(version: &str, minimum: Option<&str>) -> EyreResult<()> {
+    let Some(minimum) = minimum.map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(());
+    };
+    let minimum = normalize_release_version(minimum)
+        .map_err(|e| eyre::eyre!("MERO_TEE_MIN_VERSION is invalid: {e}"))?;
+    let parse = |v: &str| {
+        semver::Version::parse(v).map_err(|e| eyre::eyre!("cannot compare release {v}: {e}"))
+    };
+    if parse(version)? < parse(&minimum)? {
+        bail!(
+            "release {version} is older than this node's minimum {minimum} \
+             (MERO_TEE_MIN_VERSION); refusing to verify the KMS against it"
+        );
+    }
+    Ok(())
+}
+
 /// Resolve policy: fetch from release when version is set, else None.
 pub async fn resolve_policy() -> EyreResult<Option<KmsAttestationPolicy>> {
     if use_env_policy() {
@@ -236,6 +368,8 @@ pub async fn resolve_policy() -> EyreResult<Option<KmsAttestationPolicy>> {
     let Some(version) = release_version_from_env()? else {
         return Ok(None);
     };
+    let minimum = std::env::var("MERO_TEE_MIN_VERSION").ok();
+    enforce_minimum_release(&version, minimum.as_deref())?;
 
     // Security fail-closed: if operator explicitly configured a release version,
     // we must not continue without attestation policy verification.
@@ -425,5 +559,69 @@ mod tests {
         let values = vec![format!("0X{}", "CD".repeat(48))];
         let parsed = parse_hex_array(&values, 48).expect("0X prefix should be accepted");
         assert_eq!(parsed, vec!["cd".repeat(48)]);
+    }
+
+    /// A policy exactly as `Release mero-kms` publishes it. The parser used to
+    /// read unprefixed `allowed_*` names that no published file carries, so
+    /// every real policy failed to parse and `init --kms-url` could not succeed.
+    const PUBLISHED_POLICY: &str =
+        include_str!("../testdata/kms-phala-attestation-policy-2.3.69.json");
+
+    #[test]
+    fn a_published_policy_parses_to_its_kms_allowlists() {
+        let raw: serde_json::Value = serde_json::from_str(PUBLISHED_POLICY).unwrap();
+        let policy = parse_policy_json_for_release(PUBLISHED_POLICY, "2.3.69", None)
+            .expect("the published layout must parse");
+
+        let kms_mrtd = raw["policy"]["kms_allowed_mrtd"][0].as_str().unwrap();
+        let node_mrtd = raw["policy"]["node_allowed_mrtd"][0].as_str().unwrap();
+        assert_eq!(policy.allowed_mrtd, vec![kms_mrtd.to_owned()]);
+        // The node allowlists describe the nodes a KMS serves, not the KMS.
+        assert!(!policy.allowed_mrtd.contains(&node_mrtd.to_owned()));
+        assert_eq!(policy.allowed_tcb_statuses, vec!["uptodate", "outofdate"]);
+    }
+
+    #[test]
+    fn a_policy_for_another_release_or_profile_is_refused() {
+        let err = parse_policy_json_for_release(PUBLISHED_POLICY, "2.3.70", None)
+            .expect_err("a file from another release must not stand in for this one");
+        assert!(
+            err.to_string().contains("not the requested 2.3.70"),
+            "{err}"
+        );
+
+        assert!(parse_policy_json_for_release(
+            PUBLISHED_POLICY,
+            "2.3.69",
+            Some("locked-read-only")
+        )
+        .is_ok());
+        let err = parse_policy_json_for_release(PUBLISHED_POLICY, "2.3.69", Some("debug"))
+            .expect_err("a locked-profile policy must not verify a debug node's KMS");
+        assert!(err.to_string().contains("MERO_TEE_PROFILE"), "{err}");
+    }
+
+    #[test]
+    fn a_policy_for_something_other_than_a_kms_is_refused() {
+        let mut raw: serde_json::Value = serde_json::from_str(PUBLISHED_POLICY).unwrap();
+        raw["role"] = serde_json::json!("node");
+        let err = parse_policy_json_for_release(&raw.to_string(), "2.3.69", None)
+            .expect_err("only a KMS policy verifies a KMS");
+        assert!(err.to_string().contains("role"), "{err}");
+    }
+
+    #[test]
+    fn a_release_below_the_minimum_is_refused() {
+        enforce_minimum_release("2.3.69", None).unwrap();
+        enforce_minimum_release("2.3.69", Some("  ")).unwrap();
+        enforce_minimum_release("2.3.69", Some("2.3.69")).unwrap();
+        enforce_minimum_release("2.3.70", Some("mero-kms-v2.3.69")).unwrap();
+        // Numeric, not lexical: 2.3.100 is newer than 2.3.69.
+        enforce_minimum_release("2.3.100", Some("2.3.69")).unwrap();
+
+        let err = enforce_minimum_release("2.3.7", Some("2.3.69"))
+            .expect_err("an older release must not be accepted");
+        assert!(err.to_string().contains("MERO_TEE_MIN_VERSION"), "{err}");
+        assert!(enforce_minimum_release("2.3.69", Some("not-a-version")).is_err());
     }
 }

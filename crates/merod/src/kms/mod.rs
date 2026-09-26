@@ -26,7 +26,10 @@ use subtle::ConstantTimeEq;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
+use self::sealed::EphemeralSealKey;
 use crate::kms_policy::KmsAttestationPolicy;
+
+mod sealed;
 
 /// Request body for the Phala KMS challenge endpoint.
 #[derive(Debug, Serialize)]
@@ -52,13 +55,24 @@ struct PhalaGetKeyRequest {
     peer_id: String,
     peer_public_key_b64: String,
     signature_b64: String,
+    /// The one-time X25519 key the KMS must seal the released key to. The
+    /// get-key quote commits to it, so it cannot be swapped in transit.
+    seal_to_b64: String,
 }
 
 /// Response body from the Phala KMS get-key endpoint.
+///
+/// A KMS that predates sealed release answers with `key` alone; that answer is
+/// refused, because the key in it was readable by whatever terminated TLS.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PhalaGetKeyResponse {
-    key: String,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    sealed_key_b64: Option<String>,
+    #[serde(default)]
+    seal_nonce_b64: Option<String>,
 }
 
 /// Error response from the KMS service.
@@ -125,6 +139,8 @@ struct PhalaKmsAttestRequest {
     nonce_b64: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     binding_b64: Option<String>,
+    /// Ask the KMS to report its transport key and commit to it in the quote.
+    transport_key: bool,
 }
 
 /// Response body from KMS self-attestation endpoint.
@@ -133,14 +149,18 @@ struct PhalaKmsAttestRequest {
 struct PhalaKmsAttestResponse {
     quote_b64: String,
     report_data_hex: String,
+    /// The KMS's X25519 transport key, which the quote's report data commits to.
+    #[serde(default)]
+    transport_public_key_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum KeyFetchAttestationMode {
     /// Use attestation settings configured in `config.toml`.
     UseConfigPolicy,
-    /// Skip config attestation because release-policy verification already ran.
-    AlreadyVerifiedFromReleasePolicy,
+    /// Skip config attestation because release-policy verification already ran
+    /// and attested this transport key.
+    AlreadyVerifiedFromReleasePolicy { kms_public: [u8; 32] },
 }
 
 #[derive(Debug, Clone)]
@@ -468,8 +488,8 @@ pub async fn fetch_storage_key(
         validate_kms_transport_security(&phala_config.url, strict_transport)?;
 
         let attestation_mode = if let Some(p) = policy {
-            verify_kms_attestation_from_release_policy(phala_config, p).await?;
-            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy
+            let kms_public = verify_kms_attestation_from_release_policy(phala_config, p).await?;
+            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public }
         } else {
             KeyFetchAttestationMode::UseConfigPolicy
         };
@@ -531,11 +551,12 @@ where
         )
     })?;
 
-    if phala_config.attestation.enabled {
-        verify_kms_attestation(&client, &base_url, &phala_config.attestation)
-            .await
-            .map_err(map_probe_attestation_failure)?;
+    let kms_public = if phala_config.attestation.enabled {
+        verify_kms_attestation(&client, &base_url, &phala_config.attestation).await
+    } else {
+        request_unverified_transport_key(&client, &base_url).await
     }
+    .map_err(map_probe_attestation_failure)?;
 
     let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id)
         .await
@@ -543,10 +564,10 @@ where
     let challenge_nonce =
         decode_kms_challenge_nonce(&challenge).map_err(map_probe_challenge_failure)?;
 
-    let peer_id_hash = hash_peer_id(peer_id);
+    let seal = EphemeralSealKey::generate();
     let mut report_data = [0u8; 64];
     report_data[..32].copy_from_slice(&challenge_nonce);
-    report_data[32..].copy_from_slice(&peer_id_hash);
+    report_data[32..].copy_from_slice(&sealed::request_binding(seal.public(), peer_id));
 
     let attestation = attestor(report_data).map_err(|details| {
         probe_failure(
@@ -565,6 +586,7 @@ where
         &challenge_nonce,
         &attestation.quote_bytes,
         peer_id,
+        seal.public(),
     )
     .map_err(|err| {
         probe_failure(
@@ -593,12 +615,14 @@ where
             peer_id: peer_id.to_owned(),
             peer_public_key_b64: base64::engine::general_purpose::STANDARD.encode(peer_public_key),
             signature_b64: base64::engine::general_purpose::STANDARD.encode(signature),
+            seal_to_b64: base64::engine::general_purpose::STANDARD.encode(seal.public()),
         },
     )
     .await
     .map_err(map_probe_get_key_failure)?;
 
-    decode_kms_encryption_key(&key_response).map_err(map_probe_get_key_failure)
+    open_released_key(&key_response, &seal, &kms_public, &challenge_nonce, peer_id)
+        .map_err(map_probe_get_key_failure)
 }
 
 /// Verify KMS via POST /attest using policy fetched from release.
@@ -607,7 +631,7 @@ where
 async fn verify_kms_attestation_from_release_policy(
     phala_config: &PhalaKmsConfig,
     policy: &KmsAttestationPolicy,
-) -> Result<()> {
+) -> Result<[u8; 32]> {
     info!("Verifying KMS attestation before key fetch");
 
     let base_url = ensure_trailing_slash(&phala_config.url);
@@ -624,6 +648,7 @@ async fn verify_kms_attestation_from_release_policy(
     let request = PhalaKmsAttestRequest {
         nonce_b64: nonce_b64.clone(),
         binding_b64: Some(policy.default_binding_b64.clone()),
+        transport_key: true,
     };
 
     let response = client
@@ -650,6 +675,8 @@ async fn verify_kms_attestation_from_release_policy(
     let binding: [u8; 32] = binding_bytes
         .try_into()
         .map_err(|_| eyre::eyre!("Policy default_binding_b64 must be 32 bytes"))?;
+    let kms_public = decode_kms_transport_key(&attest)?;
+    let binding = sealed::attest_binding(&binding, &kms_public);
     let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
 
     let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest)?;
@@ -715,7 +742,7 @@ async fn verify_kms_attestation_from_release_policy(
         },
     )?;
     info!("KMS attestation verified successfully");
-    Ok(())
+    Ok(kms_public)
 }
 
 /// How an attestation policy is enforced.
@@ -977,10 +1004,10 @@ fn enforce_required_measurement_allowlist_non_empty(
 /// This function:
 /// 1. Requests a one-time challenge nonce from KMS
 /// 2. Generates a TDX attestation with challenge nonce in report_data[0..32]
-///    and SHA256(peer_id) in report_data[32..64]
+///    and a commitment to the peer id and a one-time seal key in [32..64]
 /// 3. Signs challenge + quote hash with node identity key
 /// 4. Sends the signed attestation request to KMS
-/// 5. Returns the encryption key bytes
+/// 5. Opens the key the KMS sealed to that one-time key (see [`sealed`])
 ///
 /// # Arguments
 /// * `phala_config` - Phala KMS configuration
@@ -1009,18 +1036,20 @@ async fn fetch_from_phala(
     // Build HTTP client once and reuse for all KMS requests.
     let client = build_kms_http_client(phala_config)?;
 
-    if phala_config.attestation.enabled {
-        match attestation_mode {
-            KeyFetchAttestationMode::UseConfigPolicy => {
-                verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?;
-            }
-            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy => {
-                info!(
-                    "Skipping config-based KMS attestation: release policy verification already completed"
-                );
-            }
+    let kms_public = match attestation_mode {
+        KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public } => {
+            info!(
+                "Skipping config-based KMS attestation: release policy verification already completed"
+            );
+            kms_public
         }
-    }
+        KeyFetchAttestationMode::UseConfigPolicy if phala_config.attestation.enabled => {
+            verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?
+        }
+        KeyFetchAttestationMode::UseConfigPolicy => {
+            request_unverified_transport_key(&client, &base_url).await?
+        }
+    };
 
     // 1) Request one-time challenge nonce.
     info!(%challenge_endpoint, "Requesting key release challenge from KMS");
@@ -1033,16 +1062,12 @@ async fn fetch_from_phala(
         "Received KMS challenge"
     );
 
-    // 2) Create report_data with challenge nonce in [0..32] and SHA256(peer_id) in [32..64].
-    let peer_id_hash = hash_peer_id(peer_id);
-    debug!(
-        peer_id_hash = %hex::encode(peer_id_hash),
-        "Generated peer ID hash for attestation"
-    );
-
+    // 2) Create report_data with the challenge nonce in [0..32] and, in [32..64],
+    //    a commitment to the peer id and the one-time key the KMS must seal to.
+    let seal = EphemeralSealKey::generate();
     let mut report_data = [0u8; 64];
     report_data[..32].copy_from_slice(&challenge_nonce);
-    report_data[32..].copy_from_slice(&peer_id_hash);
+    report_data[32..].copy_from_slice(&sealed::request_binding(seal.public(), peer_id));
 
     // 3) Generate attestation
     let attestation =
@@ -1066,6 +1091,7 @@ async fn fetch_from_phala(
         &challenge_nonce,
         &attestation.quote_bytes,
         peer_id,
+        seal.public(),
     )?;
     let signature = identity
         .sign(&signature_payload)
@@ -1079,11 +1105,12 @@ async fn fetch_from_phala(
         peer_id: peer_id.to_string(),
         peer_public_key_b64: base64::engine::general_purpose::STANDARD.encode(peer_public_key),
         signature_b64: base64::engine::general_purpose::STANDARD.encode(signature),
+        seal_to_b64: base64::engine::general_purpose::STANDARD.encode(seal.public()),
     };
 
     info!(%key_endpoint, "Sending signed key request to KMS");
     let response = request_kms_key_release(&client, &key_endpoint, &request).await?;
-    let key_bytes = decode_kms_encryption_key(&response)?;
+    let key_bytes = open_released_key(&response, &seal, &kms_public, &challenge_nonce, peer_id)?;
 
     info!(
         key_len = key_bytes.len(),
@@ -1165,7 +1192,7 @@ async fn verify_kms_attestation(
     client: &reqwest::Client,
     base_url: &Url,
     attestation_config: &KmsAttestationConfig,
-) -> Result<()> {
+) -> Result<[u8; 32]> {
     let effective_config = resolve_effective_attestation_config(attestation_config)?;
     let policy = normalize_kms_attestation_policy(&effective_config)?;
     let attest_endpoint = base_url
@@ -1175,15 +1202,17 @@ async fn verify_kms_attestation(
     let mut nonce = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut nonce);
 
-    let expected_report_data = build_kms_attestation_report_data(&nonce, &policy.binding);
-
     let request = PhalaKmsAttestRequest {
         nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
         binding_b64: policy.binding_b64.clone(),
+        transport_key: true,
     };
 
     info!(%attest_endpoint, "Verifying KMS self-attestation before key request");
     let attest_response = request_kms_attestation(client, &attest_endpoint, &request).await?;
+    let kms_public = decode_kms_transport_key(&attest_response)?;
+    let binding = sealed::attest_binding(&policy.binding, &kms_public);
+    let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
     let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest_response)?;
 
     if report_data_bytes.len() != 64 {
@@ -1216,15 +1245,15 @@ async fn verify_kms_attestation(
         }
 
         warn!("Accepting mock KMS attestation quote - this is insecure and for development only");
-        verify_mock_attestation(&quote_bytes, &nonce, &policy.binding)
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
             .context("Failed to verify mock KMS attestation")?
     } else {
-        verify_attestation(&quote_bytes, &nonce, &policy.binding)
+        verify_attestation(&quote_bytes, &nonce, &binding)
             .await
             .context("Failed to verify KMS attestation quote")?
     };
     #[cfg(not(feature = "mock-attestation"))]
-    let verification_result = verify_attestation(&quote_bytes, &nonce, &policy.binding)
+    let verification_result = verify_attestation(&quote_bytes, &nonce, &binding)
         .await
         .context("Failed to verify KMS attestation quote")?;
 
@@ -1246,7 +1275,90 @@ async fn verify_kms_attestation(
     )?;
     info!("KMS self-attestation verified successfully");
 
-    Ok(())
+    Ok(kms_public)
+}
+
+/// The KMS's transport key with its quote left unverified, for a config with
+/// attestation disabled (development only). The key is still sealed, so a
+/// passive observer of the connection learns nothing, but nothing proves the
+/// transport key belongs to a genuine KMS — so neither is the key it releases.
+async fn request_unverified_transport_key(
+    client: &reqwest::Client,
+    base_url: &Url,
+) -> Result<[u8; 32]> {
+    warn!(
+        "KMS attestation is disabled: the KMS's transport key is not verified, so the storage \
+         key may come from whoever answers at this URL. Development only."
+    );
+    let attest_endpoint = base_url
+        .join("attest")
+        .context("Failed to build KMS attest endpoint URL")?;
+    let mut nonce = [0u8; 32];
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
+    let request = PhalaKmsAttestRequest {
+        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+        binding_b64: None,
+        transport_key: true,
+    };
+    let attest_response = request_kms_attestation(client, &attest_endpoint, &request).await?;
+    decode_kms_transport_key(&attest_response)
+}
+
+fn decode_kms_transport_key(attest_response: &PhalaKmsAttestResponse) -> Result<[u8; 32]> {
+    let Some(encoded) = attest_response.transport_public_key_b64.as_deref() else {
+        bail!(
+            "the KMS reported no transport key, so it cannot seal the key it releases. It \
+             predates sealed key release; upgrade mero-kms-phala. A key released unsealed is \
+             readable by whatever terminates TLS in front of the KMS, so it is not accepted."
+        );
+    };
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .context("KMS transportPublicKeyB64 is not valid base64")?;
+    decoded
+        .try_into()
+        .map_err(|_| eyre::eyre!("KMS transportPublicKeyB64 must decode to exactly 32 bytes"))
+}
+
+/// Open the key the KMS released, sealed to `seal` by the holder of `kms_public`.
+fn open_released_key(
+    response: &PhalaGetKeyResponse,
+    seal: &EphemeralSealKey,
+    kms_public: &[u8; 32],
+    challenge_nonce: &[u8; 32],
+    peer_id: &str,
+) -> Result<Vec<u8>> {
+    let (Some(sealed_key_b64), Some(seal_nonce_b64)) = (
+        response.sealed_key_b64.as_deref(),
+        response.seal_nonce_b64.as_deref(),
+    ) else {
+        if response.key.is_some() {
+            bail!(
+                "the KMS released the key unsealed, readable by anything between it and this \
+                 node; refusing it. Upgrade mero-kms-phala to one that supports sealed release."
+            );
+        }
+        bail!("KMS get-key response carries no sealed key");
+    };
+    if sealed_key_b64.len() > MAX_KMS_KEY_HEX_LEN * 2 {
+        bail!("KMS returned an oversized sealed key");
+    }
+    let engine = &base64::engine::general_purpose::STANDARD;
+    let ciphertext = engine
+        .decode(sealed_key_b64)
+        .context("KMS sealedKeyB64 is not valid base64")?;
+    let seal_nonce = engine
+        .decode(seal_nonce_b64)
+        .context("KMS sealNonceB64 is not valid base64")?;
+    let plaintext = seal.open(
+        kms_public,
+        challenge_nonce,
+        peer_id,
+        &seal_nonce,
+        &ciphertext,
+    )?;
+    let key_hex = std::str::from_utf8(&plaintext).context("the sealed key is not hex text")?;
+    decode_kms_encryption_key(key_hex)
 }
 
 pub(crate) fn resolve_effective_attestation_config(
@@ -1465,8 +1577,8 @@ async fn request_kms_key_release(
         .context("Failed to parse KMS get-key response")
 }
 
-fn decode_kms_encryption_key(response: &PhalaGetKeyResponse) -> Result<Vec<u8>> {
-    let key_hex = response.key.trim();
+fn decode_kms_encryption_key(key_hex: &str) -> Result<Vec<u8>> {
+    let key_hex = key_hex.trim();
     if key_hex.is_empty() {
         bail!("KMS returned an empty encryption key");
     }
@@ -1638,6 +1750,7 @@ fn build_signature_payload(
     challenge_nonce: &[u8; 32],
     quote_bytes: &[u8],
     peer_id: &str,
+    seal_to: &[u8; 32],
 ) -> Result<Vec<u8>> {
     let quote_hash = Sha256::digest(quote_bytes);
     let payload = serde_json::json!({
@@ -1645,17 +1758,9 @@ fn build_signature_payload(
         "challengeNonceHex": hex::encode(challenge_nonce),
         "quoteHashHex": hex::encode(quote_hash),
         "peerId": peer_id,
+        "sealToHex": hex::encode(seal_to),
     });
     serde_json::to_vec(&payload).context("Failed to serialize challenge signature payload")
-}
-
-/// Hash a peer ID string to create a 32-byte value for attestation.
-///
-/// This must match the hashing used by the KMS service.
-fn hash_peer_id(peer_id: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(peer_id.as_bytes());
-    hasher.finalize().into()
 }
 
 /// Ensure URL has a trailing slash to prevent `Url::join` from replacing the last path segment.
@@ -1746,6 +1851,10 @@ mod tests {
         binding_b64: Option<String>,
     }
 
+    /// The stand-in KMS's transport secret.
+    #[cfg(feature = "mock-attestation")]
+    const TEST_KMS_SECRET: [u8; 32] = [0x5c; 32];
+
     #[cfg(feature = "mock-attestation")]
     fn mock_quote_bytes_with_report_data(report_data: &[u8; 64]) -> Vec<u8> {
         let mut quote_bytes = b"MOCK_TDX_QUOTE_V1".to_vec();
@@ -1777,6 +1886,8 @@ mod tests {
             default_kms_attestation_binding()
         };
 
+        let kms_public = sealed::public_for_test(&TEST_KMS_SECRET);
+        let binding = sealed::attest_binding(&binding, &kms_public);
         let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
         let report_data_hex = match mode {
             AttestResponseMode::Valid => hex::encode(expected_report_data),
@@ -1788,7 +1899,8 @@ mod tests {
 
         Json(json!({
             "quoteB64": quote_b64,
-            "reportDataHex": report_data_hex
+            "reportDataHex": report_data_hex,
+            "transportPublicKeyB64": base64::engine::general_purpose::STANDARD.encode(kms_public)
         }))
     }
 
@@ -1859,6 +1971,7 @@ mod tests {
         peer_id: String,
         peer_public_key_b64: String,
         signature_b64: String,
+        seal_to_b64: String,
     }
 
     #[cfg(feature = "mock-attestation")]
@@ -1884,6 +1997,8 @@ mod tests {
             default_kms_attestation_binding()
         };
 
+        let kms_public = sealed::public_for_test(&TEST_KMS_SECRET);
+        let binding = sealed::attest_binding(&binding, &kms_public);
         let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
         let report_data_hex = match state.mode.attest {
             AttestResponseMode::Valid => hex::encode(expected_report_data),
@@ -1897,7 +2012,9 @@ mod tests {
             StatusCode::OK,
             Json(json!({
                 "quoteB64": quote_b64,
-                "reportDataHex": report_data_hex
+                "reportDataHex": report_data_hex,
+                "transportPublicKeyB64":
+                    base64::engine::general_purpose::STANDARD.encode(kms_public)
             })),
         )
     }
@@ -1937,7 +2054,8 @@ mod tests {
             || request.quote_b64.is_empty()
             || request.peer_id.is_empty()
             || request.peer_public_key_b64.is_empty()
-            || request.signature_b64.is_empty();
+            || request.signature_b64.is_empty()
+            || request.seal_to_b64.is_empty();
         if has_empty_field {
             return (
                 StatusCode::BAD_REQUEST,
@@ -1949,12 +2067,30 @@ mod tests {
         }
 
         match state.mode.get_key {
-            ProbeGetKeyMode::Success => (
-                StatusCode::OK,
-                Json(json!({
-                    "key": "11".repeat(32)
-                })),
-            ),
+            ProbeGetKeyMode::Success => {
+                let engine = &base64::engine::general_purpose::STANDARD;
+                let seal_to: [u8; 32] = engine
+                    .decode(&request.seal_to_b64)
+                    .expect("sealToB64 must be base64")
+                    .try_into()
+                    .expect("sealToB64 must be 32 bytes");
+                // The challenge handler below always issues this nonce.
+                let sealed_key = sealed::seal_for_test(
+                    &TEST_KMS_SECRET,
+                    &seal_to,
+                    &[0x33; 32],
+                    &request.peer_id,
+                    [0x19; 12],
+                    &"11".repeat(32),
+                );
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "sealedKeyB64": engine.encode(sealed_key),
+                        "sealNonceB64": engine.encode([0x19u8; 12])
+                    })),
+                )
+            }
             ProbeGetKeyMode::MeasurementPolicyRejected => (
                 StatusCode::FORBIDDEN,
                 Json(json!({
@@ -2056,21 +2192,6 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_peer_id() {
-        let peer_id = "12D3KooWAbcdefghijklmnopqrstuvwxyz";
-        let hash = hash_peer_id(peer_id);
-        assert_eq!(hash.len(), 32);
-
-        // Same peer_id should produce same hash
-        let hash2 = hash_peer_id(peer_id);
-        assert_eq!(hash, hash2);
-
-        // Different peer_id should produce different hash
-        let hash3 = hash_peer_id("12D3KooWDifferentPeerId");
-        assert_ne!(hash, hash3);
-    }
-
-    #[test]
     fn test_ensure_trailing_slash() {
         // URL without trailing slash should get one added
         let url = Url::parse("http://host/api/v1").unwrap();
@@ -2163,6 +2284,7 @@ mod tests {
         let oversized_quote = PhalaKmsAttestResponse {
             quote_b64: "A".repeat(MAX_KMS_ATTEST_QUOTE_B64_LEN + 1),
             report_data_hex: "00".repeat(64),
+            transport_public_key_b64: None,
         };
         let err = decode_kms_attestation_response(&oversized_quote)
             .expect_err("oversized quoteB64 must fail")
@@ -2172,6 +2294,7 @@ mod tests {
         let oversized_report = PhalaKmsAttestResponse {
             quote_b64: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
             report_data_hex: "0".repeat(MAX_KMS_REPORT_DATA_HEX_LEN + 1),
+            transport_public_key_b64: None,
         };
         let err = decode_kms_attestation_response(&oversized_report)
             .expect_err("oversized reportDataHex must fail")
@@ -2181,20 +2304,54 @@ mod tests {
 
     #[test]
     fn test_decode_kms_encryption_key_rejects_undersized_key() {
-        let undersized = PhalaGetKeyResponse {
-            key: "00".to_owned(),
-        };
-        let err = decode_kms_encryption_key(&undersized)
+        let err = decode_kms_encryption_key("00")
             .expect_err("undersized key must fail")
             .to_string();
         assert!(err.contains("undersized encryption key"), "{err}");
 
         // A full 32-byte key is accepted.
-        let valid = PhalaGetKeyResponse {
-            key: "42".repeat(MIN_KMS_KEY_BYTES),
-        };
-        let decoded = decode_kms_encryption_key(&valid).expect("valid key must decode");
+        let decoded = decode_kms_encryption_key(&"42".repeat(MIN_KMS_KEY_BYTES))
+            .expect("valid key must decode");
         assert_eq!(decoded.len(), MIN_KMS_KEY_BYTES);
+    }
+
+    /// A KMS that answers with the key in the clear is refused, even with every
+    /// quote genuine: that key was readable by whatever terminated TLS.
+    #[test]
+    fn an_unsealed_key_release_is_refused() {
+        let seal = EphemeralSealKey::generate();
+        let unsealed = PhalaGetKeyResponse {
+            key: Some("42".repeat(MIN_KMS_KEY_BYTES)),
+            sealed_key_b64: None,
+            seal_nonce_b64: None,
+        };
+        let err = open_released_key(&unsealed, &seal, &[9; 32], &[0; 32], "peer")
+            .expect_err("an unsealed key must not be accepted");
+        assert!(err.to_string().contains("unsealed"), "{err}");
+    }
+
+    #[test]
+    fn a_sealed_key_release_opens_and_decodes() {
+        let seal = EphemeralSealKey::generate();
+        let kms_secret = [0x21; 32];
+        let nonce = [0x31; 32];
+        let key_hex = "42".repeat(MIN_KMS_KEY_BYTES);
+        let sealed_key = sealed::seal_for_test(
+            &kms_secret,
+            seal.public(),
+            &nonce,
+            "peer",
+            [7; 12],
+            &key_hex,
+        );
+        let response = PhalaGetKeyResponse {
+            key: None,
+            sealed_key_b64: Some(base64::engine::general_purpose::STANDARD.encode(sealed_key)),
+            seal_nonce_b64: Some(base64::engine::general_purpose::STANDARD.encode([7u8; 12])),
+        };
+        let kms_public = sealed::public_for_test(&kms_secret);
+        let key = open_released_key(&response, &seal, &kms_public, &nonce, "peer").unwrap();
+        assert_eq!(key, vec![0x42; MIN_KMS_KEY_BYTES]);
     }
 
     #[test]
@@ -2204,12 +2361,37 @@ mod tests {
         let quote_bytes = b"quote-bytes";
         let peer_id = "12D3KooWAbcdefghijklmnopqrstuvwxyz";
 
-        let payload1 =
-            build_signature_payload(challenge_id, &challenge_nonce, quote_bytes, peer_id).unwrap();
-        let payload2 =
-            build_signature_payload(challenge_id, &challenge_nonce, quote_bytes, peer_id).unwrap();
+        let seal_to = [0x7b; 32];
+
+        let payload1 = build_signature_payload(
+            challenge_id,
+            &challenge_nonce,
+            quote_bytes,
+            peer_id,
+            &seal_to,
+        )
+        .unwrap();
+        let payload2 = build_signature_payload(
+            challenge_id,
+            &challenge_nonce,
+            quote_bytes,
+            peer_id,
+            &seal_to,
+        )
+        .unwrap();
 
         assert_eq!(payload1, payload2);
+        // The seal key is signed over: a request re-pointed at another key is
+        // no longer the request this node signed.
+        let repointed = build_signature_payload(
+            challenge_id,
+            &challenge_nonce,
+            quote_bytes,
+            peer_id,
+            &[0; 32],
+        )
+        .unwrap();
+        assert_ne!(payload1, repointed);
     }
 
     #[test]

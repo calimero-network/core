@@ -265,6 +265,44 @@ pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 
+/// Marks a logic method as TEE-only.
+///
+/// An `#[app::tee]` method runs only when the node's TEE scheduler fires it on an
+/// attested TEE that the namespace's TEE authoring policy allows. There it runs
+/// as `AccountId::TEE_AUTHORITY`, may call `env::tee_random_bytes`, and may write
+/// `TeeOnly` state. Any other invocation — a JSON-RPC call, a handler run on a
+/// member's node, a direct call in a test — panics before the body runs.
+///
+/// Fire one by naming it as a TEE handler on an event:
+/// `app::emit!((MyEvent::RollRequested { .. }, "tee:resolve_roll"))`. Receivers
+/// that are not the elected TEE authority skip `tee:` handlers.
+///
+/// The guard is a convenience: the security boundary is merge, where every peer
+/// drops a `TeeOnly` write whose signer is not an attested TEE authority.
+#[proc_macro_attribute]
+pub fn tee(args: TokenStream, input: TokenStream) -> TokenStream {
+    if !args.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`#[app::tee]` takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let mut method = parse_macro_input!(input as syn::ImplItemFn);
+    let name = method.sig.ident.to_string();
+    let guard: syn::Stmt = syn::parse_quote! {
+        if !::calimero_sdk::env::tee_origin() {
+            ::calimero_sdk::env::panic_str(&::std::format!(
+                "`{}` is an #[app::tee] method: only the node's TEE scheduler may run it",
+                #name
+            ));
+        }
+    };
+    method.block.stmts.insert(0, guard);
+    method.into_token_stream().into()
+}
+
 /// Marks a logic method as read-only (a "view").
 ///
 /// A marker consumed by `#[app::logic]` and recorded in the ABI as

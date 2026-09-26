@@ -850,6 +850,29 @@ impl SyncManager {
                                         continue;
                                     }
 
+                                    if let calimero_storage::entities::StorageType::Shared {
+                                        writers,
+                                        ..
+                                    } = &index_entity.metadata.storage_type
+                                    {
+                                        if !crate::sync::helpers::snapshot_leaf_admitted(
+                                            self.context_client.datastore(),
+                                            &context_id,
+                                            writers,
+                                            &index_entity.metadata.storage_type,
+                                        ) {
+                                            warn!(
+                                                %context_id,
+                                                id = ?id,
+                                                "snapshot Entity record: claims the TEE-only \
+                                                 writer set but its signer is not the TEE \
+                                                 authority — dropping"
+                                            );
+                                            rejected += 1;
+                                            continue;
+                                        }
+                                    }
+
                                     // Verified — persist both Entry
                                     // and Index blobs under their
                                     // hashed storage keys.
@@ -1024,7 +1047,7 @@ impl SyncManager {
                                                 // member; defensive only.
                                                 _ => continue,
                                             };
-                                            let Some(_writers) = anchor_writers.get(&anchor) else {
+                                            let Some(writers) = anchor_writers.get(&anchor) else {
                                                 warn!(
                                                     %context_id,
                                                     id = ?id_obj.as_bytes(),
@@ -1046,6 +1069,21 @@ impl SyncManager {
                                                     error = ?e,
                                                     "snapshot deferred SharedMember: signature \
                                                      verification failed — dropping"
+                                                );
+                                                continue;
+                                            }
+                                            if !crate::sync::helpers::snapshot_leaf_admitted(
+                                                self.context_client.datastore(),
+                                                &context_id,
+                                                writers,
+                                                &metadata.storage_type,
+                                            ) {
+                                                warn!(
+                                                    %context_id,
+                                                    id = ?id_obj.as_bytes(),
+                                                    "snapshot deferred SharedMember: its anchor is \
+                                                     TEE-only but its signer is not the TEE \
+                                                     authority — dropping"
                                                 );
                                                 continue;
                                             }
@@ -1349,6 +1387,10 @@ pub(crate) enum SnapshotEntityDrainOutcome {
     RedrivenElsewhere,
     /// A transient parse/verify failure — keep the record for a later pass.
     Pending,
+    /// The entity claims the TEE-only writer set but its signer is not the TEE
+    /// authority. That verdict does not change on a retry, so the record is
+    /// deleted rather than kept.
+    Refused,
 }
 
 /// Re-verify and persist a buffered future-schema snapshot entity (PR-6b Task
@@ -1366,6 +1408,7 @@ pub(crate) enum SnapshotEntityDrainOutcome {
 /// pass-2 re-drive; we return [`SnapshotEntityDrainOutcome::RedrivenElsewhere`]
 /// so the caller deletes the now-orphaned buffer record rather than leaking it.
 pub(crate) fn persist_buffered_snapshot_entity(
+    store: &calimero_store::Store,
     handle: &mut calimero_store::Handle<calimero_store::Store>,
     context_id: ContextId,
     id: [u8; 32],
@@ -1401,6 +1444,21 @@ pub(crate) fn persist_buffered_snapshot_entity(
         warn!(%context_id, id = ?id, error = ?e,
             "absorb entity drain: signature verification failed — leaving pending");
         return Ok(SnapshotEntityDrainOutcome::Pending);
+    }
+    if let calimero_storage::entities::StorageType::Shared { writers, .. } =
+        &index_entity.metadata.storage_type
+    {
+        if !crate::sync::helpers::snapshot_leaf_admitted(
+            store,
+            &context_id,
+            writers,
+            &index_entity.metadata.storage_type,
+        ) {
+            warn!(%context_id, id = ?id,
+                "absorb entity drain: claims the TEE-only writer set but its signer is \
+                 not the TEE authority — deleting");
+            return Ok(SnapshotEntityDrainOutcome::Refused);
+        }
     }
 
     let entry_key = ContextStateKey::new(context_id, StorageKey::Entry(id_obj).to_bytes());
@@ -3133,9 +3191,15 @@ mod tests {
         };
         let index_bytes = borsh::to_vec(&index).unwrap();
 
-        let outcome =
-            persist_buffered_snapshot_entity(&mut handle, ctx, id, &[1, 2, 3], &index_bytes)
-                .unwrap();
+        let outcome = persist_buffered_snapshot_entity(
+            &store,
+            &mut handle,
+            ctx,
+            id,
+            &[1, 2, 3],
+            &index_bytes,
+        )
+        .unwrap();
         assert_eq!(
             outcome,
             SnapshotEntityDrainOutcome::RedrivenElsewhere,
@@ -3144,7 +3208,8 @@ mod tests {
 
         // A malformed index blob is still a transient Pending (kept for retry).
         let pending =
-            persist_buffered_snapshot_entity(&mut handle, ctx, id, &[1], &[0xFF, 0xFF]).unwrap();
+            persist_buffered_snapshot_entity(&store, &mut handle, ctx, id, &[1], &[0xFF, 0xFF])
+                .unwrap();
         assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
     }
 

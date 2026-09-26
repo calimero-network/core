@@ -253,6 +253,45 @@ fn matched_profile(
         })
 }
 
+/// Publish a `TeeAuthorityEvidence` op for an admitted TEE on the namespace root.
+///
+/// Peers verify it offline at apply, which is what lets them treat the TEE as
+/// the TEE authority without trusting this node's check of its quote.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one publish, each argument distinct"
+)]
+async fn publish_authority_evidence(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    member: calimero_account::AccountId,
+    attested_key: PublicKey,
+    evidence: calimero_context_client::group::TeeAuthorityEvidencePayload,
+) -> eyre::Result<()> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let report = calimero_governance_store::sign_apply_and_publish(
+        store,
+        node_client,
+        ack_router,
+        &root,
+        signer_sk,
+        GroupOp::TeeAuthorityEvidence {
+            member,
+            attested_key,
+            quote: evidence.quote,
+            collateral: evidence.collateral,
+            attested_at: evidence.attested_at,
+        },
+    )
+    .await?;
+    report.observe("admit_tee_node", "TeeAuthorityEvidence");
+    debug!(%attested_key, "published TEE authority evidence");
+    Ok(())
+}
+
 impl Handler<AdmitTeeNodeRequest> for ContextManager {
     type Result = ActorResponse<Self, <AdmitTeeNodeRequest as Message>::Result>;
 
@@ -271,6 +310,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             tcb_status,
             is_mock,
             release_version,
+            evidence,
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -359,30 +399,15 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         // A signed-release policy names no measurements: they come from the
         // release the TEE says it runs, fetched and signature-checked below,
-        // outside the actor. A list policy is checked here, as it always was.
-        //
-        // A mock quote carries made-up registers no release publishes, so it
-        // is judged on `accept_mock` alone, the rule the list form applies.
-        // A subgroup admission (`account` is `None`) moves a namespace member
-        // inward: its release was checked when the root admitted it, and the
-        // record it is re-admitted from does not carry the version.
-        let release_claim = match policy.release_trust {
-            Some(trust) if !is_mock && account.is_some() => {
-                match signed_release_claim(trust, release_version.as_deref()) {
-                    Ok(claim) => Some(claim),
-                    Err(err) => return ActorResponse::reply(Err(err)),
-                }
+        // outside the actor, once it is known this is a new admission. A list
+        // policy is checked here, as it always was.
+        if policy.release_trust.is_none() {
+            if let Err(err) =
+                check_measurement_lists(&policy, &mrtd, &rtmr0, &rtmr1, &rtmr2, &rtmr3)
+            {
+                return ActorResponse::reply(Err(err));
             }
-            Some(_) => None,
-            None => {
-                if let Err(err) =
-                    check_measurement_lists(&policy, &mrtd, &rtmr0, &rtmr1, &rtmr2, &rtmr3)
-                {
-                    return ActorResponse::reply(Err(err));
-                }
-                None
-            }
-        };
+        }
 
         // Direct-row check: TEE admission writes the node's direct
         // membership row + signing key. An inherited match via the
@@ -408,13 +433,67 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             },
         };
-        match MembershipRepository::new(&self.datastore)
+        let already_member = match MembershipRepository::new(&self.datastore)
             .has_direct_member(&group_id, &member_account)
         {
-            Ok(true) => return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember)),
-            Ok(false) => {}
+            Ok(already) => already,
             Err(e) => return ActorResponse::reply(Err(e)),
+        };
+        if already_member {
+            // Admitted before, possibly by a build that published no evidence.
+            // Its re-announcement is the chance to publish it now, so a TEE
+            // admitted earlier can still become an authority.
+            let has_evidence = match calimero_governance_store::tee_authority_evidence(
+                &self.datastore,
+                &group_id,
+                &member_account,
+            ) {
+                Ok(found) => found.is_some(),
+                Err(e) => return ActorResponse::reply(Err(e)),
+            };
+            let Some(evidence) = evidence.filter(|_| !has_evidence) else {
+                return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
+            };
+            let datastore = self.datastore.clone();
+            let node_client = self.node_client.clone();
+            let ack_router = Arc::clone(&self.ack_router);
+            return ActorResponse::r#async(
+                async move {
+                    publish_authority_evidence(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &PrivateKey::from(node_sk),
+                        member_account,
+                        member,
+                        evidence,
+                    )
+                    .await?;
+                    Ok(TeeAdmissionOutcome::AlreadyMember)
+                }
+                .into_actor(self),
+            );
         }
+
+        // After the already-member branch, which admits nothing: a TEE admitted
+        // earlier re-announces only to have its evidence published (the
+        // server's `tee::evidence_retry`), and that announce names no release.
+        //
+        // A mock quote carries made-up registers no release publishes, so it
+        // is judged on `accept_mock` alone, the rule the list form applies.
+        // A subgroup admission (`account` is `None`) moves a namespace member
+        // inward: its release was checked when the root admitted it, and the
+        // record it is re-admitted from does not carry the version.
+        let release_claim = match policy.release_trust {
+            Some(trust) if !is_mock && account.is_some() => {
+                match signed_release_claim(trust, release_version.as_deref()) {
+                    Ok(claim) => Some(claim),
+                    Err(err) => return ActorResponse::reply(Err(err)),
+                }
+            }
+            _ => None,
+        };
 
         match calimero_governance_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash)
         {
@@ -523,6 +602,32 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     .await?
                 };
                 report.observe("admit_tee_node", "MemberJoinedViaTeeAttestation");
+
+                // After the admission, so peers apply it first. A failure is
+                // logged, not returned: the TEE is admitted either way, and while
+                // authorship is on it keeps re-announcing until some admitter
+                // publishes the evidence (the server's `tee::evidence_retry`).
+                if let Some(evidence) = evidence {
+                    if let Err(err) = publish_authority_evidence(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &sk,
+                        member_account,
+                        member,
+                        evidence,
+                    )
+                    .await
+                    {
+                        warn!(
+                            %member,
+                            ?err,
+                            "TEE admitted, but publishing its authority evidence failed; the \
+                             TEE re-announces while authorship is on, which retries it"
+                        );
+                    }
+                }
 
                 debug!(%member, ?group_id, "TEE node admitted via attestation");
 

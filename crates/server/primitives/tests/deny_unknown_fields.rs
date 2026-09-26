@@ -54,6 +54,7 @@ fn every_request_body_is_a_closed_set() {
         admin::SetDefaultCapabilitiesApiRequest,
         admin::SetTeeAdmissionPolicyApiRequest,
         admin::SignedReleaseTeePolicy,
+        admin::SetTeeAuthoringPolicyApiRequest,
         admin::SetSubgroupVisibilityApiRequest,
         admin::CreateGroupInvitationApiRequest,
         admin::JoinGroupApiRequest,

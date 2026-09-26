@@ -1099,6 +1099,52 @@ pub fn random_bytes(buf: &mut [u8]) {
     host::random_bytes(buf);
 }
 
+/// Whether this run was fired by the node's TEE scheduler as the TEE authority.
+///
+/// The node sets it — a JSON-RPC caller cannot — and only on an attested TEE the
+/// namespace's TEE authoring policy allows. In such a run [`account_id`] is
+/// `AccountId::TEE_AUTHORITY`, which is what lets it write `TeeOnly` state.
+/// `#[app::tee]` methods check it and refuse every other invocation.
+#[inline]
+#[must_use]
+pub fn tee_origin() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let present: bool = unsafe {
+            sys::tee_origin()
+                .try_into()
+                .unwrap_or_else(expected_boolean)
+        };
+        present
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::tee_origin()
+}
+
+/// Fill the buffer with randomness drawn inside the TEE.
+///
+/// Unlike [`random_bytes`], which on a member's node returns whatever that member
+/// chooses, this is only available in a TEE-triggered run (see [`tee_origin`]):
+/// the host traps otherwise. Use it for anything players must not be able to bias.
+///
+/// Under the in-process test harness it shares [`random_bytes`]' deterministic
+/// PRNG, and panics outside a `TestHost::call_as_tee` run like the host would.
+#[inline]
+pub fn tee_random_bytes(buf: &mut [u8]) {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::tee_random_bytes(Ref::new(&BufferMut::new(buf)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        assert!(
+            host::tee_origin(),
+            "tee_random_bytes is only available in a TEE-triggered execution"
+        );
+        host::random_bytes(buf);
+    }
+}
+
 /// Gets the current time.
 #[inline]
 #[must_use]

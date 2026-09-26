@@ -1276,6 +1276,7 @@ dependencies = [
  "calimero-projection",
  "calimero-storage",
  "calimero-store",
+ "calimero-tee-attestation",
  "calimero-utils-actix",
  "eyre",
  "hex",
@@ -1780,6 +1781,7 @@ dependencies = [
  "hex",
  "reqwest 0.12.28",
  "serde_json",
+ "sha2 0.11.0",
  "tdx-quote",
  "tdx_workload_attestation",
  "tokio",
@@ -6130,6 +6132,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "const_format",
+ "curve25519-dalek 5.0.0",
  "dirs 7.0.0",
  "eyre",
  "hex",
@@ -6138,6 +6141,7 @@ dependencies = [
  "multiaddr",
  "rand 0.10.2",
  "reqwest 0.12.28",
+ "ring",
  "semver",
  "serde",
  "serde_json",
@@ -9815,6 +9819,15 @@ dependencies = [
  "calimero-sdk",
  "calimero-storage",
  "serial_test",
+]
+
+[[package]]
+name = "tee-dice"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

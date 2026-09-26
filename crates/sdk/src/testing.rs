@@ -382,6 +382,27 @@ where
         self.call_as(device, f)
     }
 
+    /// Runs `f` as the node's TEE scheduler would: a TEE-triggered run whose
+    /// account is `AccountId::TEE_AUTHORITY`, so `#[app::tee]` methods accept it,
+    /// `env::tee_random_bytes` works, and `TeeOnly` state is writable.
+    pub fn call_as_tee<R>(&mut self, f: impl FnOnce(&mut S) -> R) -> R {
+        struct TeeTriggerGuard;
+        impl Drop for TeeTriggerGuard {
+            fn drop(&mut self) {
+                host::set_tee_trigger(false);
+            }
+        }
+
+        let _tee = TeeTriggerGuard;
+        host::set_tee_trigger(true);
+        let device = host::device_id();
+        self.call_as_account(
+            *calimero_primitives::identity::AccountId::TEE_AUTHORITY.as_bytes(),
+            device,
+            f,
+        )
+    }
+
     /// Overrides the **device** identity reported to app logic for subsequent
     /// `call` / `view` invocations.
     ///

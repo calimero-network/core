@@ -290,18 +290,25 @@ steps:
     username: dev
     password: dev-password
 
-  # While the two still agree on the state, so it converges and proves the mesh is
-  # alive: after the refused write below no sync barrier could ever return.
-  - name: Settle so the laptop is back in the mesh
-    type: wait_for_sync
+  # The restarted laptop is connected again, so the write below can reach its
+  # peers and the read after it proves they refused it rather than never saw it.
+  # Not a `wait_for_sync`: the two already share the context's root hash, so one
+  # returns before the laptop has dialled anyone (it did, in 0.00s, the run that
+  # found #4070).
+  - name: The laptop is back in the mesh
+    type: assert_log_present
     nodes:
       - account-carry-node-1
-      - account-carry-node-3
-    context_id: '{{context_id}}'
-    timeout: 120
-    trigger_sync: true
+    patterns:
+      - 'Connection established'
+    timeout: 60
+    check_interval: 1
 
-  # The laptop's own node accepts the write; its peers drop it, which the read below asserts.
+  # Either outcome is a refusal. If the laptop has folded its revocation, its own
+  # node discards the write. If it has not, it signs the write under governance
+  # heads from before the revocation, and the cross-DAG check alone would accept
+  # it at that cut; the tablet's receive filter drops it by the revoked device's
+  # signing key instead (#4070).
   - name: The retired laptop can no longer write
     type: call
     node: account-carry-node-1

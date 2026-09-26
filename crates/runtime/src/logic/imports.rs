@@ -282,6 +282,8 @@ impl VMLogic<'_> {
             fn register_js_sdk_root_merge();
 
             fn random_bytes(ptr: u64);
+            fn tee_origin() -> u32;
+            fn tee_random_bytes(ptr: u64);
             fn time_now(ptr: u64);
 
             fn ed25519_verify(signature_ptr: u64, public_key_ptr: u64, message_ptr: u64) -> u32;

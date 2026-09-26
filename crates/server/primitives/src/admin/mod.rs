@@ -837,6 +837,13 @@ pub struct TeeAttestRequest {
     /// Optional application ID to include in attestation
     /// If provided, the application's bytecode BlobId (hash) will be included in report_data
     pub application_id: Option<ApplicationId>,
+    /// Bind the node's signing key into the quote. When set, report data bytes
+    /// `32..64` hold `attest_key_binding(app_hash, key)` instead of the bare app
+    /// hash, and the response names the key as `boundPublicKey`. A client that
+    /// checks the binding can then attribute anything signed by that key to the
+    /// attested machine. Off by default, so existing clients get the same quote.
+    #[serde(default)]
+    pub bind_node_key: bool,
 }
 
 impl TeeAttestRequest {
@@ -844,7 +851,15 @@ impl TeeAttestRequest {
         Self {
             nonce,
             application_id,
+            bind_node_key: false,
         }
+    }
+
+    /// Ask the node to bind its signing key into the quote.
+    #[must_use]
+    pub const fn with_node_key_binding(mut self) -> Self {
+        self.bind_node_key = true;
+        self
     }
 }
 
@@ -1075,6 +1090,10 @@ pub struct TeeAttestResponseData {
     pub quote_b64: String,
     /// Parsed TDX quote structure
     pub quote: Quote,
+    /// The node key bound into the quote, present only when the request set
+    /// `bindNodeKey`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bound_public_key: Option<PublicKey>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1084,9 +1103,13 @@ pub struct TeeAttestResponse {
 }
 
 impl TeeAttestResponse {
-    pub fn new(quote_b64: String, quote: Quote) -> Self {
+    pub fn new(quote_b64: String, quote: Quote, bound_public_key: Option<PublicKey>) -> Self {
         Self {
-            data: TeeAttestResponseData { quote_b64, quote },
+            data: TeeAttestResponseData {
+                quote_b64,
+                quote,
+                bound_public_key,
+            },
         }
     }
 }
@@ -3438,6 +3461,24 @@ impl Validate for SetTeeAdmissionPolicyApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetTeeAdmissionPolicyApiResponse {}
+
+/// Which admitted TEEs may author as the TEE authority. An empty
+/// `allowed_mrtd` turns TEE authorship off.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTeeAuthoringPolicyApiRequest {
+    #[serde(default)]
+    pub allowed_mrtd: Vec<String>,
+}
+
+impl Validate for SetTeeAuthoringPolicyApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetTeeAuthoringPolicyApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

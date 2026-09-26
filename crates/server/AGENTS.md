@@ -64,7 +64,10 @@ src/
 │   │   ├── network/           # Network status handlers
 │   │   ├── tee.rs             # TEE handlers parent
 │   │   ├── tee/
+│   │   │   ├── announce.rs       # The TeeAttestationAnnounce a replica publishes
 │   │   │   ├── attest.rs
+│   │   │   ├── evidence_retry.rs # Re-announces a TEE whose authority evidence is missing
+│   │   │   ├── fleet_join.rs
 │   │   │   └── info.rs
 │   │   ├── packages.rs        # Package handlers
 │   │   ├── list_packages.rs   # List packages

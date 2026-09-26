@@ -428,6 +428,7 @@ impl Module {
             private_storage,
             node_client,
             None,
+            false,
         )
     }
 
@@ -435,6 +436,10 @@ impl Module {
     /// it via `xcall`. `xcall_origin` is surfaced to the guest through
     /// `env::xcall_origin()` so a target can authorize its caller; `None` for
     /// direct/RPC calls.
+    ///
+    /// `tee_trigger` marks a run the node's TEE scheduler fired as the TEE
+    /// authority; it unlocks the enclave-only host functions. The node sets it
+    /// only after checking that this node is an attested TEE authority.
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub fn run_with_origin<'a>(
         &'a self,
@@ -447,6 +452,7 @@ impl Module {
         private_storage: Option<&'a mut dyn Storage>,
         node_client: Option<NodeClient>,
         xcall_origin: Option<ContextId>,
+        tee_trigger: bool,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
@@ -454,6 +460,7 @@ impl Module {
 
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
+        context.tee_trigger = tee_trigger;
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 
@@ -494,12 +501,16 @@ impl Module {
                     panic_payload.as_ref(),
                     "<unknown panic>",
                 );
+                // The panic text is the guest's own and can hold its state, so
+                // only its size is logged at `error` (which is shipped off the
+                // node); the text itself stays at `debug`.
                 error!(
                     %context_id,
                     method,
-                    panic_message = %message,
+                    panic_message_len = message.len(),
                     "WASM execution panicked"
                 );
+                debug!(%context_id, method, panic_message = %message, "WASM panic message");
                 Some(FunctionCallError::HostError(HostError::Panic {
                     context: PanicContext::Guest,
                     message,

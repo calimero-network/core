@@ -241,6 +241,7 @@ async fn admit_member_into_subgroup(
         // measurements but not the version, and `admit_tee_node` does not
         // re-check a release on this path.
         release_version: None,
+        evidence: None,
     };
 
     if let Err(e) = context_client.admit_tee_node(req).await {

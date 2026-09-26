@@ -225,6 +225,17 @@ pub async fn start(
         .as_ref()
         .map(|auth| Arc::new(auth.auth_service()));
 
+    // A TEE replica re-announces itself while its authority evidence is
+    // missing; idle on every other node. Spawned here because the announcement
+    // it sends is the one fleet-join builds.
+    drop(tokio::spawn(admin::handlers::tee::evidence_retry::run(
+        datastore.clone(),
+        node_client.clone(),
+        #[cfg(feature = "mock-attestation")]
+        mock_tee,
+        shutdown.clone(),
+    )));
+
     let shared_state = Arc::new(
         AdminState::new(
             datastore.clone(),
