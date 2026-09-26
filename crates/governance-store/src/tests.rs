@@ -5977,11 +5977,25 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
     );
 
     // `enrol_member` derives the device id from the signing key.
+    let revoked = || {
+        DenyListRepository::new(&store)
+            .is_revoked_signer_for_context(&ctx, &laptop_pk)
+            .unwrap()
+    };
+    assert!(
+        !revoked(),
+        "precondition: a bound key is not a revoked signer"
+    );
+
     let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
     bindings.apply_revocation(&ns_gid, laptop).unwrap();
     assert!(
         denied(),
         "a revoked device's key must be refused at the receive filter, whatever heads it cites"
+    );
+    assert!(
+        revoked(),
+        "the catch-up paths' check must agree with the filter"
     );
 
     // The same node re-paired: a fresh device under the same account, signing with
@@ -6003,6 +6017,7 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
         !denied(),
         "a key a live binding speaks for again must not stay denied"
     );
+    assert!(!revoked(), "nor be a revoked signer on the catch-up paths");
 
     // And in the other order: the revocation of the re-paired device's
     // predecessor arriving after the new link must not silence it either.
@@ -6011,6 +6026,7 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
         !denied(),
         "denial must not depend on which op arrived first"
     );
+    assert!(!revoked(), "on either path");
 }
 
 /// The inherited-deny column must be hash-neutral, like the direct deny-list —

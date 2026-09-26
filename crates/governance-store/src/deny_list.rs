@@ -256,6 +256,40 @@ impl<'a> DenyListRepository<'a> {
         self.is_inherited_denied(&namespace, &author)
     }
 
+    /// Whether `author_key` signed for a device the namespace owning
+    /// `context_id` has revoked, and no live binding speaks for it now.
+    ///
+    /// The revoked-device half of [`Self::is_author_denied_for_context`], on its
+    /// own. The delta paths other than the gossip entry point judge an author at
+    /// the governance heads it cites, so they refuse this one case explicitly:
+    /// a revoked device that has not folded its own revocation cites heads from
+    /// before it (core#4070). The removed-member entries stay a gossip-only
+    /// shortcut; the cut check is authoritative for those.
+    ///
+    /// Reads the revoked-signer row first, a point lookup, and scans the live
+    /// bindings only when it exists, so the paths that call this per delta pay
+    /// one read for an honest author.
+    ///
+    /// # Errors
+    /// Propagates the store read or the binding scan.
+    pub fn is_revoked_signer_for_context(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+        author_key: &PublicKey,
+    ) -> EyreResult<bool> {
+        let Some(group_id) = super::contexts::get_group_for_context(self.store, context_id)? else {
+            return Ok(false);
+        };
+        let namespace = NamespaceRepository::new(self.store).resolve(&group_id)?;
+        let bindings = AccountBindingRepository::new(self.store);
+        if !bindings.is_signer_revoked(&namespace, author_key)? {
+            return Ok(false);
+        }
+        Ok(bindings
+            .binding_for_sign_pk(&namespace, author_key)?
+            .is_none())
+    }
+
     /// Every directly-denied member account under `group_id`.
     ///
     /// Callers hold accounts and the rows are keyed by account, so this is a

@@ -35,7 +35,7 @@ src/
 │   ├── network_event/
 │   │   ├── namespace.rs      # ns/<id> topic dispatch (Op/Ack/ReadinessBeacon/ReadinessProbe)
 │   │   └── readiness.rs      # ReadinessBeacon + ReadinessProbe receiver-side handlers
-│   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, store_setup.rs, verify.rs)
+│   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, revoked_signer.rs, store_setup.rs, verify.rs)
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
 │   ├── blob_announce.rs      # Availability prefetch on an inbound blob announcement
