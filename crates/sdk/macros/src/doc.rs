@@ -7,7 +7,6 @@ use syn::{Attribute, Expr, ExprLit, Lit, Meta};
 const ARGUMENTS_HEADING: &str = "# Arguments"; // the method section holding per-parameter docs
 const ENTRY_PREFIXES: [&str; 2] = ["* `", "- `"]; // list bullet plus the name's opening backtick
 const ENTRY_SEPARATOR: &str = " - "; // between the closing backtick and the entry text
-const LIST_BULLETS: [&str; 2] = ["* ", "- "]; // a list item in `# Arguments` must be a well-formed entry
 const RETURNS_HEADING: &str = "# Returns"; // the method section describing the return value
 
 /// An item's doc: one line per attribute, one leading space stripped, outer
@@ -86,8 +85,8 @@ pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
     }
 }
 
-/// One line inside `# Arguments`: an entry, a continuation of the last entry,
-/// a malformed bullet, or anything else (which ends the current entry).
+/// One line inside `# Arguments`: an entry, an indented continuation of the
+/// last entry, or blank. Any other line is malformed.
 fn argument_line(
     line: String,
     params: &mut Vec<(String, String)>,
@@ -99,21 +98,21 @@ fn argument_line(
         *continuing = true;
         return;
     }
-    if LIST_BULLETS.iter().any(|bullet| line.starts_with(bullet)) {
-        malformed.push(line);
+    if line.trim().is_empty() {
         *continuing = false;
         return;
     }
-    let continuation =
-        *continuing && line.starts_with(char::is_whitespace) && !line.trim().is_empty();
     match params.last_mut() {
-        Some((_, text)) if continuation => {
+        Some((_, text)) if *continuing && line.starts_with(char::is_whitespace) => {
             if !text.is_empty() {
                 text.push(' ');
             }
             text.push_str(line.trim());
         }
-        _ => *continuing = false,
+        _ => {
+            malformed.push(line);
+            *continuing = false;
+        }
     }
 }
 
@@ -228,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_line_ends_an_entry() {
+    fn an_indented_line_after_a_blank_is_malformed() {
         let docs = method_docs(&attrs(&[
             " # Arguments",
             " * `a` - first.",
@@ -236,7 +235,56 @@ mod tests {
             "   not a continuation",
         ]));
         assert_eq!(docs.param("a"), Some("first."));
+        assert_eq!(docs.malformed, ["  not a continuation"]);
         assert_eq!(docs.doc, None);
+    }
+
+    fn malformed_in_arguments(lines: &[&str]) -> Vec<String> {
+        let mut doc = vec![" # Arguments", " * `a` - first."];
+        doc.extend_from_slice(lines);
+        let docs = method_docs(&attrs(&doc));
+        assert_eq!(docs.param("a"), Some("first."));
+        docs.malformed
+    }
+
+    #[test]
+    fn an_unindented_wrapped_line_is_malformed() {
+        assert_eq!(
+            malformed_in_arguments(&[" Must be positive."]),
+            ["Must be positive."]
+        );
+    }
+
+    #[test]
+    fn a_paragraph_after_a_blank_line_is_malformed() {
+        assert_eq!(
+            malformed_in_arguments(&["", " More about `a`."]),
+            ["More about `a`."]
+        );
+    }
+
+    #[test]
+    fn numbered_and_plus_list_items_are_malformed() {
+        assert_eq!(
+            malformed_in_arguments(&[" 1. `b` - second.", " + `c` - third."]),
+            ["1. `b` - second.", "+ `c` - third."]
+        );
+    }
+
+    #[test]
+    fn intro_prose_before_the_entries_is_malformed() {
+        let docs = method_docs(&attrs(&[
+            " # Arguments",
+            " All amounts are in cents.",
+            " * `a` - first.",
+        ]));
+        assert_eq!(docs.malformed, ["All amounts are in cents."]);
+        assert_eq!(docs.param("a"), Some("first."));
+    }
+
+    #[test]
+    fn blank_lines_inside_arguments_are_not_malformed() {
+        assert!(malformed_in_arguments(&["", " * `b` - second.", ""]).is_empty());
     }
 
     #[test]

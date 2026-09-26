@@ -89,9 +89,11 @@ fn all() {
     // A union has no single shape to describe in the ABI.
     t.compile_fail("tests/macros/error_abi_type_union.rs");
     t.compile_fail("tests/macros/error_abi_pattern_on_record.rs");
-    // A malformed `# Arguments` entry, or one naming no parameter, would document nothing.
+    // Doc text that would land nowhere in the ABI: stray or malformed `# Arguments` lines,
+    // an entry naming no parameter, or a `# Returns` on a method returning nothing.
     t.compile_fail("tests/macros/error_unknown_argument_doc.rs");
     t.compile_fail("tests/macros/error_malformed_argument_doc.rs");
+    t.compile_fail("tests/macros/error_argument_doc_prose.rs");
     t.compile_fail("tests/macros/error_returns_doc_on_unit.rs");
     // `#[app::destructive]` / `#[app::idempotent]` describe writes only.
     t.compile_fail("tests/macros/error_hint_on_read_only.rs");

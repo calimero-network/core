@@ -192,7 +192,14 @@ pub fn set_blocks(&mut self, edits: Vec<Edit>, now: u64) -> app::Result<u32>
 ```
 
 Each entry becomes that parameter's `doc` and the section is removed from the method's own `doc`; `# Errors`, `# Examples`, and any other section except `# Returns` stay.
-An indented line continues the entry above it.
+An indented line continues the entry above it, and a blank line ends it.
+Every other line in the section fails the build, so it cannot vanish from the ABI unnoticed: an unindented wrapped line, a paragraph after a blank line, a numbered list, or intro prose.
+Put such text above the `# Arguments` heading instead.
+
+```
+`# Arguments` entry must look like: * `name` - description
+```
+
 An entry that names something other than a parameter fails the build:
 
 ```
