@@ -117,6 +117,8 @@ to seal them under:
 | Status | Code | Meaning |
 | --- | --- | --- |
 | `409` | `stale_transport_key` | The node restarted. Attest again; never take a key from this response. |
+| `403` | `sealed_required` | The node requires sealing and the request was not sealed (see below). |
+| `503` | `busy` | Too many sessions are being opened. Retry after `Retry-After`. |
 | `409` | `unknown_session` | The session expired or the node restarted. Open a new session. Nothing in the request ran, so it is safe to send again. |
 | `400` | `malformed`, `undecryptable`, `replayed_request`, `unsupported_version` | The envelope was refused. |
 
@@ -126,8 +128,59 @@ expires is cut off without an end frame, and the client reconnects under a new
 session. WebSockets cannot cross a POST; the node answers a sealed upgrade with
 a `501` inside the envelope, so subscribe over SSE instead.
 
-**Limits.** A sealed request body is capped at 64 MiB. Responses have no cap:
-they stream in frames of at most 64 KiB.
+**Limits.** A sealed request body is capped at 64 MiB, and the node buffers it
+before it can tell whether the request opens, so size your proxy's concurrency
+and body limits with that in mind. Responses have no cap: they stream in frames
+of at most 64 KiB. Session and request ids travel in the clear, so a proxy can
+tell which requests share a session, though not what they contain.
+
+**Behind `NODE_PATH_PREFIX`.** The envelope is served both at the root
+(`/sealed/v2`) and under the prefix (`{prefix}/sealed/v2`), and a request opened
+there is routed under the mount it arrived on. A sealed request therefore reaches
+exactly what a direct request through the same base URL would, whether the proxy
+passes the prefix through or strips it.
+
+### Requiring sealing
+
+Sealing is opt-in per client, so by default an unsealed client still works, and
+a client that forgets to seal sends its bearer token through the proxy in the
+clear. On a TEE node behind a proxy you do not trust, require it:
+
+```toml
+[server.sealed]
+required = true
+```
+
+The node then answers every unsealed request with `403` and code
+`sealed_required`, except the ones a client needs before it can seal anything:
+`GET /admin-api/health`, `GET /admin-api/ready`, and `POST /admin-api/tee/attest`
+(all under the path prefix, if any). Login, the admin API, JSON-RPC and SSE all
+have to go through a sealed session. Browser tools that do not seal, such as the
+bundled admin dashboard and auth login pages, stop working, and so does scraping
+`/metrics` over the same listener.
+
+### Rate limit and metrics
+
+Opening a session needs no credential, so the node answers at most 100
+handshakes a second (after a burst of 200), node-wide, and refuses the rest with
+`503`, code `busy` and `Retry-After`. mero-js waits and retries once. The limit is
+node-wide because the node cannot tell clients apart: behind a proxy every
+connection comes from the proxy. Put per-client limits where client addresses are
+known.
+
+When the session table is full, the node drops sessions that never carried a
+request before any that did, so a flood of handshakes displaces its own sessions
+first. Expired sessions are swept every 30 seconds, so their keys are gone within
+half a minute of expiry.
+
+Metrics, on the node's Prometheus registry:
+
+| Metric | Meaning |
+| --- | --- |
+| `sealed_handshakes_total` | Sessions opened. |
+| `sealed_requests_total` | Sealed requests opened and dispatched. |
+| `sealed_refusals_total{code}` | Refusals, by code: of the envelope, of a handshake over the limit (`busy`), of an unsealed request while sealing is required (`sealed_required`). |
+| `sealed_sessions` | Sessions whose keys the node holds. |
 
 In mero-js, hand the sealing fetch to the client and give it a way to attest:
 
@@ -248,6 +301,17 @@ asked for, so merod also checks what the signed file says about itself: its
 `MERO_TEE_PROFILE` is set — its `profile` must match. The KMS is checked against
 the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
 describe the nodes that KMS serves and are never read here.
+
+Each image profile has its own KMS, and each KMS its own policy. With
+`MERO_TEE_PROFILE` set, merod fetches that profile's asset,
+`kms-phala-attestation-policy.<profile>.json` (with its `.sig` and
+`.bundle.json`), so a `debug-read-only` node verifies a `debug-read-only` KMS
+against the `debug-read-only` measurements. Only when the release publishes no
+such file does merod fall back to the generic
+`kms-phala-attestation-policy.json`, which is the `locked-read-only` policy. The
+`profile` check still applies to it, so on any other profile the fallback is
+refused rather than trusted. A per-profile policy that is published without its
+signature or bundle is an error, never a reason to try the generic file.
 
 Registers alone do not pin the KMS. A node's keys are derived from the KMS's
 dstack **app** key, so anything that runs under that app can derive them — and

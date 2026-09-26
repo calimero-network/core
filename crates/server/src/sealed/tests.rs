@@ -7,15 +7,21 @@ use axum::Router;
 use futures_util::stream as futures_stream;
 use tower::{Layer, ServiceExt};
 
-use super::session::{builder, respond_with, PROLOGUE};
+use super::session::{builder, respond_with, MAX_SESSIONS, PROLOGUE};
 use super::*;
 
 const TRANSPORT_SECRET: [u8; 32] = [0x22; 32];
 
 fn transport() -> Arc<SealedTransport> {
-    Arc::new(SealedTransport::from_secret(Zeroizing::new(
-        TRANSPORT_SECRET,
-    )))
+    transport_with(&SealedOptions::default())
+}
+
+fn transport_with(options: &SealedOptions) -> Arc<SealedTransport> {
+    Arc::new(SealedTransport::from_secret(
+        Zeroizing::new(TRANSPORT_SECRET),
+        options,
+        SealedMetrics::default(),
+    ))
 }
 
 fn public_of(secret: &[u8; 32]) -> [u8; 32] {
@@ -45,6 +51,12 @@ fn app(
 ) -> impl tower::Service<Request, Response = Response, Error = core::convert::Infallible> {
     let router = Router::new()
         .route("/echo", post(echo))
+        .route("/node/echo", post(echo))
+        .route("/admin-api/health", get(|| async { "alive" }))
+        .route(
+            "/huge-head",
+            get(|| async { [("x-huge", "h".repeat(MAX_FRAME_DATA + 1))] }),
+        )
         .route(
             "/stream",
             get(|| async {
@@ -66,6 +78,18 @@ async fn send(transport: &Arc<SealedTransport>, path: &str, body: Vec<u8>) -> (S
                 .body(Body::from(body))
                 .unwrap(),
         )
+        .await
+        .unwrap();
+    let status = response.status();
+    (
+        status,
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+    )
+}
+
+async fn get_unsealed(transport: &Arc<SealedTransport>, path: &str) -> (StatusCode, Bytes) {
+    let response = app(Arc::clone(transport))
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
     let status = response.status();
@@ -110,10 +134,14 @@ struct Client {
 
 impl Client {
     async fn open(transport: &Arc<SealedTransport>) -> Self {
+        Self::open_at(transport, "").await
+    }
+
+    async fn open_at(transport: &Arc<SealedTransport>, mount: &str) -> Self {
         let (message, mut initiator) = message_1(&transport.public_key(), &[]);
         let (status, body) = send(
             transport,
-            HANDSHAKE_PATH,
+            &format!("{mount}{HANDSHAKE_PATH}"),
             handshake_body(&transport.public_key(), &message),
         )
         .await;
@@ -534,6 +562,192 @@ fn request_ids_below_the_replay_window_are_refused() {
     );
     assert!(sessions.admit(&id, 4000, now).is_err());
     assert!(sessions.admit(&id, 5001, now).is_ok());
+}
+
+/// With sealing required, a client that forgets to seal is refused before its
+/// request (and its bearer token) reaches anything, while the requests it needs
+/// to learn the key and seal still go through.
+#[tokio::test]
+async fn with_sealing_required_only_sealed_requests_are_served() {
+    let transport = transport_with(&SealedOptions::new(true, None));
+
+    let (status, body) = send(&transport, "/echo", b"plain".to_vec()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error_code(&body), "sealed_required");
+
+    let (status, body) = get_unsealed(&transport, "/admin-api/health").await;
+    assert_eq!(status, StatusCode::OK, "probes still answer");
+    assert_eq!(&body[..], b"alive");
+
+    let mut client = Client::open(&transport).await;
+    let (id, sealed) = client.seal(&head("POST", "/echo", &[]), b"sealed");
+    let (status, body) = send(&transport, SEALED_PATH, sealed).await;
+    assert_eq!(status, StatusCode::OK);
+    let (head, inner, _) = client.open_response(id, &body);
+    assert_eq!(head.status, 200);
+    assert_eq!(inner, b"sealed");
+}
+
+#[test]
+fn with_sealing_required_attestation_is_still_served_under_the_prefix() {
+    let transport = transport_with(&SealedOptions::new(true, Some("/node".to_owned())));
+    assert!(!transport.refuses_unsealed("/node/admin-api/tee/attest"));
+    assert!(!transport.refuses_unsealed("/node/admin-api/ready"));
+    assert!(transport.refuses_unsealed("/node/admin-api/contexts"));
+    assert!(transport.refuses_unsealed("/admin-api/tee/attest"));
+    assert!(!transport_with(&SealedOptions::default()).refuses_unsealed("/node/jsonrpc"));
+}
+
+/// Behind `NODE_PATH_PREFIX` the routers live under the prefix. A sealed
+/// request must reach them exactly as a direct request through the same base
+/// URL would: under the prefix when the envelope came in under it, and at the
+/// root when a proxy stripped it on the way.
+#[tokio::test]
+async fn a_sealed_request_is_routed_under_the_mount_it_arrived_on() {
+    let transport = transport_with(&SealedOptions::new(false, Some("/node".to_owned())));
+    for (mount, expected) in [("/node", "/node/echo"), ("", "/echo")] {
+        let mut client = Client::open_at(&transport, mount).await;
+        let (id, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
+        let (status, body) = send(&transport, &format!("{mount}{SEALED_PATH}"), sealed).await;
+        assert_eq!(status, StatusCode::OK);
+        let (head, _, _) = client.open_response(id, &body);
+        assert_eq!(head.status, 200, "{mount:?}");
+        assert_eq!(response_header(&head, "x-echo-uri"), Some(expected));
+    }
+}
+
+#[test]
+fn handshakes_beyond_the_rate_limit_are_refused_until_it_refills() {
+    let start = Instant::now();
+    let mut limit = HandshakeLimit::full(start);
+    for _ in 0..200 {
+        assert!(limit.admit(start));
+    }
+    assert!(!limit.admit(start), "the burst is spent");
+    assert!(
+        limit.admit(start + Duration::from_millis(10)),
+        "one more per 10ms"
+    );
+    assert!(!limit.admit(start + Duration::from_millis(10)));
+}
+
+#[tokio::test]
+async fn a_handshake_over_the_rate_limit_is_told_to_retry() {
+    let transport = transport();
+    *transport.handshakes.lock().unwrap() = HandshakeLimit {
+        tokens: 0.0,
+        refilled: Instant::now(),
+    };
+    let (message, _) = message_1(&transport.public_key(), &[]);
+    let response = app(Arc::clone(&transport))
+        .oneshot(
+            Request::post(HANDSHAKE_PATH)
+                .body(Body::from(handshake_body(
+                    &transport.public_key(),
+                    &message,
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[RETRY_AFTER], "1");
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(error_code(&body), "busy");
+}
+
+/// A flood of handshakes that never carry a request displaces its own
+/// sessions, not a client's.
+#[test]
+fn a_full_table_drops_unused_sessions_before_used_ones() {
+    let keys = || SessionKeys {
+        request: Zeroizing::new([1; 32]),
+        response: Zeroizing::new([2; 32]),
+    };
+    let start = Instant::now();
+    let mut sessions = Sessions::default();
+    let used = [0xff; SESSION_ID_LEN];
+    sessions.insert(used, keys(), start);
+    sessions.admit(&used, 1, start).unwrap();
+
+    let later = start + Duration::from_secs(60);
+    for n in 0..u32::try_from(MAX_SESSIONS + 64).unwrap() {
+        let mut id = [0; SESSION_ID_LEN];
+        id[..4].copy_from_slice(&n.to_be_bytes());
+        sessions.insert(id, keys(), later);
+    }
+    assert!(
+        sessions.keys(&used, later).is_ok(),
+        "the used session survived"
+    );
+}
+
+/// Forward secrecy rests on the keys actually being dropped, so an expired
+/// session must go even if nothing ever names it again.
+#[test]
+fn expiring_drops_sessions_nobody_names_again() {
+    let start = Instant::now();
+    let mut sessions = Sessions::default();
+    sessions.insert(
+        [5; SESSION_ID_LEN],
+        SessionKeys {
+            request: Zeroizing::new([1; 32]),
+            response: Zeroizing::new([2; 32]),
+        },
+        start,
+    );
+    sessions.expire(start + Duration::from_secs(60));
+    assert_eq!(sessions.len(), 1, "still live");
+    sessions.expire(start + SESSION_LIFETIME);
+    assert_eq!(sessions.len(), 0);
+}
+
+#[tokio::test]
+async fn a_low_order_client_key_is_refused() {
+    let transport = transport();
+    let mut low_order = vec![0u8; 32];
+    low_order.extend_from_slice(&[0u8; 16]);
+    let (status, body) = send(
+        &transport,
+        HANDSHAKE_PATH,
+        handshake_body(&transport.public_key(), &low_order),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(&body), "malformed");
+}
+
+/// Every frame fits in 64 KiB, so a client can refuse a larger one outright.
+#[tokio::test]
+async fn response_headers_too_large_for_a_frame_become_a_502() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (id, sealed) = client.seal(&head("GET", "/huge-head", &[]), b"");
+    let (_, body) = send(&transport, SEALED_PATH, sealed).await;
+    let (head, _, ended) = client.open_response(id, &body);
+    assert_eq!(head.status, 502);
+    assert!(ended);
+}
+
+#[tokio::test]
+async fn refusals_are_counted_by_code() {
+    let mut registry = Registry::default();
+    let transport = Arc::new(SealedTransport::from_secret(
+        Zeroizing::new(TRANSPORT_SECRET),
+        &SealedOptions::new(true, None),
+        SealedMetrics::register(&mut registry),
+    ));
+    let _ = send(&transport, "/echo", Vec::new()).await;
+    let _client = Client::open(&transport).await;
+
+    let mut text = String::new();
+    prometheus_client::encoding::text::encode(&mut text, &registry).unwrap();
+    assert!(
+        text.contains("sealed_refusals_total{code=\"sealed_required\"} 1"),
+        "{text}"
+    );
+    assert!(text.contains("sealed_handshakes_total 1"), "{text}");
+    assert!(text.contains("sealed_sessions 1"), "{text}");
 }
 
 const CLIENT_EPHEMERAL: [u8; 32] = [0x33; 32];

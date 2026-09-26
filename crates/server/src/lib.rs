@@ -18,7 +18,7 @@ use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::service_mounts::mount_runtime_services;
 
@@ -243,7 +243,22 @@ pub async fn start(
         shutdown.clone(),
     )));
 
-    let transport = Arc::new(sealed::SealedTransport::generate());
+    let transport = Arc::new(sealed::SealedTransport::generate(
+        &sealed::SealedOptions::new(
+            config.sealed.required,
+            std::env::var("NODE_PATH_PREFIX")
+                .ok()
+                .filter(|prefix| !prefix.is_empty()),
+        ),
+        &mut prom_registry,
+    ));
+    if config.sealed.required {
+        info!("Sealed transport required: unsealed requests are refused");
+    }
+    drop(tokio::spawn(sealed::expire_sessions(
+        Arc::downgrade(&transport),
+        shutdown.clone(),
+    )));
     let shared_state = Arc::new(
         AdminState::new(
             datastore.clone(),
