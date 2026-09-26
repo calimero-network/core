@@ -200,10 +200,11 @@ pub fn read_tee_authoring_policy(
 /// admission op carries only its signer's word for the measurements, and any
 /// member may sign one.
 ///
-/// Evaluated against this node's current governance state, not at a delta's
-/// causal cut. Two peers that have folded a policy change to different depths
-/// can therefore briefly disagree about a TEE write near that change; see the
-/// TEE authorship design notes for the at-cut follow-up.
+/// Evaluated against this node's current governance state. That is the right
+/// question where THIS node decides whether to run or sign something — the
+/// local execute path and the TEE scheduler. A peer judging a received delta
+/// asks the same question at the delta's cut instead, through the projection
+/// (`ScopeProjections::writer_account_at_cut` in `calimero-context`).
 pub fn is_tee_authority(
     store: &Store,
     group_id: &ContextGroupId,
@@ -410,6 +411,43 @@ pub fn is_tee_authority_for_context(
         return Ok(false);
     };
     Ok(tee_authority_key(store, &group_id, &account)?.as_ref() == Some(author))
+}
+
+/// Whether `key` is the attested key of a TEE admitted to the namespace that
+/// owns `context_id`: a direct `ReadOnlyTee` row at the root, with verified
+/// evidence whose quote binds `key`.
+///
+/// Deliberately weaker than [`is_tee_authority_for_context`]: it asks nothing
+/// about the authoring policy or the membership where the delta writes. It is
+/// what the receive-side read-only gate needs, because a delta from such a key
+/// is one the attested `merod` signed, and it only signs a TEE-triggered run it
+/// judged authorised at its own cut. Whether its writes may touch `TeeOnly`
+/// state is then decided at that cut, at merge, and membership by the cross-DAG
+/// check at the same cut. Asking the policy here too would put a live read in
+/// front of both, and two peers on either side of a policy change would disagree
+/// about the whole delta.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn is_attested_tee_key_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    key: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    let Some(account) = crate::member_account_in_namespace(store, &group_id, key)? else {
+        return Ok(false);
+    };
+    let root = NamespaceRepository::new(store).resolve(&group_id)?;
+    if MembershipRepository::new(store).role_of(&root, &account)?
+        != Some(GroupMemberRole::ReadOnlyTee)
+    {
+        return Ok(false);
+    }
+    Ok(tee_authority_evidence(store, &root, &account)?
+        .is_some_and(|evidence| evidence.attested_key == *key))
 }
 
 /// Every TEE authority for `context_id`, in account order. The TEE scheduler
@@ -1095,6 +1133,42 @@ mod tests {
             resolve(&f.tee_key, f.tee),
             f.tee,
             "a removed TEE loses the authority"
+        );
+    }
+
+    /// The projection folds what a quote proves, so the decode verifies it:
+    /// evidence whose quote binds its key folds with the quote's MRTD, and
+    /// evidence whose quote binds another key folds as nothing.
+    #[test]
+    fn evidence_folds_only_when_its_quote_verifies() {
+        use calimero_op::OpPayload;
+
+        let ns_gid = ContextGroupId::from([0xB2; 32]);
+        let member = AccountId::from([0x42; 32]);
+        let key = PublicKey::from([0x11; 32]);
+        let op = |quote| GroupOp::TeeAuthorityEvidence {
+            member,
+            attested_key: key,
+            quote,
+            collateral: None,
+            attested_at: 1_751_000_000,
+        };
+
+        assert_eq!(
+            crate::unified_op_decode::group_op_payload(ns_gid, &op(mock_quote_for(&key))),
+            OpPayload::TeeAuthorityEvidence {
+                group: ns_gid,
+                member,
+                attested_key: key,
+                mrtd: MOCK_MRTD.to_owned(),
+            }
+        );
+        assert_eq!(
+            crate::unified_op_decode::group_op_payload(
+                ns_gid,
+                &op(mock_quote_for(&PublicKey::from([0x99; 32])))
+            ),
+            OpPayload::Noop
         );
     }
 

@@ -146,6 +146,14 @@ pub struct ScopeState {
     /// Per-`(account, device)` floor: the highest epoch a narrowing took this
     /// device out at, recorded whether or not anything is bound.
     device_scope_floor: BTreeMap<(AccountId, DeviceId), u32>,
+    // --- TEE authorship plane ---
+    /// The TEE authoring policy, one LWW register per scope. Not part of
+    /// `governance_hash`: it decides who may author `TeeOnly` state, which the
+    /// storage root already reflects, and hashing it would make every node
+    /// that predates this plane report a divergence.
+    tee_authoring_policy: Option<(Stamp, Vec<String>)>,
+    /// Each TEE member's latest verified evidence, an LWW register per member.
+    tee_evidence: BTreeMap<AccountId, (Stamp, calimero_authz::TeeEvidence)>,
 }
 
 /// The result of walking a cut's causal ancestry: the ops reached, and what
@@ -489,6 +497,28 @@ impl ScopeState {
                 if wins(stamp, self.member_caps_clock.get(&key)) {
                     let _ = self.member_caps.insert(key, capabilities.bits());
                     let _ = self.member_caps_clock.insert(key, stamp);
+                }
+            }
+            OpPayload::TeeAuthoringPolicySet { allowed_mrtd, .. } => {
+                lww_set(&mut self.tee_authoring_policy, stamp, allowed_mrtd.clone());
+            }
+            OpPayload::TeeAuthorityEvidence {
+                member,
+                attested_key,
+                mrtd,
+                ..
+            } => {
+                if wins(stamp, self.tee_evidence.get(member).map(|(seen, _)| seen)) {
+                    let _ = self.tee_evidence.insert(
+                        *member,
+                        (
+                            stamp,
+                            calimero_authz::TeeEvidence {
+                                attested_key: *attested_key,
+                                mrtd: mrtd.clone(),
+                            },
+                        ),
+                    );
                 }
             }
             // A graph-only node: present in the log so an ancestry walk can
@@ -888,6 +918,16 @@ impl ScopeState {
             devices,
             accounts,
             revoked_devices: self.revoked_devices.clone(),
+            tee_authoring_policy: self
+                .tee_authoring_policy
+                .as_ref()
+                .map(|(_, allowed)| allowed.clone())
+                .unwrap_or_default(),
+            tee_evidence: self
+                .tee_evidence
+                .iter()
+                .map(|(member, (_, evidence))| (*member, evidence.clone()))
+                .collect(),
         }
     }
 

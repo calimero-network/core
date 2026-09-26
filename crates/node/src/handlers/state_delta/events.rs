@@ -423,7 +423,7 @@ fn record_fired_markers(
     // TEE authority signed says a trigger fired; a member's would let them
     // stall a game whose elected TEE is down.
     let signed_by_authority = author.is_some_and(|author| {
-        calimero_governance_store::is_tee_authority_for_context(store, context_id, &author)
+        calimero_governance_store::is_attested_tee_key_for_context(store, context_id, &author)
             .unwrap_or_else(|err| {
                 warn!(%context_id, error = %err, "TEE authority lookup failed for a fired marker");
                 false

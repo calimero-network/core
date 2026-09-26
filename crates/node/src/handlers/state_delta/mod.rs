@@ -949,26 +949,16 @@ fn arm_signer_resolver_for_cut(
     let store = datastore.clone();
     delta_store.arm_signer_resolver(std::sync::Arc::new(
         move |key: &calimero_primitives::identity::PublicKey| {
-            let account = projections
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .device_account_at_cut(&store, group, key, &heads)?;
             // An attested TEE authority signs as the TEE authority, the one
             // writer of `TeeOnly` state. Its node only signs deltas for TEE-
             // triggered runs, which run as that account, so this is the same
-            // resolution its own apply used. A lookup failure refuses (`None`)
-            // rather than falling back to the TEE's own account, which would
-            // quietly change which writer sets it matches.
-            match calimero_governance_store::writer_account(&store, &group, key, account) {
-                Ok(writer) => Some(writer),
-                Err(err) => {
-                    tracing::warn!(
-                        %err,
-                        "TEE authority lookup failed while resolving a signer; refusing"
-                    );
-                    None
-                }
-            }
+            // resolution its own apply used. The authority is resolved at this
+            // cut, like the binding, so a policy change or a TEE removal the
+            // delta did not cite cannot change how its writes merge.
+            projections
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .writer_account_at_cut(&store, group, key, &heads)
         },
     ));
 }

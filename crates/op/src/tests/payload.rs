@@ -114,6 +114,16 @@ fn op_payload_discriminants_are_pinned() {
             device,
             scope_epoch: 4,
         },
+        OpPayload::TeeAuthoringPolicySet {
+            group,
+            allowed_mrtd: vec!["m".to_owned()],
+        },
+        OpPayload::TeeAuthorityEvidence {
+            group,
+            member: account,
+            attested_key: calimero_primitives::identity::PublicKey::from([7; 32]),
+            mrtd: "m".to_owned(),
+        },
     ];
 
     // Exhaustive: a new variant forces a new arm here.
@@ -139,10 +149,12 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::MemberJoinedWithDevice { .. } => 17,
             OpPayload::Opaque { .. } => 18,
             OpPayload::DeviceDescoped { .. } => 19,
+            OpPayload::TeeAuthoringPolicySet { .. } => 20,
+            OpPayload::TeeAuthorityEvidence { .. } => 21,
         }
     }
 
-    assert_eq!(all.len(), 20, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 22, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(

@@ -86,6 +86,20 @@ pub struct AclView {
     /// Separate from [`devices`](Self::devices) and **grow-only** — see the
     /// module docs.
     pub revoked_devices: BTreeSet<DeviceId>,
+    /// The namespace's TEE authoring policy at the cut: the MRTDs whose attested
+    /// TEEs may author as the TEE authority. Empty means TEE authorship is off.
+    pub tee_authoring_policy: Vec<String>,
+    /// Each TEE member's latest verified attestation evidence at the cut.
+    pub tee_evidence: BTreeMap<AccountId, TeeEvidence>,
+}
+
+/// What a TEE member's verified attestation evidence established, at a cut.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TeeEvidence {
+    /// The key the quote binds.
+    pub attested_key: PublicKey,
+    /// The MRTD the quote reports.
+    pub mrtd: String,
 }
 
 /// An account's resolved root key at a cut.

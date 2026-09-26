@@ -45,6 +45,7 @@
 use calimero_account::{AccountId, VerifiedDeviceCert};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Op, OpPayload};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
@@ -291,6 +292,30 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                     bound: op.author(),
                     claimed: *account,
                 })
+            }
+        }
+        // The namespace's admin sets which TEE images may author, as the
+        // governance apply requires.
+        OpPayload::TeeAuthoringPolicySet { group, .. } => {
+            if acl_at_cut.is_group_admin(&op.author(), *group) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
+        // Evidence proves itself; the voucher rule only keeps it to those who
+        // may vouch for an admission: an admin, or a TEE already admitted.
+        OpPayload::TeeAuthorityEvidence { group, .. } => {
+            let author = op.author();
+            let is_tee = acl_at_cut
+                .groups
+                .get(group)
+                .and_then(|members| members.get(&author))
+                .is_some_and(|role| *role == GroupMemberRole::ReadOnlyTee);
+            if is_tee || acl_at_cut.is_group_admin(&author, *group) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
             }
         }
         OpPayload::AccountKeysRotated { handoff } => {

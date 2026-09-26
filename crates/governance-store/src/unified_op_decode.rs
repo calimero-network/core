@@ -238,7 +238,7 @@ pub fn op_from_namespace_op_with_binding(
         // than answer from a fold with an invisible hole. Collapsing both into
         // `Noop` made every cut behind any unmodelled op look unreadable.
         NamespaceOp::Group { group_id, .. } => match decrypted_group_op {
-            Some(group_op) => payload_from_group_op(*group_id, group_op).unwrap_or(OpPayload::Noop),
+            Some(group_op) => group_op_payload(*group_id, group_op),
             None => OpPayload::Opaque {
                 group: calimero_context_config::types::ContextGroupId::from(group_id.to_bytes()),
             },
@@ -312,6 +312,49 @@ pub fn op_from_namespace_op_with_binding(
         parents,
         payload,
     )
+}
+
+/// The unified payload for a decrypted group op.
+///
+/// [`payload_from_group_op`], except for `TeeAuthorityEvidence`, whose payload
+/// is what its quote proves. The quote is verified here, offline and the same
+/// way on every node, and evidence that does not verify folds to nothing, so
+/// the projection only ever holds evidence a reader could have checked itself.
+pub(crate) fn group_op_payload(
+    group: calimero_context_config::types::ContextGroupId,
+    op: &GroupOp,
+) -> OpPayload {
+    if let GroupOp::TeeAuthorityEvidence {
+        member,
+        attested_key,
+        quote,
+        collateral,
+        attested_at,
+    } = op
+    {
+        return match crate::tee::verify_authority_evidence(
+            attested_key,
+            quote,
+            collateral.as_deref(),
+            *attested_at,
+        ) {
+            Ok(verdict) => OpPayload::TeeAuthorityEvidence {
+                group,
+                member: *member,
+                attested_key: *attested_key,
+                mrtd: verdict.mrtd,
+            },
+            Err(err) => {
+                tracing::warn!(
+                    member = %member,
+                    error = %format!("{err:#}"),
+                    "TEE authority evidence does not verify; folding it as nothing"
+                );
+                OpPayload::Noop
+            }
+        };
+    }
+    payload_from_group_op(group, op).unwrap_or(OpPayload::Noop)
 }
 
 /// Build a [`CausalDelta`] from a [`SignedNamespaceOp`] for insertion into the

@@ -1754,10 +1754,50 @@ impl ScopeProjections {
         //
         // A node's OWN key never reaches here: `account_for_group` reads the local
         // device row, which is minted without waiting for any op.
-        view.devices
-            .values()
-            .find(|binding| binding.sign_pk == *key)
-            .map(|binding| binding.account)
+        bound_account(&view, key)
+    }
+
+    /// The account a write signed by `key` is checked against at merge, at the
+    /// cut `heads`: [`device_account_at_cut`](Self::device_account_at_cut), or
+    /// [`AccountId::TEE_AUTHORITY`] when that account is a TEE authority at the
+    /// cut and `key` is the one its evidence binds.
+    ///
+    /// The at-cut counterpart of `calimero_governance_store::writer_account`.
+    /// Every input to the authority comes from the fold of the cut's ancestry —
+    /// the `ReadOnlyTee` role at the namespace root, the authoring policy, the
+    /// verified evidence, the key's binding and the membership where it writes —
+    /// so two replicas that hold the cited ancestry resolve one TEE write the
+    /// same way, however far past the cut each has applied.
+    ///
+    /// `None` when the key's account cannot be resolved at the cut, or the TEE's
+    /// membership is not yet decidable there; the caller defers the write.
+    pub fn writer_account_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        key: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<AccountId> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        // One fold for every signer; only a TEE candidate pays for a second.
+        let view = self.acl_view_at(&ScopeId::from(namespace_id), heads)?;
+        let account = bound_account(&view, key)?;
+        // `account` is who `key` speaks for at this cut, so evidence for
+        // `account` that names `key` is neither relabelled from another TEE nor
+        // for a key the quote does not bind.
+        if tee_evidence_key(&view, ContextGroupId::from(namespace_id), &account) != Some(*key) {
+            return Some(account);
+        }
+        // Still a member where it writes: a Restricted subgroup it was never
+        // admitted to is not one.
+        Some(if self.member_at_cut(store, group, key, heads)? {
+            AccountId::TEE_AUTHORITY
+        } else {
+            account
+        })
     }
 
     pub fn member_at_cut(
@@ -2437,6 +2477,36 @@ impl ScopeProjections {
             .get(member)
             .cloned()
     }
+}
+
+/// The account `key` is bound to in `view`, if any.
+fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
+    view.devices
+        .values()
+        .find(|binding| binding.sign_pk == *key)
+        .map(|binding| binding.account)
+}
+
+/// The attested key of `account`'s evidence, when `view` makes `account` a TEE
+/// authority candidate: a direct `ReadOnlyTee` member of the namespace `root`,
+/// under a non-empty authoring policy that names its evidence's MRTD.
+fn tee_evidence_key(
+    view: &calimero_authz::AclView,
+    root: ContextGroupId,
+    account: &AccountId,
+) -> Option<PublicKey> {
+    let is_tee = view
+        .groups
+        .get(&root)
+        .and_then(|members| members.get(account))
+        .is_some_and(|role| *role == calimero_primitives::context::GroupMemberRole::ReadOnlyTee);
+    if !is_tee {
+        return None;
+    }
+    view.tee_evidence
+        .get(account)
+        .filter(|evidence| view.tee_authoring_policy.contains(&evidence.mrtd))
+        .map(|evidence| evidence.attested_key)
 }
 
 #[cfg(test)]
