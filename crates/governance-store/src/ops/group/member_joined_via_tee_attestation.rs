@@ -23,14 +23,14 @@ pub(crate) fn apply(
     if *role != GroupMemberRole::ReadOnlyTee {
         bail!(MembershipError::TeeRoleMustBeReadOnly);
     }
-    // The verifier is a member who vouched for the attestation, so its key is
-    // resolved to the account membership is recorded against. A key bound to no
-    // account here vouches for nobody.
+    // The verifier vouched for the attestation, so its key is resolved to the
+    // account whose authority is checked. A key bound to no account here
+    // vouches for nobody.
     let Some(verifier) = ctx.signer_account()? else {
-        bail!(MembershipError::TeeVerifierNotMember);
+        bail!(MembershipError::TeeVerifierNotAuthorized);
     };
     ctx.membership_policy()
-        .require_tee_attestation_verifier_membership(&verifier)?;
+        .require_tee_attestation_verifier(&verifier)?;
     let policy = ctx
         .membership_policy()
         .read_required_tee_admission_policy()?;

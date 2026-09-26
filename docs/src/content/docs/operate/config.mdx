@@ -339,6 +339,19 @@ and every node stays on the version it already runs.
 Trusted Execution Environment configuration. The entire section is optional and
 absent on non-TEE deployments.
 
+When `[tee]` is present, `merod run` fetches the datastore's encryption key from the
+KMS and refuses to start without it. **Create a TEE node with `merod init --kms-url
+<URL>`** rather than adding this section afterwards. `init` is what writes the node's
+signing identity and account root, so a store encrypted only from the first `run`
+would already hold both in plaintext. Having been written unencrypted, that store also
+could not be opened encrypted at all, because every read is decrypted. `--kms-url`
+fetches the key before anything is written and saves `[tee.kms.phala]` with that URL.
+
+The KMS is verified against the signed mero-tee release policy, so `init --kms-url`
+requires the release to be named in `MERO_TEE_VERSION` (or `MERO_KMS_VERSION` /
+`MERO_KMS_RELEASE_TAG`) and refuses otherwise. A store encrypted with a key from an
+unverified KMS would be readable by whoever runs that endpoint.
+
 ### `[tee.kms.phala]`
 
 | Key | Type | Default | Meaning |

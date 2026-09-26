@@ -29,7 +29,7 @@ What a verified quote proves:
 | Field | What it is | Role in admission |
 | --- | --- | --- |
 | `mrtd` | Launch measurement of the TD (the VM image) | Matched against the policy's `allowed_mrtd` |
-| `rtmr0`–`rtmr3` | Runtime measurement registers | Matched against `allowed_rtmr0..3` (each optional) |
+| `rtmr0`–`rtmr3` | Runtime measurement registers | Matched against `allowed_rtmr0..3`; `rtmr1`–`rtmr3` are required, `rtmr0` is optional |
 | `tcb_status` | Platform TCB level reported by DCAP verification | Matched against `allowed_tcb_statuses` |
 | `report_data` | 64 caller-supplied bytes baked into the quote | Binds the quote to a fresh nonce and a public key |
 
@@ -62,14 +62,14 @@ A result is `is_valid()` only when the signature verified **and** the nonce matc
 
 ## The admission handshake
 
-Admission is a gossip exchange on the namespace governance topic `ns/<hex(namespace_id)>`. A namespace **is** its own root group, so the namespace id is the admission group id. The joining replica announces; any existing member that receives the announce acts as a **verifier**.
+Admission is a gossip exchange on the namespace governance topic `ns/<hex(namespace_id)>`. A namespace **is** its own root group, so the namespace id is the admission group id. The joining replica announces; every member receives the announce, but only an **admin** of the namespace or an **already-admitted TEE node** acts on it as a **verifier**. Other members stand down.
 
 <SeqDiagram
   id="d-tee-admission"
   title="TEE attestation admission handshake"
   lanes={[
     { label: 'TEE replica', color: '#58a6ff' },
-    { label: 'Verifier (existing member)', color: '#3fb950' },
+    { label: 'Verifier (admin or admitted TEE)', color: '#3fb950' },
     { label: 'Namespace governance scope', color: '#a5ff11' },
   ]}
   steps={[
@@ -110,7 +110,7 @@ A single gossip publish into an empty mesh is lost forever — gossipsub has no 
 
 The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handlers/tee_attestation_admission.rs`). It rejects an announce that did not arrive on a well-formed `ns/<hex>` topic, verifies the quote (mock or real) against `SHA-256(public_key)`, drops it silently if invalid, then computes `quote_hash = SHA-256(quote_bytes)` and delegates to `admit_tee_node` with the extracted measurements.
 
-`admit_tee_node` (`crates/context/src/handlers/admit_tee_node.rs`) is where policy is enforced:
+`admit_tee_node` (`crates/context/src/handlers/admit_tee_node.rs`) is where policy is enforced. It first asks whether this node may vouch at all — only an admin of the group or a `ReadOnlyTee` member of it may — and a node that may not returns `Ok(())` without publishing, since peers would refuse its op. A node that may vouch then:
 
 <Steps>
 
@@ -120,7 +120,7 @@ The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handl
 
 3. **Fail-closed allowlist.** `allowed_mrtd` must be non-empty; an empty MRTD allowlist is rejected outright. The quote's `mrtd` must be in it.
 
-4. **Optional allowlists.** `tcb_status` and each of `rtmr0..3` are checked only when their allowlist is non-empty (empty = "don't care").
+4. **Runtime registers.** `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` must each be non-empty, and the quote's value must be in each. RTMR3 is the only register that names the image (profile and release). But `calimero-init` extends it from public inputs, so it proves something only when the kernel (RTMR1) and kernel command line + initrd (RTMR2) that ran before it are pinned as well. Without them, a custom kernel or initrd can reproduce a locked profile's RTMR3. `allowed_rtmr0` (the VM's hardware configuration, which varies with machine shape) is checked only when non-empty. `tcb_status` fails closed: an empty allowlist enforces `UpToDate`.
 
 5. **Idempotency.** If the member already holds a direct row, admission is a no-op `Ok(())` — safe under the re-announce loop.
 
@@ -132,10 +132,10 @@ The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handl
 
 </Steps>
 
-The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be `ReadOnlyTee`, the **signer must itself be a member** of the namespace (`require_tee_attestation_verifier_membership` — any member may verify, no special verifier role), a policy must exist, and the recorded measurements must still satisfy the allowlists. On success it admits the member and clears any prior deny-list entry.
+The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be `ReadOnlyTee`, the **signer must be an admin of the group or a TEE node already admitted to it** (`require_tee_attestation_verifier`), a policy must exist, and the recorded measurements must still satisfy the allowlists. On success it admits the member and clears any prior deny-list entry.
 
 <Aside type="caution">
-**Normative.** A verifier MUST be an existing member of the namespace whose attestation it admits. The admission op MUST record `role: ReadOnlyTee`; any other role is rejected at apply. The TEE admission policy MUST live on the **namespace root** — `TeeAdmissionPolicySet` on a subgroup is rejected, and policy reads resolve to the root before reading. `allowed_mrtd` MUST be non-empty, so a misconfigured empty policy fails closed rather than admitting everything.
+**Normative.** A verifier MUST be an admin of the group whose attestation it admits (directly, as its genesis admin, or inherited from an ancestor) or a `ReadOnlyTee` member of that same group. Plain membership is NOT sufficient: peers never see the quote — the op carries only the measurements the verifier claims — so whoever may sign the op decides who receives the group key. The admission op MUST record `role: ReadOnlyTee`; any other role is rejected at apply. The TEE admission policy MUST live on the **namespace root** — `TeeAdmissionPolicySet` on a subgroup is rejected, and policy reads resolve to the root before reading. `allowed_mrtd`, `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` MUST each be non-empty, so a misconfigured policy fails closed rather than admitting everything. These are refused when the policy is set, when a node admits, and on every peer that applies an admission.
 </Aside>
 
 ### Key delivery (the verifier, again)
@@ -150,7 +150,7 @@ The verifier (a key-holder) therefore calls `deliver_group_key_to_member`, which
 
 ### Self-confirm and auto-follow (the replica)
 
-Back in `fleet-join`, the poll loop watches `list_group_contexts`. Once the membership op and `KeyDelivery` have propagated and been applied, the replica sees itself in the group, joins every context in the namespace, and publishes its own `MemberSetAutoFollow { auto_follow_contexts: true, auto_follow_subgroups: true }` — signed with its **own** namespace identity, which satisfies that op's admin-or-self authorization rule. The verifier cannot do this on the replica's behalf because it holds neither admin authority nor the replica's signing key. From then on, new contexts and subgroups auto-join without further sidecar polling (see [Governance](/protocol/governance/) for the auto-follow machinery).
+Back in `fleet-join`, the poll loop watches `list_group_contexts`. Once the membership op and `KeyDelivery` have propagated and been applied, the replica sees itself in the group, joins every context in the namespace, and publishes its own `MemberSetAutoFollow { auto_follow_contexts: true, auto_follow_subgroups: true }` — signed with its **own** namespace identity, which satisfies that op's admin-or-self authorization rule. The verifier does not do this on the replica's behalf: it does not hold the replica's signing key, and when the verifier is another TEE it has no admin authority either. From then on, new contexts and subgroups auto-join without further sidecar polling (see [Governance](/protocol/governance/) for the auto-follow machinery).
 
 ## Worked example: a replica joins a fleet
 
@@ -168,13 +168,17 @@ read-only follower of an existing namespace — no operator invite at any point.
    curl -X PUT \
      "$NODE/admin-api/groups/$NS/settings/tee-admission-policy" \
      -d '{ "allowed_mrtd": ["<approved-td-measurement>"],
+           "allowed_rtmr1": ["<approved-kernel-measurement>"],
+           "allowed_rtmr2": ["<approved-initrd-measurement>"],
+           "allowed_rtmr3": ["<approved-image-measurement>"],
            "allowed_tcb_statuses": ["UpToDate"],
            "accept_mock": false }'
    ```
 
-   This publishes `TeeAdmissionPolicySet` on the namespace root. `allowed_mrtd`
-   is non-empty, so the policy fails closed; an empty allowlist would be
-   rejected rather than admitting every quote.
+   This publishes `TeeAdmissionPolicySet` on the namespace root. The values
+   come from the release's `published-mrtds.json`. `allowed_mrtd` and
+   `allowed_rtmr1..3` must each be non-empty; an empty one is refused rather
+   than admitting every quote.
 
 2. **The replica boots and announces.** The fleet sidecar calls the protected
    route on the new node. The node resolves its namespace identity, builds
@@ -188,12 +192,13 @@ read-only follower of an existing namespace — no operator invite at any point.
    The call re-announces every ~2 s for up to ~30 s, seeding the gossip mesh
    each cycle, because a single publish into a not-yet-formed mesh would be lost.
 
-3. **Any existing member verifies and admits.** A current member receives the
+3. **An admin or an admitted TEE verifies and admits.** Such a node receives the
    announce, runs `verify_attestation` (DCAP signature + nonce +
    `SHA-256(pubkey)` bind), checks the quote's `mrtd`/`tcb_status` against the
    policy, guards against a replayed `quote_hash`, and publishes
    `RootOp::MemberJoinedViaTeeAttestation { role: ReadOnlyTee, quote_hash, mrtd, …,
-   account }`. No special "verifier" role exists — any member may admit a valid quote.
+   account }`. A plain member does not: peers refuse an admission it signs, because
+   they trust the verifier's claimed measurements rather than re-checking the quote.
 
    The `account` is the replica's own credential, which travelled on the
    announcement. The verifier checks it against the key the **quote** binds to

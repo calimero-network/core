@@ -11,8 +11,8 @@ use super::super::{
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
     TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_MRTD_EMPTY, TEE_REJECT_RTMR0,
-    TEE_REJECT_RTMR1, TEE_REJECT_RTMR2, TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY,
-    TEE_REJECT_TCB_STATUS,
+    TEE_REJECT_RTMR1, TEE_REJECT_RTMR1_EMPTY, TEE_REJECT_RTMR2, TEE_REJECT_RTMR2_EMPTY,
+    TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY, TEE_REJECT_TCB_STATUS,
 };
 use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
@@ -111,18 +111,35 @@ impl<'a> MembershipPolicy<'a> {
         Ok(())
     }
 
-    /// The member who verified a TEE attestation must itself be a member.
+    /// Whether `verifier` may vouch for a TEE attestation in this group: an
+    /// admin of it (directly, as its genesis admin, or inherited from an
+    /// ancestor), or a TEE node already admitted to it (`ReadOnlyTee`).
     ///
-    /// Takes the verifier's ACCOUNT: this is a membership question, and the
-    /// caller — which holds the op's signing key — resolves it first so an
-    /// unbound or revoked key refuses here rather than being promoted to a
-    /// stand-in that matches nothing.
-    pub fn require_tee_attestation_verifier_membership(
-        &self,
-        verifier: &AccountId,
-    ) -> EyreResult<()> {
-        if !self.membership.is_member(verifier)? {
-            bail!(MembershipError::TeeVerifierNotMember);
+    /// Plain membership is NOT enough. Peers never see the quote — the op
+    /// carries only the measurements the verifier claims — so whoever may sign
+    /// this op decides who gets the group key. A plain `Member` must not be able
+    /// to mint a "TEE" out of an arbitrary key by copying measurements the
+    /// policy allows.
+    ///
+    /// The TEE row is read in THIS group and nowhere else: a TEE admitted to the
+    /// namespace root vouches at the root, and one admitted to a Restricted
+    /// subgroup vouches there. Neither can vouch in a group it was never let into.
+    pub fn is_tee_attestation_verifier(&self, verifier: &AccountId) -> EyreResult<bool> {
+        if MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, verifier)? {
+            return Ok(true);
+        }
+        Ok(self.membership.role_of(verifier)? == Some(GroupMemberRole::ReadOnlyTee))
+    }
+
+    /// [`is_tee_attestation_verifier`](Self::is_tee_attestation_verifier) as a
+    /// gate.
+    ///
+    /// Takes the verifier's ACCOUNT: the caller — which holds the op's signing
+    /// key — resolves it first so an unbound or revoked key refuses here rather
+    /// than being promoted to a stand-in that matches nothing.
+    pub fn require_tee_attestation_verifier(&self, verifier: &AccountId) -> EyreResult<()> {
+        if !self.is_tee_attestation_verifier(verifier)? {
+            bail!(MembershipError::TeeVerifierNotAuthorized);
         }
         Ok(())
     }
@@ -170,6 +187,8 @@ impl<'a> MembershipPolicy<'a> {
                 MembershipPolicyRejection::Rtmr1NotAllowed => TEE_REJECT_RTMR1,
                 MembershipPolicyRejection::Rtmr2NotAllowed => TEE_REJECT_RTMR2,
                 MembershipPolicyRejection::Rtmr3NotAllowed => TEE_REJECT_RTMR3,
+                MembershipPolicyRejection::Rtmr1AllowlistEmpty => TEE_REJECT_RTMR1_EMPTY,
+                MembershipPolicyRejection::Rtmr2AllowlistEmpty => TEE_REJECT_RTMR2_EMPTY,
                 MembershipPolicyRejection::Rtmr3AllowlistEmpty => TEE_REJECT_RTMR3_EMPTY,
             };
             record_membership_policy_rejection(reason);

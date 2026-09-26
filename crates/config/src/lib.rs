@@ -92,6 +92,25 @@ pub struct TeeConfig {
 }
 
 impl TeeConfig {
+    /// A TEE config that fetches its storage key from the Phala KMS at `url`,
+    /// with every other setting at its default.
+    ///
+    /// The shape `merod init --kms-url` writes. The KMS's own attestation is
+    /// verified against the release policy merod fetches at startup (see
+    /// `merod`'s `kms_policy`), so no allowlists are needed here.
+    #[must_use]
+    pub fn phala(url: Url) -> Self {
+        Self {
+            kms: KmsConfig {
+                phala: Some(PhalaKmsConfig {
+                    url,
+                    tls: KmsTlsConfig::default(),
+                    attestation: KmsAttestationConfig::default(),
+                }),
+            },
+        }
+    }
+
     /// Whether this node is configured to enforce *real* KMS attestation.
     ///
     /// Returns true when a KMS provider has attestation verification enabled and
