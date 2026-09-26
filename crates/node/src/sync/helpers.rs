@@ -486,7 +486,7 @@ pub(crate) fn signer_account_for(
     // it, a TEE's `TeeOnly` writes reach a peer by delta but are refused when
     // they arrive by repair, so a peer that catches up by repair never gets them.
     // A lookup error refuses, as a missing binding does above.
-    calimero_governance_store::writer_account(store, &group_id, account).ok()
+    calimero_governance_store::writer_account(store, &group_id, &signer, account).ok()
 }
 
 /// What a receiver should do with one incoming leaf.

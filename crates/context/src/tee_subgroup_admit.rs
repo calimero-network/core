@@ -237,6 +237,7 @@ async fn admit_member_into_subgroup(
         // is_mock flag. Mock-quote test paths admit via the allowlisted mock
         // MRTD regardless (accept_mock + allowed_mrtd), so false is correct here.
         is_mock: false,
+        evidence: None,
     };
 
     if let Err(e) = context_client.admit_tee_node(req).await {

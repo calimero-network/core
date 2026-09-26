@@ -41,12 +41,16 @@ calimero-op.workspace = true
 calimero-op-adapter.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-storage.workspace = true
+# Offline verification of TEE authority evidence at op apply.
+calimero-tee-attestation.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
 bip39 = { version = "3.0.0", default-features = false, features = ["alloc", "zeroize"] }
 zeroize.workspace = true
 
 [dev-dependencies]
+# Mock quotes, so tests can build evidence that binds a key of their choosing.
+calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }
 # Fold-equivalence: cross-check the unified projection's membership fold
 # against this crate's live membership resolver over the same op sequences.
 # (`calimero-op` is now a regular dependency — used by `unified_op_decode` —

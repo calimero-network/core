@@ -90,6 +90,42 @@ async fn deliver_group_key_to_member(
     Ok(())
 }
 
+/// Publish a `TeeAuthorityEvidence` op for an admitted TEE on the namespace root.
+///
+/// Peers verify it offline at apply, which is what lets them treat the TEE as
+/// the TEE authority without trusting this node's check of its quote.
+#[expect(clippy::too_many_arguments, reason = "one publish, each argument distinct")]
+async fn publish_authority_evidence(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    member: calimero_account::AccountId,
+    attested_key: PublicKey,
+    evidence: calimero_context_client::group::TeeAuthorityEvidencePayload,
+) -> eyre::Result<()> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let report = calimero_governance_store::sign_apply_and_publish(
+        store,
+        node_client,
+        ack_router,
+        &root,
+        signer_sk,
+        GroupOp::TeeAuthorityEvidence {
+            member,
+            attested_key,
+            quote: evidence.quote,
+            collateral: evidence.collateral,
+            attested_at: evidence.attested_at,
+        },
+    )
+    .await?;
+    report.observe("admit_tee_node", "TeeAuthorityEvidence");
+    debug!(%attested_key, "published TEE authority evidence");
+    Ok(())
+}
+
 impl Handler<AdmitTeeNodeRequest> for ContextManager {
     type Result = ActorResponse<Self, <AdmitTeeNodeRequest as Message>::Result>;
 
@@ -107,6 +143,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             rtmr3,
             tcb_status,
             is_mock,
+            evidence,
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -242,12 +279,46 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             },
         };
-        match MembershipRepository::new(&self.datastore)
+        let already_member = match MembershipRepository::new(&self.datastore)
             .has_direct_member(&group_id, &member_account)
         {
-            Ok(true) => return ActorResponse::reply(Ok(())),
-            Ok(false) => {}
+            Ok(already) => already,
             Err(e) => return ActorResponse::reply(Err(e)),
+        };
+        if already_member {
+            // Admitted before, possibly by a build that published no evidence.
+            // Its re-announcement is the chance to publish it now, so a TEE
+            // admitted earlier can still become an authority.
+            let has_evidence = match calimero_governance_store::tee_authority_evidence(
+                &self.datastore,
+                &group_id,
+                &member_account,
+            ) {
+                Ok(found) => found.is_some(),
+                Err(e) => return ActorResponse::reply(Err(e)),
+            };
+            let Some(evidence) = evidence.filter(|_| !has_evidence) else {
+                return ActorResponse::reply(Ok(()));
+            };
+            let datastore = self.datastore.clone();
+            let node_client = self.node_client.clone();
+            let ack_router = Arc::clone(&self.ack_router);
+            return ActorResponse::r#async(
+                async move {
+                    publish_authority_evidence(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &PrivateKey::from(node_sk),
+                        member_account,
+                        member,
+                        evidence,
+                    )
+                    .await
+                }
+                .into_actor(self),
+            );
         }
 
         match calimero_governance_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash)
@@ -347,6 +418,31 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     .await?
                 };
                 report.observe("admit_tee_node", "MemberJoinedViaTeeAttestation");
+
+                // After the admission, so peers apply it first. A failure is
+                // logged, not returned: the TEE is admitted either way, and its
+                // next announcement publishes the evidence again.
+                if let Some(evidence) = evidence {
+                    if let Err(err) = publish_authority_evidence(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &sk,
+                        member_account,
+                        member,
+                        evidence,
+                    )
+                    .await
+                    {
+                        warn!(
+                            %member,
+                            ?err,
+                            "TEE admitted, but publishing its authority evidence failed; its \
+                             next announcement retries"
+                        );
+                    }
+                }
 
                 debug!(%member, ?group_id, "TEE node admitted via attestation");
 

@@ -192,11 +192,13 @@ pub fn read_tee_authoring_policy(
 
 /// Whether `account` is a **TEE authority** for `group_id`: a TEE admitted to
 /// the namespace by attestation (a direct `ReadOnlyTee` row at the root), still
-/// a member of `group_id`, whose recorded MRTD the namespace's authoring policy
-/// allows.
+/// a member of `group_id`, holding verified attestation evidence whose MRTD the
+/// namespace's authoring policy allows.
 ///
-/// The MRTD is the one recorded on the admission op, which every peer verified
-/// against the quote at apply — never a value the writer asserts now.
+/// The MRTD comes from the quote in a [`GroupOp::TeeAuthorityEvidence`] that
+/// this node verified itself, never from an admission op's claims. An
+/// admission op carries only its signer's word for the measurements, and any
+/// member may sign one.
 ///
 /// Evaluated against this node's current governance state, not at a delta's
 /// causal cut. Two peers that have folded a policy change to different depths
@@ -207,6 +209,19 @@ pub fn is_tee_authority(
     group_id: &ContextGroupId,
     account: &AccountId,
 ) -> EyreResult<bool> {
+    Ok(tee_authority_key(store, group_id, account)?.is_some())
+}
+
+/// The one key that may act as the TEE authority for `account`, or `None` if
+/// `account` is not a TEE authority. It is the key the verified quote binds.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_authority_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+) -> EyreResult<Option<PublicKey>> {
     // A point lookup first: this runs for every signer the receive path
     // resolves, and nearly every one is an ordinary member. Only a direct
     // `ReadOnlyTee` row at the root — which attestation admission alone mints,
@@ -214,28 +229,115 @@ pub fn is_tee_authority(
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let membership = MembershipRepository::new(store);
     if membership.role_of(&root, account)? != Some(GroupMemberRole::ReadOnlyTee) {
-        return Ok(false);
+        return Ok(None);
     }
     // Still a member where it writes: a Restricted subgroup it was never
     // admitted to is not one.
     if membership.check_path(group_id, account)? == MembershipPath::None {
-        return Ok(false);
+        return Ok(None);
     }
     let allowed = read_tee_authoring_policy(store, group_id)?;
     if allowed.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(
-        tee_admission_record(store, &root, account)?.is_some_and(|record| {
-            record.role == GroupMemberRole::ReadOnlyTee && allowed.contains(&record.mrtd)
-        }),
-    )
+    if tee_admission_record(store, &root, account)?
+        .is_none_or(|record| record.role != GroupMemberRole::ReadOnlyTee)
+    {
+        return Ok(None);
+    }
+    Ok(tee_authority_evidence(store, &root, account)?
+        .filter(|evidence| allowed.contains(&evidence.mrtd))
+        .map(|evidence| evidence.attested_key))
 }
 
-/// The account a write by `account` is checked against at merge.
+/// What a TEE's verified attestation evidence established.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeeAuthorityEvidenceRecord {
+    /// The key the quote binds.
+    pub attested_key: PublicKey,
+    /// The MRTD read from the verified quote.
+    pub mrtd: String,
+}
+
+/// The latest verified [`GroupOp::TeeAuthorityEvidence`] for `account` on the
+/// namespace root's log.
 ///
-/// [`AccountId::TEE_AUTHORITY`] for a TEE authority of `group_id` (see
-/// [`is_tee_authority`]), so its writes match a `TeeOnly` cell's writer set.
+/// Each candidate is verified again here, rather than trusted because it was
+/// logged: the check is pure, so it costs a signature verification, and it
+/// keeps the answer right even for a log that was filled by some path other
+/// than apply. The evidence must also bind a key that speaks for `account`, so
+/// evidence copied from another TEE and relabelled is ignored.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_authority_evidence(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+) -> EyreResult<Option<TeeAuthorityEvidenceRecord>> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let mut latest = None;
+    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
+        let Ok(op) = decode_group_op(&root, *seq, bytes, "tee_authority_evidence") else {
+            continue;
+        };
+        let GroupOp::TeeAuthorityEvidence {
+            member,
+            attested_key,
+            quote,
+            collateral,
+            attested_at,
+        } = op.op
+        else {
+            continue;
+        };
+        if member != *account {
+            continue;
+        }
+        let Ok(verdict) =
+            verify_authority_evidence(&attested_key, &quote, collateral.as_deref(), attested_at)
+        else {
+            continue;
+        };
+        if crate::member_account_in_namespace(store, &root, &attested_key)? != Some(member) {
+            continue;
+        }
+        latest = Some(TeeAuthorityEvidenceRecord {
+            attested_key,
+            mrtd: verdict.mrtd,
+        });
+    }
+    Ok(latest)
+}
+
+/// Verify TEE authority evidence offline. The quote must bind `attested_key` the
+/// way fleet join binds it: SHA-256 of the key in report data bytes `32..64`.
+///
+/// # Errors
+/// If the collateral does not decode, or the evidence does not verify.
+pub(crate) fn verify_authority_evidence(
+    attested_key: &PublicKey,
+    quote: &[u8],
+    collateral: Option<&[u8]>,
+    attested_at: u64,
+) -> EyreResult<calimero_tee_attestation::EvidenceVerdict> {
+    use sha2::{Digest, Sha256};
+
+    let collateral = collateral
+        .map(serde_json::from_slice::<calimero_tee_attestation::QuoteCollateralV3>)
+        .transpose()
+        .map_err(|err| eyre::eyre!("TEE evidence collateral does not decode: {err}"))?;
+    let key_hash: [u8; 32] = Sha256::digest(**attested_key).into();
+    calimero_tee_attestation::verify_evidence(quote, collateral.as_ref(), attested_at, &key_hash)
+        .map_err(|err| eyre::eyre!("TEE evidence does not verify: {err}"))
+}
+
+/// The account a write signed by `key`, which speaks for `account`, is checked
+/// against at merge.
+///
+/// [`AccountId::TEE_AUTHORITY`] only when `account` is a TEE authority of
+/// `group_id` and `key` is the key its verified quote binds (see
+/// [`tee_authority_key`]), so its writes match a `TeeOnly` cell's writer set.
 /// `account` itself for everyone else, so no other signer can ever match it.
 /// Every path that resolves a signer for the merge must go through this, or a
 /// path that skips it refuses the TEE's writes.
@@ -246,13 +348,16 @@ pub fn is_tee_authority(
 pub fn writer_account(
     store: &Store,
     group_id: &ContextGroupId,
+    key: &PublicKey,
     account: AccountId,
 ) -> EyreResult<AccountId> {
-    Ok(if is_tee_authority(store, group_id, &account)? {
-        AccountId::TEE_AUTHORITY
-    } else {
-        account
-    })
+    Ok(
+        if tee_authority_key(store, group_id, &account)?.as_ref() == Some(key) {
+            AccountId::TEE_AUTHORITY
+        } else {
+            account
+        },
+    )
 }
 
 /// [`is_tee_authority`] for the device key that signed a delta in `context_id`.
@@ -270,7 +375,7 @@ pub fn is_tee_authority_for_context(
     let Some(account) = crate::member_account_in_namespace(store, &group_id, author)? else {
         return Ok(false);
     };
-    is_tee_authority(store, &group_id, &account)
+    Ok(tee_authority_key(store, &group_id, &account)?.as_ref() == Some(author))
 }
 
 /// Every TEE authority for `context_id`, in account order. The TEE scheduler
@@ -622,10 +727,9 @@ mod tests {
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
 
-    use super::{
-        is_tee_authority, read_tee_authoring_policy, tee_admission_record, tee_admission_records,
-        writer_account,
-    };
+    use calimero_primitives::identity::PublicKey;
+
+    use super::{is_tee_authority, tee_admission_record, tee_admission_records, writer_account};
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
     use crate::MembershipRepository;
@@ -675,132 +779,252 @@ mod tests {
         .unwrap()
     }
 
-    /// A TEE is an authority exactly while it is still a `ReadOnlyTee` member
-    /// and the latest authoring policy names the MRTD its admission recorded.
+    /// The MRTD a mock quote reports: 48 zero bytes.
+    const MOCK_MRTD: &str =
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    /// A mock quote binding `key`, the way fleet join binds its own key.
+    fn mock_quote_for(key: &PublicKey) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let key_hash: [u8; 32] = Sha256::digest(**key).into();
+        let report_data = calimero_tee_attestation::build_report_data(&[0x01; 32], Some(&key_hash));
+        calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
+    }
+
+    fn evidence_op(
+        signer_sk: &PrivateKey,
+        ns_gid: ContextGroupId,
+        nonce: u64,
+        member: AccountId,
+        attested_key: PublicKey,
+        quote: Vec<u8>,
+    ) -> SignedGroupOp {
+        SignedGroupOp::sign(
+            signer_sk,
+            ns_gid,
+            vec![],
+            nonce,
+            GroupOp::TeeAuthorityEvidence {
+                member,
+                attested_key,
+                quote,
+                collateral: None,
+                attested_at: 1_751_000_000,
+            },
+        )
+        .unwrap()
+    }
+
+    /// One namespace with an admitted TEE (admission op, `ReadOnlyTee` row, key
+    /// bound to its account) and a way to append ops to the root's log.
+    struct Fixture {
+        store: calimero_store::Store,
+        ns_gid: ContextGroupId,
+        signer_sk: PrivateKey,
+        tee_key: PublicKey,
+        tee: AccountId,
+        seq: std::cell::Cell<u64>,
+    }
+
+    impl Fixture {
+        fn new(ns_byte: u8) -> Self {
+            let store = test_store();
+            let ns_gid = ContextGroupId::from([ns_byte; 32]);
+            let signer_sk = PrivateKey::random(&mut rand::rng());
+            let (tee_key, tee) = crate::test_fixtures::enrolled(&store, &ns_gid, 0x70);
+            let this = Self {
+                store,
+                ns_gid,
+                signer_sk,
+                tee_key,
+                tee,
+                seq: std::cell::Cell::new(0),
+            };
+            this.log(|sk, ns, n| tee_join_op(sk, ns, n, tee, [0x07; 32]));
+            MembershipRepository::new(&this.store)
+                .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
+                .unwrap();
+            this
+        }
+
+        fn log(&self, op: impl FnOnce(&PrivateKey, ContextGroupId, u64) -> SignedGroupOp) {
+            let seq = self.seq.get() + 1;
+            self.seq.set(seq);
+            let op = op(&self.signer_sk, self.ns_gid, seq);
+            append_op_log_entry(&self.store, &self.ns_gid, seq, &borsh::to_vec(&op).unwrap())
+                .unwrap();
+        }
+
+        fn policy(&self, allowed: &[&str]) {
+            self.log(|sk, ns, n| authoring_policy_op(sk, ns, n, allowed));
+        }
+
+        fn evidence(&self, member: AccountId, attested_key: PublicKey, quote: Vec<u8>) {
+            self.log(|sk, ns, n| evidence_op(sk, ns, n, member, attested_key, quote));
+        }
+
+        fn is_authority(&self, account: &AccountId) -> bool {
+            is_tee_authority(&self.store, &self.ns_gid, account).unwrap()
+        }
+    }
+
+    /// A TEE is an authority exactly while it is still a `ReadOnlyTee` member,
+    /// holds verified evidence, and the latest authoring policy names the MRTD
+    /// that evidence's quote reports.
     #[test]
     fn tee_authority_follows_the_latest_policy_and_membership() {
-        let store = test_store();
-        let mut rng = rand::rng();
-        let ns_gid = ContextGroupId::from([0xAC; 32]);
-        let tee = AccountId::from([0x42; 32]);
-        let signer_sk = PrivateKey::random(&mut rng);
-        let membership = MembershipRepository::new(&store);
+        let f = Fixture::new(0xAC);
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
 
-        // `tee_join_op` records MRTD "m1".
-        let log = |seq: u64, op: &SignedGroupOp| {
-            append_op_log_entry(&store, &ns_gid, seq, &borsh::to_vec(op).unwrap()).unwrap();
-        };
-        log(1, &tee_join_op(&signer_sk, ns_gid, 1, tee, [0x07; 32]));
-        membership
-            .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
-            .unwrap();
-
+        assert!(!f.is_authority(&f.tee), "no policy: TEE authorship is off");
+        f.policy(&["m2"]);
         assert!(
-            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
-            "no policy: TEE authorship is off"
+            !f.is_authority(&f.tee),
+            "a policy that does not name the quote's MRTD admits no authority"
         );
-
-        log(2, &authoring_policy_op(&signer_sk, ns_gid, 2, &["m2"]));
+        f.policy(&["m2", MOCK_MRTD]);
+        assert!(f.is_authority(&f.tee));
+        f.policy(&[]);
         assert!(
-            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
-            "a policy that does not name the recorded MRTD admits no authority"
-        );
-
-        log(
-            3,
-            &authoring_policy_op(&signer_sk, ns_gid, 3, &["m2", "m1"]),
-        );
-        assert!(is_tee_authority(&store, &ns_gid, &tee).unwrap());
-        assert_eq!(
-            read_tee_authoring_policy(&store, &ns_gid).unwrap(),
-            ["m2", "m1"]
-        );
-
-        log(4, &authoring_policy_op(&signer_sk, ns_gid, 4, &[]));
-        assert!(
-            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
+            !f.is_authority(&f.tee),
             "an empty list turns TEE authorship back off"
         );
-
-        log(5, &authoring_policy_op(&signer_sk, ns_gid, 5, &["m1"]));
-        assert!(is_tee_authority(&store, &ns_gid, &tee).unwrap());
-        membership.remove_member(&ns_gid, &tee).unwrap();
+        f.policy(&[MOCK_MRTD]);
+        assert!(f.is_authority(&f.tee));
+        MembershipRepository::new(&f.store)
+            .remove_member(&f.ns_gid, &f.tee)
+            .unwrap();
         assert!(
-            !is_tee_authority(&store, &ns_gid, &tee).unwrap(),
+            !f.is_authority(&f.tee),
             "the admission record outlives a removal; the authority must not"
         );
     }
 
-    /// An ordinary member is never an authority, even with an admission record
-    /// and a matching policy: only the attestation-minted `ReadOnlyTee` role is.
+    /// The attack evidence exists to stop. Any member may sign an admission op,
+    /// and peers check only its claimed measurements. A member who forges one
+    /// for an account it controls, claiming exactly the MRTD the policy names,
+    /// gets a `ReadOnlyTee` row but no authority: it has no quote to prove it.
     #[test]
-    fn a_member_with_a_matching_record_is_not_a_tee_authority() {
-        let store = test_store();
-        let mut rng = rand::rng();
-        let ns_gid = ContextGroupId::from([0xAD; 32]);
-        let member = AccountId::from([0x43; 32]);
-        let signer_sk = PrivateKey::random(&mut rng);
-
-        for (seq, op) in [
-            tee_join_op(&signer_sk, ns_gid, 1, member, [0x08; 32]),
-            authoring_policy_op(&signer_sk, ns_gid, 2, &["m1"]),
-        ]
-        .iter()
-        .enumerate()
-        {
-            append_op_log_entry(&store, &ns_gid, seq as u64 + 1, &borsh::to_vec(op).unwrap())
-                .unwrap();
-        }
-        MembershipRepository::new(&store)
-            .add_member(&ns_gid, &member, GroupMemberRole::Member)
+    fn a_forged_admission_without_evidence_is_not_an_authority() {
+        let f = Fixture::new(0xAF);
+        let (_key, forged) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x71);
+        f.log(|sk, ns, n| {
+            SignedGroupOp::sign(
+                sk,
+                ns,
+                vec![],
+                n,
+                GroupOp::MemberJoinedViaTeeAttestation {
+                    member: forged,
+                    quote_hash: [0x66; 32],
+                    mrtd: MOCK_MRTD.to_owned(),
+                    rtmr0: "r0".to_owned(),
+                    rtmr1: "r1".to_owned(),
+                    rtmr2: "r2".to_owned(),
+                    rtmr3: "r3".to_owned(),
+                    tcb_status: "UpToDate".to_owned(),
+                    role: GroupMemberRole::ReadOnlyTee,
+                },
+            )
+            .unwrap()
+        });
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &forged, GroupMemberRole::ReadOnlyTee)
             .unwrap();
+        f.policy(&[MOCK_MRTD]);
 
-        assert!(!is_tee_authority(&store, &ns_gid, &member).unwrap());
+        assert!(!f.is_authority(&forged));
     }
 
-    /// Only an attested TEE that the policy allows is resolved to the TEE
-    /// authority, the sole writer of `TeeOnly` state. Everyone else, including a
-    /// member holding a matching admission record and a TEE whose authority was
-    /// withdrawn, resolves to their own account and cannot match that writer set.
+    /// Evidence names the key its quote binds. Copying a genuine TEE's evidence
+    /// and relabelling it for another account does not work, because that key
+    /// does not speak for the other account.
     #[test]
-    fn only_a_policy_allowed_tee_resolves_to_the_tee_authority() {
-        let store = test_store();
-        let mut rng = rand::rng();
-        let ns_gid = ContextGroupId::from([0xAE; 32]);
-        let tee = AccountId::from([0x44; 32]);
-        let member = AccountId::from([0x45; 32]);
-        let admin = AccountId::from([0x46; 32]);
-        let signer_sk = PrivateKey::random(&mut rng);
-        let membership = MembershipRepository::new(&store);
-        let log = |seq: u64, op: &SignedGroupOp| {
-            append_op_log_entry(&store, &ns_gid, seq, &borsh::to_vec(op).unwrap()).unwrap();
-        };
+    fn evidence_relabelled_for_another_account_is_ignored() {
+        let f = Fixture::new(0xB0);
+        let (_key, other) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x72);
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &other, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+        f.log(|sk, ns, n| tee_join_op(sk, ns, n, other, [0x08; 32]));
+        f.policy(&[MOCK_MRTD]);
+        f.evidence(other, f.tee_key, mock_quote_for(&f.tee_key));
 
-        log(1, &tee_join_op(&signer_sk, ns_gid, 1, tee, [0x09; 32]));
-        log(2, &tee_join_op(&signer_sk, ns_gid, 2, member, [0x0A; 32]));
+        assert!(!f.is_authority(&other));
+    }
+
+    /// A quote proves one key. Evidence that names a different key than the one
+    /// the quote binds does not verify.
+    #[test]
+    fn evidence_whose_quote_binds_another_key_is_ignored() {
+        let f = Fixture::new(0xB1);
+        let stranger = PublicKey::from([0x99; 32]);
+        f.policy(&[MOCK_MRTD]);
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&stranger));
+
+        assert!(!f.is_authority(&f.tee));
+    }
+
+    /// An ordinary member is never an authority, even with an admission record,
+    /// genuine-looking evidence and a matching policy: only the
+    /// attestation-minted `ReadOnlyTee` role is.
+    #[test]
+    fn a_member_with_a_matching_record_is_not_a_tee_authority() {
+        let f = Fixture::new(0xAD);
+        let (key, member) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x73);
+        f.log(|sk, ns, n| tee_join_op(sk, ns, n, member, [0x09; 32]));
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &member, GroupMemberRole::Member)
+            .unwrap();
+        f.evidence(member, key, mock_quote_for(&key));
+        f.policy(&[MOCK_MRTD]);
+
+        assert!(!f.is_authority(&member));
+    }
+
+    /// Only the key the quote binds acts as the TEE authority. Members, admins,
+    /// a removed TEE, and any other key of the TEE's own account resolve to
+    /// their own account, so none of them can match a `TeeOnly` writer set.
+    #[test]
+    fn only_the_attested_key_resolves_to_the_tee_authority() {
+        let f = Fixture::new(0xAE);
+        let (member_key, member) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x74);
+        let (admin_key, admin) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x75);
+        let membership = MembershipRepository::new(&f.store);
         membership
-            .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
+            .add_member(&f.ns_gid, &member, GroupMemberRole::Member)
             .unwrap();
         membership
-            .add_member(&ns_gid, &member, GroupMemberRole::Member)
+            .add_member(&f.ns_gid, &admin, GroupMemberRole::Admin)
             .unwrap();
-        membership
-            .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
-            .unwrap();
-        let resolve = |account| writer_account(&store, &ns_gid, account).unwrap();
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        let resolve =
+            |key: &PublicKey, account| writer_account(&f.store, &f.ns_gid, key, account).unwrap();
 
         // Authorship off: nobody is the authority, the TEE included.
-        for account in [tee, member, admin] {
-            assert_eq!(resolve(account), account);
-        }
+        assert_eq!(resolve(&f.tee_key, f.tee), f.tee);
 
-        log(3, &authoring_policy_op(&signer_sk, ns_gid, 3, &["m1"]));
-        assert_eq!(resolve(tee), AccountId::TEE_AUTHORITY);
-        assert_eq!(resolve(member), member, "a member is never the authority");
-        assert_eq!(resolve(admin), admin, "nor is an admin");
+        f.policy(&[MOCK_MRTD]);
+        assert_eq!(resolve(&f.tee_key, f.tee), AccountId::TEE_AUTHORITY);
+        assert_eq!(
+            resolve(&member_key, member),
+            member,
+            "a member is never the authority"
+        );
+        assert_eq!(resolve(&admin_key, admin), admin, "nor is an admin");
+        let other_key = PublicKey::from([0x98; 32]);
+        assert_eq!(
+            resolve(&other_key, f.tee),
+            f.tee,
+            "a key the quote does not bind is not the authority, even for the TEE's account"
+        );
 
-        membership.remove_member(&ns_gid, &tee).unwrap();
-        assert_eq!(resolve(tee), tee, "a removed TEE loses the authority");
+        membership.remove_member(&f.ns_gid, &f.tee).unwrap();
+        assert_eq!(
+            resolve(&f.tee_key, f.tee),
+            f.tee,
+            "a removed TEE loses the authority"
+        );
     }
 
     #[test]

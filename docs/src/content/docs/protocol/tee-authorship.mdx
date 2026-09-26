@@ -24,8 +24,8 @@ deal is the motivating case.
 TEE authorship lets such a node write, but only three things together make a
 write count:
 
-1. The namespace's **TEE authoring policy** names the MRTD recorded when that
-   TEE was admitted.
+1. The namespace's **TEE authoring policy** names the MRTD in that TEE's
+   **attestation evidence**, which every node verifies for itself.
 2. The write comes from an **`#[app::tee]` method** that the node's TEE
    scheduler fired, running as the **TEE authority** principal.
 3. The data it writes lives in **`TeeOnly<T>`** storage, whose only writer is
@@ -44,10 +44,12 @@ it checks that the key's account is a TEE authority:
 
 - a direct `ReadOnlyTee` row at the namespace root, which only attestation admission mints;
 - still a member of the context's group;
-- an admission record whose `mrtd` is in the root's latest `TeeAuthoringPolicySet`.
+- verified attestation evidence for the account whose MRTD is in the root's
+  latest `TeeAuthoringPolicySet`;
+- and the signing key is the one key that evidence's quote binds.
 
-That check is `calimero_governance_store::is_tee_authority`. It runs in two
-places:
+That check is `calimero_governance_store::tee_authority_key`, and
+`writer_account` applies it to a signer. It runs in two places:
 
 | Where | What it decides |
 | --- | --- |
@@ -68,9 +70,39 @@ curl -X PUT "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy" \
 ```
 
 An empty list turns TEE authorship off. There is no default: a namespace with no
-policy has no TEE authority, whatever TEEs it admitted. The MRTD is read from
-the admission op every peer verified against the quote, never from anything the
-writer asserts later.
+policy has no TEE authority, whatever TEEs it admitted.
+
+## Attestation evidence
+
+An admission op is not enough to make a TEE an authority. Any member may sign
+one, and it carries only a hash of the quote and the signer's word for the
+measurements, so no other node can check them. A member could forge an
+admission for an account it controls, claiming exactly the MRTD the policy
+names.
+
+So authority needs a second op, `TeeAuthorityEvidence`, which carries the proof:
+
+| Field | What it is |
+| --- | --- |
+| `quote` | The raw TDX quote. |
+| `collateral` | The Intel-signed DCAP collateral the quote was appraised against. |
+| `attested_at` | The moment the collateral is judged at. |
+| `attested_key` | The key the quote binds: SHA-256 of it is in report data bytes 32..64. |
+
+The node that admits the TEE publishes it right after the admission. Every node
+verifies it **offline** when it applies the op: the quote's signature chain
+against the collateral at `attested_at`, the key binding, and the measurements
+and TCB status against the admission policy. The check needs no network and no
+clock, so a node that joins years later and replays the log reaches the same
+verdict. An op that fails is never applied.
+
+The reader verifies again when it looks the evidence up, and it ignores
+evidence whose `attested_key` does not speak for the account it names. Copying
+one TEE's evidence and relabelling it for another account does not work, and
+neither does evidence whose quote binds a different key.
+
+A TEE admitted by a build that published no evidence is not an authority until
+it announces itself again: the admitting node then publishes evidence for it.
 
 ## Writing an app
 
@@ -158,4 +190,5 @@ receiver asks one question, in `events.rs`:
 | No sealing to member keys and no TEE-only secrets yet. | Only public randomness, not hidden cards. | `tee_seal_to_member`, a namespace TEE vault key, and `TeeSecret<T>`. |
 | Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
 | Two TEE authorities could create the same `TeeOnly` cell concurrently. | When `T` is a collection, each mints its own inner collection id and one of them is lost at merge. With one TEE per namespace, as in the demo, this cannot happen. | Derive the inner collection's id from the cell's id. |
-| `is_tee_authority` scans the root's op log. | It costs one scan per resolved TEE signer. A point-lookup pre-filter keeps ordinary members out of it. | Materialise the policy. |
+| `attested_at` is chosen by whoever assembles the evidence. | It must fall inside the collateral's validity window, but within that window the TCB status is as of that moment, not today. A platform that has since fallen out of date keeps its authority. | Re-appraise evidence against fresh collateral on a schedule, and expire authority that is not refreshed. |
+| `tee_authority_key` scans the root's op log and re-verifies the evidence it finds. | It costs one scan and one quote verification per resolved TEE signer. A point-lookup pre-filter keeps ordinary members out of it. | Materialise the policy and cache the verdict per evidence op. |

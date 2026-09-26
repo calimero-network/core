@@ -109,6 +109,19 @@ pub async fn handle_tee_attestation_announce(
         "TEE attestation verified successfully"
     );
 
+    // Evidence for the TEE authority: the quote plus the collateral it is
+    // judged against, so every peer can verify the measurements offline rather
+    // than take this node's word for them. A mock quote carries none.
+    let collateral = if is_mock {
+        None
+    } else {
+        let collateral = calimero_tee_attestation::fetch_collateral(&quote_bytes).await?;
+        Some(serde_json::to_vec(&collateral)?)
+    };
+    let attested_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+
     // Delegate policy checking and governance op publishing to the context manager.
     // The context manager has access to the store and signing keys.
     use calimero_context_client::group::AdmitTeeNodeRequest;
@@ -126,6 +139,11 @@ pub async fn handle_tee_attestation_announce(
             rtmr3,
             tcb_status,
             is_mock,
+            evidence: Some(calimero_context_client::group::TeeAuthorityEvidencePayload {
+                quote: quote_bytes,
+                collateral,
+                attested_at,
+            }),
         })
         .await
 }

@@ -1266,6 +1266,7 @@ dependencies = [
  "calimero-projection",
  "calimero-storage",
  "calimero-store",
+ "calimero-tee-attestation",
  "calimero-utils-actix",
  "eyre",
  "hex",
