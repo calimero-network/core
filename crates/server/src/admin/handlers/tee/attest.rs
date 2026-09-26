@@ -6,7 +6,8 @@ use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::generate_mock_attestation;
 use calimero_tee_attestation::{
-    attest_key_binding, build_report_data, generate_attestation, AttestationError,
+    attest_key_binding, attest_transport_binding, build_report_data, generate_attestation,
+    AttestationError,
 };
 use reqwest::StatusCode;
 use tracing::{error, info};
@@ -109,7 +110,16 @@ pub async fn handler(
     let binding = bound_public_key
         .as_ref()
         .map(|key| attest_key_binding(app_hash.as_ref(), key));
-    let report_data = build_report_data(&nonce_array, binding.as_ref().or(app_hash.as_ref()));
+    let inner = binding.or(app_hash);
+    // With `bindTransportKey` the second half commits to the key sealed requests
+    // are encrypted to, wrapping whatever would have been there, so the node-key
+    // and app bindings still hold under it.
+    let transport_public_key = req.bind_transport_key.then_some(state.transport_public_key);
+    let second_half = match transport_public_key {
+        Some(key) => Some(attest_transport_binding(&inner.unwrap_or([0; 32]), &key)),
+        None => inner,
+    };
+    let report_data = build_report_data(&nonce_array, second_half.as_ref());
 
     // 4. Generate attestation using the tee-attestation crate.
     //
@@ -180,7 +190,12 @@ pub async fn handler(
 
     info!("TEE attestation generated successfully");
     ApiResponse {
-        payload: TeeAttestResponse::new(result.quote_b64, result.quote, bound_public_key),
+        payload: TeeAttestResponse::new(
+            result.quote_b64,
+            result.quote,
+            bound_public_key,
+            transport_public_key.map(hex::encode),
+        ),
     }
     .into_response()
 }
