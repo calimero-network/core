@@ -7,6 +7,7 @@ use syn::{Attribute, Expr, ExprLit, Lit, Meta};
 const ARGUMENTS_HEADING: &str = "# Arguments"; // the method section holding per-parameter docs
 const ENTRY_PREFIXES: [&str; 2] = ["* `", "- `"]; // list bullet plus the name's opening backtick
 const ENTRY_SEPARATOR: &str = " - "; // between the closing backtick and the entry text
+const LIST_BULLETS: [&str; 2] = ["* ", "- "]; // a list item in `# Arguments` must be a well-formed entry
 
 /// An item's doc: one line per attribute, one leading space stripped, outer
 /// blank lines trimmed. `None` when nothing but blank lines remain.
@@ -26,6 +27,7 @@ pub fn tokens(doc: Option<&str>) -> TokenStream {
 pub struct MethodDocs {
     pub doc: Option<String>,
     pub params: Vec<(String, String)>,
+    pub malformed: Vec<String>,
 }
 
 impl MethodDocs {
@@ -41,6 +43,7 @@ impl MethodDocs {
 pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
     let mut kept = Vec::new();
     let mut params: Vec<(String, String)> = Vec::new();
+    let mut malformed = Vec::new();
     let mut in_arguments = false;
     let mut continuing = false;
 
@@ -62,6 +65,11 @@ pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
             continuing = true;
             continue;
         }
+        if LIST_BULLETS.iter().any(|bullet| line.starts_with(bullet)) {
+            malformed.push(line);
+            continuing = false;
+            continue;
+        }
         let continuation =
             continuing && line.starts_with(char::is_whitespace) && !line.trim().is_empty();
         match params.last_mut() {
@@ -78,6 +86,7 @@ pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
     MethodDocs {
         doc: join_trimmed(&kept),
         params,
+        malformed,
     }
 }
 
@@ -236,5 +245,28 @@ mod tests {
         let docs = method_docs(&plain);
         assert_eq!(docs.doc, None);
         assert!(docs.params.is_empty());
+    }
+
+    #[test]
+    fn a_bullet_that_is_not_an_entry_is_malformed() {
+        let docs = method_docs(&attrs(&[
+            " * `outside`: bullets outside the section are prose.",
+            "",
+            " # Arguments",
+            " * `x`: text",
+            " * x - text",
+            " - `y` - fine,",
+            "   * an indented bullet continues it.",
+        ]));
+        assert_eq!(docs.malformed, ["* `x`: text", "* x - text"]);
+        assert_eq!(
+            docs.param("y"),
+            Some("fine, * an indented bullet continues it.")
+        );
+        assert_eq!(docs.params.len(), 1);
+        assert_eq!(
+            docs.doc.as_deref(),
+            Some("* `outside`: bullets outside the section are prose.")
+        );
     }
 }

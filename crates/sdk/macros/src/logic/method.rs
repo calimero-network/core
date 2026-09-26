@@ -772,6 +772,12 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ));
             }
         }
+        for _ in &docs.malformed {
+            errors.subsume(SynError::new_spanned(
+                name,
+                ParseError::MalformedArgumentDoc,
+            ));
+        }
 
         // A `#[app::view]` method is read-only (the node takes a shared read
         // lock), so a `&mut self` receiver is a contradiction.
@@ -947,6 +953,28 @@ mod tests {
         assert_eq!(
             message,
             "`# Arguments` names `vaule`, which is not a parameter of `set`"
+        );
+    }
+
+    #[test]
+    fn a_malformed_arguments_bullet_is_an_error() {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let item: ImplItemFn = parse_quote! {
+            /// # Arguments
+            /// * `value`: the value to store.
+            pub fn set(&mut self, value: u32) {}
+        };
+        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        }) else {
+            panic!("a malformed `# Arguments` bullet must be rejected")
+        };
+        let message = errors.take().expect("an error was recorded").to_string();
+        assert_eq!(
+            message,
+            "`# Arguments` entry must look like: * `name` - description"
         );
     }
 }

@@ -180,6 +180,8 @@ pub enum ParseError<'a> {
     ViewCannotMutate,
     #[error("`# Arguments` names `{name}`, which is not a parameter of `{method}`")]
     UnknownArgumentDoc { name: String, method: String },
+    #[error("`# Arguments` entry must look like: * `name` - description")]
+    MalformedArgumentDoc,
 }
 
 impl AsRef<Self> for ParseError<'_> {
