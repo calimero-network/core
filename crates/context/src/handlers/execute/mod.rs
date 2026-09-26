@@ -1860,11 +1860,6 @@ impl ContextManager {
     /// addressing makes reuse always sound (same blob ⇒ same module), so
     /// entries never need eviction. The read-only method set is populated
     /// alongside from the embedded ABI.
-    #[expect(
-        clippy::result_large_err,
-        reason = "The error type is shared across this handler; boxing it here would \
-                  change a public signature, so it is left for a follow-up."
-    )]
     pub fn get_module_for_blob(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,
@@ -1964,6 +1959,11 @@ pub(crate) mod tests_support {
 }
 
 /// Read a module's bytecode and compile it on the blocking pool.
+#[expect(
+    clippy::result_large_err,
+    reason = "The runtime's compile error is large; boxing it would change the \
+              runtime's public signature, so it is left for a follow-up."
+)]
 fn compile_module(
     node_client: NodeClient,
     vm_limits: calimero_runtime::logic::VMLimits,
