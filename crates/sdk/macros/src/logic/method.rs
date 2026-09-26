@@ -761,6 +761,17 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         }
 
         let docs = doc::method_docs(&input.item.attrs);
+        for (param, _) in &docs.params {
+            if !args.iter().any(|arg| arg.ident == param) {
+                errors.subsume(SynError::new_spanned(
+                    name,
+                    ParseError::UnknownArgumentDoc {
+                        name: param.clone(),
+                        method: name_str.clone(),
+                    },
+                ));
+            }
+        }
 
         // A `#[app::view]` method is read-only (the node takes a shared read
         // lock), so a `&mut self` receiver is a contradiction.
@@ -915,5 +926,27 @@ mod tests {
         assert!(!flags(parse_quote! { String }));
         // More than two type arguments is not a plain `Result<Ok, Err>`.
         assert!(!flags(parse_quote! { Result<u64, String, Extra> }));
+    }
+
+    #[test]
+    fn an_arguments_entry_for_an_unknown_param_is_an_error() {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let item: ImplItemFn = parse_quote! {
+            /// # Arguments
+            /// * `vaule` - the value to store.
+            pub fn set(&mut self, value: u32) {}
+        };
+        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        }) else {
+            panic!("an unknown `# Arguments` name must be rejected")
+        };
+        let message = errors.take().expect("an error was recorded").to_string();
+        assert_eq!(
+            message,
+            "`# Arguments` names `vaule`, which is not a parameter of `set`"
+        );
     }
 }

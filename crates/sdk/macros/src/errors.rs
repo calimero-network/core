@@ -178,6 +178,8 @@ pub enum ParseError<'a> {
          `#[app::view]` if the method must mutate."
     )]
     ViewCannotMutate,
+    #[error("`# Arguments` names `{name}`, which is not a parameter of `{method}`")]
+    UnknownArgumentDoc { name: String, method: String },
 }
 
 impl AsRef<Self> for ParseError<'_> {
