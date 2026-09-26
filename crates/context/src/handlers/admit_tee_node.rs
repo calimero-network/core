@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -7,14 +8,15 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
+use calimero_tee_release::{compare_release_versions, NodeRelease, NODE_RELEASE_TAG_PREFIX};
 use tracing::{debug, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    GroupKeyring, MembershipPolicy, MembershipRepository, NamespaceRepository,
-    TeeAdmissionPolicyRead,
+    GroupKeyring, MembershipPolicy, MembershipRepository, NamespaceRepository, TeeAdmissionPolicy,
+    TeeAdmissionPolicyRead, TeeReleaseTrust,
 };
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
@@ -91,6 +93,166 @@ async fn deliver_group_key_to_member(
     Ok(())
 }
 
+/// Check a quote's registers against a list policy's allowlists.
+fn check_measurement_lists(
+    policy: &TeeAdmissionPolicy,
+    mrtd: &str,
+    rtmr0: &str,
+    rtmr1: &str,
+    rtmr2: &str,
+    rtmr3: &str,
+) -> eyre::Result<()> {
+    if policy.allowed_mrtd.is_empty() {
+        eyre::bail!(
+            "TEE admission policy has empty allowed_mrtd — at least one MRTD must be specified"
+        );
+    }
+    if !policy.allowed_mrtd.iter().any(|a| a == mrtd) {
+        eyre::bail!("MRTD not in policy allowlist");
+    }
+    if !policy.allowed_rtmr0.is_empty() && !policy.allowed_rtmr0.iter().any(|a| a == rtmr0) {
+        eyre::bail!("RTMR0 not in policy allowlist");
+    }
+    // RTMR1 and RTMR2 are MANDATORY, for RTMR3's sake (see below). RTMR3 is
+    // extended from public inputs, so it only proves which image ran if the
+    // kernel (RTMR1) and the command line + initrd (RTMR2) that ran before
+    // `calimero-init` are pinned too; otherwise a custom kernel or initrd
+    // can extend RTMR3 with a locked profile's string. RTMR0 (the VM's
+    // hardware configuration) stays optional.
+    if policy.allowed_rtmr1.is_empty() || policy.allowed_rtmr2.is_empty() {
+        eyre::bail!(
+            "TEE admission policy has an empty allowed_rtmr1 or allowed_rtmr2 — both must be \
+             specified. RTMR3 is extended from public inputs, so it only identifies the image \
+             when the kernel (RTMR1) and command line + initrd (RTMR2) are pinned too. Take \
+             the values from the release's published-mrtds.json."
+        );
+    }
+    if !policy.allowed_rtmr1.iter().any(|a| a == rtmr1) {
+        eyre::bail!("RTMR1 not in policy allowlist");
+    }
+    if !policy.allowed_rtmr2.iter().any(|a| a == rtmr2) {
+        eyre::bail!("RTMR2 not in policy allowlist");
+    }
+    // RTMR3 IS MANDATORY, and it is the only field that pins the image.
+    //
+    // `allowed_mrtd` above cannot do it. MRTD measures the virtual firmware,
+    // so it is identical across every PROFILE of a release and stays
+    // constant across RELEASES -- `locked-read-only` reported the same
+    // c1ee9c16… for 2.3.62, 2.3.63 and 2.3.65, and every profile of each.
+    // A policy naming only an MRTD admits a `debug` image, which carries no
+    // lockdown role: openssh-server, the serial console and the rescue shell
+    // are present and root is not locked.
+    //
+    // `calimero-init` extends RTMR3 with
+    // `calimero-rtmr3-v2:<role>:<profile>:<root_hash>`, so it names exactly
+    // one (profile, release) pair. The cost is that it CHANGES EVERY
+    // RELEASE, which is why this was optional: pinning it means the policy
+    // must gain the new value before nodes on a new image can join. That is
+    // the intended trade -- an allowlist that silently stops narrowing is
+    // worse than one that has to be maintained.
+    //
+    // Empty is a refusal, not a skip. Under the old `is_empty()` guard an
+    // empty list meant "do not check", so the weakest policy was the one
+    // that looked like it had simply not been filled in.
+    if policy.allowed_rtmr3.is_empty() {
+        eyre::bail!(
+            "TEE admission policy has empty allowed_rtmr3 — at least one RTMR3 must be \
+             specified. MRTD does not identify the image: it is the same for every profile \
+             of a release and does not change between most releases, so a policy without \
+             RTMR3 admits any profile, including debug images that are not locked down. \
+             RTMR3 is published per profile in the release's published-mrtds.json and \
+             changes each release, so add the new value when upgrading."
+        );
+    }
+    if !policy.allowed_rtmr3.iter().any(|a| a == rtmr3) {
+        eyre::bail!("RTMR3 not in policy allowlist");
+    }
+    Ok(())
+}
+
+/// The release a TEE claims to run, accepted as far as it can be without
+/// fetching it: it must be named, and be no older than the policy's floor.
+struct SignedReleaseClaim {
+    trust: TeeReleaseTrust,
+    version: String,
+}
+
+fn signed_release_claim(
+    trust: TeeReleaseTrust,
+    release_version: Option<&str>,
+) -> eyre::Result<SignedReleaseClaim> {
+    let Some(claimed) = release_version else {
+        eyre::bail!(
+            "the namespace admits TEEs by signed release, and this node did not name the \
+             mero-tee release it runs; it needs a build that sends one"
+        );
+    };
+    let version =
+        calimero_tee_release::normalize_release_version(claimed, NODE_RELEASE_TAG_PREFIX)?;
+    if let Some(floor) = trust.min_release_version.as_deref() {
+        match compare_release_versions(&version, floor) {
+            Some(Ordering::Less) => {
+                eyre::bail!("mero-tee release {version} is older than the policy's minimum {floor}")
+            }
+            Some(_) => {}
+            None => eyre::bail!(
+                "mero-tee release {version} cannot be compared with the policy's minimum {floor}"
+            ),
+        }
+    }
+    Ok(SignedReleaseClaim { trust, version })
+}
+
+impl SignedReleaseClaim {
+    /// Fetch the claimed release's signed measurements and name the allowed
+    /// profile the quote's registers match.
+    ///
+    /// The signature is what makes this a check: `published-mrtds.json` is
+    /// accepted only if the `Release mero-tee` workflow signed it, so a TEE
+    /// that names a release it does not run, or a release that was never
+    /// published, is refused here.
+    async fn verify(
+        &self,
+        mrtd: &str,
+        rtmr0: &str,
+        rtmr1: &str,
+        rtmr2: &str,
+        rtmr3: &str,
+    ) -> eyre::Result<String> {
+        let release = calimero_tee_release::fetch_node_release(&self.version)
+            .await
+            .map_err(|err| {
+                eyre::eyre!(
+                    "could not verify mero-tee release {}'s signed measurements: {err:#}",
+                    self.version
+                )
+            })?;
+        matched_profile(&self.trust, &release, mrtd, rtmr0, rtmr1, rtmr2, rtmr3)
+    }
+}
+
+fn matched_profile(
+    trust: &TeeReleaseTrust,
+    release: &NodeRelease,
+    mrtd: &str,
+    rtmr0: &str,
+    rtmr1: &str,
+    rtmr2: &str,
+    rtmr3: &str,
+) -> eyre::Result<String> {
+    release
+        .matching_profile(&trust.allowed_profiles, mrtd, rtmr0, rtmr1, rtmr2, rtmr3)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "the quote's measurements match none of the allowed profiles ({}) of signed \
+                 mero-tee release {}",
+                trust.allowed_profiles.join(", "),
+                release.version
+            )
+        })
+}
+
 impl Handler<AdmitTeeNodeRequest> for ContextManager {
     type Result = ActorResponse<Self, <AdmitTeeNodeRequest as Message>::Result>;
 
@@ -108,6 +270,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             rtmr3,
             tcb_status,
             is_mock,
+            release_version,
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -178,14 +341,6 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             )));
         }
 
-        if policy.allowed_mrtd.is_empty() {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "TEE admission policy has empty allowed_mrtd — at least one MRTD must be specified"
-            )));
-        }
-        if !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
-            return ActorResponse::reply(Err(eyre::eyre!("MRTD not in policy allowlist")));
-        }
         // Fail-closed TCB-status gate (audit #356 / #17). An empty
         // `allowed_tcb_statuses` no longer skips the check: it enforces against
         // the secure default `{UpToDate}`. `Revoked` is rejected
@@ -201,63 +356,33 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         ) {
             return ActorResponse::reply(Err(eyre::eyre!("TCB status not in policy allowlist")));
         }
-        if !policy.allowed_rtmr0.is_empty() && !policy.allowed_rtmr0.iter().any(|a| a == &rtmr0) {
-            return ActorResponse::reply(Err(eyre::eyre!("RTMR0 not in policy allowlist")));
-        }
-        // RTMR1 and RTMR2 are MANDATORY, for RTMR3's sake (see below). RTMR3 is
-        // extended from public inputs, so it only proves which image ran if the
-        // kernel (RTMR1) and the command line + initrd (RTMR2) that ran before
-        // `calimero-init` are pinned too; otherwise a custom kernel or initrd
-        // can extend RTMR3 with a locked profile's string. RTMR0 (the VM's
-        // hardware configuration) stays optional.
-        if policy.allowed_rtmr1.is_empty() || policy.allowed_rtmr2.is_empty() {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "TEE admission policy has an empty allowed_rtmr1 or allowed_rtmr2 — both must be \
-                 specified. RTMR3 is extended from public inputs, so it only identifies the image \
-                 when the kernel (RTMR1) and command line + initrd (RTMR2) are pinned too. Take \
-                 the values from the release's published-mrtds.json."
-            )));
-        }
-        if !policy.allowed_rtmr1.iter().any(|a| a == &rtmr1) {
-            return ActorResponse::reply(Err(eyre::eyre!("RTMR1 not in policy allowlist")));
-        }
-        if !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
-            return ActorResponse::reply(Err(eyre::eyre!("RTMR2 not in policy allowlist")));
-        }
-        // RTMR3 IS MANDATORY, and it is the only field that pins the image.
+
+        // A signed-release policy names no measurements: they come from the
+        // release the TEE says it runs, fetched and signature-checked below,
+        // outside the actor. A list policy is checked here, as it always was.
         //
-        // `allowed_mrtd` above cannot do it. MRTD measures the virtual firmware,
-        // so it is identical across every PROFILE of a release and stays
-        // constant across RELEASES -- `locked-read-only` reported the same
-        // c1ee9c16… for 2.3.62, 2.3.63 and 2.3.65, and every profile of each.
-        // A policy naming only an MRTD admits a `debug` image, which carries no
-        // lockdown role: openssh-server, the serial console and the rescue shell
-        // are present and root is not locked.
-        //
-        // `calimero-init` extends RTMR3 with
-        // `calimero-rtmr3-v2:<role>:<profile>:<root_hash>`, so it names exactly
-        // one (profile, release) pair. The cost is that it CHANGES EVERY
-        // RELEASE, which is why this was optional: pinning it means the policy
-        // must gain the new value before nodes on a new image can join. That is
-        // the intended trade -- an allowlist that silently stops narrowing is
-        // worse than one that has to be maintained.
-        //
-        // Empty is a refusal, not a skip. Under the old `is_empty()` guard an
-        // empty list meant "do not check", so the weakest policy was the one
-        // that looked like it had simply not been filled in.
-        if policy.allowed_rtmr3.is_empty() {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "TEE admission policy has empty allowed_rtmr3 — at least one RTMR3 must be \
-                 specified. MRTD does not identify the image: it is the same for every profile \
-                 of a release and does not change between most releases, so a policy without \
-                 RTMR3 admits any profile, including debug images that are not locked down. \
-                 RTMR3 is published per profile in the release's published-mrtds.json and \
-                 changes each release, so add the new value when upgrading."
-            )));
-        }
-        if !policy.allowed_rtmr3.iter().any(|a| a == &rtmr3) {
-            return ActorResponse::reply(Err(eyre::eyre!("RTMR3 not in policy allowlist")));
-        }
+        // A mock quote carries made-up registers no release publishes, so it
+        // is judged on `accept_mock` alone, the rule the list form applies.
+        // A subgroup admission (`account` is `None`) moves a namespace member
+        // inward: its release was checked when the root admitted it, and the
+        // record it is re-admitted from does not carry the version.
+        let release_claim = match policy.release_trust {
+            Some(trust) if !is_mock && account.is_some() => {
+                match signed_release_claim(trust, release_version.as_deref()) {
+                    Ok(claim) => Some(claim),
+                    Err(err) => return ActorResponse::reply(Err(err)),
+                }
+            }
+            Some(_) => None,
+            None => {
+                if let Err(err) =
+                    check_measurement_lists(&policy, &mrtd, &rtmr0, &rtmr1, &rtmr2, &rtmr3)
+                {
+                    return ActorResponse::reply(Err(err));
+                }
+                None
+            }
+        };
 
         // Direct-row check: TEE admission writes the node's direct
         // membership row + signing key. An inherited match via the
@@ -309,6 +434,16 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
+                if let Some(claim) = &release_claim {
+                    let profile = claim.verify(&mrtd, &rtmr0, &rtmr1, &rtmr2, &rtmr3).await?;
+                    debug!(
+                        %member,
+                        ?group_id,
+                        release = %claim.version,
+                        %profile,
+                        "TEE matches a signed mero-tee release"
+                    );
+                }
                 let sk = PrivateKey::from(effective_signing_key);
                 // Two forms, one decision: does this admission have to carry a
                 // credential?
@@ -433,5 +568,92 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use calimero_tee_release::ProfileMeasurements;
+
+    use super::*;
+
+    fn trust(min: Option<&str>) -> TeeReleaseTrust {
+        TeeReleaseTrust {
+            allowed_profiles: vec!["locked-read-only".to_owned()],
+            min_release_version: min.map(str::to_owned),
+        }
+    }
+
+    fn release() -> NodeRelease {
+        let one = |v: &str| vec![v.to_owned()];
+        let profile = |rtmr3: &str| ProfileMeasurements {
+            allowed_mrtd: one("mrtd"),
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: one("rtmr1"),
+            allowed_rtmr2: one("rtmr2"),
+            allowed_rtmr3: one(rtmr3),
+        };
+        NodeRelease {
+            version: "2.3.72".to_owned(),
+            profiles: BTreeMap::from([
+                ("locked-read-only".to_owned(), profile("locked")),
+                ("debug".to_owned(), profile("debug")),
+            ]),
+        }
+    }
+
+    #[test]
+    fn a_signed_release_policy_needs_the_release_named() {
+        let err = signed_release_claim(trust(None), None).err().unwrap();
+        assert!(err.to_string().contains("did not name"), "{err}");
+    }
+
+    #[test]
+    fn the_claimed_release_is_normalised_and_held_to_the_floor() {
+        let claim = signed_release_claim(trust(Some("2.3.72")), Some("mero-tee-v2.3.72")).unwrap();
+        assert_eq!(claim.version, "2.3.72");
+        assert!(signed_release_claim(trust(Some("2.3.72")), Some("2.3.80")).is_ok());
+
+        let err = signed_release_claim(trust(Some("2.3.72")), Some("2.3.71"))
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("older than"), "{err}");
+        assert!(
+            signed_release_claim(trust(None), Some("latest")).is_err(),
+            "a claim that is not a version is refused before any fetch"
+        );
+    }
+
+    #[test]
+    fn only_an_allowed_profile_of_the_release_admits() {
+        let release = release();
+        let profile = matched_profile(
+            &trust(None),
+            &release,
+            "mrtd",
+            "rtmr0",
+            "rtmr1",
+            "rtmr2",
+            "locked",
+        )
+        .unwrap();
+        assert_eq!(profile, "locked-read-only");
+
+        let err = matched_profile(
+            &trust(None),
+            &release,
+            "mrtd",
+            "rtmr0",
+            "rtmr1",
+            "rtmr2",
+            "debug",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("locked-read-only"),
+            "a debug image of a signed release is still not an allowed profile: {err}"
+        );
     }
 }

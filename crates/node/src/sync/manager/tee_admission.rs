@@ -41,6 +41,7 @@ use rand::RngExt;
 use tracing::{debug, info, warn};
 
 use super::SyncManager;
+use crate::handlers::tee_attestation_admission::TeeAdmissionClaim;
 
 /// How many distinct admitter machines one request will try.
 ///
@@ -66,6 +67,7 @@ impl SyncManager {
             quote_bytes,
             nonce,
             account,
+            release_version,
         } = params;
 
         let routes =
@@ -94,11 +96,15 @@ impl SyncManager {
             match self
                 .ask_one_for_tee_admission(
                     peer,
-                    namespace_id,
+                    tee_admission_request(
+                        namespace_id,
+                        public_key,
+                        &quote_bytes,
+                        nonce,
+                        &account,
+                        release_version.as_deref(),
+                    ),
                     public_key,
-                    &quote_bytes,
-                    nonce,
-                    &account,
                     pop,
                 )
                 .await
@@ -127,18 +133,11 @@ impl SyncManager {
 
     /// One request to one peer. `Err` carries the peer's reason, or what went
     /// wrong reaching it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the fields of one request, borrowed rather than rebuilt per peer"
-    )]
     async fn ask_one_for_tee_admission(
         &self,
         peer: PeerId,
-        namespace_id: [u8; 32],
+        payload: InitPayload,
         public_key: PublicKey,
-        quote_bytes: &[u8],
-        nonce: [u8; 32],
-        account: &calimero_governance_types::JoinAccountCredential,
         pop: Option<calimero_node_primitives::sync::InitProof>,
     ) -> Result<(), String> {
         let mut stream = self
@@ -152,13 +151,7 @@ impl SyncManager {
             // is bound to the namespace instead (see `build_join_init_pop`).
             context_id: ContextId::from([0u8; 32]),
             party_id: public_key,
-            payload: InitPayload::TeeAdmissionRequest {
-                namespace_id,
-                quote_bytes: quote_bytes.to_vec(),
-                public_key,
-                nonce,
-                account: Box::new(account.clone()),
-            },
+            payload,
             next_nonce: rand::rng().random(),
             pop,
         };
@@ -189,29 +182,20 @@ impl SyncManager {
 
     /// Responder side: verify the attestation and admit, exactly as the
     /// broadcast receiver would, then say what happened.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the fields of the request, handed over as the dispatcher destructured them"
-    )]
     pub(super) async fn handle_tee_admission_request(
         &self,
         peer_id: PeerId,
         namespace_id: [u8; 32],
-        quote_bytes: Vec<u8>,
-        public_key: PublicKey,
-        attestation_nonce: [u8; 32],
-        account: Box<calimero_governance_types::JoinAccountCredential>,
+        claim: TeeAdmissionClaim,
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
+        let public_key = claim.public_key;
         let (admitted, reason) = match crate::handlers::tee_attestation_admission::verify_and_admit(
             &self.context_client,
             peer_id,
-            quote_bytes,
-            public_key,
-            attestation_nonce,
             namespace_id,
-            account,
+            claim,
         )
         .await
         {
@@ -234,5 +218,38 @@ impl SyncManager {
         };
         crate::sync::stream::send(stream, &answer, None).await?;
         Ok(())
+    }
+}
+
+/// The request form to send: the one naming this node's release when it knows
+/// it. A responder that predates that form drops the stream, and the initiator
+/// moves on to the next admitter and then to the broadcast, which also carries
+/// the old form.
+fn tee_admission_request(
+    namespace_id: [u8; 32],
+    public_key: PublicKey,
+    quote_bytes: &[u8],
+    nonce: [u8; 32],
+    account: &calimero_governance_types::JoinAccountCredential,
+    release_version: Option<&str>,
+) -> InitPayload {
+    let quote_bytes = quote_bytes.to_vec();
+    let account = Box::new(account.clone());
+    match release_version {
+        Some(release_version) => InitPayload::TeeReleaseAdmissionRequest {
+            namespace_id,
+            quote_bytes,
+            public_key,
+            nonce,
+            account,
+            release_version: release_version.to_owned(),
+        },
+        None => InitPayload::TeeAdmissionRequest {
+            namespace_id,
+            quote_bytes,
+            public_key,
+            nonce,
+            account,
+        },
     }
 }

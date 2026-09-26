@@ -679,6 +679,17 @@ pub struct SetTeeAdmissionPolicyRequest {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
+    /// Admit by signed release instead of the lists above, which must then be
+    /// empty. Published as `GroupOp::TeeReleaseAdmissionPolicySet`.
+    pub signed_release: Option<SignedReleaseTrust>,
+}
+
+/// The signed-release form of a TEE admission policy: which image profiles of
+/// any release the mero-tee release workflow signed are admitted.
+#[derive(Clone, Debug)]
+pub struct SignedReleaseTrust {
+    pub allowed_profiles: Vec<String>,
+    pub min_release_version: Option<String>,
 }
 
 impl Message for SetTeeAdmissionPolicyRequest {
@@ -715,6 +726,13 @@ pub struct AdmitTeeNodeRequest {
     pub rtmr3: String,
     pub tcb_status: String,
     pub is_mock: bool,
+    /// The mero-tee node release the TEE says it runs, e.g. `2.3.72`.
+    ///
+    /// A claim, not evidence: under a signed-release policy the admitter
+    /// fetches that release's signed measurements and refuses a quote that
+    /// matches none of its allowed profiles, so a false claim gets nothing.
+    /// `None` from a node that did not send one; a list policy ignores it.
+    pub release_version: Option<String>,
 }
 
 /// What a node did with a TEE admission request that passed verification.

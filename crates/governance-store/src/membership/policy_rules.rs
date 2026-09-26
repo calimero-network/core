@@ -112,7 +112,7 @@ pub enum MembershipPolicyRejection {
 
 #[derive(Debug)]
 pub struct MembershipPolicyValidationError {
-    reason: MembershipPolicyRejection,
+    pub(crate) reason: MembershipPolicyRejection,
 }
 
 impl MembershipPolicyValidationError {

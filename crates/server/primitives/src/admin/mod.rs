@@ -3318,11 +3318,60 @@ pub struct SetTeeAdmissionPolicyApiRequest {
     pub allowed_tcb_statuses: Vec<String>,
     #[serde(default)]
     pub accept_mock: bool,
+    /// Admit TEEs running any node release the mero-tee release workflow
+    /// signed, instead of the measurements listed above -- which must then be
+    /// left empty. `allowedTcbStatuses` and `acceptMock` apply to both forms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_release: Option<SignedReleaseTeePolicy>,
+}
+
+/// The signed-release form of a TEE admission policy.
+///
+/// The admitter checks a joining TEE's quote against the signed
+/// `published-mrtds.json` of the release it says it runs, so the policy names
+/// which image profiles to accept rather than their measurements, and does not
+/// need updating when a new release is published.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignedReleaseTeePolicy {
+    /// Image profiles to admit, e.g. `locked-read-only`.
+    pub allowed_profiles: Vec<String>,
+    /// The oldest release admitted (`2.3.72`), or any signed release when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_release_version: Option<String>,
 }
 
 impl Validate for SetTeeAdmissionPolicyApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
+        if let Some(signed) = &self.signed_release {
+            if signed.allowed_profiles.iter().all(|p| p.trim().is_empty()) {
+                errors.push(ValidationError::InvalidFormat {
+                    field: "signed_release.allowed_profiles",
+                    reason: "name at least one image profile, e.g. locked-read-only".to_owned(),
+                });
+            }
+            // One form or the other. Accepting both would store a policy whose
+            // lists are silently ignored, which reads as a check that is not made.
+            for (field, list) in [
+                ("allowed_mrtd", &self.allowed_mrtd),
+                ("allowed_rtmr0", &self.allowed_rtmr0),
+                ("allowed_rtmr1", &self.allowed_rtmr1),
+                ("allowed_rtmr2", &self.allowed_rtmr2),
+                ("allowed_rtmr3", &self.allowed_rtmr3),
+            ] {
+                if !list.is_empty() {
+                    errors.push(ValidationError::InvalidFormat {
+                        field,
+                        reason: "must be empty with signed_release: the measurements come from \
+                                 the signed release the TEE runs"
+                            .to_owned(),
+                    });
+                }
+            }
+            return errors;
+        }
         // No `accept_mock` carve-out. `accept_mock` gates whether a MOCK QUOTE
         // is entertained at all, not whether its measurements are checked --
         // `create_mock_quote` reports the all-zero 48 bytes for every register,
@@ -3401,6 +3450,10 @@ pub struct GetTeeAdmissionPolicyApiResponse {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
+    /// Set when the policy admits by signed release; the measurement lists
+    /// are then empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_release: Option<SignedReleaseTeePolicy>,
 }
 
 impl GetTeeAdmissionPolicyApiResponse {
@@ -3414,6 +3467,7 @@ impl GetTeeAdmissionPolicyApiResponse {
             allowed_rtmr3: vec![],
             allowed_tcb_statuses: vec![],
             accept_mock: false,
+            signed_release: None,
         }
     }
 }
@@ -3507,6 +3561,7 @@ mod tests {
             allowed_rtmr3: vec!["74".to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,
+            signed_release: None,
         };
         let errors = req.validate();
         assert!(
@@ -3531,6 +3586,7 @@ mod tests {
             allowed_rtmr3: vec!["74".to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,
+            signed_release: None,
         };
         assert!(req.validate().is_empty());
     }
@@ -3558,6 +3614,7 @@ mod tests {
                 allowed_rtmr3: vec!["74".to_owned()],
                 allowed_tcb_statuses: vec![],
                 accept_mock: false,
+                signed_release: None,
             };
             let errors = req.validate();
             assert!(
@@ -3568,6 +3625,40 @@ mod tests {
                 "an empty {field} must be refused at write time; got {errors:?}"
             );
         }
+    }
+
+    /// The signed-release form names profiles, not measurements, and the
+    /// measurement lists must then be empty: stored beside it they would read
+    /// as a check nobody makes.
+    #[test]
+    fn a_signed_release_policy_takes_profiles_instead_of_lists() {
+        let req: SetTeeAdmissionPolicyApiRequest = serde_json::from_value(serde_json::json!({
+            "signedRelease": {
+                "allowedProfiles": ["locked-read-only"],
+                "minReleaseVersion": "2.3.72"
+            },
+            "allowedTcbStatuses": ["UpToDate"]
+        }))
+        .unwrap();
+        assert!(req.validate().is_empty(), "{:?}", req.validate());
+
+        let mut with_lists = req.clone();
+        with_lists.allowed_rtmr3 = vec!["74".to_owned()];
+        assert!(with_lists.validate().iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidFormat { field, .. } if *field == "allowed_rtmr3"
+        )));
+
+        let mut no_profile = req;
+        no_profile.signed_release = Some(SignedReleaseTeePolicy {
+            allowed_profiles: vec![],
+            min_release_version: None,
+        });
+        assert!(no_profile.validate().iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidFormat { field, .. }
+                if *field == "signed_release.allowed_profiles"
+        )));
     }
 
     /// The two shapes the route accepts. An empty `only` is refused by the

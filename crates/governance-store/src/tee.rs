@@ -9,6 +9,11 @@ use eyre::Result as EyreResult;
 use super::read_op_log_after;
 
 /// Reconstructed TEE admission policy from the governance DAG.
+///
+/// Two forms share this struct. A `TeeAdmissionPolicySet` fills the measurement
+/// lists and leaves `release_trust` empty. A `TeeReleaseAdmissionPolicySet`
+/// sets `release_trust` and leaves the lists empty: the measurements come from
+/// the signed release the TEE runs, checked by the admitter, not from here.
 #[derive(Debug)]
 pub struct TeeAdmissionPolicy {
     pub allowed_mrtd: Vec<String>,
@@ -18,6 +23,16 @@ pub struct TeeAdmissionPolicy {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
+    pub release_trust: Option<TeeReleaseTrust>,
+}
+
+/// The signed-release half of a [`TeeAdmissionPolicy`].
+#[derive(Clone, Debug)]
+pub struct TeeReleaseTrust {
+    /// Image profiles a TEE may run, e.g. `locked-read-only`.
+    pub allowed_profiles: Vec<String>,
+    /// The oldest release admitted, or `None` for any signed release.
+    pub min_release_version: Option<String>,
 }
 
 /// One op-log entry that could not be decoded as a [`SignedGroupOp`].
@@ -110,17 +125,10 @@ pub fn read_tee_admission_policy(
             }
         };
 
-        if let GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd,
-            allowed_rtmr0,
-            allowed_rtmr1,
-            allowed_rtmr2,
-            allowed_rtmr3,
-            allowed_tcb_statuses,
-            accept_mock,
-        } = op.op
-        {
-            latest = Some(TeeAdmissionPolicy {
+        // Either form supersedes the other: the newest policy op in the log
+        // is the policy, whichever kind it is.
+        match op.op {
+            GroupOp::TeeAdmissionPolicySet {
                 allowed_mrtd,
                 allowed_rtmr0,
                 allowed_rtmr1,
@@ -128,7 +136,39 @@ pub fn read_tee_admission_policy(
                 allowed_rtmr3,
                 allowed_tcb_statuses,
                 accept_mock,
-            });
+            } => {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd,
+                    allowed_rtmr0,
+                    allowed_rtmr1,
+                    allowed_rtmr2,
+                    allowed_rtmr3,
+                    allowed_tcb_statuses,
+                    accept_mock,
+                    release_trust: None,
+                });
+            }
+            GroupOp::TeeReleaseAdmissionPolicySet {
+                allowed_profiles,
+                min_release_version,
+                allowed_tcb_statuses,
+                accept_mock,
+            } => {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd: Vec::new(),
+                    allowed_rtmr0: Vec::new(),
+                    allowed_rtmr1: Vec::new(),
+                    allowed_rtmr2: Vec::new(),
+                    allowed_rtmr3: Vec::new(),
+                    allowed_tcb_statuses,
+                    accept_mock,
+                    release_trust: Some(TeeReleaseTrust {
+                        allowed_profiles,
+                        min_release_version,
+                    }),
+                });
+            }
+            _ => {}
         }
     }
 

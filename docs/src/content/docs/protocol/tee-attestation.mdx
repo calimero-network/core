@@ -126,6 +126,8 @@ The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handl
 
 2. **Mock gate.** `is_mock && !policy.accept_mock` → reject.
 
+3. **Signed release** (signed-release policies only; steps 3–4 are skipped). The TEE must name the mero-tee node release it runs, no older than the policy's `min_release_version`. The admitter fetches that release's `published-mrtds.json` with its detached signature and Sigstore bundle, refuses it unless the `Release mero-tee` workflow of `calimero-network/mero-tee` signed it, and requires the quote's MRTD and RTMR1–3 (RTMR0 when the profile pins it) to match one of the policy's `allowed_profiles`. See [Signed-release policies](#signed-release-policies).
+
 3. **Fail-closed allowlist.** `allowed_mrtd` must be non-empty; an empty MRTD allowlist is rejected outright. The quote's `mrtd` must be in it.
 
 4. **Runtime registers.** `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` must each be non-empty, and the quote's value must be in each. RTMR3 is the only register that names the image (profile and release). But `calimero-init` extends it from public inputs, so it proves something only when the kernel (RTMR1) and kernel command line + initrd (RTMR2) that ran before it are pinned as well. Without them, a custom kernel or initrd can reproduce a locked profile's RTMR3. `allowed_rtmr0` (the VM's hardware configuration, which varies with machine shape) is checked only when non-empty. `tcb_status` fails closed: an empty allowlist enforces `UpToDate`.
@@ -140,7 +142,7 @@ The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handl
 
 </Steps>
 
-The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be `ReadOnlyTee`, the **signer must be an admin of the group or a TEE node already admitted to it** (`require_tee_attestation_verifier`), a policy must exist, and the recorded measurements must still satisfy the allowlists. On success it admits the member and clears any prior deny-list entry.
+The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be `ReadOnlyTee`, the **signer must be an admin of the group or a TEE node already admitted to it** (`require_tee_attestation_verifier`), a policy must exist, and the recorded measurements must still satisfy the allowlists — under a signed-release policy only `tcb_status` is re-checked, and the measurements are the voucher's word, since a replaying peer holds neither the quote nor the release file. On success it admits the member and clears any prior deny-list entry.
 
 <Aside type="caution">
 **Normative.** A verifier MUST be an admin of the group whose attestation it admits (directly, as its genesis admin, or inherited from an ancestor) or a `ReadOnlyTee` member of that same group. Plain membership is NOT sufficient: peers never see the quote — the op carries only the measurements the verifier claims — so whoever may sign the op decides who receives the group key. The admission op MUST record `role: ReadOnlyTee`; any other role is rejected at apply. The TEE admission policy MUST live on the **namespace root** — `TeeAdmissionPolicySet` on a subgroup is rejected, and policy reads resolve to the root before reading. `allowed_mrtd`, `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` MUST each be non-empty, so a misconfigured policy fails closed rather than admitting everything. These are refused when the policy is set, when a node admits, and on every peer that applies an admission.
@@ -258,7 +260,31 @@ TeeAdmissionPolicySet {
 }
 ```
 
-There is no materialized policy row — the op log _is_ the storage. `read_tee_admission_policy` scans the root's op log and takes the **last** `TeeAdmissionPolicySet`, so a later op simply supersedes an earlier one (last-writer-wins, like the rest of the projection). The apply handler validates only that the signer is an admin and that the target is a namespace root, not a subgroup.
+There is no materialized policy row — the op log _is_ the storage. `read_tee_admission_policy` scans the root's op log and takes the **last** `TeeAdmissionPolicySet` or `TeeReleaseAdmissionPolicySet`, so a later op simply supersedes an earlier one of either form (last-writer-wins, like the rest of the projection). The apply handler validates only that the signer is an admin and that the target is a namespace root, not a subgroup.
+
+### Signed-release policies
+
+A measurement list has to gain RTMR3 for every release: a fleet node on a new image is refused until an admin copies the new value in. The second form trusts the release's signature instead:
+
+```rust
+TeeReleaseAdmissionPolicySet {
+    allowed_profiles: Vec<String>,        // e.g. ["locked-read-only"]
+    min_release_version: Option<String>,  // oldest release admitted
+    allowed_tcb_statuses: Vec<String>,
+    accept_mock: bool,
+}
+```
+
+mero-tee's release workflow keyless-signs each node release's `published-mrtds.json` with cosign, publishing a detached signature and a Sigstore bundle next to it. The admitter fetches all three for the release the TEE names (`calimero-tee-release`, cached per release), verifies the Fulcio certificate names the `Release mero-tee` workflow on `refs/heads/master` of `calimero-network/mero-tee`, checks the file's `tag` is that release, and matches the quote against the allowed profiles. A TEE that names a release it does not run, or one never published, matches nothing.
+
+The release travels as a claim: `BroadcastMessage::TeeReleaseAttestationAnnounce` and `InitPayload::TeeReleaseAdmissionRequest` are the old forms plus `release_version`, appended at the tail of their enums. `fleet-join` sends the named form when merod knows its release (`MERO_TEE_VERSION`, written by `calimero-init` from the instance's `tee-release-version`) and always sends the old announce too, so admitters that predate the new form still hear the node. An admitter under a signed-release policy refuses a TEE that names no release.
+
+Two properties follow from the choice to trust the voucher on replay:
+
+- A replaying peer checks the voucher's role and `tcb_status`, as it does for every admission, and records the measurements without comparing them. What it relies on is that the voucher is an admin or an admitted TEE, which the list form already relies on for the quote itself.
+- A subgroup admission of an already-admitted TEE (`tee_subgroup_admit`) does not re-fetch the release: its record carries measurements, not the version, and the root admission checked it.
+
+Only node releases published with a `.bundle.json` can be verified; releases before that are refused under this form.
 
 ## Eviction and self-purge
 
@@ -296,7 +322,7 @@ The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (au
 | `POST /tee/verify-quote` | `{ nonce, quote_b64, expected_application_hash? }` | Verifies a quote and reports per-check results. |
 | `POST /tee/fleet-join` (protected) | `{ group_id, admitter_addrs? }` | Runs the full announce → admission → join loop above, asking `admitter_addrs` directly first when given. |
 
-The admission policy is set separately via `PUT /admin-api/.../groups/:group_id/settings/tee-admission-policy`, which publishes `TeeAdmissionPolicySet`.
+The admission policy is set separately via `PUT /admin-api/.../groups/:group_id/settings/tee-admission-policy`, which publishes `TeeAdmissionPolicySet` — or, when the body carries `signedRelease: { allowedProfiles, minReleaseVersion? }` and no measurement lists, `TeeReleaseAdmissionPolicySet`. `GET` on the same path reports `signedRelease` for the second form.
 
 ## Verifying from outside Rust
 

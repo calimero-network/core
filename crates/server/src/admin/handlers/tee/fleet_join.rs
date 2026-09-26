@@ -144,6 +144,12 @@ pub async fn handler(
     // outside the node that owns it.
     let account_id = account.statement.account;
 
+    // The node release this node runs, when merod was told it
+    // (`MERO_TEE_VERSION`). A namespace that admits TEEs by signed release
+    // checks the quote against that release's signed measurements; without it
+    // only a namespace with measurement lists can admit this node.
+    let release_version = state.tee_release_version.clone();
+
     // Kept for the direct request below, which carries the same attestation the
     // broadcast does. Only built when there is someone to ask.
     let direct_request = (!req.admitter_addrs.is_empty()).then(|| TeeAdmissionParams {
@@ -153,17 +159,37 @@ pub async fn handler(
         quote_bytes: attestation.quote_bytes.clone(),
         nonce,
         account: account.clone(),
+        release_version: release_version.clone(),
     });
 
-    let broadcast = BroadcastMessage::TeeAttestationAnnounce {
+    // Both announcement forms when the release is known: the one that names
+    // it, for admitters under a signed-release policy, and the old one, which
+    // every admitter decodes -- including those that predate the new form and
+    // would otherwise not hear this node at all.
+    let mut announcements = Vec::with_capacity(2);
+    if let Some(release_version) = release_version {
+        announcements.push(BroadcastMessage::TeeReleaseAttestationAnnounce {
+            quote_bytes: attestation.quote_bytes.clone(),
+            public_key: our_public_key,
+            nonce,
+            node_type: SpecializedNodeType::ReadOnly,
+            account: account.clone(),
+            release_version,
+        });
+    }
+    announcements.push(BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,
         public_key: our_public_key,
         nonce,
         node_type: SpecializedNodeType::ReadOnly,
         account,
-    };
+    });
 
-    let payload = match borsh::to_vec(&broadcast) {
+    let payloads = match announcements
+        .iter()
+        .map(borsh::to_vec)
+        .collect::<Result<Vec<_>, _>>()
+    {
         Ok(p) => p,
         Err(err) => {
             error!(error=?err, "Failed to serialize TeeAttestationAnnounce");
@@ -201,11 +227,7 @@ pub async fn handler(
     // empty mesh is non-fatal, fall through into the retry loop below; any
     // *other* publish error is a genuine transport failure and still bails
     // (a subscription with no chance of an announce is useless).
-    if let Err(err) = state
-        .node_client
-        .publish_on_namespace_now(group_id_bytes, payload.clone())
-        .await
-    {
+    if let Err(err) = publish_announcements(&state.node_client, group_id_bytes, &payloads).await {
         if calimero_network_primitives::client::is_no_peers_subscribed_error(&err) {
             info!(
                 group_id = %req.group_id,
@@ -455,10 +477,7 @@ pub async fn handler(
                 // cycle delivers a fresh copy to a mesh window that opens later.
                 // Best effort — a transport error here is logged, not fatal.
                 if tokio::time::Instant::now() < deadline {
-                    match state
-                        .node_client
-                        .publish_on_namespace_now(group_id_bytes, payload.clone())
-                        .await
+                    match publish_announcements(&state.node_client, group_id_bytes, &payloads).await
                     {
                         Ok(mesh_peers) => tracing::debug!(
                             group_id = %req.group_id,
@@ -524,4 +543,20 @@ pub async fn handler(
         }),
     }
     .into_response()
+}
+
+/// Publish each announcement form on the namespace topic, stopping at the
+/// first failure. Returns the mesh size the last publish saw.
+async fn publish_announcements(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    namespace_id: [u8; 32],
+    payloads: &[Vec<u8>],
+) -> eyre::Result<usize> {
+    let mut mesh_peers = 0;
+    for payload in payloads {
+        mesh_peers = node_client
+            .publish_on_namespace_now(namespace_id, payload.clone())
+            .await?;
+    }
+    Ok(mesh_peers)
 }

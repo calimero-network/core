@@ -852,7 +852,9 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn direct_tee_admission_reports_its_verdict() {
-    use crate::handlers::tee_attestation_admission::{verify_and_admit, TeeAdmissionVerdict};
+    use crate::handlers::tee_attestation_admission::{
+        verify_and_admit, TeeAdmissionClaim, TeeAdmissionVerdict,
+    };
     use calimero_context_client::group::TeeAdmissionOutcome;
 
     let node = boot_test_node().await;
@@ -867,11 +869,14 @@ async fn direct_tee_admission_reports_its_verdict() {
         verify_and_admit(
             &node.context_client,
             libp2p::PeerId::random(),
-            mock_quote_bytes(&nonce, &pk_hash),
-            announcer_pk,
-            nonce,
             gid.to_bytes(),
-            account,
+            TeeAdmissionClaim {
+                quote_bytes: mock_quote_bytes(&nonce, &pk_hash),
+                public_key: announcer_pk,
+                nonce,
+                account,
+                release_version: None,
+            },
         )
     };
 

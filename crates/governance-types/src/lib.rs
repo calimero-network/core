@@ -185,6 +185,13 @@ id_newtype! {
 /// variant, so a v13 peer must reject at the gate rather than mis-decode.
 ///
 /// v15: appends `GroupOp::AccountDeviceLabelled`; no prior ordinal moves.
+///
+/// `TeeReleaseAdmissionPolicySet` is appended after `AccountDeviceLabelled`
+/// WITHOUT a bump, the `GroupKeyRotated` posture: every earlier ordinal holds,
+/// so a peer without it decodes everything it already understood and fails
+/// only on that op, which appears only in a namespace whose owner chose to
+/// trust signed releases. Bumping would instead make every older peer reject
+/// every op in every namespace.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 15;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
@@ -696,6 +703,28 @@ pub enum GroupOp {
         /// signer is `device` itself, which a paired device holding no root is.
         root_proof: Option<Box<SignedDeviceLabel>>,
     },
+    /// TEE admission policy that trusts signed mero-tee node releases instead
+    /// of fixed measurement lists. Only admins can set it, on a namespace root.
+    ///
+    /// A TEE is admitted when its quote matches, for one of `allowed_profiles`,
+    /// the `published-mrtds.json` of the release it runs, and the admitter has
+    /// verified that file's Sigstore signature against the `Release mero-tee`
+    /// workflow identity. A new release is trusted the moment it is published,
+    /// so nothing has to rewrite this policy when the fleet rolls forward.
+    /// Supersedes a `TeeAdmissionPolicySet` and is superseded by one: the
+    /// newest of the two in the log is the policy.
+    TeeReleaseAdmissionPolicySet {
+        /// Image profiles a TEE may run, e.g. `locked-read-only`. Non-empty.
+        allowed_profiles: Vec<String>,
+        /// The oldest release admitted (`X.Y.Z` or `X.Y.Z-pre`), or `None`
+        /// for any signed release.
+        min_release_version: Option<String>,
+        /// TCB statuses admitted, with the same rules as the list policy: an
+        /// empty list admits only `UpToDate`, and `Revoked` never passes.
+        allowed_tcb_statuses: Vec<String>,
+        /// Admit mock quotes (test builds with `mock-attestation` only).
+        accept_mock: bool,
+    },
 }
 
 impl GroupOp {
@@ -741,6 +770,7 @@ impl GroupOp {
             GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
             GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
             GroupOp::AccountDeviceLabelled { .. } => "account_device_labelled",
+            GroupOp::TeeReleaseAdmissionPolicySet { .. } => "tee_release_admission_policy_set",
         }
     }
 }
@@ -2233,6 +2263,30 @@ impl GroupOp {
                     for s in list {
                         check_bound(name, s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
                     }
+                }
+                Ok(())
+            }
+            Self::TeeReleaseAdmissionPolicySet {
+                allowed_profiles,
+                min_release_version,
+                allowed_tcb_statuses,
+                ..
+            } => {
+                for (name, list) in [
+                    ("allowed_profiles", allowed_profiles),
+                    ("allowed_tcb_statuses", allowed_tcb_statuses),
+                ] {
+                    check_bound(name, list.len(), bounds::MAX_TEE_ALLOWED_ENTRIES)?;
+                    for s in list {
+                        check_bound(name, s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
+                    }
+                }
+                if let Some(v) = min_release_version {
+                    check_bound(
+                        "min_release_version",
+                        v.len(),
+                        bounds::MAX_TEE_ALLOWED_STRING_LEN,
+                    )?;
                 }
                 Ok(())
             }

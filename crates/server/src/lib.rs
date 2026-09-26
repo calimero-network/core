@@ -118,6 +118,10 @@ pub struct AdminState {
     /// present under the default-off `mock-attestation` feature.
     #[cfg(feature = "mock-attestation")]
     pub mock_tee: bool,
+    /// The mero-tee node release this node runs, from `MERO_TEE_VERSION`.
+    /// Fleet-join names it to admitters, which check the quote against that
+    /// release's signed measurements under a signed-release policy.
+    pub tee_release_version: Option<String>,
 }
 
 impl AdminState {
@@ -136,7 +140,14 @@ impl AdminState {
             readiness,
             #[cfg(feature = "mock-attestation")]
             mock_tee,
+            tee_release_version: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_tee_release_version(mut self, tee_release_version: Option<String>) -> Self {
+        self.tee_release_version = tee_release_version;
+        self
     }
 }
 
@@ -214,14 +225,17 @@ pub async fn start(
         .as_ref()
         .map(|auth| Arc::new(auth.auth_service()));
 
-    let shared_state = Arc::new(AdminState::new(
-        datastore.clone(),
-        ctx_client.clone(),
-        node_client.clone(),
-        readiness,
-        #[cfg(feature = "mock-attestation")]
-        mock_tee,
-    ));
+    let shared_state = Arc::new(
+        AdminState::new(
+            datastore.clone(),
+            ctx_client.clone(),
+            node_client.clone(),
+            readiness,
+            #[cfg(feature = "mock-attestation")]
+            mock_tee,
+        )
+        .with_tee_release_version(config.tee_release_version.clone()),
+    );
     let mounted = mount_runtime_services(
         app,
         &config,
