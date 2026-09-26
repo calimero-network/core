@@ -42,7 +42,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | Signed-op apply (peer-to-peer) | `apply_signed_group_op`, `apply_signed_namespace_op`, `broadcast_group_local_state`, `sync_group` |
 | Capabilities / metadata | `get_member_capabilities`, `set_member_capabilities`, `set_default_capabilities`, `get_member_metadata`, `set_member_metadata`, `get_group_metadata`, `set_group_metadata`, `store_*` (the `store_group_meta`, `store_group_context`, `store_member_capability`, `store_member_metadata`, `store_default_capabilities`, `store_subgroup_visibility`, `store_context_metadata`, `store_group_metadata` family - local-write halves used by the apply path) |
 | Introspection / admin | `get_group_info`, `get_group_for_context`, `list_all_groups`, `list_group_members`, `list_group_contexts`, `get_cascade_status`, `issue_ownership_proof`, `admit_tee_node`, `set_tee_admission_policy` |
-| Application updates | `update_application/mod.rs` |
+| Application updates | `update_application/mod.rs`, `precompile_application` (compiles an installed application's modules into the module cache; the admin install endpoints call it so the first context does not pay for compiling) |
 
 Two modules there are not handlers. `ensure_account_namespace` is a plain function `pair_device_complete` calls, creating the holder's account namespace on first use, naming it, and recording the holder's own device in it. `follow_namespace` is the one definition of following a namespace - note participation, subscribe, pull - called by `pair_device_init` and by the `account_follow` listener.
 

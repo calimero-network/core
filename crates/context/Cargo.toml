@@ -55,6 +55,8 @@ calimero-wasm-abi.workspace = true
 # the blobstore and the temp dirs a real `NodeClient` needs.
 calimero-node-primitives = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+# Module compiles run on the node's global runtime, which must be multi-threaded.
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [features]
 profiling = ["calimero-runtime/profiling"]

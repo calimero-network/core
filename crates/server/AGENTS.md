@@ -351,4 +351,9 @@ request re-stamps it.
   if a subscription stops being revoked when it should be, suspect what `vouch`
   recorded, not the gate
 - All responses use consistent error format
+- `install-application` and `install-dev-application` wait for the installed
+  application's modules to compile (`ctx_client.precompile_application`) before
+  answering, so the first context created from it is not slowed by compiling
+  its WASM. A compile failure is only logged: the install still succeeds, as
+  before
 - Every request body is `deny_unknown_fields`; add a new request type to the list in `primitives/tests/deny_unknown_fields.rs`
