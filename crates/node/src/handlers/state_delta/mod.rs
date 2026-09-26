@@ -1132,7 +1132,9 @@ pub async fn handle_state_delta(
     // (while no live binding speaks for that key). Here the filter is the only
     // refusal on this path, not a shortcut: the cross-DAG check authorizes at the
     // governance heads the author cites, and a revoked device that has not yet
-    // folded its own revocation cites heads from before it (core#4070).
+    // folded its own revocation cites heads from before it (core#4070). The
+    // DAG-catchup of a peer's heads refuses it too; a delta fetched as the
+    // parent of an accepted one does not, since its child vouches for it.
     //
     // Skipped for non-group contexts (`is_author_denied_for_context`
     // returns `Ok(false)` when there's no owning group). Lookup
@@ -1721,6 +1723,11 @@ async fn request_missing_deltas(
                         continue;
                     }
 
+                    // No revoked-device check, as on DAG-catchup parent-pull:
+                    // a pending delta asked for this one as its parent, which
+                    // vouches that it was accepted before the revocation was
+                    // known (core#4070).
+                    //
                     // Cross-DAG authorization against the governance parent
                     // edge: derives the group from the context (folding in the
                     // old group-id anti-bypass) and resolves membership at the
