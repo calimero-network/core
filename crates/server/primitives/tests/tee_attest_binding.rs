@@ -19,7 +19,9 @@ fn a_request_can_ask_for_the_key_binding() {
     ))
     .unwrap();
     assert!(req.bind_node_key);
-    assert!(TeeAttestRequest::new(NONCE.to_owned(), None)
-        .with_node_key_binding()
-        .bind_node_key);
+    assert!(
+        TeeAttestRequest::new(NONCE.to_owned(), None)
+            .with_node_key_binding()
+            .bind_node_key
+    );
 }
