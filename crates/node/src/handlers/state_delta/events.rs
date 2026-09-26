@@ -124,6 +124,7 @@ pub(super) async fn execute_cascaded_events(
                     context_client,
                     context_id,
                     our_identity,
+                    cascaded_id,
                     &cascaded_payload,
                 )
                 .await
@@ -236,6 +237,14 @@ pub(super) async fn execute_cascaded_events(
 /// 2. Consider refactoring to use CRDTs
 /// 3. Or disable parallelization if absolutely necessary
 ///
+/// ## TEE handlers
+///
+/// A handler named `tee:<method>` is a **TEE trigger**: it runs on exactly one
+/// node — the TEE authority [`elected_tee_for`] picks for this delta — through
+/// [`ContextClient::execute_tee_trigger`], as `AccountId::TEE_AUTHORITY`. Every
+/// other receiver skips it, and a skip counts as success: it is not this node's
+/// to run, so there is nothing to replay on restart.
+///
 /// Returns `Ok(true)` if every handler in the payload ran successfully,
 /// `Ok(false)` if at least one handler errored (individual errors are
 /// logged but swallowed so later handlers in the list still run). Callers
@@ -246,10 +255,59 @@ pub(super) async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
     context_id: &ContextId,
     our_identity: &PublicKey,
+    // The delta carrying these events. It names the firing, so it is what the
+    // TEE election ranks on.
+    cause: &[u8; 32],
     events_payload: &[ExecutionEvent],
 ) -> Result<bool> {
     let mut all_succeeded = true;
+    // Resolved once per delta, and only if it carries a TEE handler.
+    let mut elected_tee: Option<bool> = None;
     for event in events_payload {
+        if let Some(tee_method) = event
+            .handler
+            .as_deref()
+            .and_then(|handler| handler.strip_prefix(TEE_HANDLER_PREFIX))
+        {
+            let elected = match elected_tee {
+                Some(elected) => elected,
+                None => match elected_tee_for(context_client, context_id, our_identity, cause) {
+                    Ok(elected) => {
+                        elected_tee = Some(elected);
+                        elected
+                    }
+                    // Not a verdict, so neither "skip" nor abort: keep the
+                    // events for replay and let the other handlers run.
+                    Err(err) => {
+                        warn!(%context_id, tee_method, error = %err, "TEE election lookup failed");
+                        all_succeeded = false;
+                        continue;
+                    }
+                },
+            };
+            if !elected {
+                debug!(
+                    %context_id,
+                    tee_method,
+                    "Skipping TEE handler: this node is not the elected TEE authority"
+                );
+                continue;
+            }
+            info!(%context_id, tee_method, "Firing TEE trigger");
+            if let Err(err) = context_client
+                .execute_tee_trigger(
+                    context_id,
+                    our_identity,
+                    tee_method.to_owned(),
+                    event.data.clone(),
+                )
+                .await
+            {
+                warn!(tee_method, error = %err, "TEE trigger failed");
+                all_succeeded = false;
+            }
+            continue;
+        }
         if let Some(handler_name) = &event.handler {
             debug!(
                 %context_id,
@@ -287,6 +345,50 @@ pub(super) async fn execute_event_handlers_parsed(
     }
 
     Ok(all_succeeded)
+}
+
+/// Handler-name prefix marking an event handler as a TEE trigger.
+const TEE_HANDLER_PREFIX: &str = "tee:";
+
+/// Domain separator for ranking TEE authorities per firing.
+const TEE_TRIGGER_RANK_DOMAIN: &[u8] = b"calimero.tee-trigger-rank.v1";
+
+/// Whether this node is the TEE authority that fires the TEE handlers of the
+/// delta `cause`.
+///
+/// Every authority ranks all of them by `H(cause ‖ account)` and the lowest
+/// fires. Ranking on the delta rather than on anything a TEE produces means no
+/// TEE can grind an outcome by choosing whether to fire, and needs no messages.
+/// There is no failover yet: if the elected TEE is down, the trigger waits for
+/// it (its events stay in the DB for replay when it catches up).
+fn elected_tee_for(
+    context_client: &ContextClient,
+    context_id: &ContextId,
+    our_identity: &PublicKey,
+    cause: &[u8; 32],
+) -> Result<bool> {
+    let store = context_client.datastore();
+    if !calimero_governance_store::is_tee_authority_for_context(store, context_id, our_identity)? {
+        return Ok(false);
+    }
+    let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
+    else {
+        return Ok(false);
+    };
+    let Some(our_account) =
+        calimero_governance_store::member_account_in_namespace(store, &group_id, our_identity)?
+    else {
+        return Ok(false);
+    };
+    let leader = calimero_governance_store::tee_authorities_for_context(store, context_id)?
+        .into_iter()
+        .min_by_key(|account| {
+            calimero_primitives::identity::domain_hash(
+                TEE_TRIGGER_RANK_DOMAIN,
+                &[cause.as_slice(), account.as_bytes().as_slice()],
+            )
+        });
+    Ok(leader == Some(our_account))
 }
 
 // ---- emit_state_mutation_event_parsed ----

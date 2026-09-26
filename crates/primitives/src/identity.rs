@@ -312,6 +312,28 @@ content_address_id! {
     AccountId
 }
 
+/// Domain separator whose [`domain_hash`] is [`AccountId::TEE_AUTHORITY`].
+pub const TEE_AUTHORITY_DOMAIN: &[u8] = b"calimero.tee-authority.v1";
+
+impl AccountId {
+    /// The **TEE authority**: the principal an attested TEE node acts as when a
+    /// TEE trigger fires, and the only writer of an app's `TeeOnly` storage.
+    ///
+    /// Not any real account. Real accounts are content addresses of an
+    /// `AccountGenesis` under a different domain, so producing this id as one
+    /// would need a SHA-256 preimage. No key can sign as it: a node resolves a
+    /// TEE's signing key to it only after checking the namespace's TEE authoring
+    /// policy, and every peer re-checks that before accepting the write.
+    ///
+    /// `domain_hash(TEE_AUTHORITY_DOMAIN, &[])`, spelled out because
+    /// `domain_hash` is not `const`; a test pins the two together.
+    pub const TEE_AUTHORITY: Self = Self::from_raw([
+        0xf4, 0xd0, 0xa8, 0x91, 0x2b, 0xfa, 0x1b, 0x94, 0x30, 0xf0, 0x5d, 0xd5, 0x58, 0xa6, 0xa9,
+        0xb9, 0x85, 0xde, 0xa0, 0x9d, 0x1a, 0x85, 0xbd, 0xbc, 0xd1, 0x00, 0xaa, 0xe7, 0x0d, 0x6b,
+        0x36, 0xda,
+    ]);
+}
+
 content_address_id! {
     /// Stable identity of one installation belonging to an account.
     ///
@@ -470,6 +492,14 @@ mod tests {
     use core::mem::ManuallyDrop;
 
     use super::*;
+
+    #[test]
+    fn tee_authority_is_the_domain_hash_of_its_domain() {
+        assert_eq!(
+            AccountId::TEE_AUTHORITY,
+            AccountId::from(domain_hash(TEE_AUTHORITY_DOMAIN, &[]))
+        );
+    }
 
     #[test]
     fn test_private_key_zeroize_on_drop() {

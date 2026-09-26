@@ -116,7 +116,7 @@ pub fn is_currently_authorized_for_context(
     // state mutation through HC/LevelWise/EntityPush. The gossip path's
     // `is_read_only_for_context` filter (in `handle_state_delta`) is what
     // we're mirroring here.
-    if NamespaceRepository::new(store).is_read_only_for_context(context_id, author)? {
+    if NamespaceRepository::new(store).rejects_state_writes_from(context_id, author)? {
         return Ok(false);
     }
     MembershipRepository::new(store).is_member(&group_id, &account)

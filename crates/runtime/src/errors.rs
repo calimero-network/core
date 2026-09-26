@@ -119,6 +119,8 @@ pub enum MethodResolutionError {
 pub enum HostError {
     #[error("invalid register id: {id}")]
     InvalidRegisterId { id: u64 },
+    #[error("{function} is only available in a TEE-triggered execution")]
+    TeeOnly { function: &'static str },
     #[error("invalid memory access")]
     InvalidMemoryAccess,
     #[error(

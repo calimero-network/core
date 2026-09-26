@@ -166,7 +166,7 @@ fn collateral_source_from(configured: Option<&str>) -> String {
 /// returns that CRL hex-encoded rather than as binary DER. That path falls back
 /// cleanly, so it is safe either way — but it is a real behavioural difference,
 /// not just a different hostname.
-fn collateral_source() -> String {
+pub(crate) fn collateral_source() -> String {
     collateral_source_from(std::env::var(COLLATERAL_URL_ENV).ok().as_deref())
 }
 

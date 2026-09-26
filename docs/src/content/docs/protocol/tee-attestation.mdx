@@ -40,7 +40,9 @@ report_data[0..32]  = nonce          (32 bytes, random per announce)
 report_data[32..64] = SHA-256(pubkey) or app-hash (32 bytes)
 ```
 
-For fleet admission the second half is `SHA-256` of the joining node's namespace-identity public key (`fleet_join.rs`); for the standalone `/tee/attest` endpoint it is the optional application bytecode hash. Verification (`verify_attestation`) does four things:
+For fleet admission the second half is `SHA-256` of the joining node's namespace-identity public key (`fleet_join.rs`). For the standalone `/tee/attest` endpoint it is the optional application bytecode hash, unless the request sets `bindNodeKey`.
+
+With `bindNodeKey: true`, the second half is `attest_key_binding(app_hash, node_key)`: `SHA-256("calimero.tee-attest.key-binding.v1" || app_hash || node_key)`, with 32 zero bytes when no application was named. The response returns the key as `boundPublicKey`. Without the binding, a quote proves only that some genuine TEE ran this image, and a relay could forward the attest call to that TEE while answering everything else itself. A client that recomputes the binding from `boundPublicKey` knows that anything signed by that key comes from the attested machine, including the deltas and delegated-execution results it signs. The node signs with one identity for every namespace, so that is the key bound. Verification (`verify_attestation`) does four things:
 
 <Steps>
 
@@ -238,7 +240,7 @@ offline.
 `ReadOnlyTee` is one of the group member roles ([identities](/protocol/identities/) covers the keypair model). Its constraints:
 
 - **Directly-rowed, never inherited.** A `ReadOnlyTee` membership is always a stored `(member, group)` row written by admission; it is never conferred by the inherited-membership parent-walk. A replica is a member only of the scopes it was explicitly admitted to.
-- **Read-only.** The role cannot author governance ops or state deltas. The state-delta receive path rejects any delta whose author's materialized role is `ReadOnly` or `ReadOnlyTee`, in every apply path (gossip, parent-fetch, buffered). It exists to decrypt and serve, not to mutate.
+- **Read-only, unless the namespace grants authorship.** The role cannot author governance ops or state deltas. The state-delta receive path rejects any delta whose author's materialized role is `ReadOnly` or `ReadOnlyTee`, in every apply path (gossip, parent-fetch, buffered). It exists to decrypt and serve, not to mutate. The one exception is a TEE whose verified attestation evidence reports an MRTD the namespace's TEE authoring policy names: it may author as the TEE authority, and only from an `#[app::tee]` method its own scheduler fired. See [TEE authorship](/protocol/tee-authorship/).
 - **Attestation-only assignment.** `MemberJoinedViaTeeAttestation` is the only op that mints the role. Manually setting a member to `ReadOnlyTee` via `update_member_role` is rejected — "can only be assigned via TEE attestation admission".
 - **Auto-follow on.** Admission plus the replica's self-signed op leave both auto-follow flags set, so the replica tracks new contexts and subgroups in the scopes it holds.
 

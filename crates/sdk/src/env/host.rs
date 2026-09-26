@@ -79,6 +79,8 @@ struct MockHost {
     /// When `true`, `blob_announce_to_context` reports failure so tests can
     /// exercise the announce-failure branch app code hits under real WASM.
     blob_announce_should_fail: bool,
+    /// Whether the current call is a TEE-triggered run (`env::tee_origin`).
+    tee_trigger: bool,
 }
 
 impl Default for MockHost {
@@ -98,6 +100,7 @@ impl Default for MockHost {
             blob_read_handles: BTreeMap::new(),
             next_fd: 1,
             blob_announce_should_fail: false,
+            tee_trigger: false,
         }
     }
 }
@@ -161,6 +164,15 @@ pub(crate) fn set_context_id(id: [u8; 32]) {
 /// tests can drive the announce-failure branch.
 pub(crate) fn set_blob_announce_should_fail(fail: bool) {
     with(|h| h.blob_announce_should_fail = fail);
+}
+
+/// Marks subsequent calls as TEE-triggered runs (or not).
+pub(crate) fn set_tee_trigger(tee: bool) {
+    with(|h| h.tee_trigger = tee);
+}
+
+pub(crate) fn tee_origin() -> bool {
+    with(|h| h.tee_trigger)
 }
 
 /// Whether the mock host should report a blob announce as failed.

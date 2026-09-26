@@ -50,6 +50,7 @@ the source is short enough to read end to end.
 | [`kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-shared-storage) | `SharedStorage`: group-writable state guarded by a rotatable writer set | [Permissioned storage](/build/permissioned-storage/) |
 | [`kv-store-with-user-and-frozen-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-user-and-frozen-storage) | `UserStorage` (per-owner slots) + `FrozenStorage` (write-once, content-addressed) | [Permissioned storage](/build/permissioned-storage/) |
 | [`components-demo`](https://github.com/calimero-network/core/tree/master/apps/components-demo) | The access-control components: `Ownable`, `AccessControl` (named roles, `grant_role` / `has_role`), `PermissionedStorage` | [Permissioned storage](/build/permissioned-storage/) |
+| [`tee-dice`](https://github.com/calimero-network/core/tree/master/apps/tee-dice) | `TeeOnly` state and an `#[app::tee]` method: a dice roll only an attested TEE can write | [TEE authorship](/protocol/tee-authorship/) |
 | [`private_data`](https://github.com/calimero-network/core/tree/master/apps/private_data) | `#[app::private]` node-local state that is never synced across the mesh | [Permissioned storage](/build/permissioned-storage/) · [State modeling](/build/state-modeling/) |
 
 ### Collections & keys

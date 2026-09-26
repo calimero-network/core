@@ -686,6 +686,16 @@ impl Message for SetTeeAdmissionPolicyRequest {
 }
 
 #[derive(Debug)]
+pub struct SetTeeAuthoringPolicyRequest {
+    pub group_id: ContextGroupId,
+    pub allowed_mrtd: Vec<String>,
+}
+
+impl Message for SetTeeAuthoringPolicyRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
 pub struct AdmitTeeNodeRequest {
     pub group_id: ContextGroupId,
     /// The replica's identity KEY, not its account.
@@ -715,6 +725,22 @@ pub struct AdmitTeeNodeRequest {
     pub rtmr3: String,
     pub tcb_status: String,
     pub is_mock: bool,
+    /// The quote and its collateral, for the `TeeAuthorityEvidence` op that
+    /// lets peers verify the measurements themselves. `Some` on the fleet
+    /// path, which holds the quote; `None` on the subgroup path, which admits
+    /// from a stored record and has no quote to prove anything with.
+    pub evidence: Option<TeeAuthorityEvidencePayload>,
+}
+
+/// What a `TeeAuthorityEvidence` op carries besides the member and its key.
+#[derive(Debug)]
+pub struct TeeAuthorityEvidencePayload {
+    /// The raw TDX quote.
+    pub quote: Vec<u8>,
+    /// JSON of the DCAP collateral, `None` for a mock quote.
+    pub collateral: Option<Vec<u8>>,
+    /// When the collateral was fetched, in seconds since the epoch.
+    pub attested_at: u64,
 }
 
 /// What a node did with a TEE admission request that passed verification.

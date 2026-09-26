@@ -89,6 +89,11 @@ pub struct VMContext<'a> {
     /// for direct/RPC calls. Set by the node, never from guest memory, so the
     /// target can trust it. Exposed to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<[u8; DIGEST_SIZE]>,
+    /// `true` when the node's TEE scheduler fired this run on an attested TEE
+    /// that the namespace authorises to author — never set from guest memory or
+    /// by an RPC caller. Gates the enclave-only host functions (`tee_origin`,
+    /// `tee_random_bytes`), and is what an `#[app::tee]` method checks.
+    pub tee_trigger: bool,
 }
 
 impl<'a> VMContext<'a> {
@@ -119,6 +124,7 @@ impl<'a> VMContext<'a> {
             executor_public_key,
             governance_position: None,
             xcall_origin: None,
+            tee_trigger: false,
         }
     }
 }
