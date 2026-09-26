@@ -196,6 +196,7 @@ export default defineConfig({
                 'protocol/blobs',
                 'protocol/xcall',
                 'protocol/tee-attestation',
+                'protocol/tee-authorship',
                 'protocol/upgrades',
               ],
             },

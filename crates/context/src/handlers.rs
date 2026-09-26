@@ -63,6 +63,7 @@ pub mod set_member_capabilities;
 pub mod set_member_metadata;
 pub mod set_subgroup_visibility;
 pub mod set_tee_admission_policy;
+pub mod set_tee_authoring_policy;
 pub mod store_context_metadata;
 pub mod store_default_capabilities;
 pub mod store_group_context;
@@ -194,6 +195,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetTeeAdmissionPolicy { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetTeeAuthoringPolicy { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AdmitTeeNode { request, outcome } => {

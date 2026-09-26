@@ -109,6 +109,32 @@ impl<'a> NamespaceRepository<'a> {
         }
     }
 
+    /// Whether a state delta **authored by** `identity` must be dropped as a
+    /// read-only member's write — the receive-side gate.
+    ///
+    /// [`is_read_only_for_context`](Self::is_read_only_for_context), except for
+    /// an attested TEE authority. That member is `ReadOnlyTee`, and its node only
+    /// signs a delta for a TEE-triggered run (the local execute path discards
+    /// every other write it makes), so what reaches a peer from it is TEE
+    /// authorship. Whether that write may touch `TeeOnly` state is decided
+    /// separately, at merge, by the signer resolving to `TEE_AUTHORITY`.
+    ///
+    /// The local execute path keeps using `is_read_only_for_context`: there the
+    /// question is whether THIS run may write, and the answer for a TEE is "only
+    /// when triggered", which it checks itself.
+    pub fn rejects_state_writes_from(
+        &self,
+        context_id: &ContextId,
+        identity: &PublicKey,
+    ) -> EyreResult<bool> {
+        if !self.is_read_only_for_context(context_id, identity)? {
+            return Ok(false);
+        }
+        Ok(!crate::is_tee_authority_for_context(
+            self.store, context_id, identity,
+        )?)
+    }
+
     /// Returns `true` if `executor` is currently authorized to author state
     /// mutations on `context_id` — direct admin/member or Open-subgroup
     /// inheritance. See original `is_authorized_for_context_state_op` doc

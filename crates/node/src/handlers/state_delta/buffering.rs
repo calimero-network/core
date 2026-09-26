@@ -481,6 +481,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
             }
             let mut handle = input.node_clients.context.datastore_handle();
             match crate::sync::snapshot::persist_buffered_snapshot_entity(
+                store,
                 &mut handle,
                 *context_id,
                 entity_absorb.id,
@@ -494,7 +495,10 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
                 // SharedMember is re-applied via the snapshot pass-2 re-drive.
                 // Delete the orphaned buffer record so it stops blocking the
                 // drain early-exit and wasting a runtime env per apply.
-                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere) => {
+                Ok(
+                    crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere
+                    | crate::sync::snapshot::SnapshotEntityDrainOutcome::Refused,
+                ) => {
                     repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 }
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Pending) => {

@@ -162,6 +162,44 @@ where
         Self::from_inner(inner, writers, frozen)
     }
 
+    /// A handle to a cell that stores **nothing** yet: no wrapper entity and no
+    /// value entry. [`materialize`](Self::materialize) creates both on the first
+    /// authorised write.
+    ///
+    /// This is for a writer set the creator is not in, such as `TeeOnly`'s
+    /// `{TEE_AUTHORITY}`. An eager genesis there would be signed by the creator,
+    /// and every peer would drop it because the creator is not a writer. Deferring
+    /// genesis to the first write means a writer signs it, so peers accept it.
+    /// Only the id rides root state (an `Element` serialises to its id alone).
+    pub(crate) fn new_unmaterialized(frozen: bool) -> Self {
+        let mut storage = Element::new(None);
+        storage.metadata.crdt_type = Some(CrdtType::SharedStorage);
+        Self {
+            inner: Collection {
+                children_ids: core::cell::RefCell::new(None),
+                storage,
+                _priv: core::marker::PhantomData,
+            },
+            frozen,
+            value: core::cell::RefCell::new(None),
+            _adaptor: core::marker::PhantomData,
+        }
+    }
+
+    /// Create the wrapper entity at this handle's id, stamped `Shared{writers}`,
+    /// and its value entry with `T::default()`. The caller must have checked that
+    /// the executor is in `writers`, so the genesis it emits is signed by a writer.
+    pub(crate) fn materialize(&mut self, writers: BTreeSet<AccountId>) {
+        let field_name = self.inner.storage.metadata.field_name.clone();
+        let inner = Collection::new_shared(
+            Some(self.inner.id()),
+            field_name.as_deref(),
+            CrdtType::SharedStorage,
+            writers.clone(),
+        );
+        *self = Self::from_inner(inner, writers, self.frozen);
+    }
+
     /// Wrap a freshly-registered, `Shared`-stamped wrapper collection and
     /// materialise its single value entry with `T::default()`.
     ///
@@ -213,6 +251,17 @@ where
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
         let new_id = compute_collection_id(None, field_name);
         if self.inner.id() == new_id {
+            return;
+        }
+        // A cell that stores nothing yet (see `new_unmaterialized`) has no entity
+        // to relocate: only the handle moves, and genesis later lands at the new id.
+        if !matches!(
+            <Index<MainStorage>>::get_metadata(self.inner.id()),
+            Ok(Some(_))
+        ) {
+            self.inner
+                .storage
+                .reassign_id_and_field_name(new_id, field_name);
             return;
         }
 
@@ -287,6 +336,18 @@ where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
     S: StorageAdaptor,
 {
+    /// Whether the wrapper entity exists in this node's storage. Always true for
+    /// an eagerly created cell; false for an unmaterialized one until its first
+    /// write, and on a peer until that write syncs.
+    ///
+    /// # Errors
+    /// Returns any underlying index read error.
+    pub(crate) fn is_materialized(&self) -> Result<bool, StoreError> {
+        Ok(<Index<S>>::get_metadata(self.inner.id())
+            .map_err(StoreError::StorageError)?
+            .is_some())
+    }
+
     /// The id of the value entry under this wrapper.
     fn value_id(&self) -> Id {
         compute_id(self.inner.id(), VALUE_KEY)

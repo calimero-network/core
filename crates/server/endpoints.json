@@ -3,6 +3,7 @@
   "DELETE /admin-api/blobs/{blob_id}",
   "DELETE /admin-api/contexts/{context_id}",
   "DELETE /admin-api/groups/{group_id}",
+  "DELETE /admin-api/groups/{group_id}/settings/tee-authoring-policy",
   "DELETE /admin-api/namespaces/{namespace_id}",
   "GET /admin-api/account/applications",
   "GET /admin-api/account/devices",
@@ -100,5 +101,6 @@
   "PUT /admin-api/groups/{group_id}/metadata",
   "PUT /admin-api/groups/{group_id}/settings/default-capabilities",
   "PUT /admin-api/groups/{group_id}/settings/subgroup-visibility",
-  "PUT /admin-api/groups/{group_id}/settings/tee-admission-policy"
+  "PUT /admin-api/groups/{group_id}/settings/tee-admission-policy",
+  "PUT /admin-api/groups/{group_id}/settings/tee-authoring-policy"
 ]

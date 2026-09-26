@@ -27,6 +27,8 @@ base64.workspace = true
 # Reads `tcbEvaluationDataNumber` out of fetched collateral so a TCB verdict
 # records which baseline produced it. See `verify::tcb_evaluation_data_number_of`.
 serde_json.workspace = true
+# `attest_key_binding`, shared by the attest endpoint and the clients that check it.
+sha2.workspace = true
 
 # Quote verification dependencies (cross-platform)
 dcap-qvl.workspace = true

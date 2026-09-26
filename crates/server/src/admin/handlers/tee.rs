@@ -1,7 +1,9 @@
 use axum::routing::{get, post};
 use axum::Router;
 
+mod announce;
 mod attest;
+pub mod evidence_retry;
 pub mod fleet_join;
 mod info;
 

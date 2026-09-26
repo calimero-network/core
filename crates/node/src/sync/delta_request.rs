@@ -215,7 +215,7 @@ fn verify_fetched_parent(
     // check on the catchup path even though gossip rejects it.
     // Mirror the gate `apply_authorized_state_delta` uses.
     if NamespaceRepository::new(datastore)
-        .is_read_only_for_context(context_id, &fetched.author_id)
+        .rejects_state_writes_from(context_id, &fetched.author_id)
         .unwrap_or_else(|err| {
             warn!(%context_id, author = %fetched.author_id, %err, "ReadOnly lookup failed; failing closed");
             true
