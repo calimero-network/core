@@ -1,0 +1,218 @@
+---
+title: TEE Authorship
+description: How an attested TEE node writes state no member can forge — TEE-only methods, TEE-only storage, and the policy that grants the authority.
+sidebar:
+  order: 15
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Prototype">
+This chapter describes a first cut. What it leaves out, and what that costs,
+is listed under [Limits of this prototype](#limits-of-this-prototype).
+</Aside>
+
+## Why a TEE author
+
+A [TEE fleet node](/protocol/tee-attestation/) is admitted by attestation as a
+`ReadOnlyTee` member. On its own that role only replicates. Some apps need the
+opposite: a participant **nobody in the group controls** that can draw a
+random number no player can bias, keep a secret no player can read, and record
+a verdict every player can check came from the enclave's code. A card game's
+deal is the motivating case.
+
+TEE authorship lets such a node write, but only three things together make a
+write count:
+
+1. The namespace's **TEE authoring policy** names the MRTD in that TEE's
+   **attestation evidence**, which every node verifies for itself.
+2. The write comes from an **`#[app::tee]` method** that the node's TEE
+   scheduler fired, running as the **TEE authority** principal.
+3. The data it writes lives in **`TeeOnly<T>`** storage, whose only writer is
+   the TEE authority. Every peer checks that writer set at merge.
+
+The third is the security boundary. Peers never re-run app code, so they
+cannot tell which method produced a delta. What they check is who signed it,
+and that check needs no trust in the author's node.
+
+## The TEE authority
+
+`AccountId::TEE_AUTHORITY` is a reserved account: the domain hash of
+`calimero.tee-authority.v1`. No real account is a hash under that domain, and
+no key signs as it. A node treats a signing key as speaking for it only after
+it checks that the key's account is a TEE authority:
+
+- a direct `ReadOnlyTee` row at the namespace root, which only attestation admission mints;
+- still a member of the context's group;
+- verified attestation evidence for the account whose MRTD is in the root's
+  latest `TeeAuthoringPolicySet`;
+- and the signing key is the one key that evidence's quote binds.
+
+That check is `calimero_governance_store::tee_authority_key`, and
+`writer_account` applies it to a signer. It runs in two places:
+
+| Where | What it decides |
+| --- | --- |
+| Local execute (`internal_execute`) | Whether a TEE-triggered run may go ahead. If so, the principal becomes `(TEE_AUTHORITY, this node's key)` and the read-only discard is lifted, for this run only. |
+| Receive path | `rejects_state_writes_from` lets a TEE authority's delta through the read-only gate. The signer resolver maps its key to `TEE_AUTHORITY`, so its `TeeOnly` writes match the writer set at merge. |
+
+Every other write a `ReadOnlyTee` node attempts, such as an ordinary JSON-RPC
+call on it, is still discarded locally.
+
+## Granting the authority
+
+The policy is a governance op, set by a namespace-root admin on the root, and
+the last one wins:
+
+```bash
+curl -X PUT "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy" \
+  -d '{ "allowedMrtd": ["<approved-td-measurement>"] }'
+```
+
+An empty list turns TEE authorship off. There is no default: a namespace with no
+policy has no TEE authority, whatever TEEs it admitted.
+
+## Attestation evidence
+
+An admission op is not enough to make a TEE an authority. Any member may sign
+one, and it carries only a hash of the quote and the signer's word for the
+measurements, so no other node can check them. A member could forge an
+admission for an account it controls, claiming exactly the MRTD the policy
+names.
+
+So authority needs a second op, `TeeAuthorityEvidence`, which carries the proof:
+
+| Field | What it is |
+| --- | --- |
+| `quote` | The raw TDX quote. |
+| `collateral` | The Intel-signed DCAP collateral the quote was appraised against. |
+| `attested_at` | The moment the collateral is judged at. |
+| `attested_key` | The key the quote binds: SHA-256 of it is in report data bytes 32..64. |
+
+The node that admits the TEE publishes it right after the admission. Every node
+verifies it **offline** when it applies the op: the quote's signature chain
+against the collateral at `attested_at`, the key binding, and the measurements
+and TCB status against the admission policy. The check needs no network and no
+clock, so a node that joins years later and replays the log reaches the same
+verdict. An op that fails is never applied.
+
+The reader verifies again when it looks the evidence up, and it ignores
+evidence whose `attested_key` does not speak for the account it names. Copying
+one TEE's evidence and relabelling it for another account does not work, and
+neither does evidence whose quote binds a different key.
+
+Only the TEE holds its quote, so only the TEE can put right evidence that
+never landed: a publish that failed right after admission, or an admission by a
+build that published none. A TEE therefore watches for it. While TEE authorship
+is on in a namespace it was admitted to, and no verified evidence for it is on
+the log, it announces itself again with a fresh quote, and an admitter that
+hears an already-admitted TEE with no evidence publishes it. The first
+re-announce waits a minute, since right after an admission the admitter's own
+publish is usually still on its way, and the wait doubles after each one up to
+half an hour. It stops once the evidence is recorded. Whether the policy names
+the TEE's MRTD plays no part: the evidence is owed either way.
+
+## Joining from a snapshot
+
+A node that joins a context from a snapshot writes the leaves straight to disk.
+A snapshot leaf is state, not an op, so there is no causal cut to ask whether
+its signer was a writer then. The snapshot path therefore checks only that each
+leaf's signature verifies, and the writer check resumes on the entity's next
+write.
+
+`TeeOnly` state gets the writer check anyway. A leaf whose writer set holds the
+TEE authority, whether the cell itself or an entry under it, is stored only when
+its signer resolves to the TEE authority by the same rule the merge path uses.
+Otherwise a member serving the snapshot could sign a value with its own key and
+label it with the TEE-only writer set, and the joiner would store and read it. A
+refused leaf is dropped like a leaf with a bad signature, and repair sync, which
+checks writers, fetches the honest copy.
+
+## Writing an app
+
+```rust
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct TeeDice {
+    results: TeeOnly<UnorderedMap<String, LwwRegister<u32>>>,
+}
+
+#[app::logic]
+impl TeeDice {
+    #[app::init]
+    pub fn init() -> TeeDice {
+        TeeDice { results: TeeOnly::new_tee_only() }
+    }
+
+    // Any member: asks for a roll. Writes nothing the game trusts.
+    pub fn roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
+        app::emit!((Event::RollRequested { roll_id: &roll_id, sides }, "tee:resolve_roll"));
+        Ok(())
+    }
+
+    // Only the elected TEE authority runs this.
+    #[app::tee]
+    pub fn resolve_roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
+        let mut bytes = [0u8; 4];
+        env::tee_random_bytes(&mut bytes);
+        // ...insert into self.results
+        Ok(())
+    }
+}
+```
+
+- **`#[app::tee]`** inserts a guard that panics unless `env::tee_origin()` is
+  true. That flag is set by the node only for a TEE-triggered run on a TEE
+  authority, so a JSON-RPC call or a member's handler run cannot enter the body.
+- **`env::tee_random_bytes`** traps outside a TEE-triggered run. Use it instead of
+  `env::random_bytes`, which on a member's node returns whatever that member
+  chooses.
+- **`TeeOnly<T>`** is `PermissionedStorage<T, TeeAuthorityAcl>` with the frozen
+  writer set `{TEE_AUTHORITY}`. It also guards in-place edits through
+  `get_mut`, so a member's forged write fails on their own node, not only at
+  their peers.
+- **A `TeeOnly` cell stores nothing until the TEE's first write.** `init` runs
+  as the context creator, who is not a writer. A cell created there would be
+  signed by the creator, and every peer would drop it, so its initial state
+  would never leave the creator's node. Instead the cell is created by the TEE
+  authority's first write, which peers accept. Until that write reaches a
+  node, read it with `try_get`, which returns `None`. `get` returns an error
+  until then.
+- **`TestHost::call_as_tee`** runs a closure as the scheduler would, for native
+  tests.
+
+The [`tee-dice`](https://github.com/calimero-network/core/tree/master/apps/tee-dice)
+example and its `tee-dice-roll.yml` merobox scenario exercise all of it.
+
+## Firing: the `tee:` handler
+
+A TEE trigger is an event handler whose name starts with `tee:`. Handlers only
+run on receivers, never on the delta's author. For a `tee:` handler each
+receiver asks one question, in `events.rs`:
+
+<Steps>
+
+1. Is this node a TEE authority for the context? If not, skip. A skip counts as
+   handled, so nothing is replayed on restart.
+
+2. Rank every TEE authority by `H(delta_id ‖ account)`. The lowest one fires.
+   The ranking depends on the triggering delta, not on anything a TEE produces,
+   so no TEE can grind an outcome by choosing whether to fire.
+
+3. The elected TEE calls `ContextClient::execute_tee_trigger`, which runs the
+   method with `tee_trigger: true` after the authority check.
+
+</Steps>
+
+## Limits of this prototype
+
+| Limit | Consequence | Planned fix |
+| --- | --- | --- |
+| The authority is evaluated on **current** governance state, not at the delta's causal cut. | Near a policy change or a TEE removal, two peers can briefly disagree about one TEE write. | Resolve the policy and admission record at the cut, as `device_account_at_cut` does for bindings. |
+| Receivers cannot tell a TEE-triggered delta from any other delta by a TEE authority. | The guarantee rests on the attested `merod` refusing to sign anything else, which it does. | A `calimero/tee/1` envelope domain that commits to the trigger. |
+| **No failover.** If the elected TEE is down, its trigger waits; the events stay in its DB for replay. | A game stalls while its TEE is offline. | Rank-*k* fallback after `k × grace`. |
+| Triggers are **event-driven only**: no cron and no governance-event triggers. | Timeouts must be requested by a member. | A scheduler actor fed by ABI-declared cron specs. |
+| No sealing to member keys and no TEE-only secrets yet. | Only public randomness, not hidden cards. | `tee_seal_to_member`, a namespace TEE vault key, and `TeeSecret<T>`. |
+| Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
+| Two TEE authorities could create the same `TeeOnly` cell concurrently. | When `T` is a collection, each mints its own inner collection id and one of them is lost at merge. With one TEE per namespace, as in the demo, this cannot happen. | Derive the inner collection's id from the cell's id. |
+| `attested_at` is chosen by whoever assembles the evidence. | It must fall inside the collateral's validity window, but within that window the TCB status is as of that moment, not today. A platform that has since fallen out of date keeps its authority. | Re-appraise evidence against fresh collateral on a schedule, and expire authority that is not refreshed. |
+| `tee_authority_key` scans the root's op log and re-verifies the evidence it finds. | It costs one scan and one quote verification per resolved TEE signer. A point-lookup pre-filter keeps ordinary members out of it. | Materialise the policy and cache the verdict per evidence op. |

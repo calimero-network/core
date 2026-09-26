@@ -696,6 +696,43 @@ pub enum GroupOp {
         /// signer is `device` itself, which a paired device holding no root is.
         root_proof: Option<Box<SignedDeviceLabel>>,
     },
+    /// TEE authoring policy: which admitted TEE nodes may author state as the
+    /// TEE authority (`AccountId::TEE_AUTHORITY`) — the only writer of an app's
+    /// `TeeOnly` storage. A TEE qualifies when the MRTD in its verified
+    /// [`GroupOp::TeeAuthorityEvidence`] is in `allowed_mrtd`.
+    ///
+    /// Namespace-root only and admin-only, like [`GroupOp::TeeAdmissionPolicySet`];
+    /// the last op on the root's log wins. An empty `allowed_mrtd` disables TEE
+    /// authorship (fail closed) rather than allowing every admitted TEE.
+    TeeAuthoringPolicySet { allowed_mrtd: Vec<String> },
+    /// Attestation evidence that makes an admitted TEE eligible to be a TEE
+    /// authority: its quote, the Intel-signed collateral it was appraised
+    /// against, and the moment of that appraisal.
+    ///
+    /// `MemberJoinedViaTeeAttestation` carries only the admitter's word for the
+    /// measurements. This op carries the proof, and every node verifies it
+    /// offline at apply: the quote's signature chain against `collateral` at
+    /// `attested_at`, its report data binding `attested_key`, and its
+    /// measurements and TCB status against the admission policy. An op that
+    /// fails is never applied, so the log holds only verified evidence.
+    ///
+    /// Namespace-root only, published by a TEE voucher: an admin or an
+    /// already-admitted TEE, the same rule as the admission itself.
+    TeeAuthorityEvidence {
+        /// The admitted TEE's account.
+        member: AccountId,
+        /// The key the quote binds, and the only key that may act as the TEE
+        /// authority for `member`.
+        attested_key: PublicKey,
+        /// The raw TDX quote.
+        quote: Vec<u8>,
+        /// JSON of the DCAP collateral the quote was appraised against.
+        /// `None` for a mock quote, which only a mock build accepts.
+        collateral: Option<Vec<u8>>,
+        /// When the collateral is judged, in seconds since the epoch. It must
+        /// fall inside the collateral's validity window.
+        attested_at: u64,
+    },
 }
 
 impl GroupOp {
@@ -741,6 +778,8 @@ impl GroupOp {
             GroupOp::AccountNamespaceLeft { .. } => "account_namespace_left",
             GroupOp::AccountDeviceDescoped { .. } => "account_device_descoped",
             GroupOp::AccountDeviceLabelled { .. } => "account_device_labelled",
+            GroupOp::TeeAuthoringPolicySet { .. } => "tee_authoring_policy_set",
+            GroupOp::TeeAuthorityEvidence { .. } => "tee_authority_evidence",
         }
     }
 }
@@ -1945,6 +1984,11 @@ pub mod bounds {
     pub const MAX_TEE_ALLOWED_ENTRIES: usize = 1_024;
     /// Max byte length of each string entry in a TEE allow-list.
     pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
+    /// A TDX quote with its embedded PCK chain is about 5 KiB.
+    pub const MAX_TEE_QUOTE_BYTES: usize = 16 * 1024;
+    /// DCAP collateral as JSON (CRLs, TCB info, QE identity and their chains)
+    /// is about 16 KiB.
+    pub const MAX_TEE_COLLATERAL_BYTES: usize = 64 * 1024;
     /// Max root-key handoffs in one device-link credential chain.
     ///
     /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
@@ -2233,6 +2277,30 @@ impl GroupOp {
                     for s in list {
                         check_bound(name, s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
                     }
+                }
+                Ok(())
+            }
+            Self::TeeAuthoringPolicySet { allowed_mrtd } => {
+                check_bound(
+                    "allowed_mrtd",
+                    allowed_mrtd.len(),
+                    bounds::MAX_TEE_ALLOWED_ENTRIES,
+                )?;
+                for s in allowed_mrtd {
+                    check_bound("allowed_mrtd", s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
+                }
+                Ok(())
+            }
+            Self::TeeAuthorityEvidence {
+                quote, collateral, ..
+            } => {
+                check_bound("quote", quote.len(), bounds::MAX_TEE_QUOTE_BYTES)?;
+                if let Some(collateral) = collateral {
+                    check_bound(
+                        "collateral",
+                        collateral.len(),
+                        bounds::MAX_TEE_COLLATERAL_BYTES,
+                    )?;
                 }
                 Ok(())
             }

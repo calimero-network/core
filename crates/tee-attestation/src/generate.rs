@@ -190,6 +190,29 @@ pub fn create_mock_quote(report_data: &[u8; 64]) -> Quote {
     }
 }
 
+/// Domain separator for [`attest_key_binding`].
+pub const ATTEST_KEY_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.key-binding.v1";
+
+/// The value the attest endpoint puts in report data bytes `32..64` when a
+/// client asks it to bind the node's key: SHA-256 over the domain, the app's
+/// bytecode hash (32 zero bytes when none was requested), and the key.
+///
+/// Binding the key is what lets a client tie the quote to the node it talks to.
+/// Without it the quote proves some genuine TEE ran this image, and a relay
+/// could forward the attest call to that TEE while answering everything else
+/// itself. With it, anything later signed by `public_key` traces back to the
+/// attested machine. Client and node must compute this identically, so both
+/// use this function.
+#[must_use]
+pub fn attest_key_binding(app_hash: Option<&[u8; 32]>, public_key: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(ATTEST_KEY_BINDING_DOMAIN);
+    hasher.update(app_hash.unwrap_or(&[0u8; 32]));
+    hasher.update(public_key);
+    hasher.finalize().into()
+}
+
 /// Build report data from nonce and optional application hash.
 ///
 /// # Arguments
@@ -205,4 +228,35 @@ pub fn build_report_data(nonce: &[u8; 32], app_hash: Option<&[u8; 32]>) -> [u8; 
         report_data[32..].copy_from_slice(hash);
     }
     report_data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{attest_key_binding, build_report_data};
+
+    #[test]
+    fn the_key_binding_commits_to_the_key_and_the_app() {
+        let key = [0x11; 32];
+        let app = [0x22; 32];
+        let bound = attest_key_binding(Some(&app), &key);
+
+        assert_ne!(
+            bound,
+            attest_key_binding(Some(&app), &[0x12; 32]),
+            "another key"
+        );
+        assert_ne!(
+            bound,
+            attest_key_binding(Some(&[0x23; 32]), &key),
+            "another app"
+        );
+        assert_ne!(bound, attest_key_binding(None, &key), "no app at all");
+        assert_ne!(
+            bound, app,
+            "never the bare app hash an unbound quote carries"
+        );
+
+        let report_data = build_report_data(&[0x33; 32], Some(&bound));
+        assert_eq!(&report_data[32..], &bound);
+    }
 }

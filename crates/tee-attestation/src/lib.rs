@@ -53,13 +53,19 @@
 //! never be trusted in production environments.
 
 mod error;
+mod evidence;
 mod generate;
 mod info;
 mod policy;
 mod verify;
 
+pub use dcap_qvl::QuoteCollateralV3;
 pub use error::AttestationError;
-pub use generate::{build_report_data, generate_attestation, AttestationResult};
+pub use evidence::{fetch_collateral, verify_evidence, EvidenceVerdict};
+pub use generate::{
+    attest_key_binding, build_report_data, generate_attestation, AttestationResult,
+    ATTEST_KEY_BINDING_DOMAIN,
+};
 #[cfg(feature = "mock-attestation")]
 pub use generate::{generate_mock_attestation, is_mock_quote};
 pub use info::{get_tee_info, TeeInfo};

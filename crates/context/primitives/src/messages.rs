@@ -24,10 +24,11 @@ use crate::group::{
     RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -122,6 +123,13 @@ pub struct ExecuteRequest {
     /// proves to peers who never saw the HTTP request that the author consented.
     /// A read has no peer to convince, because it publishes nothing.
     pub read_as: Option<calimero_account::AccountId>,
+    /// `true` when the node's TEE scheduler fires this run as the TEE authority.
+    ///
+    /// Set only by `ContextClient::execute_tee_trigger`, never from an RPC body.
+    /// It is not trusted either: the handler refuses it unless the executor is
+    /// this node's key and that key is an attested TEE authority for the
+    /// context, and then runs the method as `AccountId::TEE_AUTHORITY`.
+    pub tee_trigger: bool,
 }
 
 #[derive(Debug)]
@@ -567,6 +575,10 @@ pub enum ContextMessage {
     SetTeeAdmissionPolicy {
         request: SetTeeAdmissionPolicyRequest,
         outcome: oneshot::Sender<<SetTeeAdmissionPolicyRequest as Message>::Result>,
+    },
+    SetTeeAuthoringPolicy {
+        request: SetTeeAuthoringPolicyRequest,
+        outcome: oneshot::Sender<<SetTeeAuthoringPolicyRequest as Message>::Result>,
     },
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,

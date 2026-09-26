@@ -44,11 +44,11 @@ use crate::group::{
     RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -1571,6 +1571,53 @@ impl ContextClient {
         self.registry.get_context_members(context_id, owned)
     }
 
+    /// Fire an `#[app::tee]` method as the TEE authority.
+    ///
+    /// Only the node's TEE trigger path calls this, with the node's own key as
+    /// `executor`. The context handler re-checks that the key is an attested TEE
+    /// authority for the context before it runs anything, so a call from a node
+    /// that is not one fails rather than writing as a member.
+    pub async fn execute_tee_trigger(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        method: String,
+        payload: Vec<u8>,
+    ) -> Result<ExecuteResponse, ExecuteError> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::Execute {
+                request: ExecuteRequest {
+                    context: *context_id,
+                    executor: *executor,
+                    method,
+                    payload,
+                    atomic: None,
+                    xcall_origin: None,
+                    xcall_depth: 0,
+                    delegation: None,
+                    read_as: None,
+                    tee_trigger: true,
+                },
+                outcome: sender,
+            })
+            .await
+            .map_err(|err| {
+                tracing::error!(%err, "context manager mailbox closed during TEE trigger");
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Ipc,
+                }
+            })?;
+
+        receiver.await.map_err(|err| {
+            tracing::error!(%err, "context manager dropped the TEE trigger response channel");
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Ipc,
+            }
+        })?
+    }
+
     /// Sends a request to execute a method within a context.
     ///
     /// This is the primary way to interact with the application running inside a context.
@@ -1630,6 +1677,7 @@ impl ContextClient {
                     xcall_depth,
                     delegation,
                     read_as: None,
+                    tee_trigger: false,
                 },
                 outcome: sender,
             })
@@ -1690,6 +1738,7 @@ impl ContextClient {
                     xcall_depth: 0,
                     delegation: None,
                     read_as: Some(account),
+                    tee_trigger: false,
                 },
                 outcome: sender,
             })
@@ -2282,6 +2331,12 @@ impl ContextClient {
         set_tee_admission_policy,
         SetTeeAdmissionPolicy,
         SetTeeAdmissionPolicyRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_tee_authoring_policy,
+        SetTeeAuthoringPolicy,
+        SetTeeAuthoringPolicyRequest,
         eyre::Result<()>
     );
     forward_to_actor!(

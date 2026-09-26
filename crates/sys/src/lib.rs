@@ -63,6 +63,10 @@ wasm_imports! {
         fn private_storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>) -> Bool;
         // --
         fn random_bytes(buf: Ref<BufferMut<'_>>);
+        // Enclave-only: true in a run the node's TEE scheduler fired as the TEE
+        // authority, and the randomness only such a run may draw. See `env::tee`.
+        fn tee_origin() -> Bool;
+        fn tee_random_bytes(buf: Ref<BufferMut<'_>>);
         fn time_now(buf: Ref<BufferMut<'_>>);
         // --
         // Crypto functions

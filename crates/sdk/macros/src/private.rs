@@ -42,7 +42,7 @@ use sha2::{Digest, Sha256};
 ///   multi-writer conflict resolution; in single-writer private
 ///   storage their merge semantics are unused complexity.
 /// - Access-control collections (`SharedStorage`, `PermissionedStorage`,
-///   `Ownable`, `AccessControl`, `UserStorage`, `FrozenStorage`) —
+///   `Ownable`, `TeeOnly`, `AccessControl`, `UserStorage`, `FrozenStorage`) —
 ///   cross-writer mutability, per-user separation, and immutability
 ///   all assume the synced tree.
 /// - Authored collections (`AuthoredMap`, `AuthoredVector`) —
@@ -138,6 +138,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
     (
         "Ownable",
         "is single-owner shared storage (a SharedStorage alias); its data syncs, so it cannot live in a private namespace.",
+    ),
+    (
+        "TeeOnly",
+        "is TEE-authority shared storage (a PermissionedStorage alias); its data syncs, so it cannot live in a private namespace.",
     ),
     (
         "AccessControl",
@@ -670,6 +674,7 @@ mod tests {
         "SharedStorage<String>",
         "PermissionedStorage<String>",
         "Ownable<String>",
+        "TeeOnly<String>",
         "AccessControl",
         "UserStorage<String>",
         "FrozenStorage<String>",

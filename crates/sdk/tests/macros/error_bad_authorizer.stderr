@@ -9,7 +9,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
    |
  6 | struct NotAnAuthorizer;
    | ^^^^^^^^^^^^^^^^^^^^^^
-   = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+   = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
   --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
    |
@@ -18,6 +18,9 @@ help: the following other types implement trait `Authorizer`
 ...
    | impl Authorizer for OwnerAcl {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+   | impl Authorizer for TeeAuthorityAcl {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
    | impl Authorizer for ProtocolAuthorizer {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -41,7 +44,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -50,6 +53,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -67,7 +73,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -76,6 +82,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -100,7 +109,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -109,6 +118,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -134,7 +146,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -143,6 +155,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -167,7 +182,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -176,6 +191,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -200,7 +218,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -209,6 +227,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
@@ -233,7 +254,7 @@ help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
   |
 6 | struct NotAnAuthorizer;
   | ^^^^^^^^^^^^^^^^^^^^^^
-  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), `ProtocolAuthorizer` (per-op `OpMask`), or `TeeAuthorityAcl` (TEE authority only, via `TeeOnly<T>`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
 help: the following other types implement trait `Authorizer`
  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
   |
@@ -242,6 +263,9 @@ help: the following other types implement trait `Authorizer`
 ...
   | impl Authorizer for OwnerAcl {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerAcl`
+...
+  | impl Authorizer for TeeAuthorityAcl {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TeeAuthorityAcl`
 ...
   | impl Authorizer for ProtocolAuthorizer {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ProtocolAuthorizer`
