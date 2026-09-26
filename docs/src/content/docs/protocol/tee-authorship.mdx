@@ -104,6 +104,22 @@ neither does evidence whose quote binds a different key.
 A TEE admitted by a build that published no evidence is not an authority until
 it announces itself again: the admitting node then publishes evidence for it.
 
+## Joining from a snapshot
+
+A node that joins a context from a snapshot writes the leaves straight to disk.
+A snapshot leaf is state, not an op, so there is no causal cut to ask whether
+its signer was a writer then. The snapshot path therefore checks only that each
+leaf's signature verifies, and the writer check resumes on the entity's next
+write.
+
+`TeeOnly` state gets the writer check anyway. A leaf whose writer set holds the
+TEE authority, whether the cell itself or an entry under it, is stored only when
+its signer resolves to the TEE authority by the same rule the merge path uses.
+Otherwise a member serving the snapshot could sign a value with its own key and
+label it with the TEE-only writer set, and the joiner would store and read it. A
+refused leaf is dropped like a leaf with a bad signature, and repair sync, which
+checks writers, fetches the honest copy.
+
 ## Writing an app
 
 ```rust

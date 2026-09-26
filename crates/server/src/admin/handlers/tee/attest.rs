@@ -5,7 +5,9 @@ use axum::Extension;
 use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::generate_mock_attestation;
-use calimero_tee_attestation::{build_report_data, generate_attestation, AttestationError};
+use calimero_tee_attestation::{
+    attest_key_binding, build_report_data, generate_attestation, AttestationError,
+};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
@@ -75,8 +77,39 @@ pub async fn handler(
         None
     };
 
-    // 3. Build report_data using the tee-attestation crate
-    let report_data = build_report_data(&nonce_array, app_hash.as_ref());
+    // 3. Build report_data using the tee-attestation crate. With `bindNodeKey`
+    // the second half also commits to this node's signing key, so a client can
+    // tie the quote to the node it is talking to rather than to some TEE a relay
+    // forwarded the call to. The node signs with one identity for every
+    // namespace, so that is the key bound.
+    let bound_public_key = if req.bind_node_key {
+        match calimero_governance_store::NamespaceRepository::new(&state.store).node_identity() {
+            Ok(Some(identity)) => Some(identity.public_key),
+            Ok(None) => {
+                return ApiError {
+                    status_code: StatusCode::CONFLICT,
+                    message: "This node holds no signing identity yet, so there is no key to \
+                              bind into the attestation"
+                        .to_owned(),
+                }
+                .into_response();
+            }
+            Err(err) => {
+                error!(error=?err, "Failed to read the node identity");
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to read the node identity".to_owned(),
+                }
+                .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    let binding = bound_public_key
+        .as_ref()
+        .map(|key| attest_key_binding(app_hash.as_ref(), key));
+    let report_data = build_report_data(&nonce_array, binding.as_ref().or(app_hash.as_ref()));
 
     // 4. Generate attestation using the tee-attestation crate.
     //
@@ -147,7 +180,7 @@ pub async fn handler(
 
     info!("TEE attestation generated successfully");
     ApiResponse {
-        payload: TeeAttestResponse::new(result.quote_b64, result.quote),
+        payload: TeeAttestResponse::new(result.quote_b64, result.quote, bound_public_key),
     }
     .into_response()
 }
