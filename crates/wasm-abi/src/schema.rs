@@ -197,6 +197,13 @@ pub struct Method {
     /// [`XCallCallers::AnyInNamespace`] so they keep their prior behaviour.
     #[serde(default, skip_serializing_if = "XCallCallers::is_any_in_namespace")]
     pub xcall_callers: XCallCallers,
+    /// Period, in seconds, of a timer-driven TEE trigger
+    /// (`#[app::tee(every = "..")]`): the node's TEE scheduler fires the method
+    /// once per period, on one TEE authority. `None` for every other method,
+    /// event-driven TEE triggers included, and on manifests compiled before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tee_every_secs: Option<u64>,
 }
 
 /// `skip_serializing_if` predicate for a defaulted `bool` field. serde passes
@@ -824,6 +831,7 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
         });
 
         // Serialize and deserialize
@@ -854,6 +862,7 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
@@ -874,6 +883,7 @@ mod tests {
             intent: MethodIntent::ReadOnly,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("read_only"), "expected 'read_only' in {json}");
@@ -890,6 +900,7 @@ mod tests {
             intent: MethodIntent::Mutating,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
         };
         let json_mut = serde_json::to_string(&m_mut).unwrap();
         assert!(
@@ -909,6 +920,7 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
         };
         let json2 = serde_json::to_string(&m2).unwrap();
         assert!(
@@ -934,6 +946,7 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(
@@ -945,6 +958,7 @@ mod tests {
         let m2 = Method {
             xcall_callable: true,
             xcall_callers: Default::default(),
+            tee_every_secs: None,
             intent: MethodIntent::Mutating,
             ..m.clone()
         };

@@ -52,6 +52,7 @@ mod rekey;
 mod reserved;
 mod sanitizer;
 mod state;
+mod tee;
 
 // todo! use referenced lifetimes everywhere
 
@@ -277,18 +278,19 @@ pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// `app::emit!((MyEvent::RollRequested { .. }, "tee:resolve_roll"))`. Receivers
 /// that are not the elected TEE authority skip `tee:` handlers.
 ///
+/// Or on a timer, with `#[app::tee(every = "30s")]` (units `s`, `m`, `h`, `d`).
+/// The period is recorded in the ABI, and the node's TEE scheduler fires the
+/// method once per period, counted from the Unix epoch, on one TEE authority.
+/// A timer method takes no arguments.
+///
 /// The guard is a convenience: the security boundary is merge, where every peer
 /// drops a `TeeOnly` write whose signer is not an attested TEE authority.
 #[proc_macro_attribute]
 pub fn tee(args: TokenStream, input: TokenStream) -> TokenStream {
-    if !args.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`#[app::tee]` takes no arguments",
-        )
-        .to_compile_error()
-        .into();
-    }
+    // The arguments are `#[app::logic]`'s: it reads the period off this
+    // attribute, records it in the ABI, and reports a bad one. Reporting it here
+    // as well would print every mistake twice.
+    let _ = args;
     let mut method = parse_macro_input!(input as syn::ImplItemFn);
     let name = method.sig.ident.to_string();
     let guard: syn::Stmt = syn::parse_quote! {

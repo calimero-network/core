@@ -566,6 +566,7 @@ pub(crate) async fn apply_authorized_state_delta(
         &node_clients.context.datastore_handle().into_inner(),
         &context_id,
         governance_position.as_ref(),
+        calimero_storage::logical_clock::physical_time_secs(&delta.hlc),
     );
     let add_result = delta_store_ref
         .add_delta_with_events(
@@ -815,7 +816,7 @@ pub(crate) async fn apply_authorized_state_delta(
                     warn!(
                         %context_id,
                         delta_id = ?delta_id,
-                        "One or more handlers failed on direct-apply path; keeping events in DB for restart replay"
+                        "One or more handlers failed or wait for their turn on direct-apply path; keeping events in DB for restart replay"
                     );
                 }
             } else {
@@ -914,6 +915,8 @@ fn arm_signer_resolver_for_cut(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
     governance_position: Option<&calimero_context_config::types::GovernanceParentEdge>,
+    // The delta's own clock, in seconds: when its TEE evidence is judged.
+    delta_secs: u32,
 ) {
     let group = match calimero_governance_store::get_group_for_context(datastore, context_id) {
         Ok(Some(group)) => group,
@@ -949,26 +952,16 @@ fn arm_signer_resolver_for_cut(
     let store = datastore.clone();
     delta_store.arm_signer_resolver(std::sync::Arc::new(
         move |key: &calimero_primitives::identity::PublicKey| {
-            let account = projections
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .device_account_at_cut(&store, group, key, &heads)?;
             // An attested TEE authority signs as the TEE authority, the one
             // writer of `TeeOnly` state. Its node only signs deltas for TEE-
             // triggered runs, which run as that account, so this is the same
-            // resolution its own apply used. A lookup failure refuses (`None`)
-            // rather than falling back to the TEE's own account, which would
-            // quietly change which writer sets it matches.
-            match calimero_governance_store::writer_account(&store, &group, key, account) {
-                Ok(writer) => Some(writer),
-                Err(err) => {
-                    tracing::warn!(
-                        %err,
-                        "TEE authority lookup failed while resolving a signer; refusing"
-                    );
-                    None
-                }
-            }
+            // resolution its own apply used. The authority is resolved at this
+            // cut, like the binding, so a policy change or a TEE removal the
+            // delta did not cite cannot change how its writes merge.
+            projections
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .writer_account_at_cut(&store, group, key, &heads, u64::from(delta_secs))
         },
     ));
 }
@@ -2403,7 +2396,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                         warn!(
                             %context_id,
                             delta_id = ?delta_id,
-                            "One or more handlers failed on buffered-replay path; keeping events in DB for restart replay"
+                            "One or more handlers failed or wait for their turn on buffered-replay path; keeping events in DB for restart replay"
                         );
                     }
                 } else {

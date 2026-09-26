@@ -175,6 +175,9 @@ verification.
 | `env::random_bytes(buf: &mut [u8])` | Fills `buf` with random bytes from the host. | Non-deterministic in production. Under the test harness it is a deterministic, **non-cryptographic** PRNG — don't rely on it for security in tests. On a member's node it returns whatever that member chooses, so never trust it for a game. |
 | `env::tee_random_bytes(buf: &mut [u8])` | Fills `buf` with randomness drawn inside an attested TEE. | Traps outside a TEE-triggered run (an `#[app::tee]` method the TEE scheduler fired). See [TEE authorship](/protocol/tee-authorship/). |
 | `env::tee_origin() -> bool` | Whether this run was fired by the TEE scheduler as the TEE authority. | Set by the node, never by a caller. `#[app::tee]` checks it for you. |
+| `env::seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>>` | Seals `plaintext` so that only a run whose executor is `key` can open it. | Proves confidentiality, never authorship: anyone who knows a key can seal to it. Keep what the TEE seals in `TeeOnly` state. `None` if `key` is not a usable Ed25519 point. |
+| `env::open_sealed(sealed: &[u8]) -> Option<Vec<u8>>` | Opens an envelope sealed to this run's executor key. | `None` for an envelope sealed to another key. Traps on a TEE node unless the TEE scheduler fired the run, and in a delegated run. Prefer `Sealed<T>` / `TeeSecret<T>` from `calimero-storage`. |
+| `env::tee_authority_keys() -> Vec<[u8; 32]>` | The attested keys of the context's TEE authorities. | TEE-triggered runs only. `TeeSecret<T>` seals to these on every write. |
 
 ## Cross-context calls
 

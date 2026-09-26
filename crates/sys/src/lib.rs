@@ -67,6 +67,11 @@ wasm_imports! {
         // authority, and the randomness only such a run may draw. See `env::tee`.
         fn tee_origin() -> Bool;
         fn tee_random_bytes(buf: Ref<BufferMut<'_>>);
+        fn tee_authority_keys(register_id: RegisterId);
+        // Sealing: public-key encryption to an Ed25519 key, and opening with this
+        // run's executor key. See `env::seal_to`.
+        fn seal_to(key: Ref<Buffer<'_>>, plaintext: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        fn open_sealed(sealed: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn time_now(buf: Ref<BufferMut<'_>>);
         // --
         // Crypto functions

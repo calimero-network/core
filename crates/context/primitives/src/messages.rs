@@ -123,13 +123,17 @@ pub struct ExecuteRequest {
     /// proves to peers who never saw the HTTP request that the author consented.
     /// A read has no peer to convince, because it publishes nothing.
     pub read_as: Option<calimero_account::AccountId>,
-    /// `true` when the node's TEE scheduler fires this run as the TEE authority.
+    /// The trigger this run fires, when the node's TEE scheduler fires it as
+    /// the TEE authority.
     ///
     /// Set only by `ContextClient::execute_tee_trigger`, never from an RPC body.
     /// It is not trusted either: the handler refuses it unless the executor is
     /// this node's key and that key is an attested TEE authority for the
-    /// context, and then runs the method as `AccountId::TEE_AUTHORITY`.
-    pub tee_trigger: bool,
+    /// context, and then runs the method as `AccountId::TEE_AUTHORITY`. The
+    /// delta the run produces names the trigger in a
+    /// [`TEE_FIRED_EVENT_KIND`](crate::tee_trigger::TEE_FIRED_EVENT_KIND) event,
+    /// so the other TEE authorities know not to fire it again.
+    pub tee_trigger: Option<crate::tee_trigger::TeeTriggerId>,
 }
 
 #[derive(Debug)]

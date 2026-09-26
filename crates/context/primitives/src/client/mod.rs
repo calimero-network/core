@@ -1577,12 +1577,16 @@ impl ContextClient {
     /// `executor`. The context handler re-checks that the key is an attested TEE
     /// authority for the context before it runs anything, so a call from a node
     /// that is not one fails rather than writing as a member.
+    ///
+    /// `trigger` names the firing; the delta the run produces carries it, so the
+    /// other TEE authorities stand down.
     pub async fn execute_tee_trigger(
         &self,
         context_id: &ContextId,
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
+        trigger: crate::tee_trigger::TeeTriggerId,
     ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
@@ -1598,7 +1602,7 @@ impl ContextClient {
                     xcall_depth: 0,
                     delegation: None,
                     read_as: None,
-                    tee_trigger: true,
+                    tee_trigger: Some(trigger),
                 },
                 outcome: sender,
             })
@@ -1677,7 +1681,7 @@ impl ContextClient {
                     xcall_depth,
                     delegation,
                     read_as: None,
-                    tee_trigger: false,
+                    tee_trigger: None,
                 },
                 outcome: sender,
             })
@@ -1738,7 +1742,7 @@ impl ContextClient {
                     xcall_depth: 0,
                     delegation: None,
                     read_as: Some(account),
-                    tee_trigger: false,
+                    tee_trigger: None,
                 },
                 outcome: sender,
             })
