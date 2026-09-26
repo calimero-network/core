@@ -6,6 +6,8 @@ use url::Url;
 use crate::cli::RootArgs;
 use crate::kms::{self, KmsProbeResult};
 
+mod disk_key;
+
 #[derive(Debug, Parser)]
 pub struct KmsCommand {
     #[command(subcommand)]
@@ -16,6 +18,8 @@ pub struct KmsCommand {
 enum KmsSubcommands {
     /// Probe KMS attestation and key-fetch flow
     Probe(KmsProbeCommand),
+    /// Fetch the key that unlocks this TD's encrypted data disk
+    DiskKey(disk_key::KmsDiskKeyCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -32,6 +36,7 @@ impl KmsCommand {
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         match self.action {
             KmsSubcommands::Probe(command) => command.run(root_args).await,
+            KmsSubcommands::DiskKey(command) => command.run().await,
         }
     }
 }

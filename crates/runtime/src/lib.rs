@@ -494,12 +494,16 @@ impl Module {
                     panic_payload.as_ref(),
                     "<unknown panic>",
                 );
+                // The panic text is the guest's own and can hold its state, so
+                // only its size is logged at `error` (which is shipped off the
+                // node); the text itself stays at `debug`.
                 error!(
                     %context_id,
                     method,
-                    panic_message = %message,
+                    panic_message_len = message.len(),
                     "WASM execution panicked"
                 );
+                debug!(%context_id, method, panic_message = %message, "WASM panic message");
                 Some(FunctionCallError::HostError(HostError::Panic {
                     context: PanicContext::Guest,
                     message,

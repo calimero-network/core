@@ -167,3 +167,31 @@ fn panic_guest() {
     assert_eq!(error.to_string(), "guest panicked: explicit panic");
     assert_json_eq!(json!(error), expected);
 }
+
+/// What the guest wrote stays out of `redacted()`: an app's error bytes and
+/// panic text can carry its state, and the redacted form is what gets logged at
+/// levels that leave the node.
+#[test]
+fn redacted_elides_what_the_guest_wrote() {
+    let secret = "balance 1234 < 5000";
+
+    let returned = FunctionCallError::ExecutionError(secret.as_bytes().to_vec());
+    assert!(!returned.redacted().contains(secret));
+    assert!(returned.redacted().contains("19 bytes"));
+
+    let guest_panic = FunctionCallError::HostError(HostError::Panic {
+        context: PanicContext::Guest,
+        message: secret.to_owned(),
+        location: Location::Unknown,
+    });
+    assert!(guest_panic.to_string().contains(secret));
+    assert!(!guest_panic.redacted().contains(secret));
+
+    // The node's own panics are its own text, so they are kept.
+    let host_panic = FunctionCallError::HostError(HostError::Panic {
+        context: PanicContext::Host,
+        message: "host invariant".to_owned(),
+        location: Location::Unknown,
+    });
+    assert_eq!(host_panic.redacted(), host_panic.to_string());
+}

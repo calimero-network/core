@@ -2197,12 +2197,21 @@ async fn internal_execute(
         "WASM execution completed"
     );
 
-    if outcome.returns.is_err() {
+    if let Err(err) = &outcome.returns {
+        // Redacted at `warn`: the app's own error bytes and panic text can hold
+        // its state, and this line is shipped off the node. See
+        // `FunctionCallError::redacted`.
         warn!(
             context_id = %context.id,
             method = %method,
-            error = ?outcome.returns,
+            error = %err.redacted(),
             "WASM execution returned error"
+        );
+        debug!(
+            context_id = %context.id,
+            method = %method,
+            error = ?err,
+            "WASM execution error (unredacted)"
         );
         return Ok((outcome, None, None, None));
     }
