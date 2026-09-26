@@ -51,7 +51,7 @@ impl TeeDice {
         if !(2..=1000).contains(&sides) {
             app::bail!(Error::BadSides(sides));
         }
-        if self.results.get()?.contains(&roll_id)? {
+        if self.is_recorded(&roll_id)? {
             app::bail!(Error::DuplicateRoll(&roll_id));
         }
         app::emit!((
@@ -70,7 +70,7 @@ impl TeeDice {
     /// or duplicated request cannot re-roll it.
     #[app::tee]
     pub fn resolve_roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
-        if self.results.get()?.contains(&roll_id)? || !(2..=1000).contains(&sides) {
+        if self.is_recorded(&roll_id)? || !(2..=1000).contains(&sides) {
             return Ok(());
         }
         let face = unbiased_face(sides);
@@ -87,12 +87,24 @@ impl TeeDice {
 
     /// The face a roll landed on, once the TEE has resolved it.
     pub fn get_roll(&self, roll_id: String) -> app::Result<Option<u32>> {
-        Ok(self.results.get()?.get(&roll_id)?.map(|face| *face.get()))
+        let Some(results) = self.results.try_get()? else {
+            return Ok(None);
+        };
+        Ok(results.get(&roll_id)?.map(|face| *face.get()))
     }
 
     /// Whether the TEE has resolved `roll_id` yet.
     pub fn is_resolved(&self, roll_id: String) -> app::Result<bool> {
-        Ok(self.results.get()?.contains(&roll_id)?)
+        self.is_recorded(&roll_id)
+    }
+
+    /// Whether the TEE has recorded a face for `roll_id`. `results` stores
+    /// nothing until the TEE's first write, so before then no roll is recorded.
+    fn is_recorded(&self, roll_id: &str) -> app::Result<bool> {
+        match self.results.try_get()? {
+            Some(results) => Ok(results.contains(roll_id)?),
+            None => Ok(false),
+        }
     }
 }
 

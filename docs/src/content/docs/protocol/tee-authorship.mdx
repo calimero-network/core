@@ -114,6 +114,13 @@ impl TeeDice {
   writer set `{TEE_AUTHORITY}`. It also guards in-place edits through
   `get_mut`, so a member's forged write fails on their own node, not only at
   their peers.
+- **A `TeeOnly` cell stores nothing until the TEE's first write.** `init` runs
+  as the context creator, who is not a writer. A cell created there would be
+  signed by the creator, and every peer would drop it, so its initial state
+  would never leave the creator's node. Instead the cell is created by the TEE
+  authority's first write, which peers accept. Until that write reaches a
+  node, read it with `try_get`, which returns `None`. `get` returns an error
+  until then.
 - **`TestHost::call_as_tee`** runs a closure as the scheduler would, for native
   tests.
 
@@ -149,4 +156,6 @@ receiver asks one question, in `events.rs`:
 | **No failover.** If the elected TEE is down, its trigger waits; the events stay in its DB for replay. | A game stalls while its TEE is offline. | Rank-*k* fallback after `k × grace`. |
 | Triggers are **event-driven only**: no cron and no governance-event triggers. | Timeouts must be requested by a member. | A scheduler actor fed by ABI-declared cron specs. |
 | No sealing to member keys and no TEE-only secrets yet. | Only public randomness, not hidden cards. | `tee_seal_to_member`, a namespace TEE vault key, and `TeeSecret<T>`. |
+| Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
+| Two TEE authorities could create the same `TeeOnly` cell concurrently. | When `T` is a collection, each mints its own inner collection id and one of them is lost at merge. With one TEE per namespace, as in the demo, this cannot happen. | Derive the inner collection's id from the cell's id. |
 | `is_tee_authority` scans the root's op log. | It costs one scan per resolved TEE signer. A point-lookup pre-filter keeps ordinary members out of it. | Materialise the policy. |
