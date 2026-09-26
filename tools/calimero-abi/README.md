@@ -94,7 +94,8 @@ Example output for an unsafe downgrade:
   state field. An identity-gated CRDT nested *inside* a `Record`/`Variant` field
   is not currently inspected (would need a recursive walk).
 - **Docs are not schema.** `doc` keys are dropped before comparison, so editing
-  a doc comment is never a finding.
+  a doc comment is never a finding. Methods are not compared at all, so a
+  method's `doc`, `returns_doc`, `destructive` or `idempotent` never is either.
 - The identity classification reuses the authoritative `collection_category`
   classifier from `calimero-wasm-abi`.
 

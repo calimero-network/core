@@ -363,6 +363,9 @@ mod tests {
             xcall_callable: false,
             xcall_callers: Default::default(),
             tee_every_secs: None,
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert!(validate_manifest(&manifest).is_ok());
@@ -387,6 +390,9 @@ mod tests {
             xcall_callable: false,
             xcall_callers: Default::default(),
             tee_every_secs: None,
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert!(matches!(
@@ -454,6 +460,9 @@ mod tests {
             xcall_callable: false,
             xcall_callers: Default::default(),
             tee_every_secs: None,
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert!(validate_manifest(&manifest).is_err());

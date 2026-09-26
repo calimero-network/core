@@ -15,6 +15,9 @@ fn method(name: &str) -> Method {
         xcall_callable: false,
         xcall_callers: Default::default(),
         tee_every_secs: None,
+        returns_doc: None,
+        destructive: false,
+        idempotent: false,
     }
 }
 

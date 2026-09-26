@@ -29,6 +29,9 @@ fn test_schema_validation_basic() {
         xcall_callable: false,
         xcall_callers: Default::default(),
         tee_every_secs: None,
+        returns_doc: None,
+        destructive: false,
+        idempotent: false,
     });
 
     // Serialize to JSON
@@ -109,6 +112,9 @@ fn test_schema_validation_shared_storage_crdt_type() {
         xcall_callable: false,
         xcall_callers: Default::default(),
         tee_every_secs: None,
+        returns_doc: None,
+        destructive: false,
+        idempotent: false,
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
@@ -342,6 +348,9 @@ fn test_schema_validation_tuple() {
         xcall_callable: false,
         xcall_callers: Default::default(),
         tee_every_secs: None,
+        returns_doc: None,
+        destructive: false,
+        idempotent: false,
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
@@ -420,6 +429,9 @@ fn test_schema_validation_doc_on_every_object() {
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
         xcall_callers: Default::default(),
+        returns_doc: None,
+        destructive: false,
+        idempotent: false,
     });
     manifest.events.push(Event {
         name: "E".to_owned(),
@@ -460,6 +472,33 @@ fn test_schema_validation_doc_does_not_loosen_other_keys() {
         assert!(
             schema.validate(&manifest).is_err(),
             "must be rejected: {manifest}"
+        );
+    }
+}
+
+#[test]
+fn test_schema_validation_method_hints() {
+    let schema_json = include_str!("../wasm-abi.schema.json");
+    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
+
+    let manifest = |method: Value| json!({"schema_version":"wasm-abi/1","types":{},"methods":[method],"events":[]});
+    let accepted = manifest(json!({"name":"wipe","params":[],"returns":{"kind":"u32"},
+        "returns_doc":"How many entries were removed.","destructive":true,"idempotent":true}));
+    assert!(
+        schema.validate(&accepted).is_ok(),
+        "{:?}",
+        schema.validate(&accepted).err()
+    );
+    for rejected in [
+        json!({"name":"wipe","params":[],"destructive":"yes"}),
+        json!({"name":"wipe","params":[],"idempotent":1}),
+        json!({"name":"wipe","params":[],"returns_doc":7}),
+        json!({"name":"wipe","params":[],"destructive_hint":true}),
+    ] {
+        assert!(
+            schema.validate(&manifest(rejected.clone())).is_err(),
+            "{rejected}"
         );
     }
 }

@@ -52,7 +52,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | `CollectionCategory` | enum | `Convergent` / `Replayable` / `IdentityGated` - classification returned by `collection_category()`, exhaustively matched (no wildcard) so a new `CrdtCollectionType` variant fails to compile until categorized |
 | `MethodIntent` | enum, `#[default] Unspecified` | `ReadOnly` (`#[app::view]`), `Mutating`, `Unspecified` (fail-safe: treated as write lock) |
 | `XCallCallers` | enum, `#[default] AnyInNamespace` | Who may call an `#[app::xcall]` method: `AnyInNamespace` or `SameApp` (`from_same_app`) |
-| `Method` / `Parameter` / `Field` / `Variant` / `Error` / `Event` | structs | Manifest leaves; all serde-defaulted so old manifests round-trip; each carries an optional `doc` (the item's rustdoc) |
+| `Method` / `Parameter` / `Field` / `Variant` / `Error` / `Event` | structs | Manifest leaves; all serde-defaulted so old manifests round-trip; each carries an optional `doc` (the item's rustdoc); `Method` also carries `returns_doc`, `destructive` and `idempotent` (caller hints, omitted when absent/false) |
 | `MigrationEdgeAbi` | struct | One `{ method, from_version }` hop; `from_version + 1` is the target |
 
 `collection_category()` is the single source of truth for migration safety, consumed by both `downgrade.rs` (the core L1 upgrade gate) and the `mero-abi diff` CI lint:
