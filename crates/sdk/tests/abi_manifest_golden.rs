@@ -73,6 +73,13 @@ impl State {
         self.total.set(note.len() as u64);
     }
 
+    /// Drops the running total.
+    #[app::destructive]
+    #[app::idempotent]
+    pub fn reset(&mut self) {
+        self.total.set(0);
+    }
+
     /// Totals, capped when a cap is given.
     ///
     /// # Returns
@@ -160,6 +167,15 @@ fn generated_manifest_is_the_golden() {
                     "params": [],
                     "returns": { "kind": "string" },
                     "intent": "read_only",
+                },
+                {
+                    "name": "reset",
+                    "doc": "Drops the running total.",
+                    "params": [],
+                    "returns": { "kind": "unit" },
+                    "intent": "mutating",
+                    "destructive": true,
+                    "idempotent": true,
                 },
                 {
                     "name": "summarize",

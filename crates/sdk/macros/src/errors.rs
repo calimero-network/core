@@ -184,6 +184,10 @@ pub enum ParseError<'a> {
     MalformedArgumentDoc,
     #[error("`# Returns` on `{method}`, which returns nothing")]
     ReturnsDocOnUnit { method: String },
+    #[error("`#[app::{attr}]` has no meaning on read-only `{method}`")]
+    HintOnReadOnly { attr: &'static str, method: String },
+    #[error("`#[app::{attr}]` has no meaning on an initializer")]
+    HintOnInit { attr: &'static str },
 }
 
 impl AsRef<Self> for ParseError<'_> {

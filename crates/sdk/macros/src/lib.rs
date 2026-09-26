@@ -328,6 +328,22 @@ pub fn view(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 
+/// Marks a logic method as destructive: it deletes or irreversibly overwrites
+/// data. Recorded as `Method.destructive`, a hint for callers.
+#[proc_macro_attribute]
+pub fn destructive(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
+/// Marks a logic method as idempotent: repeating the call with the same
+/// arguments has no further effect. Recorded as `Method.idempotent`, a hint.
+#[proc_macro_attribute]
+pub fn idempotent(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
 /// Marks a function as the application cleanup function.
 ///
 /// This macro marks a function that will be called when the application is being destroyed.

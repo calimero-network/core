@@ -57,6 +57,10 @@ pub enum Modifer {
         /// `None` for an event-driven TEE trigger.
         every_secs: Option<u64>,
     },
+    /// `#[app::destructive]` - deletes or irreversibly overwrites data.
+    Destructive,
+    /// `#[app::idempotent]` - repeating the call with the same arguments changes nothing further.
+    Idempotent,
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -461,6 +465,14 @@ impl PublicLogicMethod<'_> {
         };
         let doc = doc::tokens(self.docs.doc.as_deref());
         let returns_doc = doc::tokens(self.docs.returns.as_deref());
+        let destructive = self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Destructive));
+        let idempotent = self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Idempotent));
 
         quote! {
             {
@@ -483,6 +495,8 @@ impl PublicLogicMethod<'_> {
                     tee_every_secs: #tee_every_secs,
                     doc: #doc,
                     returns_doc: #returns_doc,
+                    destructive: #destructive,
+                    idempotent: #idempotent,
                     ..::core::default::Default::default()
                 });
             }
@@ -643,6 +657,8 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                         };
                         modifiers.push(Modifer::Tee { every_secs });
                     }
+                    "destructive" => modifiers.push(Modifer::Destructive),
+                    "idempotent" => modifiers.push(Modifer::Idempotent),
                     "xcall" => {
                         // Validate the optional caller-policy arg so a typo is a
                         // compile error rather than silently falling back to the
@@ -805,6 +821,26 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         if is_view {
             if let Some(SelfType::Mutable(span)) = &self_type {
                 errors.subsume(SynError::new_spanned(span, ParseError::ViewCannotMutate));
+            }
+        }
+
+        let read_only = is_view || matches!(self_type, Some(SelfType::Immutable(_)));
+        for modifier in &modifiers {
+            let attr = match modifier {
+                Modifer::Destructive => "destructive",
+                Modifer::Idempotent => "idempotent",
+                _ => continue,
+            };
+            if is_init {
+                errors.subsume(SynError::new_spanned(name, ParseError::HintOnInit { attr }));
+            } else if read_only {
+                errors.subsume(SynError::new_spanned(
+                    name,
+                    ParseError::HintOnReadOnly {
+                        attr,
+                        method: name_str.clone(),
+                    },
+                ));
             }
         }
 
@@ -1049,5 +1085,61 @@ mod tests {
             errors.take().expect("an error was recorded").to_string(),
             "`# Returns` on `init`, which returns nothing"
         );
+    }
+
+    fn rejection(item: ImplItemFn) -> String {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        }) else {
+            panic!("the method must be rejected")
+        };
+        errors.take().expect("an error was recorded").to_string()
+    }
+
+    #[test]
+    fn hints_on_read_only_methods_and_initializers_are_errors() {
+        assert_eq!(
+            rejection(parse_quote! { #[app::destructive] pub fn peek(&self) {} }),
+            "`#[app::destructive]` has no meaning on read-only `peek`"
+        );
+        assert_eq!(
+            rejection(parse_quote! { #[app::view] #[app::idempotent] pub fn peek(&self) {} }),
+            "`#[app::idempotent]` has no meaning on read-only `peek`"
+        );
+        assert_eq!(
+            rejection(parse_quote! { #[app::view] #[app::destructive] pub fn peek() {} }),
+            "`#[app::destructive]` has no meaning on read-only `peek`"
+        );
+        assert_eq!(
+            rejection(parse_quote! { #[app::init] #[app::idempotent] pub fn init() -> S { S } }),
+            "`#[app::idempotent]` has no meaning on an initializer"
+        );
+    }
+
+    #[test]
+    fn a_method_may_be_both_destructive_and_idempotent() {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let item: ImplItemFn =
+            parse_quote! { #[app::destructive] #[app::idempotent] pub fn reset(&mut self) {} };
+        let LogicMethod::Public(method) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        })
+        .map_err(|_| "the method must parse")
+        .unwrap() else {
+            panic!("a `pub fn` is a public logic method")
+        };
+        assert!(method
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, Modifer::Destructive)));
+        assert!(method
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, Modifer::Idempotent)));
     }
 }
