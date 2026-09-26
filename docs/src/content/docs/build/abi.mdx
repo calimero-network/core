@@ -175,6 +175,7 @@ describe:
 Your `///` comments ship in the ABI.
 A method, parameter, type, field, enum variant, or event with a doc comment carries it as `doc`, so a client or an agent can learn what a method is for without your source.
 An item without a comment has no `doc` key, and editing a comment is never an ABI change: `cargo mero abi diff` ignores it.
+The comment is still embedded in the wasm, so a doc-only edit produces different bytes and a new blob hash.
 
 Rust does not allow `///` on a parameter, so parameters use rustdoc's `# Arguments` list:
 

@@ -52,8 +52,8 @@ Each method records its full call shape:
   flag marks `Option<T>` arguments.
 - `returns` / `returns_nullable` - the return type and whether it is optional.
 - `errors` - the typed error codes a method can return (omitted when empty).
-- `intent` - `read_only` for methods marked `#[app::view]`, otherwise treated as
-  mutating. The node uses this to pick a shared read lock vs an exclusive write
+- `intent` - `read_only` for methods taking `&self` or marked `#[app::view]`,
+  otherwise treated as mutating. The node uses this to pick a shared read lock vs an exclusive write
   lock. Absent on older modules (treated as a write, the fail-safe).
 - `xcall_callable` - `true` for methods marked `#[app::xcall]`, the cross-context
   entry points.
