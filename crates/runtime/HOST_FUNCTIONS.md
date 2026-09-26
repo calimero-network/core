@@ -436,6 +436,11 @@ Large binary object streaming.
 | `random_bytes` | `(dest_ptr: u64)` | Fills buffer with cryptographically random bytes. |
 | `time_now` | `(dest_ptr: u64)` | Writes current Unix timestamp (nanoseconds) as `u64` to 8-byte buffer. |
 | `ed25519_verify` | `(sig_ptr: u64, pk_ptr: u64, msg_ptr: u64) -> u32` | Verifies Ed25519 signature. Returns `1` if valid, `0` if invalid. |
+| `tee_origin` | `() -> u32` | `1` in a run the node's TEE scheduler fired as the TEE authority, `0` otherwise. |
+| `tee_random_bytes` | `(dest_ptr: u64)` | `random_bytes`, but only in a TEE-triggered run; traps (`TeeOnly`) otherwise. |
+| `tee_authority_keys` | `(register_id: u64)` | Writes the attested keys of the context's TEE authorities, 32 bytes each. TEE-triggered runs only; traps (`TeeOnly`) otherwise. |
+| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
+| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key and writes the plaintext; `0` if it does not open. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
 
 ---
 

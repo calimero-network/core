@@ -373,8 +373,8 @@ fn delta_age(
     Some(SystemTime::now().duration_since(sent).unwrap_or_default())
 }
 
-/// Record the triggers this delta says it fired, when a TEE authority signed
-/// it.
+/// Record the triggers this delta says it fired, when an attested TEE key
+/// signed it.
 ///
 /// Best-effort: a marker that is not recorded costs at most a duplicate firing
 /// by a fallback TEE, and failing the delta over it would be worse.
@@ -405,9 +405,11 @@ fn record_fired_markers(
             return;
         }
     };
-    // Anyone can emit an event of the marker's kind. Only one from a delta a
-    // TEE authority signed says a trigger fired; a member's would let them
-    // stall a game whose elected TEE is down.
+    // Anyone can emit an event of the marker's kind. Only one from a delta an
+    // attested TEE signed says a trigger fired; a member's would let them stall
+    // a game whose elected TEE is down. Attested rather than authorised, like
+    // the read-only gate: the marker must count on every peer that accepted
+    // the delta, whatever policy each has applied.
     let signed_by_authority = author.is_some_and(|author| {
         calimero_governance_store::is_attested_tee_key_for_context(store, context_id, &author)
             .unwrap_or_else(|err| {
@@ -416,7 +418,7 @@ fn record_fired_markers(
             })
     });
     if !signed_by_authority {
-        debug!(%context_id, "Ignoring TEE fired markers on a delta no TEE authority signed");
+        debug!(%context_id, "Ignoring TEE fired markers on a delta no attested TEE signed");
         return;
     }
     for trigger in markers {
