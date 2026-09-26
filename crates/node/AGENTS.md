@@ -44,6 +44,8 @@ src/
 ├── readiness/
 │   └── tests.rs              # FSM transition tests + cache picker / atomicity tests
 ├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
+├── tee_firing.rs             # TEE trigger election, failover turns, fired markers (event + timer triggers)
+├── tee_scheduler.rs          # Fires #[app::tee(every = "..")] methods once per tick on TEE authorities
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
 │   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, relay_sealed_join.rs, tee_admission.rs, tests.rs)

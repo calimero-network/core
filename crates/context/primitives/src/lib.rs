@@ -7,6 +7,7 @@ pub mod client;
 pub mod group;
 pub mod local_governance;
 pub mod messages;
+pub mod tee_trigger;
 
 /// An owned, per-context lock guard held across a context operation.
 ///

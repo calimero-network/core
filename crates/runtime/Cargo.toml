@@ -28,6 +28,7 @@ wasmer-middlewares.workspace = true
 
 calimero-account.workspace = true
 calimero-context-config.workspace = true
+calimero-crypto.workspace = true
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-sys.workspace = true

@@ -38,6 +38,8 @@ pub mod rich_document;
 pub use rich_document::{Block, BlockId, BlockView, RichDocument};
 pub mod lww_register;
 pub use lww_register::LwwRegister;
+pub mod tee_secret;
+pub use tee_secret::{Sealed, TeeSecret};
 pub mod blob_ref;
 pub use blob_ref::BlobRef;
 pub mod crdt_meta;

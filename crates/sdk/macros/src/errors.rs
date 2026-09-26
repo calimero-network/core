@@ -164,6 +164,8 @@ pub enum ParseError<'a> {
     XCallAndViewConflict,
     #[error("`#[app::tee]` cannot be combined with `#[app::init]`, `#[app::view]` or `#[app::xcall]` — a TEE method is fired only by the node's TEE scheduler, and it exists to write TEE-only state")]
     TeeConflict,
+    #[error("an `#[app::tee(every = \"..\")]` method takes no arguments — a timer fires with no event behind it, so there is nothing to pass it")]
+    TeeTimerTakesArguments,
     #[error(
         "`#[derive(AbiType)]` is not supported on unions - a union's active field is not known \
          statically, so it has no single shape to describe in the ABI.\n\n\

@@ -150,12 +150,14 @@ pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
 
 pub use self::tee::{
-    is_quote_hash_used, is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
+    is_attested_tee_key_for_context, is_quote_hash_used, is_tee_admitted_identity,
+    is_tee_authority, is_tee_authority_for_context, is_tee_member_key_for_context,
     read_tee_admission_policy, read_tee_authoring_policy, tee_admission_record,
     tee_admission_records, tee_authorities_for_context, tee_authority_evidence, tee_authority_key,
-    tee_evidence_owed, tee_evidence_refresh_due, writer_account, TeeAdmissionPolicy,
-    TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord, TeeReleaseTrust,
-    UndecodableOpLogEntry,
+    tee_authority_keys_for_context, tee_evidence_owed, tee_evidence_refresh_due, writer_account,
+    TeeAdmissionPolicy, TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord,
+    TeeReleaseTrust, UndecodableOpLogEntry, TEE_EVIDENCE_MAX_AGE_SECS,
+    TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;

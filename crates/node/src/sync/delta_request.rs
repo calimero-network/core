@@ -230,6 +230,11 @@ fn verify_fetched_parent(
         return VerifiedParent::Skip;
     }
 
+    // No revoked-device check here, unlike the head-pull path: this delta is
+    // fetched because one already accepted names it as a parent, and an
+    // authorized author building on it vouches that it was accepted before the
+    // revocation was known. Refusing it would strand that child (core#4070).
+    //
     // Resolve membership at the cited cut FROM THE PROJECTION (F5 #29b), parity
     // with the gossip path.
     match crate::handlers::state_delta::authorize_delta_at_edge_projected(

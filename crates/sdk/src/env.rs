@@ -1145,6 +1145,79 @@ pub fn tee_random_bytes(buf: &mut [u8]) {
     }
 }
 
+/// Seal `plaintext` to the Ed25519 public key `key`, so that only a run whose
+/// executor is `key` can [`open_sealed`] it.
+///
+/// A TEE deals a hidden card by sealing it to the player's device key (their
+/// [`device_id`] in a run they made) and writing the envelope into `TeeOnly`
+/// state. Every member replicates the envelope; only the player's node opens
+/// it.
+///
+/// Available in every run, since sealing reveals nothing. It proves
+/// confidentiality only: anyone who knows a key can seal to it, so what makes a
+/// dealt card genuine is where it is stored, not the envelope. `None` if `key`
+/// is not a usable Ed25519 point.
+///
+/// Under the in-process test harness the envelope is not encrypted; it opens
+/// only for the key it names, like the real one.
+#[must_use]
+pub fn seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::seal_to(
+                Ref::new(&Buffer::from(&key[..])),
+                Ref::new(&Buffer::from(plaintext)),
+                DATA_REGISTER,
+            )
+        }
+        .try_into()
+        .unwrap_or_else(expected_boolean::<bool>)
+        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::seal_to(key, plaintext)
+}
+
+/// Open an envelope [`seal_to`] made for this run's executor key.
+///
+/// `None` if the envelope is sealed to another key, malformed, or tampered with.
+///
+/// On a TEE node the host traps unless the TEE scheduler fired the run, so a
+/// JSON-RPC call on that node cannot read what is sealed to the TEE. In a
+/// delegated run it traps too: the node's key is not the principal's.
+#[must_use]
+pub fn open_sealed(sealed: &[u8]) -> Option<Vec<u8>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::open_sealed(Ref::new(&Buffer::from(sealed)), DATA_REGISTER) }
+            .try_into()
+            .unwrap_or_else(expected_boolean::<bool>)
+            .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::open_sealed(sealed)
+}
+
+/// The attested keys of the context's TEE authorities: the keys a value only
+/// the TEE may read is sealed to.
+///
+/// Only in a TEE-triggered run (see [`tee_origin`]); the host traps otherwise.
+/// Under the in-process test harness it is the one mock TEE key
+/// `TestHost::call_as_tee` runs as.
+#[must_use]
+pub fn tee_authority_keys() -> Vec<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    let keys = {
+        unsafe { sys::tee_authority_keys(DATA_REGISTER) }
+        read_register(DATA_REGISTER).unwrap_or_default()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let keys = host::tee_authority_keys();
+    let (keys, _) = keys.as_chunks::<32>();
+    keys.to_vec()
+}
+
 /// Gets the current time.
 #[inline]
 #[must_use]

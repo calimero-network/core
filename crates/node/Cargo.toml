@@ -52,6 +52,7 @@ calimero-op-adapter.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-server.workspace = true
 calimero-storage.workspace = true
+calimero-wasm-abi.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-store-encryption.workspace = true
 calimero-store-rocksdb.workspace = true
@@ -68,7 +69,6 @@ mock-attestation = [
 
 [dev-dependencies]
 async-trait.workspace = true
-calimero-wasm-abi.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
 # `test-utils` pulls in `Stream::test_pair()` so the sync mocks can
 # script a successful `open_stream` (`Ok(Stream)`). Dev-only edge:

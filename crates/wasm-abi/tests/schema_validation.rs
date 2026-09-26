@@ -25,6 +25,7 @@ fn test_schema_validation_basic() {
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
         xcall_callers: Default::default(),
+        tee_every_secs: None,
     });
 
     // Serialize to JSON
@@ -103,6 +104,7 @@ fn test_schema_validation_shared_storage_crdt_type() {
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
         xcall_callers: Default::default(),
+        tee_every_secs: None,
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
@@ -334,6 +336,7 @@ fn test_schema_validation_tuple() {
         intent: MethodIntent::ReadOnly,
         xcall_callable: false,
         xcall_callers: Default::default(),
+        tee_every_secs: None,
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
