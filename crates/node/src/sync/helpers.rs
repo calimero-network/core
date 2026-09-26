@@ -351,6 +351,23 @@ pub(crate) fn select_attributable_peer_identity(
     hosted.iter().next().copied()
 }
 
+/// Whether a peer must not serve this node a snapshot, judged from the identities
+/// it has proven by signed, applied messages (`peer_identities`).
+///
+/// Refused only on positive evidence: some identity it proved is `denied` for the
+/// context (a revoked device, a removed member) and none is `authorized`. A peer
+/// with no observations here is not refused. A cold joiner usually has none for
+/// the peer it snapshots from, and the identity set also spans every other
+/// context the peer takes part in, so "no authorized identity" alone would refuse
+/// honest peers (#4089).
+pub(crate) fn snapshot_source_refused(
+    hosted: &std::collections::BTreeSet<PublicKey>,
+    is_denied: impl Fn(&PublicKey) -> bool,
+    is_authorized: impl Fn(&PublicKey) -> bool,
+) -> bool {
+    hosted.iter().any(is_denied) && !hosted.iter().any(is_authorized)
+}
+
 /// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
 /// whose stored metadata has no `crdt_type` (typically the `Root<T>`
 /// entry for apps that don't use `#[app::state]`, plus test fixtures).
@@ -1410,6 +1427,38 @@ mod tests {
     fn select_peer_identity_is_none_when_peer_hosts_no_identities() {
         let hosted: BTreeSet<PublicKey> = BTreeSet::new();
         assert_eq!(select_attributable_peer_identity(&hosted, |_| true), None);
+    }
+
+    #[test]
+    fn snapshot_source_is_refused_only_on_positive_evidence() {
+        let revoked = PublicKey::from([0x03; 32]);
+        let member = PublicKey::from([0x04; 32]);
+        let elsewhere = PublicKey::from([0x05; 32]);
+
+        // A revoked device's node, known only by its revoked identity (#4089).
+        assert!(snapshot_source_refused(
+            &BTreeSet::from([revoked]),
+            |id| *id == revoked,
+            |_| false,
+        ));
+        // Unknown here: a cold joiner has seen nothing from its snapshot source.
+        assert!(!snapshot_source_refused(
+            &BTreeSet::new(),
+            |_| true,
+            |_| false
+        ));
+        // Known only from other contexts: none authorized here, none denied here.
+        assert!(!snapshot_source_refused(
+            &BTreeSet::from([elsewhere]),
+            |_| false,
+            |_| false,
+        ));
+        // A re-paired or multi-identity node that still proves an authorized one.
+        assert!(!snapshot_source_refused(
+            &BTreeSet::from([revoked, member]),
+            |id| *id == revoked,
+            |id| *id == member,
+        ));
     }
 
     #[test]

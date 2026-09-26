@@ -408,6 +408,41 @@ impl SyncManager {
             }
         }
 
+        // Snapshot apply does not gate entities on their authors (#4089), so at
+        // least refuse a source this node knows to be revoked or removed here.
+        // Only positive evidence refuses: an unknown peer still serves, since a
+        // cold joiner usually has no observations of it.
+        if let Some(hosted) = self.state_access.peer_identities(&peer_id) {
+            let store = self.context_client.datastore_handle().into_inner();
+            let deny_list = calimero_governance_store::DenyListRepository::new(&store);
+            let refused = super::helpers::snapshot_source_refused(
+                &hosted,
+                |id| {
+                    deny_list
+                        .is_author_denied_for_context(&context_id, id)
+                        .unwrap_or(false)
+                },
+                |id| {
+                    calimero_governance_store::is_currently_authorized_for_context(
+                        &store,
+                        &context_id,
+                        id,
+                    )
+                    .unwrap_or(false)
+                },
+            );
+            if refused {
+                warn!(
+                    %context_id,
+                    %peer_id,
+                    "refusing snapshot source: every identity it has proven here is revoked or removed"
+                );
+                return Err(eyre::eyre!(
+                    "snapshot source {peer_id} is revoked or removed in context {context_id}"
+                ));
+            }
+        }
+
         let mut stream = self.sync_network.open_stream(peer_id).await?;
         let boundary = self
             .request_snapshot_boundary(context_id, &mut stream)
