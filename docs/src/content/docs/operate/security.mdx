@@ -172,6 +172,18 @@ asked for, so merod also checks what the signed file says about itself: its
 the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
 describe the nodes that KMS serves and are never read here.
 
+Registers alone do not pin the KMS. A node's keys are derived from the KMS's
+dstack **app** key, so anything that runs under that app can derive them — and
+the app's owner can upgrade it to another compose file (a debug image with a
+shell) whose registers may still be allowlisted. So merod also checks *which
+compose file* the KMS runs: it replays the event log `/attest` returns,
+recomputing every RTMR3 event digest from the event itself, and trusts the
+`compose-hash` event only when the replay reproduces the quote's RTMR3. That hash
+must be in the policy's `kms_allowed_event_payload`, and a policy without one is
+refused. The pin says what the KMS runs; who else can run code under the same
+app ID is a deployment control (one app per profile, an on-chain compose-hash
+allowlist), covered in mero-tee's trust model.
+
 The release to verify against usually arrives from outside the TD (on the node
 image, instance metadata), and every old release's policy is still validly
 signed. `MERO_TEE_MIN_VERSION` sets a floor: a release older than it is refused
