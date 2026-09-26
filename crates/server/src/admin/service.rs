@@ -822,9 +822,12 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         Refusal::PairingNotTheAccountHolder { .. }
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. }
-        | Refusal::DeviceLabelNotOwn { .. } => StatusCode::FORBIDDEN,
+        | Refusal::DeviceLabelNotOwn { .. }
+        | Refusal::RevocationOfOwnDevice { .. } => StatusCode::FORBIDDEN,
         Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
-        Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
+        Refusal::PairingUnknownDevice { .. } | Refusal::RevocationUnknownDevice { .. } => {
+            StatusCode::NOT_FOUND
+        }
         _ => return None,
     })
 }
@@ -1647,6 +1650,39 @@ mod parse_api_error_tests {
                 .into(),
             );
             assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// A revocation naming a device the namespace holds no binding for.
+        /// `404`, like the relink above: the thing being addressed is not here.
+        #[test]
+        fn revoking_an_unknown_device_maps_to_404() {
+            let api = parse_api_error(
+                ContextError::RevocationUnknownDevice {
+                    namespace: "ContextGroupId(a1)".to_owned(),
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// A revocation naming the device this node runs as. `403`: the request
+        /// is understood and can never succeed from this node, and the message
+        /// has to say where it can be done instead.
+        #[test]
+        fn revoking_this_nodes_own_device_maps_to_403() {
+            let api = parse_api_error(
+                ContextError::RevocationOfOwnDevice {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("another device of the account"),
+                "the refusal has to say where the revocation can be run; got: {}",
+                api.message
+            );
         }
 
         /// And a revoked one to `403`, permanently: re-enrolling the machine mints

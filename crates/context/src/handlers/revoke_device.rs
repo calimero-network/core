@@ -27,18 +27,21 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::DeviceRevocation;
+use calimero_account::{DeviceId, DeviceRevocation};
 use calimero_context_client::group::{
     RevocationOutcome, RevokeDeviceRequest, RevokeDeviceResponse,
 };
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{withdraw_device_in, NamespaceRepository, NodeDeviceRepository};
+use calimero_governance_store::{
+    withdraw_device_in, NamespaceRepository, NodeDeviceRepository, RevocationTarget,
+};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::warn;
 
+use crate::error::ContextError;
 use crate::ContextManager;
 
 /// The namespaces a withdrawal is published into, this node's account namespace
@@ -48,6 +51,44 @@ pub(crate) fn revocation_namespaces(store: &Store) -> EyreResult<Vec<ContextGrou
     let mut namespaces = NamespaceRepository::new(store).participating_namespaces()?;
     namespaces.sort_by_key(|namespace| Some(*namespace) == account_namespace);
     Ok(namespaces)
+}
+
+/// Whose device `device` is in `namespace`, or the refusal a caller can act on.
+///
+/// Two refusals, both before anything is signed or applied:
+///
+/// * the device this node runs as. Revoking it here would withdraw the identity
+///   the revocation is signed with part way through publishing it: the local
+///   apply lands, and the publish that should carry it to peers then fails, so
+///   the node is cut off while no peer heard of it.
+/// * a device `namespace` holds no binding for, which names no account to put in
+///   the op.
+pub(crate) fn resolve_target(
+    store: &Store,
+    namespace: &ContextGroupId,
+    device: DeviceId,
+) -> EyreResult<RevocationTarget> {
+    let devices = NodeDeviceRepository::new(store);
+    if devices.get()?.is_some_and(|own| own.device() == device) {
+        return Err(ContextError::RevocationOfOwnDevice {
+            device: device.to_string(),
+        }
+        .into());
+    }
+    // Whose device this is, and whether this node can prove it owns the
+    // account, both come from the group's own binding. Deriving the account
+    // from this node's root instead answers a different question - "which
+    // account do I own here" - so an admin ejecting somebody else's device
+    // named its own account in the op and reported it back to the operator.
+    devices
+        .revocation_target(namespace, device)?
+        .ok_or_else(|| {
+            ContextError::RevocationUnknownDevice {
+                namespace: format!("{namespace:?}"),
+                device: device.to_string(),
+            }
+            .into()
+        })
 }
 
 impl Handler<RevokeDeviceRequest> for ContextManager {
@@ -76,23 +117,11 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         if let Err(err) = crate::member_account::require(&store, &namespace_id, &self_pk) {
             return ActorResponse::reply(Err(err));
         }
-        // Whose device this is, and whether this node can prove it owns the
-        // account, both come from the group's own binding. Deriving the account
-        // from this node's root instead answers a different question — "which
-        // account do I own here" — so an admin ejecting somebody else's device
-        // named its own account in the op and reported it back to the operator.
-        let device_repo = NodeDeviceRepository::new(&store);
-        let target = match device_repo.revocation_target(&namespace_id, device) {
-            Ok(Some(target)) => target,
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "{namespace_id:?} holds no binding for {device}, so there is no account \
-                     to name in the revocation. Either it was never linked here, or its \
-                     link has not synced to this node yet"
-                )))
-            }
+        let target = match resolve_target(&store, &namespace_id, device) {
+            Ok(target) => target,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        let device_repo = NodeDeviceRepository::new(&store);
         let account = target.account;
 
         // A proof minted elsewhere is verified HERE, before anything is published,
@@ -262,7 +291,63 @@ mod tests {
     use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
     use calimero_store::db::InMemoryDB;
 
-    use super::{revocation_namespaces, ContextGroupId, Store};
+    use super::{
+        resolve_target, revocation_namespaces, ContextError, ContextGroupId, DeviceId, Store,
+    };
+
+    const NS: [u8; 32] = [0xA1; 32];
+
+    /// A node that created or joined one namespace: it holds its own account root
+    /// and runs as one device.
+    fn a_node_with_its_own_device() -> (Store, DeviceId) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&NS.into())
+            .expect("take part in the namespace");
+        let devices = NodeDeviceRepository::new(&store);
+        let _root = devices
+            .provision_account_root()
+            .expect("a node that ran `merod init` holds a root");
+        let own = devices
+            .ensure_enrolled(&NS.into())
+            .expect("mint this node's own device")
+            .device();
+        (store, own)
+    }
+
+    /// Revoking the device this node runs as would withdraw the identity the
+    /// revocation is signed with before any peer heard of it, so it is refused
+    /// before anything is applied - and as a typed refusal, not an internal error.
+    #[test]
+    fn revoking_the_device_this_node_runs_as_is_refused() {
+        let (store, own) = a_node_with_its_own_device();
+
+        let refused = resolve_target(&store, &NS.into(), own).expect_err("this is our device");
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::RevocationOfOwnDevice { .. })
+            ),
+            "got: {refused}"
+        );
+    }
+
+    /// A device the namespace holds no binding for names no account, so there is
+    /// nothing to revoke. Typed, so the API answers `404` rather than `500`.
+    #[test]
+    fn a_device_the_namespace_holds_no_binding_for_is_refused_as_unknown() {
+        let (store, _own) = a_node_with_its_own_device();
+
+        let refused = resolve_target(&store, &NS.into(), DeviceId::from([0u8; 32]))
+            .expect_err("nothing is bound under this id");
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::RevocationUnknownDevice { .. })
+            ),
+            "got: {refused}"
+        );
+    }
 
     /// Last, whatever the key-ordered scan says: the account namespace's apply
     /// drives this node's own carry, which then finds the rest already gone.
