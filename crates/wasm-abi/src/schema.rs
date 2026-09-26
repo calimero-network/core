@@ -188,7 +188,7 @@ impl XCallCallers {
 }
 
 /// Method definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Method {
     pub name: String,
     /// The method's doc comment, minus its `# Arguments` section (that moves
@@ -855,7 +855,6 @@ mod tests {
         // Add a simple method
         manifest.methods.push(Method {
             name: "test_method".to_owned(),
-            doc: None,
             params: vec![Parameter {
                 name: "param1".to_owned(),
                 type_: TypeRef::string(),
@@ -863,15 +862,7 @@ mod tests {
                 doc: None,
             }],
             returns: Some(TypeRef::i32()),
-            returns_nullable: None,
-            errors: Vec::new(),
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         });
 
         // Serialize and deserialize
@@ -891,7 +882,6 @@ mod tests {
         // Add a test method
         manifest.methods.push(Method {
             name: "test_method".to_owned(),
-            doc: None,
             params: vec![Parameter {
                 name: "param1".to_owned(),
                 type_: TypeRef::string(),
@@ -899,15 +889,7 @@ mod tests {
                 doc: None,
             }],
             returns: Some(TypeRef::string()),
-            returns_nullable: None,
-            errors: Vec::new(),
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
@@ -921,18 +903,8 @@ mod tests {
         // ReadOnly serialises as "read_only" and round-trips.
         let m = Method {
             name: "query".to_owned(),
-            doc: None,
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::ReadOnly,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("read_only"), "expected 'read_only' in {json}");
@@ -942,18 +914,8 @@ mod tests {
         // Mutating serialises as "mutating" and round-trips.
         let m_mut = Method {
             name: "mutate".to_owned(),
-            doc: None,
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::Mutating,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         };
         let json_mut = serde_json::to_string(&m_mut).unwrap();
         assert!(
@@ -966,18 +928,7 @@ mod tests {
         // Unspecified is omitted from JSON (backward-compatible wire format).
         let m2 = Method {
             name: "unspecified".to_owned(),
-            doc: None,
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         };
         let json2 = serde_json::to_string(&m2).unwrap();
         assert!(
@@ -996,18 +947,7 @@ mod tests {
         // Default false is omitted from JSON — old manifests stay identical.
         let m = Method {
             name: "f".to_owned(),
-            doc: None,
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(
@@ -1225,15 +1165,7 @@ mod tests {
                 nullable: None,
                 doc: Some("Caller's unix seconds.".to_owned()),
             }],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         };
         let json = serde_json::to_value(&documented).unwrap();
         assert_eq!(json["doc"], "Apply a batch.\n\n# Errors\nToo many edits.");
@@ -1329,17 +1261,12 @@ mod tests {
     fn method_hints_round_trip_and_are_omitted_by_default() {
         let hinted = Method {
             name: "wipe".to_owned(),
-            doc: None,
-            params: vec![],
             returns: Some(TypeRef::u32()),
-            returns_nullable: None,
             returns_doc: Some("How many entries were removed.".to_owned()),
-            errors: vec![],
             intent: MethodIntent::Mutating,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
             destructive: true,
             idempotent: true,
+            ..Default::default()
         };
         let json = serde_json::to_value(&hinted).unwrap();
         assert_eq!(json["returns_doc"], "How many entries were removed.");

@@ -336,7 +336,6 @@ fn collect_refs_from_event(event: &Event, path: &str, refs: &mut Vec<(String, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::MethodIntent;
 
     #[test]
     fn test_valid_manifest() {
@@ -354,18 +353,8 @@ mod tests {
         // Add a test method
         manifest.methods.push(Method {
             name: "test_method".to_owned(),
-            doc: None,
-            params: vec![],
             returns: Some(TypeRef::u32()),
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         });
 
         assert!(validate_manifest(&manifest).is_ok());
@@ -378,21 +367,11 @@ mod tests {
         let mut manifest = Manifest::new();
         manifest.methods.push(Method {
             name: "pairs".to_owned(),
-            doc: None,
-            params: vec![],
             returns: Some(TypeRef::list(TypeRef::tuple(vec![
                 TypeRef::string(),
                 TypeRef::reference("NoSuchType"),
             ]))),
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         });
 
         assert!(matches!(
@@ -451,18 +430,8 @@ mod tests {
         // Add a method that references a non-existent type
         manifest.methods.push(Method {
             name: "test_method".to_owned(),
-            doc: None,
-            params: vec![],
             returns: Some(TypeRef::reference("NonExistentType")),
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
-            tee_every_secs: None,
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
+            ..Default::default()
         });
 
         assert!(validate_manifest(&manifest).is_err());
