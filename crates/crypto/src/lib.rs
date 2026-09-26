@@ -300,6 +300,40 @@ pub struct SealedEnvelope {
     pub ciphertext: Vec<u8>,
 }
 
+impl SealedEnvelope {
+    /// Bytes of the fixed-size head: the ephemeral key, then the nonce.
+    const HEAD_LEN: usize = 32 + NONCE_LEN;
+
+    /// The envelope as one byte string: ephemeral key, nonce, then ciphertext.
+    ///
+    /// This layout is what an app stores and what `open_sealed` reads back, so
+    /// it is a wire format: it must never change.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::HEAD_LEN + self.ciphertext.len());
+        bytes.extend_from_slice(AsRef::<[u8]>::as_ref(&self.ephemeral_public_key));
+        bytes.extend_from_slice(&self.nonce);
+        bytes.extend_from_slice(&self.ciphertext);
+        bytes
+    }
+
+    /// Parse [`to_bytes`](Self::to_bytes)' layout. `None` if `bytes` is too short
+    /// to hold the head and an authentication tag.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::HEAD_LEN + AEAD_TAG_LEN {
+            return None;
+        }
+        let (key, rest) = bytes.split_at(32);
+        let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
+        Some(Self {
+            ephemeral_public_key: PublicKey::from(<[u8; 32]>::try_from(key).ok()?),
+            nonce: Nonce::try_from(nonce).ok()?,
+            ciphertext: ciphertext.to_vec(),
+        })
+    }
+}
+
 /// Why a seal or an open failed.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -362,6 +396,19 @@ mod tests {
     use super::*;
 
     // --- sealed envelopes -------------------------------------------------
+
+    #[test]
+    fn an_envelope_survives_its_byte_encoding() {
+        let mut csprng = rand::rng();
+        let root = PrivateKey::random(&mut csprng);
+        let envelope =
+            seal_to_root(&mut csprng, &root.public_key(), b"ace".to_vec()).expect("seal");
+
+        let decoded = SealedEnvelope::from_bytes(&envelope.to_bytes()).expect("decodes");
+        assert_eq!(decoded, envelope);
+        assert_eq!(open_sealed(&root, &decoded).expect("opens"), b"ace");
+        assert!(SealedEnvelope::from_bytes(&envelope.to_bytes()[..40]).is_none());
+    }
 
     #[test]
     fn a_sealed_envelope_opens_with_the_root_it_was_sealed_to() {

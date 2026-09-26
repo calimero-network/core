@@ -429,6 +429,7 @@ impl Module {
             node_client,
             None,
             false,
+            logic::SealingContext::default(),
         )
     }
 
@@ -440,6 +441,9 @@ impl Module {
     /// `tee_trigger` marks a run the node's TEE scheduler fired as the TEE
     /// authority; it unlocks the enclave-only host functions. The node sets it
     /// only after checking that this node is an attested TEE authority.
+    ///
+    /// `sealing` holds the keys behind the sealing host functions; see
+    /// [`logic::SealingContext`].
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub fn run_with_origin<'a>(
         &'a self,
@@ -453,6 +457,7 @@ impl Module {
         node_client: Option<NodeClient>,
         xcall_origin: Option<ContextId>,
         tee_trigger: bool,
+        sealing: logic::SealingContext,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
@@ -461,6 +466,7 @@ impl Module {
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
         context.tee_trigger = tee_trigger;
+        context.sealing = sealing;
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 

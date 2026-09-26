@@ -1547,6 +1547,7 @@ dependencies = [
  "bytes",
  "calimero-account",
  "calimero-context-config",
+ "calimero-crypto",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-storage",
@@ -9801,6 +9802,15 @@ dependencies = [
  "calimero-sdk",
  "calimero-storage",
  "serial_test",
+]
+
+[[package]]
+name = "tee-cards"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

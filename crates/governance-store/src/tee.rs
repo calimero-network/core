@@ -469,6 +469,55 @@ pub fn tee_authorities_for_context(
     Ok(authorities)
 }
 
+/// The attested key of every TEE authority for `context_id`, in account order.
+///
+/// What a `TeeSecret` is sealed to: each key opens its own envelope, so every
+/// authority that may fire a trigger can read the secret, and no member can.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_authority_keys_for_context(
+    store: &Store,
+    context_id: &ContextId,
+) -> EyreResult<Vec<PublicKey>> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(Vec::new());
+    };
+    let mut keys = Vec::new();
+    for account in tee_authorities_for_context(store, context_id)? {
+        if let Some(key) = tee_authority_key(store, &group_id, &account)? {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
+/// Whether `key` belongs to a TEE member of the namespace that owns
+/// `context_id`: its account holds the `ReadOnlyTee` role at the root, with or
+/// without evidence or authority.
+///
+/// A run on such a node may open envelopes only when the TEE scheduler fired
+/// it. What is sealed to a TEE is sealed to its node key, and an ordinary
+/// JSON-RPC call on that node runs as the same key.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn is_tee_member_key_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    key: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    let Some(account) = crate::member_account_in_namespace(store, &group_id, key)? else {
+        return Ok(false);
+    };
+    let root = NamespaceRepository::new(store).resolve(&group_id)?;
+    Ok(MembershipRepository::new(store).role_of(&root, &account)?
+        == Some(GroupMemberRole::ReadOnlyTee))
+}
+
 /// Check whether a TEE attestation quote hash has already been used in a
 /// `MemberJoinedViaTeeAttestation` op for this group.
 pub fn is_quote_hash_used(

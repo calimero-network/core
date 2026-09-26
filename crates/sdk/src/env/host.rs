@@ -175,6 +175,29 @@ pub(crate) fn tee_origin() -> bool {
     with(|h| h.tee_trigger)
 }
 
+/// Marker opening a mock envelope. The mock does not encrypt: it only has to
+/// open for the key it names, like the real one, so app tests can check who
+/// may read what.
+const MOCK_SEALED_TAG: &[u8; 8] = b"mocksea1";
+
+pub(crate) fn seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
+    Some([MOCK_SEALED_TAG.as_slice(), key, plaintext].concat())
+}
+
+pub(crate) fn open_sealed(sealed: &[u8]) -> Option<Vec<u8>> {
+    let rest = sealed.strip_prefix(MOCK_SEALED_TAG.as_slice())?;
+    let (key, plaintext) = rest.split_at_checked(32)?;
+    (key == device_id()).then(|| plaintext.to_vec())
+}
+
+pub(crate) fn tee_authority_keys() -> Vec<u8> {
+    assert!(
+        tee_origin(),
+        "tee_authority_keys is only available in a TEE-triggered execution"
+    );
+    crate::testing::TEE_DEVICE_KEY.to_vec()
+}
+
 /// Whether the mock host should report a blob announce as failed.
 pub(crate) fn blob_announce_should_fail() -> bool {
     with(|h| h.blob_announce_should_fail)

@@ -2233,6 +2233,14 @@ async fn internal_execute(
         }
     };
     let account = principal.account;
+    let sealing = sealing_context(
+        &datastore,
+        &context.id,
+        &executor,
+        identity_private_key,
+        tee_authority,
+        delegation.is_some() || read_as.is_some(),
+    )?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
     // Self-authored: both halves are this node's own identity. Delegated: both
@@ -2252,6 +2260,7 @@ async fn internal_execute(
         is_read_only_call,
         xcall_origin,
         tee_authority,
+        sealing,
     )
     .await?;
 
@@ -2788,6 +2797,44 @@ async fn internal_execute(
     ))
 }
 
+/// The keys behind this run's sealing host functions.
+///
+/// A run may open envelopes sealed to its executor key, with two exceptions.
+/// A run on a TEE node opens nothing unless the TEE scheduler fired it: what is
+/// sealed to a TEE is sealed to that node's key, and an ordinary JSON-RPC call
+/// there runs as the same key. And a delegated run opens nothing, because its
+/// principal is someone other than the node whose key it would open with.
+///
+/// A TEE-triggered run also learns the attested keys of every TEE authority, to
+/// seal a `TeeSecret` to.
+fn sealing_context(
+    datastore: &Store,
+    context_id: &ContextId,
+    executor: &PublicKey,
+    identity_private_key: &PrivateKey,
+    tee_authority: bool,
+    delegated: bool,
+) -> eyre::Result<calimero_runtime::logic::SealingContext> {
+    let may_open = tee_authority
+        || (!delegated
+            && !calimero_governance_store::is_tee_member_key_for_context(
+                datastore, context_id, executor,
+            )?);
+    let tee_authority_keys = if tee_authority {
+        calimero_governance_store::tee_authority_keys_for_context(datastore, context_id)?
+            .into_iter()
+            .map(|key| *key)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(calimero_runtime::logic::SealingContext {
+        opener: may_open
+            .then(|| std::sync::Arc::new(PrivateKey::from(*identity_private_key.as_bytes()))),
+        tee_authority_keys,
+    })
+}
+
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
 pub(crate) async fn execute(
     context: &ContextGuard,
@@ -2803,6 +2850,7 @@ pub(crate) async fn execute(
     is_read_only_call: bool,
     xcall_origin: Option<ContextId>,
     tee_trigger: bool,
+    sealing: calimero_runtime::logic::SealingContext,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
@@ -2839,6 +2887,7 @@ pub(crate) async fn execute(
                     Some(node_client),
                     xcall_origin,
                     tee_trigger,
+                    sealing,
                 )?
             } else {
                 module.run_with_origin(
@@ -2852,6 +2901,7 @@ pub(crate) async fn execute(
                     Some(node_client),
                     xcall_origin,
                     tee_trigger,
+                    sealing,
                 )?
             };
             Ok((outcome, storage, private_storage))
