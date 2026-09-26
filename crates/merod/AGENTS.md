@@ -122,6 +122,13 @@ the per-profile JSON; the generic file is the locked-read-only policy, so the
 refuses a release older than the floor, so naming an old but validly signed
 release is not a downgrade.
 
+`MERO_TEE_KMS_BACKEND=tdx` (set by calimero-init from `kms-backend` instance
+metadata) points the node at a TDX cluster KMS: merod fetches
+`kms-tdx-attestation-policy[.<profile>].json` instead, in the same order, and a
+KMS release publishes both kinds side by side. Unset or `dstack` is the Phala
+KMS. Either way the file's own `kms.backend` must equal the one asked for,
+because the signature covers the bytes, not the asset name.
+
 **The KMS's compose hash is pinned too** (`src/kms/event_log.rs`). Node keys are
 derived from the KMS's dstack *app* key, so anything running under that app can
 derive them, and the app owner can upgrade it to another compose file whose

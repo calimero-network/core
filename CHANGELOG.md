@@ -4,6 +4,8 @@
 
 ### Added
 
+- **merod can verify a TDX cluster KMS against its release's TDX policy.** With `MERO_TEE_KMS_BACKEND=tdx`, merod fetches `kms-tdx-attestation-policy[.<profile>].json` from the KMS release, which mero-tee now publishes beside the Phala policies. It keeps the per-profile-then-generic order. Unset or `dstack` keeps today's `kms-phala-attestation-policy…`. The file's own `kms.backend` must equal the one asked for, so a policy of the other kind is refused whatever it is named. Any other value of the variable is an error.
+
 - **merod verifies a KMS that runs as a TDX cluster, with no dstack**
   (`tee.kms.phala.attestation.backend = "tdx"`, or `kms.backend = "tdx"` in the
   release or external policy). mero-kms can now run as a locked GCP TDX image

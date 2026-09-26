@@ -260,6 +260,15 @@ such file does merod fall back to the generic
 refused rather than trusted. A per-profile policy that is published without its
 signature or bundle is an error, never a reason to try the generic file.
 
+A KMS release publishes two kinds of policy side by side while nodes move from
+the Phala KMS to a TDX cluster KMS: `kms-phala-attestation-policy…` (pinned by
+the compose hash its dstack event log measures) and `kms-tdx-attestation-policy…`
+(pinned by all five registers). `MERO_TEE_KMS_BACKEND` says which KMS a node
+was pointed at: unset or `dstack` fetches the first, `tdx` the second, with the
+same profile-then-generic order. The file's own `kms.backend` must equal the
+one asked for, so a file of the other kind is refused whatever it is named.
+calimero-init sets the variable from the `kms-backend` instance metadata.
+
 Registers alone do not pin the KMS. A node's keys are derived from the KMS's
 dstack **app** key, so anything that runs under that app can derive them — and
 the app's owner can upgrade it to another compose file (a debug image with a

@@ -23,6 +23,14 @@ const DEFAULT_ALLOWED_TCB_STATUSES: &[&str] = &["uptodate"];
 /// Release assets are `<stem>.json` (generic) and `<stem>.<profile>.json`
 /// (per image profile), each with a `.sig` and a `.bundle.json` beside it.
 const POLICY_ASSET_STEM: &str = "kms-phala-attestation-policy";
+/// The TDX cluster KMS's policies, which a KMS release publishes beside the
+/// dstack ones while nodes move over (mero-tee `docs/design/gcp-tdx-kms.md`).
+const TDX_POLICY_ASSET_STEM: &str = "kms-tdx-attestation-policy";
+/// Which kind of KMS this node was pointed at, and so which of a release's two
+/// policies it verifies that KMS against. Set by calimero-init from the
+/// `kms-backend` instance metadata; unset is the dstack KMS every node used
+/// before the TDX cluster existed.
+const KMS_BACKEND_ENV: &str = "MERO_TEE_KMS_BACKEND";
 
 /// Attestation policy for KMS verification (mirrors mero-kms AttestationPolicy).
 #[derive(Debug, Clone)]
@@ -167,14 +175,49 @@ pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestati
     let version = normalize_release_version(version)?;
     let tag = format!("mero-kms-v{version}");
     let expected_profile = expected_profile_from_env();
-    let candidates = policy_asset_candidates(expected_profile.as_deref())?;
+    let expected_backend = expected_backend_from_env()?;
+    let candidates = policy_asset_candidates(expected_profile.as_deref(), expected_backend)?;
     let (asset, policy_body) = fetch_first_published(&tag, &candidates, |asset| {
         fetch_verified_asset_if_published(&tag, asset, &KMS_RELEASE_IDENTITY)
     })
     .await
     .map_err(|e| eyre::eyre!("Policy fetch or signature verification failed: {}", e))?;
     info!(%asset, "Verified KMS attestation policy signature");
-    parse_policy_json_for_release(&policy_body, &version, expected_profile.as_deref())
+    let policy =
+        parse_policy_json_for_release(&policy_body, &version, expected_profile.as_deref())?;
+    require_backend(&policy, expected_backend)?;
+    Ok(policy)
+}
+
+/// The kind of KMS this node was pointed at, from `MERO_TEE_KMS_BACKEND`.
+fn expected_backend_from_env() -> EyreResult<KmsBackend> {
+    parse_expected_backend(std::env::var(KMS_BACKEND_ENV).ok().as_deref())
+}
+
+fn parse_expected_backend(value: Option<&str>) -> EyreResult<KmsBackend> {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") | Some("dstack") => Ok(KmsBackend::Dstack),
+        Some("tdx") => Ok(KmsBackend::Tdx),
+        Some(other) => bail!("{KMS_BACKEND_ENV} must be \"dstack\" or \"tdx\", got {other:?}"),
+    }
+}
+
+/// Refuse a policy for another kind of KMS than the one this node was pointed at.
+///
+/// The asset name says which kind a file is meant to be, but the signature
+/// covers the file's bytes, not its name, and each kind pins the KMS
+/// differently: a dstack policy by compose hash, a tdx one by all five
+/// registers. So the kind the file itself declares must be the one asked for.
+fn require_backend(policy: &KmsAttestationPolicy, expected: KmsBackend) -> EyreResult<()> {
+    if policy.backend != expected {
+        bail!(
+            "the release's policy is for a {:?} KMS, but this node was pointed at a {:?} KMS \
+             ({KMS_BACKEND_ENV})",
+            policy.backend,
+            expected
+        );
+    }
+    Ok(())
 }
 
 /// The policy assets to try, in order.
@@ -184,8 +227,12 @@ pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestati
 /// file: it is the locked-read-only policy, so on any other profile its
 /// `profile` field fails the check in [`parse_policy_json_for_release`] rather
 /// than admitting a KMS with the wrong measurements.
-fn policy_asset_candidates(profile: Option<&str>) -> EyreResult<Vec<String>> {
-    let generic = format!("{POLICY_ASSET_STEM}.json");
+fn policy_asset_candidates(profile: Option<&str>, backend: KmsBackend) -> EyreResult<Vec<String>> {
+    let stem = match backend {
+        KmsBackend::Tdx => TDX_POLICY_ASSET_STEM,
+        _ => POLICY_ASSET_STEM,
+    };
+    let generic = format!("{stem}.json");
     let Some(profile) = profile else {
         return Ok(vec![generic]);
     };
@@ -200,7 +247,7 @@ fn policy_asset_candidates(profile: Option<&str>) -> EyreResult<Vec<String>> {
             "MERO_TEE_PROFILE is invalid: expected lowercase letters, digits and '-', got {profile:?}"
         );
     }
-    Ok(vec![format!("{POLICY_ASSET_STEM}.{profile}.json"), generic])
+    Ok(vec![format!("{stem}.{profile}.json"), generic])
 }
 
 /// Return the first candidate the release publishes, with its verified body.
@@ -824,18 +871,18 @@ mod tests {
     #[test]
     fn a_profile_asks_for_its_own_policy_asset_first() {
         assert_eq!(
-            policy_asset_candidates(None).unwrap(),
+            policy_asset_candidates(None, KmsBackend::Dstack).unwrap(),
             vec!["kms-phala-attestation-policy.json"]
         );
         assert_eq!(
-            policy_asset_candidates(Some("debug-read-only")).unwrap(),
+            policy_asset_candidates(Some("debug-read-only"), KmsBackend::Dstack).unwrap(),
             vec![
                 "kms-phala-attestation-policy.debug-read-only.json",
                 "kms-phala-attestation-policy.json",
             ]
         );
         for bad in ["../locked", "Debug", "debug/x", "-x", "debug read"] {
-            let err = policy_asset_candidates(Some(bad)).expect_err(bad);
+            let err = policy_asset_candidates(Some(bad), KmsBackend::Dstack).expect_err(bad);
             assert!(err.to_string().contains("MERO_TEE_PROFILE"), "{err}");
         }
     }
@@ -874,7 +921,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_debug_node_fetches_the_debug_policy_not_the_locked_one() {
-        let candidates = policy_asset_candidates(Some("debug-read-only")).unwrap();
+        let candidates =
+            policy_asset_candidates(Some("debug-read-only"), KmsBackend::Dstack).unwrap();
         let (asset, body) = fetch_first_published(
             "mero-kms-v2.3.69",
             &candidates,
@@ -897,7 +945,8 @@ mod tests {
         let (locked, _) = per_profile_policies();
         let published = [("kms-phala-attestation-policy.json", Ok(locked.as_str()))];
 
-        let candidates = policy_asset_candidates(Some("locked-read-only")).unwrap();
+        let candidates =
+            policy_asset_candidates(Some("locked-read-only"), KmsBackend::Dstack).unwrap();
         let (asset, body) =
             fetch_first_published("mero-kms-v2.3.69", &candidates, release(&published))
                 .await
@@ -906,7 +955,8 @@ mod tests {
         assert!(parse_policy_json_for_release(&body, "2.3.69", Some("locked-read-only")).is_ok());
 
         // A debug node may also land on the generic file, but it is refused.
-        let candidates = policy_asset_candidates(Some("debug-read-only")).unwrap();
+        let candidates =
+            policy_asset_candidates(Some("debug-read-only"), KmsBackend::Dstack).unwrap();
         let (_, body) = fetch_first_published("mero-kms-v2.3.69", &candidates, release(&published))
             .await
             .unwrap();
@@ -915,7 +965,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_per_profile_fetch_is_an_error_not_a_fallback() {
-        let candidates = policy_asset_candidates(Some("debug-read-only")).unwrap();
+        let candidates =
+            policy_asset_candidates(Some("debug-read-only"), KmsBackend::Dstack).unwrap();
         let err = fetch_first_published(
             "mero-kms-v2.3.69",
             &candidates,
@@ -941,5 +992,55 @@ mod tests {
             err.to_string().contains("none of the policy assets"),
             "{err}"
         );
+    }
+
+    /// A node pointed at a TDX cluster asks for the TDX policies, in the same
+    /// profile-then-generic order as the dstack ones.
+    #[test]
+    fn a_tdx_node_asks_for_the_tdx_policies() {
+        assert_eq!(
+            policy_asset_candidates(Some("debug-read-only"), KmsBackend::Tdx).unwrap(),
+            vec![
+                "kms-tdx-attestation-policy.debug-read-only.json",
+                "kms-tdx-attestation-policy.json"
+            ]
+        );
+        assert_eq!(
+            policy_asset_candidates(None, KmsBackend::Tdx).unwrap(),
+            vec!["kms-tdx-attestation-policy.json"]
+        );
+        assert!(policy_asset_candidates(Some("../x"), KmsBackend::Tdx).is_err());
+    }
+
+    #[test]
+    fn the_expected_backend_defaults_to_dstack_and_refuses_anything_else() {
+        assert_eq!(parse_expected_backend(None).unwrap(), KmsBackend::Dstack);
+        assert_eq!(
+            parse_expected_backend(Some("")).unwrap(),
+            KmsBackend::Dstack
+        );
+        assert_eq!(
+            parse_expected_backend(Some("dstack")).unwrap(),
+            KmsBackend::Dstack
+        );
+        assert_eq!(
+            parse_expected_backend(Some(" TDX ")).unwrap(),
+            KmsBackend::Tdx
+        );
+        assert!(parse_expected_backend(Some("sgx")).is_err());
+    }
+
+    /// A file of the other kind is refused whatever its name, so a dstack
+    /// policy served where the tdx one was asked for cannot pin a KMS by
+    /// compose hash on a node that expects registers, nor the reverse.
+    #[test]
+    fn a_policy_for_the_other_kind_of_kms_is_refused() {
+        let hash = "56".repeat(32);
+        let dstack = parse_policy_json(&policy_with("", Some(&hash))).unwrap();
+        let tdx = parse_policy_json(&policy_with(r#", "backend": "tdx""#, None)).unwrap();
+        assert!(require_backend(&dstack, KmsBackend::Dstack).is_ok());
+        assert!(require_backend(&tdx, KmsBackend::Tdx).is_ok());
+        assert!(require_backend(&dstack, KmsBackend::Tdx).is_err());
+        assert!(require_backend(&tdx, KmsBackend::Dstack).is_err());
     }
 }
