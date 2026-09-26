@@ -648,6 +648,18 @@ pub enum MessagePayload<'a> {
         boundary_root_hash: Hash,
         /// Peer's DAG heads at the boundary.
         dag_heads: Vec<[u8; 32]>,
+        /// The context identity the responder serves this snapshot as.
+        ///
+        /// Snapshot apply does not gate entities on their authors, so the
+        /// requester must know its source is an admitted member (#4089). It
+        /// refuses the snapshot unless this identity is currently authorized
+        /// for the context and not revoked.
+        server_identity: PublicKey,
+        /// `server_identity`'s [`InitProof`], bound to the responder's own
+        /// `PeerId`: the same statement a dialer makes ("this peer holds this
+        /// identity's key in this context"), made by the node that answers.
+        /// The requester verifies it against the peer it dialed.
+        server_proof: InitProof,
     },
 
     /// A page of snapshot data.

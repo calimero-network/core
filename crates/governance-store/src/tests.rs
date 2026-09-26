@@ -6122,6 +6122,58 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
     assert!(!revoked(), "on either path");
 }
 
+/// #4089. A snapshot source must be admitted: bound (not revoked) and a member,
+/// whatever its role. A ReadOnly member holds the state and may serve it.
+#[test]
+fn admission_ignores_role_but_not_revocation_or_membership() {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xB7u8; 32]);
+    let ctx = ContextId::from([0xB8u8; 32]);
+    let admin_pk = PublicKey::from([0xB9; 32]);
+    let reader_pk = PublicKey::from([0xBA; 32]);
+    let stranger_pk = PublicKey::from([0xBB; 32]);
+
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
+    let reader = enrol_member(&store, &ns_gid, &reader_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &reader, GroupMemberRole::ReadOnly)
+        .unwrap();
+    register_context_in_group(&store, &ns_gid, &ctx).unwrap();
+
+    let admitted = |pk: &PublicKey| super::is_admitted_to_context(&store, &ctx, pk).unwrap();
+    assert_eq!(
+        admitted(&admin_pk),
+        Some(true),
+        "the group's admin is admitted"
+    );
+    assert_eq!(
+        admitted(&reader_pk),
+        Some(true),
+        "a ReadOnly member is admitted"
+    );
+    assert_eq!(
+        admitted(&stranger_pk),
+        Some(false),
+        "a key the namespace has no binding for is not"
+    );
+
+    let reader_device = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&reader_pk));
+    AccountBindingRepository::new(&store)
+        .apply_revocation(&ns_gid, reader_device)
+        .unwrap();
+    assert_eq!(admitted(&reader_pk), Some(false), "a revoked device is not");
+
+    let loose = ContextId::from([0xBCu8; 32]);
+    assert_eq!(
+        super::is_admitted_to_context(&store, &loose, &admin_pk).unwrap(),
+        None,
+        "a context in no group has no group membership to answer from"
+    );
+}
+
 /// The inherited-deny column must be hash-neutral, like the direct deny-list —
 /// writing it must not perturb the group state hash (which reads only the
 /// GroupMeta and GroupMember rows). Otherwise the sign-time
