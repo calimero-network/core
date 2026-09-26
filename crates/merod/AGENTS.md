@@ -114,8 +114,13 @@ what keep the two implementations the same format — change both or neither.
 
 The release policy is read from its `kms_allowed_*` lists (never `node_allowed_*`),
 and its `role`, `tag` and (with `MERO_TEE_PROFILE`) `profile` must match what was
-asked for. `MERO_TEE_MIN_VERSION` refuses a release older than the floor, so
-naming an old but validly signed release is not a downgrade.
+asked for. With `MERO_TEE_PROFILE` set, merod fetches that profile's asset
+(`kms-phala-attestation-policy.<profile>.json` + `.sig` + `.bundle.json`) and
+falls back to the generic `kms-phala-attestation-policy.json` only on a 404 for
+the per-profile JSON; the generic file is the locked-read-only policy, so the
+`profile` check still refuses it on any other profile. `MERO_TEE_MIN_VERSION`
+refuses a release older than the floor, so naming an old but validly signed
+release is not a downgrade.
 
 **The KMS's compose hash is pinned too** (`src/kms/event_log.rs`). Node keys are
 derived from the KMS's dstack *app* key, so anything running under that app can
