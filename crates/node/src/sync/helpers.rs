@@ -2,7 +2,9 @@
 //!
 //! **DRY Principle**: Extract repeated logic from protocol implementations.
 use calimero_context_client::client::ContextClient;
-use calimero_node_primitives::sync::{EntityDeletion, TreeLeafData};
+use calimero_node_primitives::sync::{
+    EntityDeletion, InitPayload, MessagePayload, StreamMessage, SyncTransport, TreeLeafData,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::{CrdtType, CustomTypeId};
@@ -851,6 +853,59 @@ pub fn apply_leaf_with_crdt_merge_as(
 ///
 /// The initiator batches at this limit; the responder truncates messages exceeding it.
 pub const MAX_ENTITIES_PER_PUSH: usize = 500;
+
+/// Send entities to the peer as `EntityPush` batches, consuming one
+/// `EntityPushAck` per batch. Returns `(applied, batches)` so the caller can
+/// fold both into its own stats.
+///
+/// Shared by the HashComparison and LevelWise initiators: both repair a peer
+/// through the same wire item, and a second copy of the batching would be a
+/// second place for the request budget to drift.
+pub(crate) async fn push_entities<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    identity: PublicKey,
+    leaves: &[TreeLeafData],
+) -> Result<(u64, u64)> {
+    let mut applied = 0u64;
+    let mut batches = 0u64;
+
+    for chunk in leaves.chunks(MAX_ENTITIES_PER_PUSH) {
+        let push_msg = StreamMessage::Init {
+            context_id,
+            party_id: identity,
+            payload: InitPayload::EntityPush {
+                context_id,
+                entities: chunk.to_vec(),
+            },
+            next_nonce: generate_nonce(),
+            // Pushes are writes: each entity is authorized by its own action
+            // path on apply, not by the sender's `party_id`, so no read-gating
+            // proof is attached (or required by the responder) here.
+            pop: None,
+        };
+
+        transport.send(&push_msg).await?;
+        batches += 1;
+
+        let ack = transport
+            .recv()
+            .await?
+            .ok_or_else(|| eyre::eyre!("stream closed while waiting for EntityPushAck"))?;
+
+        match ack {
+            StreamMessage::Message {
+                payload: MessagePayload::EntityPushAck { applied_count },
+                ..
+            } => applied += u64::from(applied_count),
+            _ => {
+                bail!("Unexpected response to EntityPush (peer may not support bidirectional sync)")
+            }
+        }
+    }
+
+    Ok((applied, batches))
+}
 
 /// Outcome of an EntityPush batch.
 ///

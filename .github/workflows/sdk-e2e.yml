@@ -1,13 +1,7 @@
 name: SDK E2E (paired)
 
-# Live behavioural gate ("core breaks first"): merod is built from this PR and the
-# mero-js e2e suite runs against it, then every route in the manifest must have
-# answered the SDK under 400 at least once. A renamed or removed field makes the
-# node refuse the old shape, leaving that route only 4xx, and the run goes red.
-#
-# The SDK ref is paired: declare `sdk-ref: <branch>` in the PR body (or push a
-# same-named branch on mero-js) so a breaking change and its SDK fix go green
-# together; otherwise it runs against mero-js master.
+# Behavioral gate: merod builds from this PR; mero-js e2e runs against it, and every manifest route must
+# answer under 400. Pair via `sdk-ref: <branch>` in the PR body, else it runs against mero-js master.
 
 permissions:
   contents: read
@@ -19,16 +13,8 @@ concurrency:
 
 on:
   pull_request:
-    # `push` below has no filter, so anything missing here does not skip the
-    # job — it defers it until after merge, when master goes red instead of a
-    # PR. That is how #3804 landed a breaking op layout: it changed
-    # `crates/governance-types`, which was not listed, so this job never ran on
-    # the PR and mero-js's borsh encoder was 96 bytes short on master.
-    #
-    # The rule for this list: any crate whose types the SDK re-encodes or whose
-    # HTTP surface it calls. The SDK hand-encodes namespace ops in borsh, so
-    # the governance crates that define those ops belong here as much as the
-    # server that serves them.
+    # A path missing here doesn't skip this job, it just runs after merge on master instead (push below has
+    # no filter). List any crate whose types the SDK re-encodes or whose HTTP surface it calls.
     paths:
       - "crates/server/**"
       - "crates/auth/**"
@@ -43,37 +29,23 @@ on:
       - "scripts/resolve-paired-ref.sh"
       - "scripts/check-endpoint-coverage.sh"
       - "scripts/tests/check-endpoint-coverage.test.sh"
+      - "scripts/tests/resolve-paired-ref.test.sh"
   push:
     branches:
       - master
-  # Re-runnable by hand, because a re-run of a `pull_request` run cannot change
-  # which SDK it tests. The paired ref is read from the PR body at trigger time,
-  # so a re-run replays the old one — including a branch that has since merged
-  # and been deleted, which then fails on checkout rather than falling back to
-  # master. Dispatching sends no PR payload, so the ref resolves to master,
-  # which is exactly what you want to confirm after the SDK side lands.
+  # Re-running a `pull_request` run replays the same paired ref (resolved from
+  # the PR body at trigger time). Dispatch has no PR payload, so it resolves to master.
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   SERVER_PORT: "2428"
-  # Admin credentials minted AT INIT (the login path never mints keys; there
-  # is no first-login bootstrap secret anymore). `merod init` reads these from
-  # its environment, so the dev/dev-password root key exists before the node
-  # ever listens and every login the SDK suite performs is a plain
-  # existing-user authentication. CI-only values for an ephemeral localhost
-  # node; the password is consumed at init to derive the key — nothing is at
-  # rest in config.toml.
+  # Minted at init (no first-login bootstrap secret); CI-only values for an
+  # ephemeral localhost node - the password is consumed at init, not stored.
   MERO_AUTH_ADMIN_USER: dev
   MERO_AUTH_ADMIN_PASSWORD: dev-password
-  # The same credentials, as consumed by mero-js's e2e harness
-  # (tests/e2e/harness.ts resolveCreds() reads MERO_E2E_USER / MERO_E2E_PASS,
-  # defaulting to dev/dev). Pinning them here keeps both sides in lockstep
-  # even if the harness defaults change.
-  #
-  # The password MUST satisfy the provider's configured minimum length
-  # (default 8): init-time provisioning enforces the creation-time policy, so
-  # it cannot be `dev`.
+  # Read by mero-js's harness (resolveCreds()); pin here so both sides stay in lockstep.
+  # Must meet the provider's minimum password length (default 8) - "dev" alone fails.
   MERO_E2E_USER: dev
   MERO_E2E_PASS: dev-password
 
@@ -90,6 +62,9 @@ jobs:
       - name: Test check-endpoint-coverage.sh against fixtures
         run: bash scripts/tests/check-endpoint-coverage.test.sh
 
+      - name: Test resolve-paired-ref.sh
+        run: bash scripts/tests/resolve-paired-ref.test.sh
+
   sdk-e2e:
     name: SDK E2E (paired)
     runs-on: ubuntu-latest
@@ -104,15 +79,10 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v6
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: cargo-lock-deps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build merod
         run: cargo build -p merod --bin merod
@@ -157,7 +127,6 @@ jobs:
           "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded
           "$BIN" --node ci-node run &
           echo "MEROD_PID=$!" >> "$GITHUB_ENV"
-          # Wait for the admin API to answer.
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
               echo "merod healthy"; break
@@ -167,12 +136,8 @@ jobs:
           done
 
       - name: Verify the init-minted admin key answers a plain login
-        # The admin root key was minted at init from MERO_AUTH_ADMIN_USER /
-        # MERO_AUTH_ADMIN_PASSWORD — assert a plain username/password login
-        # works BEFORE the SDK suite runs, so an auth regression fails here
-        # with a clear message instead of somewhere inside the suite. (The
-        # negative wrong/wrong test in the suite stays meaningful: the login
-        # path never mints keys, so nothing can "re-open" on a wrong guess.)
+        # Confirms the init-minted key logs in before the SDK suite runs, so an
+        # auth regression fails here with a clear message instead of buried in the suite.
         run: |
           BODY=$(jq -n --arg u "$MERO_E2E_USER" --arg p "$MERO_E2E_PASS" \
             --argjson ts "$(date +%s)" \
@@ -198,12 +163,8 @@ jobs:
           # The warrant must be real merod output: the SDK cannot sign one, and
           # without it the delegated-authorship suite skips rather than fails.
           MEROD_BINARY: "${{ github.workspace }}/target/debug/merod"
-          # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level
-          # env (dev / dev-password) so the suite logs in with the exact
-          # credentials the "Bootstrap root key" step provisioned. Do not
-          # re-declare them here — a second, divergent value is what previously
-          # let the bootstrap step mint one password while the suite logged in
-          # with another.
+          # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level env;
+          # don't re-declare here, or the suite may log in with different credentials.
         run: |
           pnpm install --frozen-lockfile
           pnpm test:e2e

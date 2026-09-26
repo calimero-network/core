@@ -46,6 +46,14 @@ description: >
 
 force_pull_image: false
 
+# Passed verbatim to each node container as RUST_LOG. Global `info` keeps the
+# log readable; the one raised channel is the announce handler, whose four
+# decline paths — announcement unreadable, not an availability member, blob
+# already held, prefetch slots busy — all log at `debug`. At `info` a failed
+# prefetch says nothing about WHY, which is exactly the state this scenario was
+# stuck in: `prefetching announced blob` at 0 hits and a silent log.
+log_level: "info,calimero_node::handlers::blob_announce=debug"
+
 # Individually defined so exactly one node boots as `merod run --mock-tee`.
 # Explicit ports are required in this form — the dict path does not stride
 # `base_port` per node, so omitting them collides every node on one port.
@@ -94,11 +102,20 @@ steps:
 
   # accept_mock + the all-zero MRTD are the step defaults; set on the namespace
   # root (group id == namespace id).
+  #
+  # `allowed_rtmr3` is passed explicitly because the step defaults it to `[]`
+  # and an empty RTMR3 allowlist is now a REFUSAL rather than a skip. MRTD
+  # measures the virtual firmware, so it is identical across every image profile
+  # of a release -- only RTMR3 says which image ran, which is why the policy has
+  # to name one. `create_mock_quote` reports the same all-zero 48 bytes for
+  # every register, so this is the same value as the MRTD default.
   - name: Set the namespace-root TeeAdmissionPolicy to accept mock attestation
     type: set_tee_admission_policy
     node: blob-tee-owner
     group_id: "{{namespace_id}}"
     accept_mock: true
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
   - name: Let the policy settle
     type: wait
@@ -151,9 +168,21 @@ steps:
   # announce is one-shot and has no catch-up path, so an availability node that
   # is not yet following the context when the blob is announced never hears
   # about it. That is a documented limitation of the design, not of this test.
-  - name: Let the replica auto-follow the context
-    type: wait
-    seconds: 20
+  # Gated on the condition itself, not on a sleep. `is_availability_node_for`
+  # begins with `find_owned_identity(context_id)`: a node with no identity for
+  # this context is not a member of it, so the announcement is dropped — and
+  # dropped silently, since that path logs at `debug`. The announce is one-shot,
+  # so missing it once means the prefetch never happens however long anything
+  # downstream waits. A fixed 20s could not express "once the replica is
+  # actually following"; this can.
+  - name: The replica holds an identity for the context, so an announce can reach it
+    type: assert_api_response
+    node: blob-tee-replica
+    path: /admin-api/contexts/{{context_id}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
 
   # ---------- Upload, and let the availability node prefetch ----------
 
@@ -176,10 +205,6 @@ steps:
     outputs:
       source_sha256: sha256
 
-  - name: Give the announce and the prefetch time to complete
-    type: wait
-    seconds: 30
-
   # The discriminator. This line is emitted by the prefetch path only; a binary
   # without it never fetches a blob it was not asked for, so this assertion
   # fails before the owner is even stopped.
@@ -190,6 +215,13 @@ steps:
     patterns:
       - "prefetching announced blob"
     tail_lines: 20000
+    # `timeout` rather than the fixed wait that used to precede this. A log
+    # line appears when the node gets there, not when the workflow reaches
+    # the step, so a sleep has to be sized by guess — too short fails on a
+    # slow runner, too long taxes every run. Polling returns as soon as the
+    # line is there.
+    timeout: 60
+    check_interval: 2
 
   # ---------- Fault: the only other holder goes away ----------
 

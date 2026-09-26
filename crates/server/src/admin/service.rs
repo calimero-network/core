@@ -92,24 +92,34 @@ pub struct AdminConfig {
     /// two drift — and the drift is silent in the unsafe direction, because the
     /// ingress exemption is the half that actually opens the door. mero-tee's
     /// node image drives both from a single Ansible variable for this reason.
-    #[serde(default)]
-    pub public_intents: bool,
+    /// Reads `public_intents` too, for one release.
+    ///
+    /// The flag and the config key move in OPPOSITE directions, and only one of
+    /// them is safe to get wrong. A new merod reading an old `config.toml` is
+    /// covered by this alias. An OLD merod reading a NEW key is not, and cannot
+    /// be: it simply does not know `delegated_access`, so `#[serde(default)]`
+    /// leaves it false and the relay comes up with the surface silently SHUT.
+    /// That is why the fleet's node image keeps writing the old key until its
+    /// merod is past this release — a rollback that reads as "the flag stopped
+    /// working" rather than as a parse error.
+    #[serde(default, alias = "public_intents")]
+    pub delegated_access: bool,
 }
 
 impl AdminConfig {
     /// One constructor taking both flags, rather than a `new(enabled)` plus a
-    /// `with_public_intents`.
+    /// `with_delegated_access`.
     ///
-    /// `public_intents` decides whether this node exposes a write path to
+    /// `delegated_access` decides whether this node exposes a write path to
     /// callers holding no credential on it, so there should be no way to build
     /// this type without answering that. A default-false convenience
     /// constructor is exactly how a relay ships with the posture nobody
     /// intended — in either direction.
     #[must_use]
-    pub const fn new(enabled: bool, public_intents: bool) -> Self {
+    pub const fn new(enabled: bool, delegated_access: bool) -> Self {
         Self {
             enabled,
-            public_intents,
+            delegated_access,
         }
     }
 }
@@ -390,6 +400,10 @@ pub(crate) fn setup(
         // endorsement node-level, so neither half ever named a namespace.
         .route("/account/pair-init", post(account::pair_init::handler))
         .route(
+            "/account/sign-with-root",
+            post(account::sign_with_root::handler),
+        )
+        .route(
             "/account/pair-complete",
             post(account::pair_complete::handler),
         )
@@ -406,6 +420,18 @@ pub(crate) fn setup(
         .route(
             "/account/devices/{device_id}/relink",
             post(account::relink::handler),
+        )
+        // The other direction, which relink deliberately cannot do: replace the
+        // scope outright, so an application can be taken away again.
+        .route(
+            "/account/devices/{device_id}/scope",
+            put(account::rescope::handler),
+        )
+        // The name every device of the account renders, as opposed to whatever
+        // alias one node happens to hold locally.
+        .route(
+            "/account/devices/{device_id}/label",
+            put(account::label::handler),
         )
         .route(
             "/namespaces/{namespace_id}/account/revoke",
@@ -455,7 +481,7 @@ pub(crate) fn setup(
         // routes are built once and mounted on exactly one of the two routers,
         // so the two postures cannot both be live and no ordering between the
         // routers decides which wins.
-        .merge(if admin_config.public_intents {
+        .merge(if admin_config.delegated_access {
             Router::new()
         } else {
             delegated_execution_routes()
@@ -469,7 +495,7 @@ pub(crate) fn setup(
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
         .nest("/tee", tee::service())
-        .merge(if admin_config.public_intents {
+        .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents"
@@ -492,7 +518,7 @@ pub(crate) fn setup(
 /// not `POST` learns the answer to a question it cannot then act on — either
 /// split is a surface that looks available and is not.
 ///
-/// Which router this is merged into is [`AdminConfig::public_intents`]; see there
+/// Which router this is merged into is [`AdminConfig::delegated_access`]; see there
 /// for why an unauthenticated posture is a coherent choice for these two routes
 /// and only these two.
 fn delegated_execution_routes() -> Router {
@@ -745,6 +771,19 @@ impl Display for ApiError {
 
 impl Error for ApiError {}
 
+impl ApiError {
+    /// True when the status blames the caller rather than this node.
+    ///
+    /// Admin handlers log a failed call at `error!`. On a fleet node those
+    /// journals ship to a central log store, so a UI polling an absent group
+    /// every 1.4s turned a routine `404` into a permanent ERROR stream --
+    /// noise in exactly the place someone looks when diagnosing a real fault.
+    /// A handler that can legitimately answer 4xx picks its level with this.
+    pub(crate) fn is_client_fault(&self) -> bool {
+        self.status_code.is_client_error()
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
         let body = json!({ "error": self.message }).to_string();
@@ -766,15 +805,20 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     use calimero_context::error::ContextError as Refusal;
 
     Some(match err {
-        Refusal::PairingStatementInvalid { .. } | Refusal::PairingCodeMismatch { .. } => {
-            StatusCode::BAD_REQUEST
-        }
-        Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
-            StatusCode::CONFLICT
-        }
-        Refusal::PairingNotTheAccountHolder { .. } | Refusal::PairingDeviceRevoked { .. } => {
-            StatusCode::FORBIDDEN
-        }
+        Refusal::PairingStatementInvalid { .. }
+        | Refusal::PairingCodeMismatch { .. }
+        | Refusal::ScopeReplacementEmpty
+        | Refusal::ScopeReplacementTooLarge { .. }
+        | Refusal::ScopeReplacementUnknownApplication { .. }
+        | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
+        Refusal::PairingNoNamespaceIdentity { .. }
+        | Refusal::PairingNoScopeKey { .. }
+        | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,
+        Refusal::PairingNotTheAccountHolder { .. }
+        | Refusal::PairingDeviceRevoked { .. }
+        | Refusal::ScopeReplacementHoldsTheRoot { .. }
+        | Refusal::DeviceLabelNotOwn { .. } => StatusCode::FORBIDDEN,
+        Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
         Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
         _ => return None,
     })
@@ -832,7 +876,13 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         // parent chain that will not terminate. Fall through to the generic 500,
         // which also keeps their messages (they name internal rows) out of the
         // response.
-        Refusal::MissingMemberValue { .. } | Refusal::DepthExceeded(_) => return None,
+        // `TeeAdmissionPolicyUnreadable` joins them: the op log holds bytes
+        // this binary cannot decode, which is not something the requester did
+        // or can undo. The reason is logged at `error!` where it is actionable;
+        // the response stays generic, like its neighbours here.
+        Refusal::MissingMemberValue { .. }
+        | Refusal::DepthExceeded(_)
+        | Refusal::TeeAdmissionPolicyUnreadable(_) => return None,
     })
 }
 
@@ -855,11 +905,38 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // typed 403 with its (safe, intended) message instead of letting it fall
     // through to the generic 500 below. This is what a caller sees when it
     // lists a group the node hasn't joined / isn't in.
-    if let Some(calimero_context::error::ContextError::NotAGroupMember { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    // `DeviceOutOfScope` rides along: it is the same kind of "no" about this
+    // node's own standing, and a `500` would read as a server fault.
+    if let Some(
+        calimero_context::error::ContextError::NotAGroupMember { .. }
+        | calimero_context::error::ContextError::NotANamespaceMember { .. }
+        // A caller-supplied identity without standing in the group. 403 like
+        // its neighbours, and never 404: the caller holds this key and is
+        // acting AS this identity, so the refusal is about standing rather
+        // than about something being absent.
+        | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
+        | calimero_context::error::ContextError::DeviceOutOfScope { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
+            message: err.to_string(),
+        };
+    }
+    // The caller named something this node does not have. `404` rather than
+    // the generic `500`: the two ask opposite things of a client, and a
+    // control-plane script reading a `500` as "already gone" is how a real
+    // failure got walked past during the fleet-HA incident. These messages
+    // carry only the id the caller supplied, so echoing them leaks nothing.
+    if let Some(
+        calimero_context::error::ContextError::GroupNotFound { .. }
+        | calimero_context::error::ContextError::NamespaceNotFound { .. }
+        | calimero_context::error::ContextError::ApplicationNotFound { .. }
+        | calimero_context::error::ContextError::ContextNotFound { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::NOT_FOUND,
             message: err.to_string(),
         };
     }
@@ -1202,6 +1279,20 @@ mod parse_api_error_tests {
         );
     }
 
+    #[test]
+    fn a_narrowed_device_maps_to_403_with_message() {
+        let err = calimero_context::error::ContextError::DeviceOutOfScope {
+            group_id: "test-group".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("narrowed its application scope"),
+            "expected the typed reason to reach the client, got: {}",
+            api.message
+        );
+    }
+
     /// The whole point of the typed variant: a caller that got the init params
     /// wrong must be told so. Before this, the same case answered
     /// `500 {"error":"Internal server error"}` and the reason lived only in the
@@ -1498,6 +1589,47 @@ mod parse_api_error_tests {
             );
         }
 
+        /// A scope replacement that names no application at all. `400`: the
+        /// caller has to fix the payload, and `all` is the request they meant.
+        #[test]
+        fn an_empty_scope_replacement_maps_to_400() {
+            let api = parse_api_error(ContextError::ScopeReplacementEmpty.into());
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        }
+
+        /// A scope replacement naming the device that holds the account root.
+        /// `403`: the request was understood and can never work, on any node.
+        #[test]
+        fn rescoping_the_root_holding_device_maps_to_403() {
+            let api = parse_api_error(
+                ContextError::ScopeReplacementHoldsTheRoot {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("holds the account root")
+                    && api.message.contains("nothing to replace"),
+                "the refusal has to say why there is nothing to do; got: {}",
+                api.message
+            );
+        }
+
+        /// A device whose scope epochs are spent. `409`: the request is understood
+        /// and conflicts with a state no retry moves.
+        #[test]
+        fn a_spent_scope_epoch_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::ScopeEpochExhausted {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+            assert!(api.message.contains("last scope epoch"), "{}", api.message);
+        }
+
         /// A relink names a device this node holds no certificate for. `404`,
         /// because the thing being addressed does not exist here - not `403`,
         /// which would say the caller is at the wrong machine.
@@ -1531,5 +1663,202 @@ mod parse_api_error_tests {
                 api.message
             );
         }
+    }
+
+    /// "The thing you named is not here" must be a `404`.
+    ///
+    /// These were bare `bail!("group '…' not found")`, which `parse_api_error`
+    /// had nothing to match, so they came back as
+    /// `500 {"error":"Internal server error"}`. Two things went wrong with
+    /// that during the fleet-HA incident: a control-plane wrapper around
+    /// namespace-leave read the 500 as "likely already left / not a member"
+    /// and carried on past a real failure, and a dashboard polling an absent
+    /// group every ~1.4s turned a routine miss into a permanent ERROR stream
+    /// in the operator's central log store.
+    mod absent_resources_are_404_not_500 {
+        use calimero_context::error::ContextError;
+
+        use super::*;
+
+        #[test]
+        fn a_missing_group_is_404_and_keeps_its_message() {
+            let api = parse_api_error(
+                ContextError::GroupNotFound {
+                    group_id: "ContextGroupId(f72d)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+            assert!(
+                api.message.contains("f72d"),
+                "the id the caller supplied is what tells them what was missing; got: {}",
+                api.message
+            );
+        }
+
+        #[test]
+        fn missing_namespace_application_and_context_are_404_too() {
+            for err in [
+                ContextError::NamespaceNotFound {
+                    namespace_id: "n".to_owned(),
+                },
+                ContextError::ApplicationNotFound {
+                    application_id: "a".to_owned(),
+                },
+                ContextError::ContextNotFound {
+                    context_id: "c".to_owned(),
+                },
+            ] {
+                let rendered = err.to_string();
+                assert_eq!(
+                    parse_api_error(err.into()).status_code,
+                    StatusCode::NOT_FOUND,
+                    "{rendered}"
+                );
+            }
+        }
+
+        /// The queried identity not being a member is the same category as the
+        /// group being absent: the caller asked about something that is not
+        /// there.
+        #[test]
+        fn a_non_member_identity_is_404() {
+            let api = parse_api_error(
+                MembershipError::MemberNotFound {
+                    group_id: "g".to_owned(),
+                    member: "m".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// Not a member is `403`, not `404`: the group exists, the node just
+        /// has no standing in it, and telling a caller "not found" would send
+        /// them looking for a group that is right there.
+        #[test]
+        fn not_a_member_stays_403_for_groups_and_namespaces() {
+            for err in [
+                ContextError::NotAGroupMember {
+                    group_id: "g".to_owned(),
+                },
+                ContextError::NotANamespaceMember {
+                    namespace_id: "n".to_owned(),
+                },
+            ] {
+                assert_eq!(
+                    parse_api_error(err.into()).status_code,
+                    StatusCode::FORBIDDEN
+                );
+            }
+        }
+
+        /// Why typing was needed at all, pinned: the untyped form these sites
+        /// used still falls through to the generic 500 with its message
+        /// scrubbed. This is what every one of them returned before.
+        #[test]
+        fn an_untyped_not_found_still_falls_through_to_500() {
+            let api = parse_api_error(eyre::eyre!("group 'ContextGroupId(f72d)' not found"));
+            assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(api.message, "Internal server error");
+        }
+
+        /// A caller-supplied identity is not this node, and the message must
+        /// not claim it is.
+        ///
+        /// `create_context` takes `identity_secret` straight from the request
+        /// body, so the identity it checks is routinely somebody else's.
+        /// Reusing `NotAGroupMember` there answered "node is not a member of
+        /// group X" about a principal that was never the node.
+        #[test]
+        fn a_caller_supplied_identity_is_403_and_names_the_identity_not_the_node() {
+            let api = parse_api_error(
+                ContextError::IdentityNotAGroupMember {
+                    group_id: "g".to_owned(),
+                    identity: "ed25519:caller".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("ed25519:caller"),
+                "the refusal must name the identity that was checked; got: {}",
+                api.message
+            );
+            assert!(
+                !api.message.contains("node is not a member"),
+                "and must not claim the NODE is the one without standing; got: {}",
+                api.message
+            );
+        }
+
+        /// The log-level split rides on this, and an ERROR per poll on a fleet
+        /// node is shipped to the operator's log store.
+        #[test]
+        fn client_fault_tracks_the_status_class() {
+            let not_found = parse_api_error(
+                ContextError::GroupNotFound {
+                    group_id: "g".to_owned(),
+                }
+                .into(),
+            );
+            assert!(not_found.is_client_fault());
+
+            let server_fault = parse_api_error(eyre::eyre!("something internal broke"));
+            assert!(!server_fault.is_client_fault());
+        }
+    }
+}
+
+#[cfg(test)]
+mod admin_config_compat_tests {
+    use super::AdminConfig;
+
+    /// A node upgraded in place still reads the key its `config.toml` holds.
+    ///
+    /// `merod init` wrote `public_intents` for every node created before this
+    /// rename, and nothing rewrites an existing config on upgrade. Without the
+    /// alias the field would fall to `#[serde(default)]` and the relay would
+    /// come up with the delegated surface SHUT — not an error, just quietly
+    /// off, which is the failure mode nobody notices until a client reports it.
+    #[test]
+    fn the_old_config_key_still_sets_the_new_field() {
+        let old: AdminConfig =
+            serde_json::from_str(r#"{"enabled":true,"public_intents":true}"#).unwrap();
+        assert!(
+            old.delegated_access,
+            "an existing config.toml must keep opening the surface it opened yesterday"
+        );
+
+        let new: AdminConfig =
+            serde_json::from_str(r#"{"enabled":true,"delegated_access":true}"#).unwrap();
+        assert!(new.delegated_access);
+
+        let absent: AdminConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(
+            !absent.delegated_access,
+            "a config that mentions neither must stay shut"
+        );
+    }
+
+    /// What this node WRITES is the new key, and that is the half the alias
+    /// cannot save.
+    ///
+    /// An older merod does not know `delegated_access`, so it reads a config
+    /// written here as "unset" and comes up shut. The compat paths therefore run
+    /// in opposite directions. A new binary reading an old key is covered
+    /// above; an old binary reading a new key is not, and cannot be. That is
+    /// why the fleet image keeps writing the old key until its merod is past
+    /// this release — a rollback would otherwise present as "the flag stopped
+    /// working" rather than as a parse error anyone could act on.
+    #[test]
+    fn a_written_config_uses_the_new_key_only() {
+        let json = serde_json::to_string(&AdminConfig::new(true, true)).unwrap();
+        assert!(json.contains("delegated_access"), "{json}");
+        assert!(
+            !json.contains("public_intents"),
+            "serializing the old name back out would make the rename invisible \
+             and never end: {json}"
+        );
     }
 }

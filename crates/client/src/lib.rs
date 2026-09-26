@@ -18,6 +18,7 @@ pub mod auth;
 pub mod client;
 pub mod connection;
 pub mod errors;
+pub mod proof;
 pub mod storage;
 pub mod traits;
 

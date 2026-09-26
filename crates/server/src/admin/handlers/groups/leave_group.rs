@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::LeaveGroupRequest;
 use calimero_server_primitives::admin::{LeaveGroupApiResponse, LeaveGroupApiResponseData};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -38,7 +38,7 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            info!(
+            debug!(
                 group_id=%group_id_str,
                 member=%resp.member_public_key,
                 "Successfully left group"

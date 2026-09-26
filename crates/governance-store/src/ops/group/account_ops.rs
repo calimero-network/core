@@ -1,5 +1,6 @@
-//! Apply handlers for the account plane: device link and certification, the
-//! account's namespace set, device revocation, and account root-key rotation.
+//! Apply handlers for the account plane: device link and certification, device
+//! naming, the account's namespace set, device revocation, and account root-key
+//! rotation.
 //!
 //! They share a file because they share one invariant, and separating them
 //! would let it drift: **every one of them must be idempotent and
@@ -18,7 +19,7 @@ use crate::op_events::OpEvent;
 use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
+    DeviceLabel, DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -51,8 +52,29 @@ pub(crate) fn apply_device_linked(
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
     endorsement: &AccountMemberEndorsement,
+    scope: &AccountProof<DeviceScope>,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
+
+    // Which namespaces the root meant this device to reach, and the epoch the
+    // binding is stamped at, which a later descope orders itself against.
+    if let Err(err) = scope.authorises(cert.account, cert.device) {
+        tracing::warn!(group_id = ?group_id, account = %cert.account, device = %cert.device,
+                       %err, "device link: the scope did not authorise this device");
+        return Ok(());
+    }
+    // The account namespace is exempt, recognised node-locally: pairing publishes a
+    // device's first link there BEFORE the certificate that would name it.
+    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? != Some(group_id) {
+        let application = crate::MetaRepository::new(ctx.store())
+            .load(&group_id)?
+            .map(|meta| meta.target.application_id);
+        if !calimero_account::scope_covers(&scope.statement.applications, application) {
+            tracing::warn!(group_id = ?group_id, device = %cert.device, ?application,
+                           "device link: the carried scope does not reach this group");
+            return Ok(());
+        }
+    }
 
     // The policy gate, in three steps: the endorsement is about this account, it
     // is validly signed, and its signer is a member at the cut. Membership rows
@@ -98,7 +120,8 @@ pub(crate) fn apply_device_linked(
     let store = ctx.store();
     let bindings = AccountBindingRepository::new(store);
 
-    let outcome = bindings.apply_link(&group_id, genesis, chain, cert)?;
+    let outcome =
+        bindings.apply_link(&group_id, genesis, chain, cert, scope.statement.scope_epoch)?;
 
     // Record the vouch even when the link itself is refused, for the same reason
     // the genesis is absorbed unconditionally: the endorsement is self-certifying
@@ -129,11 +152,12 @@ pub(crate) fn apply_device_linked(
     match outcome {
         Ok(binding) => {
             remember_own_link_if_ours(ctx, genesis, chain, cert);
-            tracing::info!(
+            tracing::debug!(
                 group_id = ?group_id,
                 account = %binding.account,
                 device = %binding.device,
                 device_epoch = binding.device_epoch,
+                scope_epoch = scope.statement.scope_epoch,
                 "account device linked"
             );
             // The device saw the group's earlier context registrations as
@@ -248,11 +272,8 @@ pub(crate) fn apply_device_certified(
         return Ok(());
     }
 
-    let recorded = crate::AccountDeviceRegistry::new(ctx.store(), group_id).record(
-        certificate,
-        &scope.statement.applications,
-        scope.statement.scope_epoch,
-    )?;
+    let recorded =
+        crate::AccountDeviceRegistry::new(ctx.store(), group_id).record(certificate, scope)?;
     if !recorded {
         return Ok(());
     }
@@ -260,7 +281,7 @@ pub(crate) fn apply_device_certified(
         group_id: group_id.to_bytes(),
         device,
     });
-    tracing::info!(
+    tracing::debug!(
         group_id = ?group_id,
         %device,
         scope_epoch = scope.statement.scope_epoch,
@@ -433,7 +454,7 @@ pub(crate) fn apply_device_unlinked(
     // Puts this node back on its own root when the withdrawn device is its own.
     // Best-effort: a node-local write must never refuse an op the group accepted.
     match crate::NodeDeviceRepository::new(ctx.store()).release_revoked_device(*device) {
-        Ok(true) => tracing::info!(group_id = ?group_id, %device,
+        Ok(true) => tracing::debug!(group_id = ?group_id, %device,
                                    "released this node's withdrawn device"),
         Ok(false) => {}
         Err(err) => tracing::warn!(group_id = ?group_id, %device, %err,
@@ -451,13 +472,138 @@ pub(crate) fn apply_device_unlinked(
             .flatten(),
     });
 
-    tracing::info!(
+    tracing::debug!(
         group_id = ?group_id,
         account = %account,
         device = %device,
         self_service,
         "account device unlinked"
     );
+    Ok(())
+}
+
+/// `GroupOp::AccountDeviceDescoped` - drop a device's binding because the
+/// account replaced its scope with one that no longer reaches this group.
+pub(crate) fn apply_device_descoped(
+    ctx: &mut GroupApplyCtx<'_>,
+    account: &AccountId,
+    device: &DeviceId,
+    application: Option<ApplicationId>,
+    scope: &AccountProof<DeviceScope>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+
+    // The mirror of the link's gate: the scope must authorise this device, and a
+    // scope that still reaches here is not a narrowing at all.
+    if let Err(err) = scope.authorises(*account, *device) {
+        tracing::warn!(group_id = ?group_id, %account, %device, %err,
+                       "account device descoped: the scope did not authorise this device");
+        return Ok(());
+    }
+    // A device keeps its account namespace, recognised here by the REPLICATED
+    // registry row: a node-local read would drop a binding this node's peers keep.
+    if crate::AccountDeviceRegistry::new(ctx.store(), group_id)
+        .device(*device)?
+        .is_some_and(|known| known.proof.statement.account == *account)
+    {
+        tracing::warn!(group_id = ?group_id, %device,
+                       "account device descoped: a device keeps its account namespace");
+        return Ok(());
+    }
+    // The op's own application, not the live metadata row: that row moves under
+    // `TargetApplicationSet`, so two replicas would answer differently.
+    if calimero_account::scope_covers(&scope.statement.applications, application) {
+        tracing::warn!(group_id = ?group_id, %device,
+                       "account device descoped: the carried scope still reaches this group");
+        return Ok(());
+    }
+
+    // Only the account may narrow its own device: the statement rides in the clear
+    // on every link, so any member could otherwise replay a superseded one.
+    //
+    // Order-safe: the signer resolves through its own binding, which causally
+    // precedes any descope it publishes.
+    if !ctx.signer_is(account)? {
+        tracing::warn!(group_id = ?group_id, %account, %device, signer = %ctx.signer(),
+                       "account device descoped: the signer does not speak for this account");
+        return Ok(());
+    }
+
+    // The floor is what refuses a stale link replayed later; it is raised even
+    // when nothing is bound, so the outcome does not depend on arrival order.
+    let epoch = scope.statement.scope_epoch;
+    if !AccountBindingRepository::new(ctx.store()).narrow(&group_id, *account, *device, epoch)? {
+        return Ok(());
+    }
+    // The same debt a revocation leaves: the device stops writing at once but
+    // keeps the key it holds, so it reads on until an admin rotates.
+    crate::PendingDeviceRotationRepository::new(ctx.store()).mark(&group_id, device)?;
+    ctx.queue_event(OpEvent::DeviceDescoped {
+        group_id: group_id.to_bytes(),
+        account: *account,
+        device: *device,
+    });
+    tracing::debug!(
+        group_id = ?group_id,
+        %account,
+        %device,
+        scope_epoch = scope.statement.scope_epoch,
+        "account device descoped"
+    );
+    Ok(())
+}
+
+/// `GroupOp::AccountDeviceLabelled` - give a device of this account a name.
+///
+/// A root-signed statement names any device of the account; without one the
+/// signer may name only the device its own live binding here resolves to.
+pub(crate) fn apply_device_labelled(
+    ctx: &mut GroupApplyCtx<'_>,
+    account: &AccountId,
+    device: &DeviceId,
+    label: &str,
+    label_epoch: u32,
+    root_proof: Option<&AccountProof<DeviceLabel>>,
+) -> EyreResult<()> {
+    let group_id = *ctx.group_id();
+
+    let authorised = match root_proof {
+        Some(proof) => match proof.authorises(*account, *device) {
+            // The statement must name the very fields the op carries, or anyone
+            // who saw one could re-wrap it around any text at any epoch.
+            Ok(verified) => verified.label == label && verified.label_epoch == label_epoch,
+            Err(err) => {
+                tracing::warn!(group_id = ?group_id, %account, %device, %err,
+                               "account device labelled: the statement did not verify");
+                false
+            }
+        },
+        // The live set, so a revoked or superseded device resolves to nothing and
+        // cannot rename itself on its way out.
+        None => AccountBindingRepository::new(ctx.store())
+            .binding_for_sign_pk(&group_id, ctx.signer())?
+            .is_some_and(|binding| binding.device == *device && binding.account == *account),
+    };
+    if !authorised {
+        tracing::warn!(
+            group_id = ?group_id,
+            %account,
+            %device,
+            signer = %ctx.signer(),
+            root_signed = root_proof.is_some(),
+            "account device labelled: the signer may not name this device"
+        );
+        return Ok(());
+    }
+
+    if !crate::AccountDeviceRegistry::new(ctx.store(), group_id).record_label(
+        *device,
+        label,
+        label_epoch,
+    )? {
+        return Ok(());
+    }
+    tracing::debug!(group_id = ?group_id, %device, label_epoch, "account device labelled");
     Ok(())
 }
 
@@ -562,7 +708,7 @@ pub(crate) fn apply_keys_rotated(
 
     match AccountBindingRepository::new(store).apply_rotation(&group_id, handoff)? {
         Ok(()) => {
-            tracing::info!(
+            tracing::debug!(
                 group_id = ?group_id,
                 account = %handoff.account,
                 from_epoch = handoff.from_epoch,

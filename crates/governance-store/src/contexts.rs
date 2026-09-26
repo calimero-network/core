@@ -232,7 +232,7 @@ pub fn restore_member_context_identities(
                 &identity_key,
                 &calimero_store::types::ContextIdentity { private_key: None },
             )?;
-            tracing::info!(
+            tracing::debug!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 context_id = %hex::encode(context_id.as_ref()),
                 ?member,

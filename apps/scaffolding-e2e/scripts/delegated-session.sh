@@ -47,64 +47,13 @@ RELAY_ACCOUNT="$6"
 
 URL=$(node_url "${NODE}") || fail "could not resolve ${NODE}'s URL"
 
-# --- 1. The node issues a challenge -----------------------------------------
+# --- 1-3. A session, from a device key and no password ---------------------
 #
-# Fetched immediately before signing: it is single-use and short-lived, so a
-# statement minted against a stale one is refused before any signature work.
+# The exchange lives in `account-api.sh` because `delegated-read-scope.sh` needs
+# the same one twice over; a second copy of it would drift silently.
 
-CHALLENGE=$(curl -fsS "${URL}/auth/challenge" \
-    | sed -n 's/.*"challenge"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
-[ -n "${CHALLENGE}" ] || fail "the node issued no challenge"
-echo "challenge: ${CHALLENGE}"
-
-# --- 2. The device signs a login statement, offline -------------------------
-#
-# `merod account login-statement` rather than a re-encoding here. The borsh
-# layout and the signing domain live in one place on purpose —
-# `LoginStatement::signing_payload` says so in its own docs — and a harness
-# carrying its own copy fails in the worst direction: the copy passes its own
-# checks while every real client is refused.
-#
-# The session key is ephemeral and distinct from the device key: it is what the
-# token authorises, so a leaked session cannot be escalated into use of the
-# device key itself.
-# ONE invocation: each call signs a fresh statement with its own timestamps, so
-# taking the statement from one and the keys from another would post a statement
-# naming a session key it never signed over — refused, and confusingly so.
-# `--generate-session-key` mints the pair here precisely so this script does no
-# crypto of its own.
-SIGNED=$(offline_merod "${NODE}" account login-statement \
-    --challenge "${CHALLENGE}" \
-    --node "${NODE_KEY}" \
-    --device-secret "${DEVICE_SECRET}" \
-    --generate-session-key \
-    --credential "${CREDENTIAL}" \
-    --audience cli)
-
-STATEMENT=$(echo "${SIGNED}" | head -1)
-SESSION_KEY=$(echo "${SIGNED}" | sed -n 's/^Session:[[:space:]]*//p')
-[ -n "${STATEMENT}" ] || fail "merod produced no login statement"
-[ -n "${SESSION_KEY}" ] || fail "merod produced no session key"
-echo "statement signed, session key ${SESSION_KEY}"
-
-# --- 3. The node mints a session from it ------------------------------------
-
-# `timestamp` is REQUIRED and `BaseTokenRequest` is `deny_unknown_fields`, so a
-# body missing it is rejected before any provider runs -- and the refusal names
-# deserialization, not the login, which reads as though the statement were at
-# fault. `permissions` is deliberately OMITTED rather than set: leaving it unset
-# takes the provider's own `session_permissions` (`context:intent`,
-# `context:query`, `context:subscribe`) instead of asking for authority a
-# delegated session must not have. mero-js#84 is the same mistake made the other
-# way -- `authenticate()` hardcodes `['admin']`.
-TOKEN_BODY=$(printf '{"auth_method":"account_proof","public_key":"%s","client_name":"%s","timestamp":%s,"provider_data":{"challenge":"%s","login_statement":"%s","account_proof":"%s"}}' \
-    "${SESSION_KEY}" "${URL}" "$(date +%s)" "${CHALLENGE}" "${STATEMENT}" "${CREDENTIAL}")
-
-TOKEN_RES=$(curl -sS -X POST "${URL}/auth/token" \
-    -H 'Content-Type: application/json' \
-    -d "${TOKEN_BODY}")
-TOKEN=$(echo "${TOKEN_RES}" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-[ -n "${TOKEN}" ] || fail "no session was minted, and this is the criterion: ${TOKEN_RES}"
+TOKEN=$(mint_session "${URL}" "${NODE_KEY}" "${DEVICE_SECRET}" "${CREDENTIAL}")
+[ -n "${TOKEN}" ] || fail "no session was minted, and this is the criterion"
 echo "session minted with no password"
 
 # --- 4. The session reads a context it is a member of ------------------------
@@ -156,7 +105,7 @@ INTENT_ARGS='{"key":"delegated","value":"written-by-a-keyholder"}'
 # the node that spends the warrant. The scenario granted it
 # `CAN_AUTHOR_ON_BEHALF` one step up; without that the POST below is refused,
 # which is exactly what `delegated-authorship.yml` asserts separately.
-WARRANT=$(offline_merod "${NODE}" account warrant \
+WARRANT=$(offline_merod account warrant \
     --context "${CONTEXT}" \
     --executor "${RELAY_ACCOUNT}" \
     --method set \

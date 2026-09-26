@@ -1,3 +1,6 @@
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
+
 use super::core::NamespaceRepository;
 use super::op_log::NamespaceOpLogService;
 use crate::{GroupKeyring, MembershipRepository};
@@ -7,11 +10,23 @@ use calimero_governance_types::NamespaceId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
+/// A candidate's rank inside one causal layer of the retry replay.
+type TieBreak = ([u8; 32], u64);
+
 /// A namespace group operation that can be retried locally because the
 /// corresponding group key is now available.
 pub struct RetryCandidate {
     pub signed_op: SignedNamespaceOp,
     pub group_key: [u8; 32],
+}
+
+impl RetryCandidate {
+    /// Order inside one causal layer: a signer's own ops in publish order, and
+    /// signer bytes across signers so every replica breaks the tie the same way.
+    fn tie_break(&self) -> TieBreak {
+        let signer_bytes: &[u8; 32] = self.signed_op.signer.as_ref();
+        (*signer_bytes, self.signed_op.nonce)
+    }
 }
 
 /// Service for retrying deferred encrypted group operations after key delivery.
@@ -105,6 +120,71 @@ impl<'a> NamespaceRetryService<'a> {
     /// is therefore treated as keyed here — but that case still surfaces
     /// through the op-driven set the moment one of its (subgroup-key-encrypted)
     /// ops is buffered, so it is not stranded.
+    /// The namespace root when this node **participates in it and holds an
+    /// identity for it, yet holds no key and cannot even resolve itself to an
+    /// account** — the state a self-purged TEE replica is left in.
+    ///
+    /// Disabling fleet HA is a `ReadOnlyTee` self-leave, and the self-purge
+    /// then removes the membership row, the account binding, the group keys
+    /// and the gov-op log, while deliberately keeping the namespace identity
+    /// as a retry anchor. Re-enabling rewrites the participation marker.
+    ///
+    /// That leaves the replica invisible to BOTH existing worklists:
+    /// [`groups_awaiting_key`] needs a buffered op (the log is gone), and
+    /// [`groups_member_but_keyless`] resolves the identity to an account
+    /// before anything else (the binding is gone). So no key request was
+    /// emitted at all, and the node sat subscribed and participating holding
+    /// nothing — never reaching the acceptance gate that everyone assumed had
+    /// refused it.
+    ///
+    /// **Asking is not accepting.** This widens only who *emits* a request;
+    /// what may be *adopted* is unchanged and still decided by
+    /// `key_server_accepted` — a trusted anchor of the group, or a responder
+    /// proving it is a device of this node's own account. A node that
+    /// qualifies for neither gets a refusal it can log instead of a silent
+    /// stall, which is strictly better than emitting nothing.
+    ///
+    /// Deliberately narrow: this fires only when the identity resolves to NO
+    /// account, which is the purged shape. A node that can resolve itself is
+    /// already answered by [`groups_member_but_keyless`], so nothing that
+    /// worked before changes.
+    pub fn root_participating_but_unbootstrapped(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
+        // No identity ⇒ nothing to recover, and nothing to recover it AS.
+        let Some(record) = NamespaceRepository::new(self.store).identity_record(&ns_typed)? else {
+            return Ok(Vec::new());
+        };
+        let my_identity = record.public_key;
+
+        // No separate participation check: `store_identity` writes the
+        // `NamespaceParticipation` row itself, so holding an identity for this
+        // namespace IS participating in it. Scanning the participation rows
+        // again would cost an O(namespaces) walk on every recovery tick to
+        // re-derive what the identity read above already established.
+
+        // Resolvable ⇒ `groups_member_but_keyless` already owns this case.
+        if crate::member_account_in_namespace(self.store, &ns_typed, &my_identity)?.is_some() {
+            return Ok(Vec::new());
+        }
+
+        // Only a root covered by its own keyring can be recovered here, matching
+        // `groups_member_but_keyless`.
+        if crate::key_covering_group(self.store, &ns_typed)? != ns_typed {
+            return Ok(Vec::new());
+        }
+
+        let has_key = GroupKeyring::new(self.store, ns_typed)
+            .load_current_key()
+            .map_err(|e| eyre::eyre!("load_current_key(root): {e}"))?
+            .is_some();
+        if has_key {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![ns_typed.to_bytes()])
+    }
+
     pub fn groups_member_but_keyless(&self) -> EyreResult<Vec<[u8; 32]>> {
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
@@ -304,37 +384,98 @@ impl<'a> NamespaceRetryService<'a> {
             });
         }
 
-        // Sort by (signer_bytes, nonce) ascending so the apply order
-        // matches publish order *per signer*. Without this sort,
-        // candidates come back in column-iteration order (sorted by
-        // `delta_id`, which is essentially a content hash) — when a
-        // higher-nonce op applies first, `apply_group_op_inner`
-        // advances the per-(group, signer) `last_nonce`, then
-        // incorrectly treats subsequent legitimate lower-nonce ops
-        // from the same signer as duplicates and skips them. That
-        // permanently loses earlier ops in the sequence (e.g. a
-        // `ContextRegistered` published before a later `MemberAdded`
-        // from the same admin), leaving a downstream
-        // `ContextMetadataSet` to bail at the "context not registered
-        // in this group" precondition.
-        //
-        // Note on multi-signer ordering: this sort groups ops by
-        // signer-public-key lexicographically, then by nonce within
-        // each signer. Cross-signer interleaving (signer A nonce 1 →
-        // signer B nonce 1 → signer A nonce 2) is NOT preserved — all
-        // of signer A's ops apply first, then all of signer B's. This
-        // is safe for correctness because `last_nonce` is tracked
-        // per-(group, signer), so each signer's nonce check is
-        // independent. Cross-signer causal ordering, where it
-        // matters, is enforced separately by `parent_op_hashes` on
-        // the namespace DAG at the time ops are received — the retry
-        // path here is just replaying ops that were already
-        // DAG-validated before being buffered awaiting `KeyDelivery`.
-        candidates.sort_by_key(|c| {
-            let signer_bytes: &[u8; 32] = c.signed_op.signer.as_ref();
-            (*signer_bytes, c.signed_op.nonce)
-        });
-
-        Ok(candidates)
+        // Replay in causal order: an op whose ancestor is in the same batch
+        // applies after it, and `(signer, nonce)` decides the rest — so a
+        // signer's own ops keep publish order (a higher nonce applying first
+        // would window the lower one away as a duplicate) and two replicas
+        // order concurrent ops identically.
+        order_causally(&op_log, candidates)
     }
+}
+
+/// Topologically order a retry batch over the causal edges between its ops.
+///
+/// Ancestry comes from the stored DAG rather than from a candidate's own
+/// `parent_op_hashes`, because the path between two buffered ops usually runs
+/// through ops that are not candidates (cleartext root ops, ops applied live).
+pub(super) fn order_causally(
+    op_log: &NamespaceOpLogService<'_>,
+    candidates: Vec<RetryCandidate>,
+) -> EyreResult<Vec<RetryCandidate>> {
+    let mut index = HashMap::new();
+    for (i, candidate) in candidates.iter().enumerate() {
+        let hash = candidate
+            .signed_op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        let _ = index.insert(hash, i);
+    }
+
+    let mut pending_ancestors = vec![0usize; candidates.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); candidates.len()];
+    for (i, candidate) in candidates.iter().enumerate() {
+        for ancestor in candidate_ancestors(op_log, &index, &candidate.signed_op) {
+            dependents[ancestor].push(i);
+            pending_ancestors[i] += 1;
+        }
+    }
+
+    let mut ready: BinaryHeap<Reverse<(TieBreak, usize)>> = (0..candidates.len())
+        .filter(|i| pending_ancestors[*i] == 0)
+        .map(|i| Reverse((candidates[i].tie_break(), i)))
+        .collect();
+    let mut order = Vec::with_capacity(candidates.len());
+    let mut placed = vec![false; candidates.len()];
+    while let Some(Reverse((_, i))) = ready.pop() {
+        placed[i] = true;
+        order.push(i);
+        for dependent in &dependents[i] {
+            pending_ancestors[*dependent] -= 1;
+            if pending_ancestors[*dependent] == 0 {
+                ready.push(Reverse((candidates[*dependent].tie_break(), *dependent)));
+            }
+        }
+    }
+    // Unreachable while op ids are content hashes, which cannot form a cycle.
+    // Appending rather than dropping keeps a corrupt store from losing an op.
+    let mut stranded: Vec<usize> = (0..candidates.len()).filter(|i| !placed[*i]).collect();
+    stranded.sort_by_key(|i| candidates[*i].tie_break());
+    order.extend(stranded);
+
+    let mut slots: Vec<Option<RetryCandidate>> = candidates.into_iter().map(Some).collect();
+    Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
+}
+
+/// Indices of the candidates that are ancestors of `op`, by walking the stored
+/// DAG from its parents. A path stops at the first candidate it reaches, whose
+/// own ancestors are already ordered ahead of it.
+fn candidate_ancestors(
+    op_log: &NamespaceOpLogService<'_>,
+    index: &HashMap<[u8; 32], usize>,
+    op: &SignedNamespaceOp,
+) -> BTreeSet<usize> {
+    let mut found = BTreeSet::new();
+    let mut visited: HashSet<[u8; 32]> = HashSet::new();
+    let mut queue: VecDeque<[u8; 32]> = op.parent_op_hashes.iter().copied().collect();
+    while let Some(hash) = queue.pop_front() {
+        if !visited.insert(hash) {
+            continue;
+        }
+        if let Some(i) = index.get(&hash) {
+            let _ = found.insert(*i);
+            continue;
+        }
+        // An absent or unreadable ancestor is ancestry this node cannot know;
+        // the op-log walks report the same condition the same way.
+        match op_log.get_signed_op(hash) {
+            Ok(Some(parent)) => queue.extend(parent.parent_op_hashes.iter().copied()),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                delta_id = %hex::encode(hash),
+                error = %format!("{e:#}"),
+                "skipping unreadable ancestor while ordering a retry batch"
+            ),
+        }
+    }
+    found
 }

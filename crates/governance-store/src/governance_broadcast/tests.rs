@@ -7,12 +7,13 @@ use async_trait::async_trait;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
 
 use super::*;
+use crate::{GroupKeyring, NamespaceGovernance, NamespaceOpLogService};
 
 /// Build an unsigned ack for tests where the signature would be checked
 /// downstream (verify_ack tests). Pairs with `signed_ack` below.
@@ -766,4 +767,94 @@ async fn a_resolvable_non_member_is_refused_not_deferred() {
         HeartbeatVerdict::Refused,
         "a resolvable non-member is a genuine refusal"
     );
+}
+
+// ---------------------------------------------------------------------------
+// min_acks at the publisher boundary
+// ---------------------------------------------------------------------------
+
+/// A cheap root op, sealed as the real publishers seal it. Re-names the
+/// existing admin, so the apply has nothing to reject.
+fn sealed_admin_change(store: &Store, ns_id: NamespaceId, pk: PublicKey) -> NamespaceOp {
+    let gid = ContextGroupId::from(ns_id.to_bytes());
+    let _key_id = GroupKeyring::new(store, gid)
+        .store_key(&[0x42; 32])
+        .expect("namespace key");
+    let new_admin = crate::member_account_in_namespace(store, &gid, &pk)
+        .expect("account lookup")
+        .expect("the fixture's admin is enrolled");
+    crate::namespace::seal_root_op_for_publish(store, ns_id, RootOp::AdminChanged { new_admin })
+        .expect("seal")
+}
+
+/// The op this publish just applied, for an ack signed against it.
+fn published_op_hash(store: &Store, ns_id: NamespaceId) -> Option<[u8; 32]> {
+    let (heads, _nonce) = NamespaceGovernance::new(store, ns_id).read_head().ok()?;
+    let signed = NamespaceOpLogService::new(store, ns_id)
+        .get_signed_op(*heads.first()?)
+        .ok()??;
+    calimero_context_client::local_governance::hash_scoped_namespace(
+        ns_topic(ns_id).as_str().as_bytes(),
+        &signed,
+    )
+    .ok()
+}
+
+/// A device mid-pairing subscribes to the namespace topic before it holds the
+/// key, so it can never ack. Waiting on it costs the full op timeout.
+#[actix::test]
+async fn publish_does_not_wait_on_a_subscriber_that_cannot_ack() {
+    let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    node_client.record_peer_subscribed(libp2p::PeerId::random(), ns_topic(ns_id));
+    let op = sealed_admin_change(&store, ns_id, sk.public_key());
+
+    let report = NamespaceGovernance::new(&store, ns_id)
+        .sign_apply_and_publish(&node_client, &ack_router, &sk, op)
+        .await
+        .expect("publish");
+
+    assert!(
+        report.elapsed_ms < 1_000,
+        "no member can ack, so the publish must not wait: elapsed_ms={}",
+        report.elapsed_ms
+    );
+    assert_eq!(report.readiness, PublishReadiness::Solo);
+}
+
+/// The other half, and the cross-node read-after-write guarantee: a second
+/// member is subscribed, so the publish waits for its ack and records it.
+///
+/// Membership alone drives the wait: a member that has just joined and sent
+/// nothing yet still has to be waited for.
+#[actix::test]
+async fn publish_waits_for_and_records_an_ackable_member() {
+    let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let acker = PrivateKey::random(&mut rand::rng());
+    let acker_pk = acker.public_key();
+    plant_namespace_role(&store, ns_id, &acker_pk, GroupMemberRole::Admin);
+    node_client.record_peer_subscribed(libp2p::PeerId::random(), ns_topic(ns_id));
+    let op = sealed_admin_change(&store, ns_id, sk.public_key());
+
+    let ack_store = store.clone();
+    let ack_router = Arc::new(ack_router);
+    let acking = Arc::clone(&ack_router);
+    let _ack_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            if let Some(op_hash) = published_op_hash(&ack_store, ns_id) {
+                acking.route(signed_ack(&acker, op_hash));
+                break;
+            }
+        }
+    });
+
+    let report = NamespaceGovernance::new(&store, ns_id)
+        .sign_apply_and_publish(&node_client, &ack_router, &sk, op)
+        .await
+        .expect("publish");
+
+    assert_eq!(report.acked_by, vec![acker_pk]);
+    assert_eq!(report.readiness, PublishReadiness::Ready);
 }

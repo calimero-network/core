@@ -1993,6 +1993,26 @@ impl SyncManager {
                 Vec::new()
             }
         };
+        // Third worklist: the purged-replica shape. A self-purged TEE replica
+        // holds a namespace identity and a participation marker but no
+        // membership row, no account binding, no buffered op and no key, so it
+        // appeared on NEITHER set above and emitted no request at all -- never
+        // reaching the acceptance gate below that was assumed to have refused
+        // it. Widening who ASKS does not widen what is ACCEPTED: the gate is
+        // unchanged, so a node that qualifies for neither ground gets a logged
+        // refusal instead of a silent stall.
+        let unbootstrapped =
+            match calimero_governance_store::namespace_root_participating_but_unbootstrapped(
+                &store,
+                namespace_id.into(),
+            ) {
+                Ok(groups) => groups,
+                Err(err) => {
+                    debug!(%err, "failed to check for an unbootstrapped namespace root");
+                    Vec::new()
+                }
+            };
+
         drop(store);
 
         // Merge into one request list of `(group_id, Option<key_id>)`: op-driven
@@ -2004,8 +2024,8 @@ impl SyncManager {
             awaiting.iter().map(|(g, _)| *g).collect();
         let mut requests: Vec<([u8; 32], Option<[u8; 32]>)> =
             awaiting.into_iter().map(|(g, k)| (g, Some(k))).collect();
-        for g in member_keyless {
-            if !op_group_ids.contains(&g) {
+        for g in member_keyless.into_iter().chain(unbootstrapped) {
+            if !op_group_ids.contains(&g) && !requests.iter().any(|(existing, _)| *existing == g) {
                 requests.push((g, None));
             }
         }
@@ -2418,7 +2438,7 @@ impl SyncManager {
 
         if let Some(namespace) = devices.account_namespace()? {
             let registry = calimero_governance_store::AccountDeviceRegistry::new(store, namespace);
-            if let Some((known, _epoch)) = registry.device(device)? {
+            if let Some(known) = registry.device(device)? {
                 if known.proof.statement.sign_pk == answering_identity {
                     return Ok(borsh::to_vec(&known.proof)?);
                 }
@@ -3283,8 +3303,21 @@ mod own_device_proof_tests {
             .expect("follow the account namespace");
         let answering = PrivateKey::from([0x42; 32]).public_key();
         let proof = certify(&root_sk, &held, answering);
+        let scope = calimero_account::AccountProof {
+            genesis: proof.genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                &root_sk,
+                proof.statement.account,
+                proof.statement.device,
+                vec![],
+                0,
+                0,
+            )
+            .expect("the account root signs the device's scope"),
+        };
         assert!(AccountDeviceRegistry::new(&store, ns())
-            .record(&proof, &[], 0)
+            .record(&proof, &scope)
             .expect("record the row"));
 
         let bytes =

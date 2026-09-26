@@ -6,6 +6,7 @@ use calimero_primitives::context::ContextId;
 use tracing::{debug, error, info, warn};
 
 use crate::constants::HASH_HEARTBEAT_FREQUENCY_S;
+use crate::manager::Persistence;
 use crate::NodeManager;
 
 /// Minimum spacing between hash-heartbeat "peer is ahead" recovery syncs for a
@@ -22,16 +23,6 @@ const HEARTBEAT_BEHIND_SYNC_DEBOUNCE: Duration =
 /// pipelines on every divergence tick. The summary row below the
 /// loop reports the full count regardless.
 const MAX_DUMP_CHILDREN: usize = 64;
-
-/// How many consecutive heartbeats the SAME same-DAG/different-root divergence
-/// must survive before it is escalated from `warn!` to `error!` (and an active
-/// recovery sync is kicked). Heartbeats fire every `HASH_HEARTBEAT_FREQUENCY_S`
-/// (30s), so `2` means a divergence must persist *unchanged* for ≥1 full
-/// interval (~30–60s) — long enough that the background periodic sync has had a
-/// chance to heal it — before it's treated as a genuinely stuck split-brain.
-/// A first observation, or one whose hashes are still moving (sync making
-/// progress), stays at `warn!` and never trips a log-scanning CI gate.
-const DIVERGENCE_PERSIST_THRESHOLD: u32 = 2;
 
 pub(super) fn handle_hash_heartbeat(
     manager: &mut NodeManager,
@@ -158,52 +149,46 @@ pub(super) fn handle_hash_heartbeat(
             let _new = manager.divergence_detected.inc();
 
             // Persistence gate: a divergence is only escalated to ERROR once the
-            // SAME (our, their) hash pair has survived
-            // `DIVERGENCE_PERSIST_THRESHOLD` consecutive heartbeats. A first
-            // observation — or one whose hashes are still moving, i.e. sync is
-            // making progress — is almost always a concurrent sync apply that
-            // landed mid-flight and self-heals next tick; logging that at ERROR
-            // turns a benign, recoverable event into a hard failure for
-            // log-scanning CI on unrelated work. The streak resets on any hash
-            // change (progress) and is cleared on convergence.
-            let count = match manager.divergence_streak.get(&(context_id, source)) {
-                Some(prev) if prev.our_hash == our_hash && prev.their_hash == their_root_hash => {
-                    prev.count.saturating_add(1)
-                }
-                _ => 1,
-            };
-            let _ = manager.divergence_streak.insert(
-                (context_id, source),
-                crate::manager::DivergenceMark {
-                    our_hash,
-                    their_hash: their_root_hash,
-                    count,
-                    last_seen: Instant::now(),
-                },
+            // SAME (our, their) hash pair has persisted for
+            // `DIVERGENCE_PERSIST_FOR`. A first observation - or one whose
+            // hashes are still moving, i.e. sync is making progress - is almost
+            // always a concurrent sync apply that landed mid-flight and
+            // self-heals next tick; logging that at ERROR turns a benign,
+            // recoverable event into a hard failure for log-scanning CI on
+            // unrelated work. The streak restarts on any hash change (progress)
+            // and is cleared on convergence.
+            let now = Instant::now();
+            let (mark, persistence) = crate::manager::DivergenceMark::observe(
+                manager.divergence_streak.get(&(context_id, source)),
+                our_hash,
+                their_root_hash,
+                now,
             );
+            let persisted_for = now.duration_since(mark.since);
+            let _ = manager.divergence_streak.insert((context_id, source), mark);
 
-            if count < DIVERGENCE_PERSIST_THRESHOLD {
+            if persistence == Persistence::Transient {
                 warn!(
                     %context_id,
                     ?source,
                     our_hash = ?our_hash,
                     their_hash = ?their_root_hash,
-                    count,
+                    ?persisted_for,
                     "Divergence detected (same DAG heads, different root) — transient: a \
                      sync apply is likely in flight; expecting periodic sync to reconcile"
                 );
                 return;
             }
 
-            // Persisted unchanged across >= DIVERGENCE_PERSIST_THRESHOLD
-            // heartbeats: background sync has NOT healed it — a genuinely stuck
-            // split-brain worth alarming and the triage dump below.
+            // Persisted unchanged for >= DIVERGENCE_PERSIST_FOR: background
+            // sync has NOT healed it - a genuinely stuck split-brain worth
+            // alarming and the triage dump below.
             error!(
                 %context_id,
                 ?source,
                 our_hash = ?our_hash,
                 their_hash = ?their_root_hash,
-                count,
+                ?persisted_for,
                 dag_heads = ?their_dag_heads,
                 "DIVERGENCE DETECTED: Same DAG heads but different root hash (persisted across heartbeats)!"
             );
@@ -293,10 +278,10 @@ pub(super) fn handle_hash_heartbeat(
             // signed anchor-pull (`reconcile_after_divergence`) from here — the
             // peer's gossiped root hash is unauthenticated, so pulling canonical
             // state off it would be a poisoning vector — but a plain HC sync is
-            // the same path periodic sync uses, just sooner. Only on the exact
-            // threshold tick so a still-stuck divergence keeps ERRORing without
+            // the same path periodic sync uses, just sooner. Only on the first
+            // escalation so a still-stuck divergence keeps ERRORing without
             // re-spawning a sync every heartbeat.
-            if count == DIVERGENCE_PERSIST_THRESHOLD {
+            if persistence == Persistence::Escalated {
                 let node_client = manager.clients.node.clone();
                 let _ignored = ctx.spawn(
                     async move {

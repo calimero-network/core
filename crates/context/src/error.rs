@@ -87,6 +87,74 @@ pub enum ContextError {
         group_id: String,
     },
 
+    /// The node is not a member of the namespace the request names.
+    ///
+    /// The namespace-scoped sibling of [`Self::NotAGroupMember`]; separate so
+    /// the message names a namespace rather than a group, which is what the
+    /// operator is holding when they hit this.
+    #[error("node is not a member of namespace '{namespace_id}'")]
+    NotANamespaceMember {
+        /// Debug rendering of the target namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// A caller-supplied identity is not a member of the group it named.
+    ///
+    /// Distinct from [`Self::NotAGroupMember`], which is about THIS NODE's own
+    /// standing. `create_context` takes an `identity_secret` straight from the
+    /// request body, so the identity it checks is frequently not the node's --
+    /// and a message saying "node is not a member" would name the wrong
+    /// principal entirely.
+    ///
+    /// `403` rather than `404`: the caller holds this key and is acting AS this
+    /// identity, so the refusal is about standing, not about a thing being
+    /// absent. It also keeps company with the capability check immediately
+    /// after it, which refuses the same call for the same shape of reason.
+    #[error("identity '{identity}' is not a member of group '{group_id}'")]
+    IdentityNotAGroupMember {
+        /// Debug rendering of the target group id (for the message only).
+        group_id: String,
+        /// Rendering of the identity that was checked (for the message only).
+        identity: String,
+    },
+
+    /// The named group has no meta row on this node.
+    ///
+    /// Typed so it can answer `404`. As an untyped `bail!` it fell through to
+    /// the generic `500`, and a caller cannot tell "what you asked about is
+    /// not here" from "this node fell over" — one means stop, the other means
+    /// retry. A control-plane script read exactly that 500 as "already left"
+    /// and carried on past a real failure.
+    #[error("group '{group_id}' not found")]
+    GroupNotFound {
+        /// Debug rendering of the absent group id (for the message only).
+        group_id: String,
+    },
+
+    /// The named namespace has no meta row on this node. See
+    /// [`Self::GroupNotFound`] for why this is typed.
+    #[error("namespace '{namespace_id}' not found")]
+    NamespaceNotFound {
+        /// Debug rendering of the absent namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// The named application is not installed on this node. See
+    /// [`Self::GroupNotFound`] for why this is typed.
+    #[error("application '{application_id}' not found")]
+    ApplicationNotFound {
+        /// Rendering of the absent application id (for the message only).
+        application_id: String,
+    },
+
+    /// The named context does not exist on this node. See
+    /// [`Self::GroupNotFound`] for why this is typed.
+    #[error("context '{context_id}' not found")]
+    ContextNotFound {
+        /// Rendering of the absent context id (for the message only).
+        context_id: String,
+    },
+
     /// The key material offered for pairing carries no valid signature from the
     /// device that minted it.
     ///
@@ -194,5 +262,102 @@ pub enum ContextError {
         device: String,
         /// Debug rendering of the namespaces holding a tombstone for it.
         namespaces: String,
+    },
+
+    /// A `400`: an empty list means every application on the wire, so accepting
+    /// it would turn the narrowest-looking request into the widest one.
+    #[error(
+        "a scope replacement must name at least one application; ask for every \
+         application explicitly instead"
+    )]
+    ScopeReplacementEmpty,
+
+    /// A `400`: the list is longer than a scope statement may carry, so it could
+    /// never be signed into one.
+    #[error("a scope replacement may name at most {limit} applications")]
+    ScopeReplacementTooLarge {
+        /// The cap the wire format puts on a scope statement.
+        limit: usize,
+    },
+
+    /// A `400`: the list names an application no namespace of this account
+    /// targets, so the replacement would reach nothing and descope everywhere.
+    #[error(
+        "this account takes part in no namespace targeting application \
+         {application}, so naming it in a scope replacement would leave the \
+         device reaching nothing"
+    )]
+    ScopeReplacementUnknownApplication {
+        /// The application the caller named (for the message only).
+        application: String,
+    },
+
+    /// A `409`: scope epochs only ever rise, and this device's has reached the
+    /// last one there is, so no further statement can supersede what it holds.
+    #[error(
+        "device {device} is at the last scope epoch there is, so its scope can no \
+         longer be replaced; revoke it and pair the machine afresh"
+    )]
+    ScopeEpochExhausted {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
+    /// A `403`: the named device is the one holding the account root, which signs
+    /// every scope statement - including any that would narrow itself.
+    #[error(
+        "device {device} holds the account root, so it always acts for every \
+         application and there is nothing to replace; name one of the account's \
+         paired devices instead"
+    )]
+    ScopeReplacementHoldsTheRoot {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
+    /// A `400`: the name is empty, untrimmed, too long, or carries control
+    /// characters, any of which would render as something other than a name.
+    #[error(
+        "a device name must be trimmed, non-empty, at most {limit} bytes and free \
+         of control characters"
+    )]
+    DeviceLabelInvalid {
+        /// The cap the wire format puts on a device label.
+        limit: usize,
+    },
+
+    /// A `403`: a paired device holds no account root, so it can sign a
+    /// statement about no device but its own.
+    #[error(
+        "this node may name only its own device ({own}), not {device}; run the \
+         rename on the node holding the account root"
+    )]
+    DeviceLabelNotOwn {
+        /// The device the caller named (for the message only).
+        device: String,
+        /// The device this node presents (for the message only).
+        own: String,
+    },
+
+    /// A `429`: renaming is cheap to ask for and costs a published op each time,
+    /// so this node spaces out its own.
+    #[error("device {device} was renamed less than {cooldown_secs}s ago; try again shortly")]
+    DeviceRenamedTooRecently {
+        /// The device the caller named (for the message only).
+        device: String,
+        /// How long this node makes a caller wait between renames.
+        cooldown_secs: u64,
+    },
+
+    /// A `403`: the account replaced this device's scope with one that no longer
+    /// reaches the namespace, so it may read on but must not author there.
+    #[error(
+        "this device's account narrowed its application scope out of the namespace \
+         owning group '{group_id}', so it may no longer write there; widen the scope \
+         with `PUT /admin-api/account/devices/{{id}}/scope` from the account holder"
+    )]
+    DeviceOutOfScope {
+        /// Hex rendering of the target group id (for the message only).
+        group_id: String,
     },
 }

@@ -17,7 +17,10 @@ use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::MembershipRepository;
 
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use calimero_governance_store::AccountBindingRepository;
+use calimero_primitives::identity::DeviceId;
+
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 
 /// Which rows a caller may see.
 #[derive(Clone, Debug)]
@@ -84,6 +87,20 @@ pub(crate) const fn narrow_to(
 
 /// Resolve what this caller may list.
 ///
+/// `device` is the one that proved this caller, when one was named. `None` is
+/// not "no device" — it is "we were not told which". A request-carried proof
+/// names the device its certificate covers; a session does not, because
+/// `account_proof` mints a token whose subject is the account and the device
+/// that logged in is dropped there.
+///
+/// Both paths can name it now. A request-carried proof names the device its
+/// certificate covers; a session names the one the `account_proof` login
+/// recorded in its token. `None` therefore means one of two things, and neither
+/// is "no device": a password session, which identifies the node owner rather
+/// than a device of anybody's account, or a session minted before that claim
+/// existed. Both are unfilterable by revocation, and both are correct to be —
+/// the first has no device, the second has one nobody wrote down.
+///
 /// The group set is resolved **per request**, never cached on the session — the
 /// same rule the delegated read follows (#3931). A membership change is a
 /// governance op this node has already applied, and the only way it reaches the
@@ -93,13 +110,28 @@ pub(crate) fn list_scope(
     ctx_client: &ContextClient,
     node_owner: Option<&AuthenticatedNodeOwner>,
     account: Option<&AuthenticatedAccount>,
+    device: Option<DeviceId>,
 ) -> eyre::Result<ListScope> {
     let Some(account) = narrow_to(node_owner, account) else {
         return Ok(ListScope::NodeWide);
     };
 
-    let groups =
-        MembershipRepository::new(ctx_client.datastore()).effective_groups_for_account(&account)?;
+    let store = ctx_client.datastore();
+    let mut groups = MembershipRepository::new(store).effective_groups_for_account(&account)?;
+
+    // Revocation is per device AND per group, so it can only be applied where
+    // both are in hand — which is here, and not at authentication. A device
+    // revoked in one group may be live in another, so this removes groups
+    // rather than refusing the caller: the account is still itself, and still a
+    // member everywhere the revocation does not reach.
+    //
+    // A read that fails removes the group. An unreadable revocation row is not
+    // evidence of a live device, and treating it as one would make the check
+    // conditional on the store answering.
+    if let Some(device) = device {
+        let bindings = AccountBindingRepository::new(store);
+        groups.retain(|group| !bindings.is_revoked(group, device).unwrap_or(true));
+    }
 
     Ok(ListScope::Account { account, groups })
 }
@@ -109,12 +141,46 @@ pub(crate) fn list_scope_for(
     ctx_client: &ContextClient,
     node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
     account: Option<axum::Extension<AuthenticatedAccount>>,
+    device: Option<axum::Extension<AuthenticatedDevice>>,
 ) -> eyre::Result<ListScope> {
     list_scope(
         ctx_client,
         node_owner.as_ref().map(|e| &e.0),
         account.as_ref().map(|e| &e.0),
+        device.map(|e| e.0 .0),
     )
+}
+
+/// Whether `scope` may be served the context named by `context_id`.
+///
+/// The named-id counterpart of `get_context_ids`'s enumeration: there the
+/// caller's groups produce the list, here a context produces its group and the
+/// scope decides. One predicate either way — [`ListScope::admits`] — so the
+/// routes that name a context cannot answer differently about the same one.
+///
+/// It lives here rather than beside any one of them because there are now four:
+/// `GET /contexts/:id`, `/:id/identities`, `/:id/storage` and `/:id/group`. A
+/// copy per handler is how the endpoint that kept the old copy becomes the one
+/// that leaks.
+///
+/// A store fault is returned rather than swallowed, because an outage must not
+/// read as a quiet permissions change. An honest *absence* — a context owned by
+/// no group — is a refusal, since `admits` fails closed on `None` for an account
+/// scope and there is no membership to check against.
+pub(crate) fn admits_context(
+    store: &calimero_store::Store,
+    context_id: &calimero_primitives::context::ContextId,
+    scope: &ListScope,
+) -> eyre::Result<bool> {
+    // Node-wide callers (a node owner, or a node with no auth guard at all) are
+    // admitted without the lookup: the answer cannot change and the read would
+    // only add a way for the endpoint to fail.
+    if matches!(scope, ListScope::NodeWide) {
+        return Ok(true);
+    }
+
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)?;
+    Ok(scope.admits(group_id.as_ref()))
 }
 
 #[cfg(test)]
@@ -202,6 +268,41 @@ mod tests {
         assert!(!account_scope(&[[0xa1; 32]]).admits(None));
     }
 
+    /// Two accounts on one relay, over the same set of ids.
+    ///
+    /// This is the predicate `/admin-api/namespaces` filters through — a
+    /// namespace IS a root group, so its id is a group id and the listing calls
+    /// `admits` on it directly. `/admin-api/contexts` enumerates rather than
+    /// filters, and has its own disjointness test next to that code; this is the
+    /// filtering half.
+    #[test]
+    fn two_account_scopes_admit_disjoint_and_complete_sets() {
+        let a = account_scope(&[[0xa1; 32], [0xa2; 32]]);
+        let b = ListScope::Account {
+            account: AccountId::from([0x02; 32]),
+            groups: [[0xb1; 32]]
+                .into_iter()
+                .map(ContextGroupId::from)
+                .collect::<BTreeSet<_>>(),
+        };
+
+        let all = [[0xa1; 32], [0xa2; 32], [0xb1; 32]].map(ContextGroupId::from);
+        let admitted = |scope: &ListScope| {
+            all.iter()
+                .filter(|g| scope.admits(Some(g)))
+                .copied()
+                .collect::<Vec<_>>()
+        };
+
+        let (seen_by_a, seen_by_b) = (admitted(&a), admitted(&b));
+        assert_eq!(seen_by_a, all[..2].to_vec(), "each sees all of its own");
+        assert_eq!(seen_by_b, all[2..].to_vec(), "each sees all of its own");
+        assert!(
+            seen_by_a.iter().all(|g| !seen_by_b.contains(g)),
+            "one tenant's listing must share no row with another's"
+        );
+    }
+
     /// An account in no groups sees nothing, rather than falling through to
     /// everything. The empty set is a real answer here, not a missing one.
     #[test]
@@ -209,5 +310,91 @@ mod tests {
         let scope = account_scope(&[]);
         assert!(!scope.admits(Some(&ContextGroupId::from([0xa1; 32]))));
         assert!(!scope.admits(None));
+    }
+}
+
+#[cfg(test)]
+mod admits_context_tests {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use calimero_account::AccountId;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::ContextTreeService;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::{admits_context, ListScope};
+
+    fn mine() -> ContextGroupId {
+        ContextGroupId::from([0xa1; 32])
+    }
+
+    fn theirs() -> ContextGroupId {
+        ContextGroupId::from([0xb1; 32])
+    }
+
+    fn my_context() -> ContextId {
+        ContextId::from([0x01; 32])
+    }
+
+    fn their_context() -> ContextId {
+        ContextId::from([0x02; 32])
+    }
+
+    /// A context owned by no group at all.
+    fn orphan_context() -> ContextId {
+        ContextId::from([0x03; 32])
+    }
+
+    fn store_with_two_tenants() -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        ContextTreeService::new(&store, mine())
+            .register_context(&my_context())
+            .expect("register");
+        ContextTreeService::new(&store, theirs())
+            .register_context(&their_context())
+            .expect("register");
+        store
+    }
+
+    fn my_scope() -> ListScope {
+        ListScope::Account {
+            account: AccountId::from([0x01; 32]),
+            groups: BTreeSet::from([mine()]),
+        }
+    }
+
+    #[test]
+    fn an_account_is_served_a_context_in_its_own_group() {
+        assert!(admits_context(&store_with_two_tenants(), &my_context(), &my_scope()).unwrap());
+    }
+
+    /// The criterion this function exists for: scoping the listing is decoration
+    /// if naming an id reaches a context the listing would have hidden.
+    #[test]
+    fn an_account_is_refused_a_context_it_is_not_a_member_of() {
+        assert!(!admits_context(&store_with_two_tenants(), &their_context(), &my_scope()).unwrap());
+    }
+
+    /// Fails closed where there is no membership to check: "no rule, therefore
+    /// allowed" is how a stranger gets in.
+    #[test]
+    fn a_context_owned_by_no_group_is_refused_an_account_scope() {
+        assert!(
+            !admits_context(&store_with_two_tenants(), &orphan_context(), &my_scope()).unwrap()
+        );
+    }
+
+    /// Single-tenant operation is unchanged: a node owner, and a node running
+    /// with no auth guard, keep today's view of every context — including one
+    /// owned by no group.
+    #[test]
+    fn a_node_wide_scope_is_served_everything() {
+        let store = store_with_two_tenants();
+        for context_id in [my_context(), their_context(), orphan_context()] {
+            assert!(admits_context(&store, &context_id, &ListScope::NodeWide).unwrap());
+        }
     }
 }

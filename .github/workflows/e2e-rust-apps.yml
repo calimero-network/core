@@ -1,9 +1,7 @@
 name: E2E - Rust Apps
 
-# Tests scaffolding-e2e and xcall-example apps using locally-built Docker image.
-# Parallel build: merod image + WASM apps build concurrently, then all test
-# workflows run in parallel via matrix.
-# Self-contained: doesn't depend on release.yml
+# Runs the merobox scenario matrix below against a locally-built merod image.
+# Self-contained: doesn't depend on release.yml.
 
 permissions:
   contents: read
@@ -22,6 +20,8 @@ on:
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
       - "apps/collaborative-editor/**"
+      - "apps/fugue-collab/**"
+      - "apps/rich-collab/**"
       - "apps/kv-store-init/**"
       - "apps/kv-store-with-handlers/**"
       - "apps/kv-store-with-user-and-frozen-storage/**"
@@ -50,6 +50,8 @@ on:
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
       - "apps/collaborative-editor/**"
+      - "apps/fugue-collab/**"
+      - "apps/rich-collab/**"
       - "apps/kv-store-init/**"
       - "apps/kv-store-with-handlers/**"
       - "apps/kv-store-with-user-and-frozen-storage/**"
@@ -78,33 +80,17 @@ env:
 
 jobs:
   # ── Build merod Docker image (heaviest step) ──
-  # Reusable build-merod-image.yml, shared verbatim with app-migration-e2e.yml
-  # so the identical merod build lives in one place and both suites ride the
-  # same warm `e2e-rust-apps` cache. Uploads the `merod-image` artifact
-  # (zstd tarball) consumed by the jobs below.
+  # Shared verbatim with app-migration-e2e.yml so both suites ride the same warm cache.
   build-image:
     name: Build Image
     uses: ./.github/workflows/build-merod-image.yml
     with:
-      # `blob-presence-tee-serves` boots a `merod run --mock-tee` node, which
-      # refuses to start on a binary built without `mock-attestation`. It gets
-      # its own image so the rest of the matrix keeps running the same feature
-      # set a release binary has.
+      # blob-presence-tee-serves boots merod run --mock-tee, which needs the mock-attestation
+      # feature; a separate image keeps the rest of the matrix on a release-like feature set.
       with-mock-tee-image: true
 
   # ── Scenario convergence lint ──
-  # Static, no nodes, seconds not minutes — so it runs ahead of everything that
-  # boots docker and fails fast on the cheapest class of e2e bug there is.
-  #
-  # A scenario that reads another node's state without a barrier establishing the
-  # state arrived is not merely flaky; it fails with a symptom that names the wrong
-  # thing. Three did in one afternoon: a null where a schema version was expected,
-  # the literal string "undefined" reaching a base58 parser, and a key-less join.
-  # Each cost an investigation into whichever feature the PR happened to touch
-  # before the timing was even suspected.
-  #
-  # Ratcheted against scripts/e2e-convergence-baseline.txt: pre-existing findings
-  # are an accepted backlog and only a NEW one fails.
+  # Ratcheted against scripts/e2e-convergence-baseline.txt: only a NEW finding fails.
   convergence-lint:
     name: Scenario convergence lint
     runs-on: ubuntu-latest
@@ -118,18 +104,16 @@ jobs:
         run: python3 scripts/lint-e2e-bundle-shape.py
       - name: Lint e2e workflows for unbuilt scenario bundles
         run: python3 scripts/lint-e2e-bundle-coverage.py
+      # A log assertion couples a scenario to a string a program prints, and a
+      # rename breaks that coupling SILENTLY: an `absent` assertion then passes
+      # vacuously forever, and a `present` one fails far from the rename, in a
+      # scenario nobody associates with logging. Neither is caught by running
+      # the suite, which is why it is a lint rather than a test.
+      - name: Lint merobox log assertions for patterns that can never match
+        run: python3 scripts/lint-e2e-log-assertions.py
 
   # ── Auth seam: client-token e2e over real HTTP ──
-  # Proves a client token minted the way the auth frontend mints it can call
-  # the routes the SDK uses (the 0.11.0-rc.9 login-loop outage shape).
-  # Companion in-process pin: crates/auth/tests/client_token_contract.rs
-  #
-  # Declarative merobox workflow (workflows/auth-seam.yml) in binary mode
-  # with the PR's own merod: `--auth-mode embedded` is binary-mode only in
-  # merobox, and its docker-mode `--auth-service` boots a prebuilt
-  # mero-auth image — the wrong artifact for a PR gate. The PR-built merod
-  # is extracted from the already-built image; the seam assertions live in
-  # scripts/e2e-auth-seam.sh, invoked as the workflow's script step.
+  # Binary mode runs the PR's own merod; docker mode's --auth-service would boot a prebuilt image.
   auth-seam:
     name: Auth seam (client-token e2e)
     needs: build-image
@@ -159,14 +143,8 @@ jobs:
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         env:
-          # Admin credentials minted AT INIT (the login path never mints
-          # keys; there is no first-login bootstrap secret anymore).
-          # Binary-mode merobox spawns `merod init`/`run` with os.environ
-          # inherited, and script steps (target: local) inherit it too — so
-          # this single export both provisions the node's admin account AND
-          # tells scripts/e2e-auth-seam.sh which credentials log in.
-          # CI-only test values for an ephemeral localhost node; the
-          # password is consumed at init — nothing lands in config.toml.
+          # These vars both provision the node's admin account at init and tell
+          # scripts/e2e-auth-seam.sh which credentials to log in with. CI-only test values.
           MERO_AUTH_ADMIN_USER: dev
           MERO_AUTH_ADMIN_PASSWORD: dev-password
           MERO_E2E_USER: dev
@@ -184,20 +162,8 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
-  # The same declarative merobox workflow as `auth-seam` above, on Windows.
-  #
-  # Everything Windows-related here has so far been build-time, or a single node
-  # started and stopped by `windows-node-smoke`. This is the first time a real
-  # multi-step workflow runs there: node lifecycle, a root login, and the client
-  # token seam asserted over real HTTP against a live merod.
-  #
-  # Two things differ from the Linux job, both forced:
-  #   - merod is built here rather than extracted from the Docker image. There is
-  #     no Docker on this runner, and a Linux container would test Linux.
-  #   - merobox comes from pip, not `setup-merobox`. That action installs the
-  #     release binary, which is published for darwin and linux only.
-  #
-  # Not gated on `build-image`, unlike auth-seam: it shares nothing with it.
+  # Same declarative workflow as auth-seam, on Windows.
+  # merod is built here, not extracted from the Docker image, since there is no Docker on this runner.
   windows-auth-seam:
     name: Windows e2e (auth seam, binary mode)
     runs-on: windows-latest
@@ -215,10 +181,10 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: windows-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # librocksdb-sys is pulled with `bindgen-runtime`, and aws-lc-sys
-      # assembles its x86_64 primitives with NASM. Same pair the release build
-      # and `windows-node-smoke` need.
+      # librocksdb-sys needs bindgen-runtime; aws-lc-sys needs NASM for its x86_64 primitives.
+      # Same pair the release build and windows-node-smoke need.
       - name: Point bindgen at the image's LLVM
         shell: bash
         run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
@@ -234,25 +200,14 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Pinned exactly, like `setup-merobox` does: a floor would let a later
-      # release change what this gate means without anyone choosing it.
-      #
-      # Each of these releases fixed something that stopped a node running here:
-      # 0.6.73 native Windows process management (teardown called
-      # `signal.SIGKILL`, which does not exist there), 0.6.74 script steps run
-      # with a literal `/bin/sh`, and 0.6.75 a crash printing merobox's own
-      # emoji banner to a cp1252 stdout. The last of those is why this step no
-      # longer sets `PYTHONIOENCODING`.
       - name: Install merobox
-        run: pip install merobox==0.6.76
+        uses: ./.github/actions/setup-merobox
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         shell: bash
         env:
-          # Same values and same reasoning as the Linux job above: the admin
-          # root key is minted at `merod init` from these, and the script step
-          # inherits them to log in with. CI-only values for an ephemeral
-          # localhost node.
+          # Same as the Linux job above: minted at merod init, and the script step inherits
+          # them to log in with. CI-only values for an ephemeral localhost node.
           MERO_AUTH_ADMIN_USER: dev
           MERO_AUTH_ADMIN_PASSWORD: dev-password
           MERO_E2E_USER: dev
@@ -271,16 +226,8 @@ jobs:
         shell: bash
         run: merobox stop --no-docker --all || true
 
-  # A real node workflow on Windows: three nodes, two invitations, two joins,
-  # a `wait_for_sync`, then a call whose result must have propagated. Where
-  # `windows-auth-seam` proves one node serves HTTP, this proves several of them
-  # find each other and agree — the part with no unix result to borrow from,
-  # since discovery and sync are exactly where the platform differs.
-  #
-  # The bundle comes from `build-apps` rather than being built here. A `.mpk` is
-  # wasm and architecture-independent, so building it once on Linux costs
-  # nothing and avoids asking whether `cargo mero`'s wasm-opt compiles on
-  # windows-msvc — a question this lane does not need to answer.
+  # Proves Windows nodes discover and converge (windows-auth-seam only proves one node serves HTTP).
+  # Uses the .mpk from build-apps: wasm is architecture-independent, sidestepping wasm-opt on windows-msvc.
   windows-node-workflow:
     name: Windows e2e (3-node sync, binary mode)
     needs: [build-apps]
@@ -299,6 +246,7 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: windows-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Point bindgen at the image's LLVM
         shell: bash
@@ -322,29 +270,10 @@ jobs:
           python-version: "3.13"
 
       - name: Install merobox
-        run: pip install merobox==0.6.76
+        uses: ./.github/actions/setup-merobox
 
-      # `cd` into the app first, exactly as the Linux matrix above does. The
-      # scenario's `path: ../../dist/...` is resolved against the CWD, not
-      # against the YAML's own location, so running it from the repo root
-      # climbs two levels OUT of the checkout. The binary is passed absolute
-      # for the same reason.
-      #
-      # The joining nodes install no bundle of their own: they learn a bytecode
-      # id from the context and must fetch it. Without a configured source that
-      # fetch fails and the first execute after a join dies on "bytecode blob
-      # not found in blobstore" — so this lane needs the same fixture registry
-      # the Linux lanes get from `e2e-fixture-registry.sh`. Only the staging
-      # half of that script is reused here (`STAGE_ONLY`); its serving half
-      # runs nginx in Docker and addresses it by the docker0 gateway, neither
-      # of which exists in binary mode. These nodes are processes on this
-      # runner, so plain loopback reaches them and `python -m http.server`
-      # is enough. merod reads the two env vars directly (cli/run.rs), and
-      # merobox hands its own environment to each node it spawns, which is
-      # what makes the Docker image-retagging step unnecessary here.
-      #
-      # Server and workflow share one step deliberately: a background process
-      # started in an earlier step is not guaranteed to outlive it.
+      # cd into the app dir since the scenario's path resolves against CWD, not the YAML's own location.
+      # Server and workflow share a step: a background process isn't guaranteed to outlive an earlier step.
       - name: Run the 3-node workflow (merobox, binary mode)
         shell: bash
         run: |
@@ -461,6 +390,18 @@ jobs:
       - name: Build collaborative-editor bundle
         run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
 
+      - name: Build fugue-collab app
+        run: cargo mero build --manifest-path apps/fugue-collab/Cargo.toml
+
+      - name: Build fugue-collab bundle
+        run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
+
+      - name: Build rich-collab app
+        run: cargo mero build --manifest-path apps/rich-collab/Cargo.toml
+
+      - name: Build rich-collab bundle
+        run: (cd apps/rich-collab && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-init app
         run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
@@ -536,6 +477,8 @@ jobs:
             apps/blobs/res/state-schema.json
             apps/abi_conformance/res/*
             apps/collaborative-editor/res/*
+            apps/fugue-collab/res/*
+            apps/rich-collab/res/*
             apps/kv-store-init/res/*
             apps/kv-store-with-handlers/res/*
             apps/kv-store-with-user-and-frozen-storage/res/*
@@ -561,10 +504,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A node needs bytecode only to run a context, not to join a group. So
-        # `image: merod:local-dht` is for the three scenarios that ARE the peer
-        # route's coverage; `registry_fetch: "false"` for the ones that run no
-        # context, or run it only where the bundle is installed. Else: http fetch.
+        # `image: merod:local-dht` marks peer-route scenarios; `registry_fetch: "false"` marks ones
+        # that fetch no bytecode, since a node needs it only to run a context, not to join a group.
         include:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml
@@ -577,32 +518,34 @@ jobs:
           - workflow: delegated-authorship
             file: workflows/delegated-authorship.yml
             app: scaffolding-e2e
-          # The password-free SESSION, which nothing else covers: a device
-          # holding only a key logs in to a node it does not own and reads.
-          # `delegated-authorship` above proves the WRITE but logs in with a
-          # username and password, which is the provider this path removes.
-          # Turns `account_proof` on in the node's own config, because it is off
-          # by default and stays that way (an empty `allowed_audiences` accepts
-          # any audience, so enabling it everywhere would ship that as default).
+          # Password-free session coverage: a device holding only a key logs in and reads (delegated-
+          # authorship above covers the write, but via username/password). Turns on account_proof.
           - workflow: delegated-session
             file: workflows/delegated-session.yml
             app: scaffolding-e2e
-          # A node holding NO account root joins and writes, under a certificate
-          # its root signed on another machine — the cold-storage posture the
-          # account/device split exists for (#3430).
-          #
-          # Needs merobox >= 0.6.67 for two things: `nodes.init_args`, to boot
-          # exactly one node with `--no-account-root`, and `deviceAgreementKey`
-          # from `node_identity`, the third input `account sign-cert` takes.
-          # Pinned by #3678.
+          # The other half of the architecture: no session and no token at all,
+          # just a signature on each request. Verified by unit tests and by a
+          # byte fixture three implementations agree on, but until this nothing
+          # had ever presented one to a running node.
+          - workflow: delegated-proof
+            file: workflows/delegated-proof.yml
+            app: scaffolding-e2e
+          # The posture a hosted relay actually runs: delegated execution served
+          # with NO node credential. Nothing covered it - `--public-intents`
+          # appeared in no scenario, so the flag deciding whether a relay is
+          # reachable by the clients it exists for had only production as
+          # evidence. Two nodes identical but for the flag, so a 200 has a 401
+          # beside it and the flag is provably what opened the route.
+          - workflow: public-intents
+            file: workflows/public-intents.yml
+            app: scaffolding-e2e
+          # A node holding no account root joins and writes under a certificate signed elsewhere - the
+          # cold-storage posture the account/device split exists for. Needs merobox >= 0.6.67.
           - workflow: offline-account-root
             file: workflows/offline-account-root.yml
             app: scaffolding-e2e
-          # #3333: after two nodes concurrently add distinct SortedSet elements,
-          # membership (`contains`)/`len` converge but ORDERED reads (`iter`)
-          # may not. Runs on a merod:local built from this branch (carrying the
-          # `sorted_index_dbg` trace); the ordered-read assertion is the
-          # discriminator. Converges here => the divergence is JS-path-specific.
+          # After two nodes concurrently add distinct SortedSet elements, membership converges but
+          # ORDERED reads (iter) may not; the ordered-read assertion is the discriminator.
           - workflow: sorted-set-concurrent-convergence
             file: workflows/sorted-set-concurrent-convergence.yml
             app: scaffolding-e2e
@@ -615,10 +558,8 @@ jobs:
           - workflow: group-join-mesh-not-ready
             file: workflows/group-join-mesh-not-ready.yml
             app: scaffolding-e2e
-          # Asserts a peer discovered over mDNS reaches the KAD ROUTING TABLE
-          # (`RoutingUpdated` in both nodes' logs), which was measured at 0 for
-          # a whole run before the identify fix. Without it the fleet gossips
-          # fine while every DHT query returns closest_peers: [] / requests: 0.
+          # Asserts a peer discovered over mDNS reaches the KAD routing table; without it the fleet
+          # gossips fine but every DHT query returns closest_peers: [].
           - workflow: kad-routing-from-identify
             file: workflows/kad-routing-from-identify.yml
             app: scaffolding-e2e
@@ -664,6 +605,9 @@ jobs:
           # lands where the application scope aimed it.
           - workflow: account-pairing-application-scope
             file: workflows/account-pairing-application-scope.yml
+            app: scaffolding-e2e
+          - workflow: account-device-scope-replace
+            file: workflows/account-device-scope-replace.yml
             app: scaffolding-e2e
           - workflow: account-pairing-missed-publish
             file: workflows/account-pairing-missed-publish.yml
@@ -756,18 +700,17 @@ jobs:
           - workflow: shared-storage-account-writers-two-devices
             file: workflows/shared-storage-account-writers-two-devices.yml
             app: scaffolding-e2e
+          - workflow: shared-storage-account-writers-concurrent
+            file: workflows/shared-storage-account-writers-concurrent.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
           - workflow: group-open-self-join-key-delivery
             file: workflows/group-open-self-join-key-delivery.yml
             app: scaffolding-e2e
-          # Answers whether calimero-network/core#3489 is reachable on live nodes:
-          # a namespace owner writing into an Open subgroup ANOTHER member
-          # created. The projection denies that at unit level; enrolment is
-          # implicit on join paths now, so this decides whether the window is
-          # actually open. Written so "closed" and "open" are distinguishable —
-          # the owner's local read and the peer's read are asserted separately.
+          # Whether a namespace owner writing into an Open subgroup another member created is reachable
+          # on live nodes - the unit-level projection denies it, but join-path enrolment is implicit now.
           - workflow: namespace-owner-writes-in-a-foreign-open-subgroup
             file: workflows/namespace-owner-writes-in-a-foreign-open-subgroup.yml
             app: scaffolding-e2e
@@ -796,21 +739,8 @@ jobs:
           - workflow: member-removed-late-joiner-catchup
             file: workflows/member-removed-late-joiner-catchup.yml
             app: scaffolding-e2e
-          # The partition-window-reconcile workflow exists at
-          # `apps/scaffolding-e2e/workflows/member-removed-partition-window-reconcile.yml`
-          # but is intentionally NOT registered in the matrix yet.
-          # Docker-bridge partition primitives can't construct the
-          # divergence scenario deterministically: signing after the
-          # heal races the TCP-buffer drain (admin sees node-2's
-          # partition-window write before signing → no divergence),
-          # while signing during the partition is blocked by the
-          # readiness gate that requires mesh peers. The reconcile
-          # code path is covered by unit tests on
-          # `apply_group_op_mutations`; this e2e needs a more
-          # surgical partition primitive (e.g. iptables-level drop
-          # on a specific peer pair) to be deterministic.
-          # Governance only - no node ever joins a context, so nothing
-          # needs bytecode and the registry is never asked.
+          # member-removed-partition-window-reconcile.yml is intentionally not registered here: Docker-
+          # bridge partitions can't make the divergence deterministic. Covered by unit tests instead.
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e
@@ -853,65 +783,27 @@ jobs:
           - workflow: blobs-api-example
             file: workflows/blobs-example.yml
             app: blobs
-          # #3317 regression: uploading with a context_id must publish a provider
-          # record. It silently did not for any namespace-backed context — i.e.
-          # every context — and blobs.yml stayed green because its only
-          # second-node step is `list_files`, which reads CRDT metadata and
-          # replicates independently of the blob. Asserts the membership bail is
-          # absent from the node log.
+          # Uploading with a context_id must publish a provider record; blobs.yml alone wouldn't catch a
+          # regression since its only second-node step reads CRDT metadata, not the blob.
           - workflow: blob-announce-membership
             file: workflows/blob-announce-namespace-membership.yml
             app: blobs
             image: merod:local-dht
-          # These need the kad server-mode fix in crates/network/src/behaviour.rs
-          # (same PR). Before it, a bare two-node fleet could never resolve a
-          # provider record: libp2p starts every node in Mode::Client, which
-          # denies the inbound kad upgrade, and promotion to Server needs a
-          # CONFIRMED external address that AutoNAT cannot obtain on a docker
-          # bridge. So nobody served lookups and every fetch ended
-          # `NotFound { closest_peers: [] }` while gossipsub and CRDT state
-          # replicated fine.
-          #
-          # A/B on a clean two-node fleet, same harness and size, only the binary
-          # differing (blob-overloading/p2p.sh, LOCAL_ONLY=1, no bootstrap peer):
-          #   rc.19            err-500 after 3s, NotFound { closest_peers: [] }
-          #   rc.19 + this fix received, HTTP 200, 0s, sha256 match
+          # Needs the kad server-mode fix in crates/network/src/behaviour.rs: promotion to Server needs a
+          # CONFIRMED external address that AutoNAT can't obtain on a docker bridge.
           - workflow: blob-cross-node-transfer
             file: workflows/blob-cross-node-transfer.yml
             app: blobs
           - workflow: blob-cross-node-sizes
             file: workflows/blob-cross-node-sizes.yml
             app: blobs
-          # Blob custody is discovered by asking the context's peers, not by
-          # reading a Kademlia provider record. This pins the property a
-          # single-valued record cannot have: any surviving holder can serve,
-          # including one that only ever downloaded the blob, after the node
-          # that uploaded and announced it is gone. Docker-only by
-          # construction — `stop_node` is a no-op under merobox's --no-docker
-          # mode, so a native run would go green without a holder ever having
-          # been removed.
-          #
-          # A companion `blob-presence-restart` scenario was written and then
-          # deleted: the kad record is stored on the OTHER node, survives a
-          # restart, and the announcer's PeerId is persistent, so the pre-change
-          # DHT path passed it too. It could not go red, and a test that cannot
-          # go red gets cited as evidence.
+          # Blob custody is discovered by asking the context's peers, not a Kademlia provider record, so
+          # any surviving holder can serve. Docker-only: stop_node is a no-op under --no-docker.
           - workflow: blob-presence-multi-holder
             file: workflows/blob-presence-multi-holder.yml
             app: blobs
-          # An availability node must hold the BYTES its context's state
-          # references, not just the state. A mock-TEE replica is admitted as a
-          # ReadOnlyTee, the owner uploads a blob and is then STOPPED, and a
-          # third node fetches it — with the owner gone the TEE is the only
-          # holder, so a byte-identical fetch is proof it prefetched the
-          # announcement. Goes red without the announce/prefetch path: the TEE
-          # replicates the state carrying the blob id but never the bytes, so
-          # the fetch finds no holder (and the "prefetching announced blob"
-          # marker it asserts on does not exist in such a binary).
-          #
-          # Runs on `merod:local-mock-tee`, not the shared image: `merod run
-          # --mock-tee` refuses to start without the `mock-attestation` feature,
-          # and that feature must not be on for the rest of the matrix.
+          # A mock-TEE replica is admitted read-only, the owner uploads and stops, and a third node
+          # fetches it - proving the TEE prefetched the blob bytes, not just referencing state.
           - workflow: blob-presence-tee-serves
             file: workflows/blob-presence-tee-serves.yml
             app: blobs
@@ -926,39 +818,19 @@ jobs:
           - workflow: mesh-soak-8node
             file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
-          # The only scenarios on a flat bridge that discover peers the way a
-          # real deployment must. Every other entry here runs with `mdns: true`
-          # and an empty `bootstrap.nodes` (`--e2e-mode` clears the list, then
-          # forces mDNS on), so multicast is not their fallback — it is their
-          # only discovery mechanism, and it exists only because one Docker
-          # bridge is one multicast domain. Nodes on separate hosts have no such
-          # path. Measured on `mesh-soak-8node` when these landed: mDNS off and
-          # nothing else changed gave 0 kad `RoutingUpdated`, 0 connections, 0
-          # identify, and a dead first join; mDNS on gave 112 dials and 112
-          # routing updates. So a total regression in bootstrap/kad discovery
-          # keeps ~80 of these entries green, and only these two go red.
-          #
-          # They are cheap (2 and 4 nodes, no soak tail) and they must stay in
-          # the matrix: a skip here reads as "discovery is fine" while removing
-          # the only evidence for it.
+          # The only scenarios that discover peers via bootstrap rather than mDNS; a bootstrap/kad
+          # regression would leave every mDNS entry green and only these two red.
           - workflow: discovery-bootstrap-only-2node
             file: workflows/discovery-bootstrap-only-2node.yml
             app: scaffolding-e2e
           - workflow: discovery-bootstrap-only-4node
             file: workflows/discovery-bootstrap-only-4node.yml
             app: scaffolding-e2e
-          # The only scenario on any topology that exercises rendezvous
-          # register/discover WITHOUT also testing relay reservations and
-          # hole-punching. The two entries above are handed a full roster of
-          # sibling addresses, so they never ask anyone for one; the eight NAT
-          # `sync-resilience-*` scenarios do ask, but behind a gateway, which is
-          # why a discovery regression there reads as a NAT flake. A
-          # cookie-poisoning bug in exactly this path once shipped with CI green
-          # (see crates/network/src/manager_discovery_tests.rs).
+          # The only scenario exercising rendezvous register/discover without also testing relay
+          # reservations and hole-punching, unlike the NAT sync-resilience scenarios below.
           - workflow: discovery-rendezvous-3node
             file: workflows/discovery-rendezvous-3node.yml
             app: scaffolding-e2e
-          # #2422 auto-follow regression workflows.
           - workflow: auto-follow-on-context-registered
             file: workflows/auto-follow/auto-follow-on-context-registered.yml
             app: scaffolding-e2e
@@ -977,45 +849,8 @@ jobs:
           - workflow: auto-follow-asymmetric-context-membership
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
-          # Sync-resilience smoke tests using the docker fault-injection
-          # primitives. Each workflow YAML uses
-          # `topology: { type: nat }` from merobox 0.6.19+ —
-          # peers sit on an internal LAN bridge behind a NAT
-          # gateway, with no direct path between siblings. The only
-          # way to reach the boot-node (which doubles as the relay
-          # server) is via the gateway's MASQUERADE; Docker's
-          # `DOCKER-ISOLATION-STAGE-2` chain plus the client-side
-          # default-route override at the gateway make direct dial
-          # physically impossible. Every cross-client packet either
-          # uses the boot-node's relay circuit, or — in cone mode —
-          # gets upgraded to a direct one by DCUtR after the
-          # initial rendezvous lands. The previous incarnation of
-          # these workflows used `preserve_default_bootstrap: true` +
-          # `mdns: false` on a single Docker bridge, which gave
-          # "hopeful" relay coverage rather than enforced.
-          #
-          # NAT-topology coverage (merobox 0.6.19+ `topology:
-          # { type: nat }`):
-          #
-          #   * `-cone` variants — cone NAT (plain MASQUERADE).
-          #     DCUtR hole-punching may upgrade the relay-mediated
-          #     connection to a direct one; the relay path is still
-          #     exercised on the way up, and these tests run faster
-          #     because the post-rendezvous traffic shortcuts to
-          #     direct.
-          #   * `-symmetric` variants — symmetric NAT (MASQUERADE
-          #     --random-fully). DCUtR fails reliably, so every
-          #     cross-client packet stays on the boot-node's relay
-          #     circuit. These exercise the relay-reservation
-          #     recovery code path strictly — a regression in
-          #     relay-mediated sync surfaces as a test failure
-          #     here, while the cone variant might mask it via
-          #     the DCUtR-direct fallback.
-          #
-          # The same three scenarios (restart, pause, partition)
-          # are run under both NAT modes so we catch both relay-
-          # recovery-only regressions AND any DCUtR-upgrade-path
-          # regressions in the cone runs.
+          # Uses topology: { type: nat } (merobox 0.6.19+) so peers sit behind a NAT gateway, forcing
+          # relay/DCUtR hole-punching; -symmetric variants force DCUtR to fail, keeping traffic on relay.
           - workflow: sync-resilience-network-partition
             file: workflows/sync-resilience-network-partition.yml
             app: scaffolding-e2e
@@ -1037,21 +872,62 @@ jobs:
           - workflow: sync-resilience-peer-pause-symmetric
             file: workflows/sync-resilience-peer-pause-symmetric.yml
             app: scaffolding-e2e
-          # sync-resilience-lossy-link.yml is tracked separately under
-          # #2468; it needs a custom merod image with iproute2 (`tc`)
-          # installed before it can land in CI. Adding it now would
-          # always-fail because the stock merod:edge image lacks
-          # iproute2 and inject_network_fault short-circuits with
-          # `tc: executable file not found`.
-          # Scenarios that existed on disk but ran in no matrix. Most predate the
-          # glob-to-enumeration switch and stopped running when it landed; the
-          # newest three were written after it and never ran at all.
+          # sync-resilience-lossy-link.yml needs a custom merod image with iproute2 (tc) installed; the
+          # stock image lacks it, so inject_network_fault would short-circuit.
           - workflow: abi-conformance
             file: workflows/abi-conformance.yml
             app: abi_conformance
           - workflow: collaborative-editor
             file: workflows/collaborative-editor.yml
             app: collaborative-editor
+          - workflow: collaborative-editor-concurrent
+            file: workflows/collaborative-editor-concurrent.yml
+            app: collaborative-editor
+          # registry_fetch "false": a node cut off from its peers cannot fetch bytecode
+          - workflow: fugue-collab-figure2
+            file: workflows/fugue-collab-figure2.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-partition-heal
+            file: workflows/fugue-collab-partition-heal.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-restart-mid-edit
+            file: workflows/fugue-collab-restart-mid-edit.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-late-joiner
+            file: workflows/fugue-collab-late-joiner.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-large-paste
+            file: workflows/fugue-collab-large-paste.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-anchors
+            file: workflows/fugue-collab-anchors.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-apply-delta
+            file: workflows/fugue-collab-apply-delta.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: fugue-collab-undo
+            file: workflows/fugue-collab-undo.yml
+            app: fugue-collab
+            registry_fetch: "false"
+          - workflow: rich-marks
+            file: workflows/rich-marks.yml
+            app: rich-collab
+            registry_fetch: "false"
+          - workflow: rich-blocks
+            file: workflows/rich-blocks.yml
+            app: rich-collab
+            registry_fetch: "false"
+          - workflow: rich-catchup
+            file: workflows/rich-catchup.yml
+            app: rich-collab
+            registry_fetch: "false"
           - workflow: kv-store-init
             file: workflows/kv-store-init.yml
             app: kv-store-init
@@ -1075,20 +951,22 @@ jobs:
           - workflow: kv-store-workflow-example
             file: workflows/workflow-example.yml
             app: kv-store
-          # Asserts the load-bearing invariants of ephemeral presence: gossip
-          # delivery to a live subscriber, replay-on-subscribe to a connection
-          # that arrives late (WS and SSE), that the replay reaches ONLY the
-          # connection that asked, TTL eviction after the publisher stops, and
-          # — the one that must never regress — that the context state hash is
-          # byte-identical before and after a presence write, i.e. presence
-          # never touches the DAG. kv-store is only a scaffold: it supplies the
-          # namespace/context presence hangs off and its wasm is never called.
+          # Asserts presence invariants: gossip delivery, replay-on-subscribe, TTL eviction, and that a
+          # presence write never touches the DAG. kv-store here is only a namespace/context scaffold.
           - workflow: ephemeral-presence-e2e
             file: workflows/ephemeral-presence-e2e.yml
+            app: kv-store
+          - workflow: ephemeral-open-subgroup-e2e
+            file: workflows/ephemeral-open-subgroup-e2e.yml
             app: kv-store
           - workflow: nested-crdt
             file: workflows/nested-crdt-test.yml
             app: nested-crdt-test
+          # Installs the bundle on every node itself - nothing to acquire.
+          - workflow: nested-crdt-offline-catchup
+            file: workflows/nested-crdt-offline-catchup.yml
+            app: nested-crdt-test
+            registry_fetch: "false"
           - workflow: private-data-example
             file: workflows/example.yml
             app: private_data
@@ -1157,32 +1035,23 @@ jobs:
         if: matrix.image != 'merod:local-dht'
         run: |
           url=$(./scripts/e2e-fixture-registry.sh)
-          # Stamp the image this lane actually boots, not always the shared one.
-          # A lane on its own image (merod:local-mock-tee) would otherwise run
-          # unstamped, never reach the registry, and trip the fetch gate below.
+          # Stamp the image this lane actually boots, not always the shared one, or a lane on its own
+          # image (merod:local-mock-tee) runs unstamped and trips the fetch gate below.
           ./scripts/set-registry-mode.sh "${{ matrix.image || 'merod:local' }}" http "$url"
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
-      # Only ephemeral-presence-e2e needs this. Its assertions are Node scripts
-      # (apps/kv-store/scripts/ephemeral-*.js) using the GLOBAL `WebSocket` and
-      # `fetch` — presence has no read endpoint, so a subscriber is the only way
-      # to observe it, and global WebSocket landed in Node 22. Pinned rather
-      # than inherited so the runner image changing its default node cannot
-      # silently take the scripts out from under us.
+      # Only the ephemeral-* scenarios need this: their assertions use the global WebSocket, which
+      # landed in Node 22. Pinned so a runner image change can't silently break the scripts.
       - name: Setup Node
-        if: matrix.workflow == 'ephemeral-presence-e2e'
+        if: startsWith(matrix.workflow, 'ephemeral-')
         uses: actions/setup-node@v7
         with:
           node-version: 22
 
-      # Only the size sweep needs these, and they are 416 MiB of /dev/urandom —
-      # not worth generating for every other workflow in the matrix
-      # (blob-cross-node-transfer uses the small committed fixtures). Random
-      # content is required, not incidental: blobs are content-addressed, so a
-      # predictable fixture would already sit on the fetching node and the
-      # cross-node path under test would be skipped.
+      # Only the size sweep needs these 416 MiB /dev/urandom fixtures. Content must be random: blobs
+      # are content-addressed, so predictable content would already sit on the fetching node.
       - name: Generate blob fixtures
         if: matrix.workflow == 'blob-cross-node-sizes'
         run: |
@@ -1192,40 +1061,21 @@ jobs:
 
       - name: Run ${{ matrix.workflow }}
         env:
-          # Admin credentials for embedded-auth scenarios, matching the
-          # dev/dev-password `login` steps in the workflow YAMLs. The login
-          # path never mints keys (no first-login bootstrap secret anymore):
-          # merobox ≥0.6.43 forwards these vars into node containers, where
-          # `merod init` mints the admin root key before the node listens.
-          # CI-only test values for ephemeral containers; the password is
-          # consumed at init — nothing lands in any image or shipped config.
+          # Admin credentials for embedded-auth scenarios, matching the dev/dev-password login steps in
+          # the workflow YAMLs. CI-only values; nothing lands in shipped config.
           MERO_AUTH_ADMIN_USER: dev
           MERO_AUTH_ADMIN_PASSWORD: dev-password
         run: |
-          # Phase 11.3 (#2237): single attempt, fail loud. The retry loop
-          # + `merobox nuke --force` between attempts existed to mask
-          # cold-start governance flakes (#2198, #2225). With the
-          # three-phase contract (publish_and_await_ack + readiness FSM
-          # + parent_pull single-peer fallback) in place, a flake here
-          # is a real bug worth surfacing.
+          # Single attempt, fail loud: a retry loop here used to mask cold-start governance flakes. With
+          # the three-phase contract in place, a flake now is a real bug worth surfacing.
           mkdir -p docker-logs
           cd apps/${{ matrix.app }}
 
-          # merobox 0.6.34+ persists per-container logs to
-          # `data/container-logs/<name>.log` natively on every `bootstrap
-          # run`, regardless of `stop_all_nodes` (calimero-network/merobox#207).
-          # This replaces the old background `docker logs -f` watcher, which
-          # existed only because earlier merobox tore the runtime containers
-          # down on exit before a post-run `docker logs` could read them.
+          # merobox >=0.6.34 persists per-container logs to data/container-logs/<name>.log
+          # natively on every bootstrap run, regardless of stop_all_nodes.
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
-          # Point merobox's `restart_container` pre-restart snapshot
-          # (merobox 0.6.22+) at the same absolute LOGDIR. Without this
-          # env override, merobox writes the snapshot to a CWD-relative
-          # `docker-logs/` which resolves to `$GITHUB_WORKSPACE/apps/
-          # <app>/docker-logs/` (because the line above `cd`s into the
-          # app dir) — separate from the artifact-uploaded LOGDIR. The
-          # snapshot would then be invisible to the artifact uploader
-          # and post-restart debugging would stay blocked.
+          # Points merobox's restart_container pre-restart snapshot at the absolute LOGDIR; otherwise it
+          # writes to a CWD-relative docker-logs/ (we cd'd into the app dir) the uploader never sees.
           export MEROBOX_PRE_RESTART_LOG_DIR="$LOGDIR"
 
           if merobox bootstrap run \
@@ -1246,12 +1096,8 @@ jobs:
               success=false
           fi
 
-          # Collect merobox's native per-container logs into the artifact
-          # dir before `nuke` clears node state. `nuke` only removes
-          # `calimero-node-*` data dirs, not `data/container-logs/`, but
-          # copying first keeps this robust to that behaviour changing.
-          # Prefix with the workflow name to keep filenames self-describing
-          # when several artifacts are downloaded together.
+          # Collect logs before nuke clears node state, staying robust if nuke's scope changes. Prefixed
+          # with the workflow name so filenames stay self-describing when merged with other artifacts.
           for f in data/container-logs/*.log; do
               [ -e "$f" ] || continue
               cp -f "$f" "$LOGDIR/${{ matrix.workflow }}-$(basename "$f")"
@@ -1268,49 +1114,15 @@ jobs:
       - name: Assert no unified-op projection divergence (cutover gate)
         if: always()
         run: |
-          # The unified-causal-log cutover shadow logs the marker
-          # `unified_projection_divergence` whenever the unified-op projection
-          # disagrees with the LIVE authorization decision on real traffic. ZERO
-          # such markers across the e2e scenarios is the gate for flipping the
-          # projection authoritative (F4) — and, having reached zero, for keeping
-          # it that way.
-          #
-          # This is a HARD gate: the projection now reproduces the live decision
-          # across every membership plane (cleartext Root joins, the encrypted
-          # GroupOp plane via the live/backfill decrypt feed, genesis-admin and
-          # inherited carve-outs, and materialized-only membership). A regression
-          # that reintroduces divergence fails the job and must be fixed before
-          # merge. Diagnostics (log_len / heads_in_log / author_in_any /
-          # decision_group_in_view) are printed on the offending lines to pinpoint
-          # the failure mode. Runs `always()` so divergence is reported even when
-          # the scenario itself failed for another reason.
-          #
-          # A marker means the two planes disagreed about the SAME question: the
-          # node only compares when the applied op's cut reaches everything live
-          # has applied. An op applied out of causal order is not a divergence —
-          # the two answers describe different histories — and reports itself as
-          # `result="skipped_stale_cut"` instead.
-          #
-          # Which is why this step also asserts COVERAGE. "No divergence marker"
-          # and "no comparison happened" are the same silence, so a gate that
-          # only looks for markers can go quiet across every scenario at once and
-          # still report green — it fails OPEN. Each membership op a node folds
-          # logs `unified_projection_compare` with what the comparison did, and a
-          # scenario that refused every comparison it attempted is a scenario
-          # this gate did not actually check.
-          #
-          # Node logs carry ANSI escapes between a field name and its value, so
-          # every grep here strips them first; matching `plane="…"` on the raw
-          # line silently finds nothing, which is how "planes seen:" used to
-          # print an empty list under a failing gate.
+          # unified_projection_divergence marks the unified-op projection disagreeing with the live
+          # decision. HARD gate; silence per-scenario isn't proof, so projection-coverage checks the total.
           strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
           compares=$(grep -rh "unified_projection_compare" docker-logs/ 2>/dev/null | strip || true)
           echo "membership comparisons:"
           if [ -n "${compares}" ]; then
               echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
-              # By op kind too: adds, removes and joins are separate planes of
-              # coverage, and a gate that only ever concludes on one of them is
-              # thinner than its total suggests.
+              # By op kind too: a gate that only ever concludes on one plane is thinner than
+              # its total suggests.
               echo "${compares}" | grep -oE 'op_kind="[a-z]+"' | sort | uniq -c
           else
               echo "  (none — this scenario folded no membership op)"
@@ -1328,14 +1140,8 @@ jobs:
               exit 1
           fi
 
-          # Observe-only per scenario, and deliberately so. A scenario can hold
-          # a single membership op that lands on a node whose ancestry is not yet
-          # decrypted — one refusal, no conclusions — which is thin coverage, not
-          # a broken gate: 9 of 88 scenarios look like that. The systemic failure
-          # this instrument exists to catch is the gate concluding nothing
-          # ANYWHERE, and that is asserted once over the whole suite in
-          # `projection-coverage`, where it cannot be confused with a quiet
-          # scenario.
+          # Observe-only per scenario: a single unresolved membership op is thin coverage, not a broken
+          # gate. The systemic failure - the gate concluding nothing anywhere - is asserted suite-wide below.
           if [ "${refused}" -gt 0 ] && [ "${concluded}" -eq 0 ]; then
               echo "::notice::every membership comparison in ${{ matrix.workflow }} was refused (${refused}) — thin coverage here; the suite-wide assertion is what gates this"
           fi
@@ -1344,24 +1150,14 @@ jobs:
       - name: Assert unified op-store completeness (C3 Stage 4, HARD gate)
         if: always()
         run: |
-          # The C3 completeness gate logs `op_store_incomplete` whenever the unified
-          # op-store is missing a governance op the gov-DAG has — i.e. some apply path
-          # isn't dual-writing the op-store. This turns "incomplete op-store" from a
-          # mystery 60s sync timeout (how the read-flip failed three times) into a
-          # cheap, specific signal naming the missing op count per namespace.
-          #
-          # HARD gate from C3 Stage 4: the read now flips onto the op-store
-          # (`ops_for_namespace`), so a gov-DAG op the op-store lacks is a correctness
-          # bug, not a known transitional gap. Stages 1-3 closed every apply-path write
-          # gap; any marker here means a path was missed and MUST be fixed before merge.
+          # op_store_incomplete marks the unified op-store missing a governance op the gov-DAG has. HARD
+          # gate: the read now flips onto the op-store, so any marker is a correctness bug.
           if grep -rl "op_store_incomplete" docker-logs/ 2>/dev/null | grep -q .; then
               count=$(grep -rho "op_store_incomplete" docker-logs/ | wc -l | tr -d ' ')
               echo "::error::op-store incomplete in ${{ matrix.workflow }} — $count marker(s); a governance apply path is not writing the op-store (read-flip is unsafe)"
               echo "sample (missing_count per namespace):"
-              # Match `missing_count=N` anywhere on an op_store_incomplete line — robust
-              # to field ordering. Tolerates the line not carrying the field at all.
-              # ANSI escapes are stripped first: they sit between the field name and
-              # the `=` in node logs, so the raw pattern never matches.
+              # ANSI escapes sit between the field name and '=' in node logs, so they're stripped first;
+              # the match tolerates any field ordering and the field being absent.
               grep -rho 'op_store_incomplete.*' docker-logs/ \
                 | sed -E 's/\x1b\[[0-9;]*m//g' \
                 | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
@@ -1380,24 +1176,8 @@ jobs:
       - name: Assert no blob chunk was served mid-write (HARD gate)
         if: always()
         run: |
-          # `blob chunk hash mismatch; refusing to serve` means a chunk failed the
-          # re-hash on the way out of the blobstore. No e2e scenario tampers with
-          # blob bytes, so the only way to produce it here is a torn read: a chunk
-          # observed while it was being rewritten.
-          #
-          # This gate exists because that is exactly how the bug it guards hid.
-          # `blob-cross-node-sizes` failed intermittently with a truncated HTTP
-          # body (run 31164570901), and the SAME error was already being logged on
-          # runs that PASSED — the scenario only went red when the mismatch landed
-          # in the streaming read rather than the probe before it. A passing job was
-          # therefore not evidence of a healthy blob path, which is why this asserts
-          # on the log marker and not just on the scenario's exit code.
-          #
-          # Fixed by writing chunks via temp-file + rename (atomic) and dropping the
-          # redundant second store on the download path. A marker here means one of
-          # those regressed, or a genuinely corrupt/tampered chunk reached disk —
-          # both are real bugs. Runs `always()` so it reports even when the scenario
-          # failed for another reason.
+          # "blob chunk hash mismatch; refusing to serve" means a torn read, since no scenario tampers
+          # with blob bytes. Fixed via temp-file + rename (atomic); a marker means that regressed.
           if grep -rl "blob chunk hash mismatch" docker-logs/ 2>/dev/null | grep -q .; then
               count=$(grep -rho "blob chunk hash mismatch" docker-logs/ | wc -l | tr -d ' ')
               echo "::error::blob chunk served mid-write in ${{ matrix.workflow }} — $count occurrence(s); a chunk failed its content-hash check on the serve path"
@@ -1410,62 +1190,30 @@ jobs:
       - name: Report which ground authorized each group-key recovery (observe-only)
         if: always()
         run: |
-          # `key_server_accepted` allows exactly two grounds: the responder is a
-          # trusted anchor of the group, or it proved with a certificate chaining
-          # to this node's account root that it is a device of this node's OWN
-          # account (#3888, #3892). Every scenario that exercises the key pull
-          # passed before the second ground existed, so a green suite is not
-          # evidence that it works -- and it shipped INERT once already, because
-          # a node that provisioned its own root holds no certificate for its own
-          # device, so the proof was always empty and acceptance quietly
-          # collapsed back to anchor-only. Two red rounds and a security hole
-          # came out of that, and the suite could not have told us.
-          #
-          # This step stays INFORMATIONAL and never fails, deliberately: most
-          # scenarios never perform a direct pull at all, because the delivery
-          # reaches them first, so asserting a marker HERE would fail the quiet
-          # ones. The floor now sits in `key-recovery-coverage`, which pools the
-          # whole suite and fails if either ground went unexercised everywhere --
-          # the same split as the projection gate and `projection-coverage`.
-          #
-          # ANSI escapes sit between a field name and its `=` in node logs, so
-          # the sed is not optional; matching the raw pattern finds nothing.
+          # key_server_accepted allows exactly two grounds: a trusted anchor, or a certificate proving a
+          # device of this node's own account. Informational only; key-recovery-coverage below is the floor.
           if grep -rl "key_recovery_authorized_by" docker-logs/ 2>/dev/null | grep -q .; then
               echo "group-key recoveries by authorizing ground:"
               grep -rho 'key_recovery_authorized_by.*' docker-logs/ \
                 | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
                 | grep -oE 'key_recovery_authorized_by="?[a-z_]+"?' | sort | uniq -c | sort -rn
           else
-              # Not a failure: most scenarios never need the direct pull at all,
-              # because the delivery reaches them first. Silence here and silence
-              # from a broken marker look identical, which is why the suite-wide
-              # view is what matters rather than any one scenario.
+              # Not a failure: most scenarios never need a direct pull; delivery reaches
+              # them first.
               echo "no key_recovery_authorized_by markers - this scenario recovered no group key by direct pull"
           fi
 
       - name: Report scope_root governance-divergence pulls (P6.S2, observe-only)
         if: always()
         run: |
-          # P6.S2 routes the GovDiverged verdict (entities agree, scope_root differs)
-          # into an actual governance pull from the diverging peer — previously this
-          # case only warned. `gov_divergence_pull_triggered` fires each time the
-          # selector issues that pull. This step is INFORMATIONAL (never fails): it
-          # confirms the corrective pull fires on rotation scenarios and lets us watch
-          # for a pathological storm (the same context pulling every single tick would
-          # show as a very high count for one context_id).
+          # gov_divergence_pull_triggered fires when entities agree but scope_root differs, triggering a
+          # pull from the diverging peer. Informational: also watches for a storm (one context dominating).
           if grep -rl "gov_divergence_pull_triggered" docker-logs/ 2>/dev/null | grep -q .; then
               count=$(grep -rho "gov_divergence_pull_triggered" docker-logs/ | wc -l | tr -d ' ')
               echo "::notice::scope_root governance pulls in ${{ matrix.workflow }} — $count trigger(s)"
               echo "per-context trigger counts (watch for a single context dominating = storm):"
-              # Two reasons this used to match nothing, and the first is the one
-              # that made every character class hopeless:
-              #
-              #   1. tracing writes these logs with ANSI styling on, so the bytes are
-              #      `context_id<ESC>[0m<ESC>[2m=<ESC>[0m<value>` — the `=` is not
-              #      adjacent to the field name at all. Hence the sed.
-              #   2. the value is bs58 (`%context_id` Displays a ContextId through
-              #      Hash), so a [0-9a-f] class would still have failed after
-              #      stripping.
+              # tracing writes these logs with ANSI styling, so the '=' isn't adjacent to the field name -
+              # hence the sed. The value is bs58 (ContextId's Display), not hex.
               per_context=$(grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
                 | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
                 | grep -oE 'context_id=[A-Za-z0-9]+' | sort | uniq -c | sort -rn | head -10)
@@ -1477,13 +1225,8 @@ jobs:
                   echo "::warning::$count trigger(s) but no context_id parsed from them — the marker's fields changed shape, so this breakdown is blind"
                   grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ | head -2
               fi
-              # The outcome, not just the count. `ops_pulled == 0` throughout means
-              # the peer had nothing to give, so the cause is upstream of the pull;
-              # a non-zero value repeating while the scenario still fails means ops
-              # arrive and the fold does not converge on them. That distinction is
-              # the whole diagnosis, and reading it used to require downloading the
-              # docker-logs artifact by hand — the job log carries only this step's
-              # own output, which is easy to mistake for the markers being absent.
+              # ops_pulled == 0 throughout means the peer had nothing to give; a non-zero value repeating
+              # while the scenario still fails means the fold doesn't converge on ops that do arrive.
               echo "pull outcomes (ops_pulled), which splits 'nothing to give' from 'ops do not take':"
               outcomes=$(grep -rho 'gov_divergence_pull_complete.*' docker-logs/ \
                 | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
@@ -1506,20 +1249,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: logs-${{ matrix.workflow }}-${{ github.sha }}
-          # `docker-logs/` (with a trailing slash) uploads the
-          # ENTIRE directory: merobox's native per-container logs,
-          # copied in as `${matrix.workflow}-${container}.log`
-          # (calimero-network/merobox#207), AND merobox 0.6.22+'s
-          # pre-restart snapshots
-          # (`${container}.pre-restart-${utc-ts}.log` — see
-          # merobox#258). Each matrix entry runs on its own runner
-          # with its own `docker-logs/` dir, so this doesn't
-          # cross-contaminate. Earlier attempt used a two-pattern
-          # glob `docker-logs/${{ matrix.workflow }}*` +
-          # `docker-logs/*.pre-restart-*.log`, but the second
-          # pattern silently matched zero files via upload-artifact's
-          # multi-line path handling; uploading the whole directory
-          # sidesteps that and is unambiguous.
+          # docker-logs/ (trailing slash) uploads the entire directory: merobox's per-container logs plus
+          # its pre-restart snapshots. A two-pattern glob would silently miss files.
           path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore
@@ -1531,18 +1262,12 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     steps:
-      # The counterpart to the per-scenario divergence gate. That one asserts a
-      # NEGATIVE — no divergence marker — which a suite that compared nothing
-      # satisfies just as well as a suite that compared everything. Asserting the
-      # positive per scenario turns out to be too sharp (a scenario legitimately
-      # holds one undecodable membership op and concludes nothing), so the floor
-      # sits here instead: across every scenario, the gate has to have concluded
-      # at least one comparison, or it was not gating.
+      # Counterpart to the per-scenario divergence gate, which only asserts a negative - a suite that
+      # compared nothing satisfies that too. This asserts the positive across the whole suite.
       - name: Download scenario logs
         id: logs
-        # Tolerated so the assertion below runs and can say precisely WHY there
-        # are no logs; a bare failure here would be indistinguishable from a
-        # suite that legitimately produced none.
+        # Tolerated so the assertion below can say precisely why logs are missing, rather
+        # than fail indistinguishably from a suite that legitimately produced none.
         uses: actions/download-artifact@v8
         with:
           pattern: logs-*
@@ -1552,11 +1277,8 @@ jobs:
 
       - name: Assert the suite concluded comparisons
         run: |
-          # Missing logs is benign in exactly one case: the matrix never ran, so
-          # there was nothing to check and the `test` job already says why. A
-          # download failure, or a matrix that ran and left nothing behind, is
-          # the fail-open case this job exists to prevent — it must not pass as
-          # "nothing to inspect".
+          # Missing logs is benign only if the matrix never ran. A download failure, or a matrix that ran
+          # and left nothing, is the fail-open case this job exists to prevent.
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
               case "${{ needs.test.result }}" in
                 skipped|cancelled)
@@ -1593,39 +1315,12 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     steps:
-      # The counterpart to the per-scenario observe-only report. `key_server_accepted`
-      # allows exactly two grounds -- the responder is a trusted anchor of the group,
-      # or it proved by certificate that it is a device of this node's OWN account
-      # (#3888, #3892) -- and the per-scenario step only PRINTS which ground was used.
-      # Printing is not gating: if a ground stopped working entirely, every scenario
-      # would print zero of it and the suite would stay green.
-      #
-      # That is not hypothetical. #3892 shipped the own-account ground INERT: a node
-      # that provisioned its own account root holds no certificate for its own device,
-      # so the proof was always empty and acceptance silently collapsed back to
-      # anchor-only. The whole suite passed anyway, twice, and could not have told us.
-      #
-      # #3896 deliberately observed rather than asserted, because the legitimate
-      # distribution was unknown and pinning a guess is how a gate starts failing for
-      # the wrong reason. It is now known (run 34473093881):
-      #
-      #     account-device-revoke-lockout   2 x own_account_device
-      #     group-subgroup-cold-sync        1 x anchor
-      #
-      # and it matches the design rather than accidentally covering it -- account and
-      # device scenarios recover from a second device of the SAME account, cross-account
-      # group scenarios recover from a group anchor. So the floor can be asserted.
-      #
-      # It is asserted HERE and not per scenario for the same reason as
-      # `projection-coverage`: most scenarios never perform a direct pull at all,
-      # because the delivery reaches them first, so demanding a marker from each one
-      # would fail the quiet ones. The systemic failure worth gating is a ground going
-      # unexercised across the ENTIRE suite.
+      # Counterpart to the per-scenario observe-only report; printing alone isn't gating, so this job
+      # asserts suite-wide, same as projection-coverage, that both key-serve grounds were exercised.
       - name: Download scenario logs
         id: logs
-        # Tolerated so the assertion below runs and can say precisely WHY there
-        # are no logs; a bare failure here would be indistinguishable from a
-        # suite that legitimately produced none.
+        # Tolerated so the assertion below can say precisely why logs are missing, rather
+        # than fail indistinguishably from a suite that legitimately produced none.
         uses: actions/download-artifact@v8
         with:
           pattern: logs-*
@@ -1635,11 +1330,8 @@ jobs:
 
       - name: Assert each ground was exercised somewhere
         run: |
-          # Missing logs is benign in exactly one case: the matrix never ran, so
-          # there was nothing to check and the `test` job already says why. A
-          # download failure, or a matrix that ran and left nothing behind, is
-          # the fail-open case this job exists to prevent -- it must not pass as
-          # "nothing to inspect".
+          # Missing logs is benign only if the matrix never ran. A download failure, or a matrix that ran
+          # and left nothing, is the fail-open case this job exists to prevent.
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
               case "${{ needs.test.result }}" in
                 skipped|cancelled)
@@ -1662,13 +1354,8 @@ jobs:
           else
               echo "  (none)"
           fi
-          # Attribution, printed whether or not the floor holds. The suite-wide
-          # count alone does not say WHICH scenario supplied a ground, and the
-          # floor currently rests on very few of them -- so when it goes red the
-          # first question is always "which supplier stopped supplying?". Answering
-          # it from the count alone means downloading the artifact by hand.
-          # Artifacts are merged into one directory and every log file is named
-          # after its scenario, so the filename is the attribution.
+          # Printed whether or not the floor holds, since the count alone doesn't say which scenario
+          # supplied a ground. Filenames (from the merged artifacts) are the attribution.
           echo "which scenarios supplied them:"
           supplied=0
           for f in $(grep -rl 'key_recovery_authorized_by' all-logs/ 2>/dev/null || true); do
@@ -1685,16 +1372,14 @@ jobs:
           fi
           anchor=$(echo "${grounds}" | grep -cx 'anchor' || true)
           own=$(echo "${grounds}" | grep -cx 'own_account_device' || true)
-          # A ground name that is neither is reported rather than ignored: renaming
-          # the value in code would otherwise fail both floors below with a message
-          # blaming the scenarios instead of the rename.
+          # Reported rather than ignored: renaming the value in code would otherwise fail
+          # both floors below with a message that blames the scenarios instead of the rename.
           other=$(echo "${grounds}" | grep -vx -e 'anchor' -e 'own_account_device' | sort -u | paste -sd, - || true)
           if [ -n "${other}" ]; then
               echo "::warning::unrecognized authorizing ground(s): ${other} — either a third ground was added (extend this floor) or the marker's values were renamed"
           fi
-          # Spelled as `if` blocks, not `[ ... ] && x=y`: the runner is `bash -e`,
-          # where a false test as the last command of an `&&` list exits the script,
-          # so the happy path (a ground IS present) would abort this step.
+          # Spelled as if blocks, not [ ... ] && x=y: under bash -e a false test as the last
+          # command of an && list exits the script, aborting even the happy path.
           missing=""
           if [ "${anchor}" -eq 0 ]; then
               missing="anchor"
@@ -1737,7 +1422,8 @@ jobs:
         run: |
           message="## E2E Rust Apps Failed
 
-          One or more E2E workflows (scaffolding-e2e, xcall-example) failed.
+          One or more jobs in this workflow (the merobox scenario matrix,
+          auth-seam, projection-coverage, key-recovery-coverage) failed.
 
           Please check the workflow logs for more details."
 

@@ -14,10 +14,12 @@
 //! ```text
 //! 1. Request level 0 (root's children)
 //! 2. Compare hashes with local via compare_level_nodes()
-//! 3. For differing nodes:
-//!    - If leaf → receive & CRDT merge entity
-//!    - If internal → add to next_level_ids
-//! 4. Request level 1 with parent_ids = differing internal nodes
+//! 3. For differing nodes, independently:
+//!    - If it carries `leaf_data` → CRDT merge the entity
+//!    - If `has_children` → add to next_level_ids
+//!      (a collection container is both: its own row is the only source of its
+//!      `own_hash`, and its children still have to be walked)
+//! 4. Request level 1 with parent_ids = those nodes
 //! 5. Continue until no more levels or max_depth reached
 //! ```
 //!
@@ -68,18 +70,20 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::child_trie::ChildTrie;
+use calimero_storage::collections::is_app_root_entry;
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::Index;
-use calimero_storage::interface::Interface;
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
 use eyre::{bail, Result};
 use tracing::{debug, info, trace, warn};
 
+use crate::sync::hash_comparison_protocol::{entity_wire_row, local_entity_wire_row};
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
-    generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
-    is_leaf_currently_authorized, LeafOutcome, MAX_ENTITIES_PER_PUSH,
+    classify_leaf, generate_nonce, get_local_root_hash_for_context,
+    handle_entity_delete_push_locked, handle_entity_push_locked, is_leaf_currently_authorized,
+    push_entities, LeafDisposition, LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 
 // =============================================================================
@@ -258,6 +262,17 @@ async fn run_initiator_impl<T: SyncTransport>(
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
     let runtime_env = create_runtime_env(store, context_id, identity, account);
 
+    // The sender's loaded-reader schema, stamped onto every row we push back.
+    let schema_bytecode_id =
+        calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id)
+            .ok()
+            .flatten();
+
+    // Container rows to hand back to the peer, and the entities already queued,
+    // which bounds the repair to one row per entity per session.
+    let mut pending_row_pushes: Vec<TreeLeafData> = Vec::new();
+    let mut pushed_rows: HashSet<[u8; 32]> = HashSet::new();
+
     // Track which parent IDs to query at next level
     // Start with None = request all nodes at level 0 (root's children)
     let mut current_parent_ids: Option<Vec<[u8; 32]>> = None;
@@ -414,6 +429,10 @@ async fn run_initiator_impl<T: SyncTransport>(
             "Level comparison result"
         );
 
+        // Nodes present on both sides with different hashes, as a set: only
+        // those can carry a container-row disagreement worth pushing back.
+        let differing: HashSet<[u8; 32]> = compare_result.differing.iter().copied().collect();
+
         // Process nodes that need sync
         let mut next_level_parents: Vec<[u8; 32]> = Vec::new();
         // Track already-added parent IDs to avoid duplicates - O(1) membership checks
@@ -458,88 +477,35 @@ async fn run_initiator_impl<T: SyncTransport>(
                 continue;
             }
 
-            if node.is_leaf() {
-                // Leaf: apply CRDT merge (Invariant I5)
-                if let Some(ref leaf_data) = node.leaf_data {
-                    trace!(
-                        %context_id,
-                        key = %hex::encode(leaf_data.key),
-                        "Merging leaf entity"
-                    );
-
-                    // Same per-leaf membership gate as the HashComparison
-                    // initiator (LevelWise walks the same merge path); drops a
-                    // revoked author's / revoked peer's leaves.
-                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, session_peer) {
-                        warn!(
-                            %context_id,
-                            key = %hex::encode(leaf_data.key),
-                            "LevelWise merge skipped: claimed author is not currently authorized for this context"
-                        );
-                        continue;
-                    }
-
-                    // Defer root entities with a real `crdt_type` for
-                    // WASM dispatch; opaque root entities (synthetic
-                    // `Opaque` LWW marker) fall through to
-                    // `apply_leaf_with_crdt_merge` which LWW-writes
-                    // them directly (no Mergeable to dispatch).
-                    let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    match crate::sync::helpers::classify_leaf(
-                        entity_id,
-                        &leaf_data.metadata.crdt_type,
-                    ) {
-                        crate::sync::helpers::LeafDisposition::DeferRoot => {
-                            stats.deferred_root_merges.push((
-                                leaf_data.key,
-                                leaf_data.value.clone(),
-                                leaf_data.metadata.hlc_timestamp,
-                            ));
-                            continue;
-                        }
-                        crate::sync::helpers::LeafDisposition::DeferCustom(type_id) => {
-                            stats.deferred_custom_merges.push((
-                                leaf_data.key,
-                                type_id,
-                                leaf_data.value.clone(),
-                                leaf_data.metadata.hlc_timestamp,
-                            ));
-                            continue;
-                        }
-                        crate::sync::helpers::LeafDisposition::Apply => {}
-                    }
-
-                    // PR-6b Task 6b.7: gate on the loaded reader so a
-                    // future-schema leaf is declined+buffered rather than
-                    // LWW-stored as unreadable bytes (sync-repair coverage).
-                    let loaded_bytecode_id =
-                        calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id)
-                            .ok()
-                            .flatten();
-                    let outcome =
-                        apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            match loaded_bytecode_id {
-                                Some(loaded) => apply_leaf_with_crdt_merge_gated(
-                                    store, context_id, leaf_data, loaded,
-                                ),
-                                None => apply_leaf_with_crdt_merge(context_id, leaf_data)
-                                    .map(|()| LeafOutcome::Applied),
-                            }
-                        })
-                        .await?;
-                    match outcome {
-                        LeafOutcome::Applied => stats.entities_merged += 1,
-                        LeafOutcome::Buffered => {
-                            // Declined: leaf is buffered, not applied. Continue
-                            // the level walk — a later drain replays it.
-                        }
-                    }
+            // Both sides hold this node and the hashes disagree, so the peer may
+            // be the one holding a container index with no bytes - nothing it
+            // can request would repair that. Once per entity per session.
+            if node.has_children && differing.contains(&node_id) && pushed_rows.insert(node_id) {
+                if let Some(row) = with_runtime_env(runtime_env.clone(), || {
+                    local_entity_wire_row(&node_id, schema_bytecode_id)
+                }) {
+                    pending_row_pushes.push(row);
                 }
-            } else {
-                // Internal node: add to next level query (avoid duplicates with O(1) check)
-                if added_parents.insert(node.id) {
-                    next_level_parents.push(node.id);
-                }
+            }
+
+            // A container carries a row AND children: apply the row, then still
+            // descend. Reading "has a row" as "is a leaf" is what made the two
+            // mutually exclusive and left every container's bytes behind.
+            if let Some(leaf_data) = node.leaf_data.as_ref() {
+                merge_remote_row(
+                    store,
+                    context_id,
+                    &runtime_env,
+                    context_client,
+                    session_peer,
+                    leaf_data,
+                    &mut stats,
+                )
+                .await?;
+            }
+
+            if node.has_children && added_parents.insert(node.id) {
+                next_level_parents.push(node.id);
             }
         }
 
@@ -566,6 +532,20 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
 
         current_parent_ids = Some(next_level_parents);
+    }
+
+    // Flush the container-row repairs collected during the walk, in batches so
+    // the session's request budget stays bounded.
+    if !pending_row_pushes.is_empty() {
+        let (applied, batches) =
+            push_entities(transport, context_id, identity, &pending_row_pushes).await?;
+        stats.requests_sent += batches;
+        debug!(
+            %context_id,
+            rows = pending_row_pushes.len(),
+            applied,
+            "Flushed container-row repairs to the peer"
+        );
     }
 
     // Flush deletion propagation (clear convergence). Entries we cleared but the
@@ -705,6 +685,83 @@ async fn run_initiator_impl<T: SyncTransport>(
     Ok(stats)
 }
 
+/// CRDT-merge one entity row the peer sent, or record it for the caller to
+/// dispatch when the host cannot merge it itself (app-typed root and custom
+/// entities). A container's row arrives through here as well as a leaf's.
+async fn merge_remote_row(
+    store: &Store,
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    context_client: Option<&ContextClient>,
+    session_peer: Option<PublicKey>,
+    leaf_data: &TreeLeafData,
+    stats: &mut LevelWiseStats,
+) -> Result<()> {
+    trace!(%context_id, key = %hex::encode(leaf_data.key), "Merging entity row");
+
+    // Same per-leaf membership gate as the HashComparison initiator (LevelWise
+    // walks the same merge path); drops a revoked author's / revoked peer's
+    // leaves.
+    if !is_leaf_currently_authorized(store, &context_id, leaf_data, session_peer) {
+        warn!(
+            %context_id,
+            key = %hex::encode(leaf_data.key),
+            "LevelWise merge skipped: claimed author is not currently authorized for this context"
+        );
+        return Ok(());
+    }
+
+    // Defer root entities with a real `crdt_type` for WASM dispatch; opaque
+    // root entities (synthetic `Opaque` LWW marker) fall through to
+    // `apply_leaf_with_crdt_merge` which LWW-writes them directly (no
+    // Mergeable to dispatch).
+    let entity_id = Id::new(leaf_data.key);
+    match classify_leaf(entity_id, &leaf_data.metadata.crdt_type) {
+        LeafDisposition::DeferRoot => {
+            stats.deferred_root_merges.push((
+                leaf_data.key,
+                leaf_data.value.clone(),
+                leaf_data.metadata.hlc_timestamp,
+            ));
+            return Ok(());
+        }
+        LeafDisposition::DeferCustom(type_id) => {
+            stats.deferred_custom_merges.push((
+                leaf_data.key,
+                type_id,
+                leaf_data.value.clone(),
+                leaf_data.metadata.hlc_timestamp,
+            ));
+            return Ok(());
+        }
+        LeafDisposition::Apply => {}
+    }
+
+    // PR-6b Task 6b.7: gate on the loaded reader so a future-schema leaf is
+    // declined+buffered rather than LWW-stored as unreadable bytes.
+    let loaded_bytecode_id =
+        calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id)
+            .ok()
+            .flatten();
+    let outcome = apply_under_context_lock(context_client, context_id, runtime_env, || {
+        match loaded_bytecode_id {
+            Some(loaded) => apply_leaf_with_crdt_merge_gated(store, context_id, leaf_data, loaded),
+            None => {
+                apply_leaf_with_crdt_merge(context_id, leaf_data).map(|()| LeafOutcome::Applied)
+            }
+        }
+    })
+    .await?;
+    match outcome {
+        LeafOutcome::Applied => stats.entities_merged += 1,
+        LeafOutcome::Buffered => {
+            // Declined: buffered, not applied. A later drain replays it.
+        }
+    }
+
+    Ok(())
+}
+
 // =============================================================================
 // Responder Implementation
 // =============================================================================
@@ -747,11 +804,23 @@ async fn run_responder_impl<T: SyncTransport>(
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
     let runtime_env = create_runtime_env(store, context_id, identity, account);
 
+    // The sender's loaded-reader schema, stamped onto every row we emit so a
+    // peer on an older reader can decline+buffer a future-schema one.
+    let schema_bytecode_id =
+        calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id)
+            .ok()
+            .flatten();
+
     let mut sequence_id = 0u64;
 
     // Handle the first request (already parsed by the manager)
-    let (nodes, has_more_levels, deleted_children) =
-        handle_levelwise_request(context_id, first_level, first_parent_ids, &runtime_env)?;
+    let (nodes, has_more_levels, deleted_children) = handle_levelwise_request(
+        context_id,
+        first_level,
+        first_parent_ids,
+        &runtime_env,
+        schema_bytecode_id,
+    )?;
 
     debug!(
         %context_id,
@@ -778,11 +847,13 @@ async fn run_responder_impl<T: SyncTransport>(
     // Handle subsequent requests in a loop
     run_responder_loop(
         transport,
+        store,
         context_id,
         &runtime_env,
         sequence_id,
         1,
         context_client.as_ref(),
+        schema_bytecode_id,
     )
     .await
 }
@@ -793,6 +864,7 @@ fn handle_levelwise_request(
     level: u32,
     parent_ids: Option<Vec<[u8; 32]>>,
     runtime_env: &calimero_storage::env::RuntimeEnv,
+    schema_bytecode_id: Option<[u8; 32]>,
 ) -> Result<(Vec<LevelNode>, bool, Vec<EntityDeletion>)> {
     trace!(
         %context_id,
@@ -829,18 +901,26 @@ fn handle_levelwise_request(
 
     // Get nodes at requested level
     with_runtime_env(runtime_env.clone(), || {
-        get_nodes_at_level(context_id, level as usize, truncated_parent_ids.as_deref())
+        get_nodes_at_level(
+            context_id,
+            level as usize,
+            truncated_parent_ids.as_deref(),
+            schema_bytecode_id,
+        )
     })
 }
 
 /// Internal loop to handle subsequent LevelWise requests.
+#[allow(clippy::too_many_arguments)]
 async fn run_responder_loop<T: SyncTransport>(
     transport: &mut T,
+    store: &Store,
     context_id: ContextId,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     mut sequence_id: u64,
     initial_requests_handled: u64,
     context_client: Option<&ContextClient>,
+    schema_bytecode_id: Option<[u8; 32]>,
 ) -> Result<()> {
     let mut requests_handled = initial_requests_handled;
 
@@ -871,8 +951,13 @@ async fn run_responder_loop<T: SyncTransport>(
             InitPayload::LevelWiseRequest {
                 level, parent_ids, ..
             } => {
-                let (nodes, has_more_levels, deleted_children) =
-                    handle_levelwise_request(context_id, level, parent_ids, runtime_env)?;
+                let (nodes, has_more_levels, deleted_children) = handle_levelwise_request(
+                    context_id,
+                    level,
+                    parent_ids,
+                    runtime_env,
+                    schema_bytecode_id,
+                )?;
 
                 debug!(
                     %context_id,
@@ -897,6 +982,57 @@ async fn run_responder_loop<T: SyncTransport>(
                 transport.send(&response).await?;
                 sequence_id += 1;
                 requests_handled += 1;
+            }
+
+            // Container-row repair. LevelWise is otherwise initiator-pull, so a
+            // responder that materialised a container from a descendant's
+            // ancestor chain holds an index row with no bytes and nothing it
+            // can ask for would fix it; the initiator hands its own row over.
+            // Same apply path as HashComparison's EntityPush.
+            InitPayload::EntityPush { entities, .. } => {
+                let total = entities.len();
+                trace!(%context_id, total, "Handling EntityPush from initiator");
+
+                let outcome = handle_entity_push_locked(
+                    context_client,
+                    store,
+                    runtime_env,
+                    context_id,
+                    &entities,
+                    None,
+                )
+                .await;
+
+                // This responder has no `ContextClient` in the trait signature's
+                // reach for app-typed root state, so it can't dispatch deferred
+                // root merges; the initiator's own walk picks that divergence up
+                // on the next round. Same gap, and same reasoning, as the
+                // HashComparison protocol responder.
+                if !outcome.deferred_root_merges.is_empty() {
+                    warn!(
+                        %context_id,
+                        deferred = outcome.deferred_root_merges.len(),
+                        "LevelWise EntityPush: dropped root-entity deferred merges"
+                    );
+                }
+
+                let response = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::EntityPushAck {
+                        applied_count: outcome.applied,
+                    },
+                    next_nonce: generate_nonce(),
+                };
+                transport.send(&response).await?;
+                sequence_id += 1;
+                requests_handled += 1;
+
+                info!(
+                    %context_id,
+                    applied = outcome.applied,
+                    total,
+                    "Applied pushed entities via CRDT merge"
+                );
             }
 
             // Tombstone propagation (clear convergence) — same mechanism as
@@ -1063,6 +1199,7 @@ fn get_nodes_at_level(
     context_id: ContextId,
     level: usize,
     parent_ids: Option<&[[u8; 32]]>,
+    schema_bytecode_id: Option<[u8; 32]>,
 ) -> Result<(Vec<LevelNode>, bool, Vec<EntityDeletion>)> {
     let mut nodes = Vec::new();
     let mut deleted_children = Vec::new();
@@ -1131,7 +1268,8 @@ fn get_nodes_at_level(
             // every ChildInfo and sorts them — per child, per level, on the sync
             // hot path. For the ~1,600-child collection this work exists to fix,
             // that is the linear read put back, just on the read side.
-            let is_leaf = !Index::<MainStorage>::has_children(child.id()).unwrap_or(false);
+            let has_children = Index::<MainStorage>::has_children(child.id()).unwrap_or(false);
+            has_more_levels |= has_children;
 
             // Determine parent_id for this node (None for level 0)
             let parent_id_bytes = if level == 0 {
@@ -1140,57 +1278,38 @@ fn get_nodes_at_level(
                 Some(*parent_id.as_bytes())
             };
 
-            if is_leaf {
-                // Get leaf data for CRDT merge
-                if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(child_storage_id)
-                {
-                    let Some(crdt_type) = child_index.metadata.crdt_type.clone() else {
-                        // No CRDT type — skip; synced via delta exchange, not level-wise push.
-                        warn!(
-                            %context_id,
-                            child_id = %hex::encode(&child_id[..8]),
-                            "leaf has no CRDT type, skipping in level sync"
-                        );
-                        continue;
-                    };
+            // An internal node carries its own row too: a container's bytes are
+            // the only source of its `own_hash`. Excluded exactly as hash
+            // comparison excludes it, the app root being merged by the app.
+            let wire_row = if has_children && is_app_root_entry(child_storage_id) {
+                None
+            } else {
+                entity_wire_row(child_storage_id, &child_index, schema_bytecode_id)
+            };
 
-                    // Carry the leaf's Merkle parent_id on the wire so the
-                    // receiver can reconstruct it at the correct position
-                    // (matches the HashComparison apply path). Pre-fix the
-                    // receiver always rooted at context, corrupting the
-                    // Merkle topology of nested entities.
-                    let mut metadata = calimero_node_primitives::sync::LeafMetadata::new(
-                        crdt_type,
-                        child_index.metadata.updated_at(),
-                        [0u8; 32],
-                    )
-                    .with_created_at(child_index.metadata.created_at());
-                    if let Some(parent_id) = child_index.parent_id() {
-                        metadata = metadata.with_parent(*parent_id.as_bytes());
-                    }
-                    // Full ancestor chain — same rationale and trust
-                    // model as in
-                    // `hash_comparison_protocol::collect_leaves_recursive`.
-                    if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(child_storage_id)
-                    {
-                        metadata = metadata.with_ancestors(ancestors);
-                    }
-                    if let Some(auth) =
-                        crate::sync::helpers::wire_authorization_for(&child_index.metadata)
-                    {
-                        metadata = metadata.with_authorization(auth);
-                    }
-                    let leaf_data =
-                        TreeLeafData::new(*child_storage_id.as_bytes(), entry_data, metadata);
-
+            match (wire_row, has_children) {
+                (Some(leaf_data), false) => {
                     nodes.push(LevelNode::leaf(
                         child_id,
                         child_hash,
                         parent_id_bytes,
                         leaf_data,
                     ));
-                } else {
-                    // Leaf node with no raw data is corrupted/incomplete - skip it
+                }
+                (Some(leaf_data), true) => {
+                    nodes.push(LevelNode::container(
+                        child_id,
+                        child_hash,
+                        parent_id_bytes,
+                        leaf_data,
+                    ));
+                }
+                (None, true) => {
+                    nodes.push(LevelNode::internal(child_id, child_hash, parent_id_bytes));
+                }
+                (None, false) => {
+                    // Childless and row-less: nothing to hand over, and the
+                    // peer's `is_valid` would reject it anyway.
                     debug!(
                         %context_id,
                         child_id = %hex::encode(&child_id[..8]),
@@ -1198,10 +1317,6 @@ fn get_nodes_at_level(
                     );
                     continue;
                 }
-            } else {
-                // Internal node: has children, so more levels exist
-                has_more_levels = true;
-                nodes.push(LevelNode::internal(child_id, child_hash, parent_id_bytes));
             }
 
             // DoS protection: limit nodes
@@ -1230,6 +1345,102 @@ fn get_nodes_at_level(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A container is handed over as a node that carries BOTH its own row and
+    /// `has_children`, which is the combination the pre-fix wire could not
+    /// express; leaves keep their row and the app root is still left out.
+    #[test]
+    fn a_containers_own_row_rides_along_with_has_children() {
+        use std::sync::Arc;
+
+        use calimero_primitives::context::ContextId;
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::{ApplyContext, Interface};
+        use calimero_store::db::InMemoryDB;
+
+        let context_id = ContextId::from([0xCA; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(
+            &store,
+            context_id,
+            identity,
+            calimero_account::AccountId::from([0xAC; 32]),
+        );
+
+        let root_id = Id::new(*context_id.as_ref());
+        let container_id = Id::new([0x5C; 32]);
+        let child_id = Id::new([0x5D; 32]);
+
+        with_runtime_env(runtime_env, || {
+            let add_under = |parent: Id, id: Id, data: Vec<u8>| {
+                let parent_hash = Index::<MainStorage>::get_hashes_for(parent)
+                    .ok()
+                    .flatten()
+                    .map_or([0; 32], |(full, _)| full);
+                let parent_meta = Index::<MainStorage>::get_index(parent)
+                    .ok()
+                    .flatten()
+                    .map(|idx| idx.metadata.clone())
+                    .unwrap_or_default();
+                Interface::<MainStorage>::apply_action(
+                    Action::Add {
+                        id,
+                        data,
+                        ancestors: vec![ChildInfo::new(parent, parent_hash, parent_meta)],
+                        metadata: Metadata::new(100, 100),
+                    },
+                    &ApplyContext::empty(),
+                )
+                .expect("add entity");
+            };
+
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+            add_under(root_id, container_id, container_id.as_bytes().to_vec());
+            add_under(container_id, child_id, b"entry".to_vec());
+
+            let (level_zero, has_more_levels, _deleted) =
+                get_nodes_at_level(context_id, 0, None, None).expect("level 0");
+            assert!(
+                has_more_levels,
+                "the container's children are a level below"
+            );
+
+            let container = level_zero
+                .iter()
+                .find(|node| node.id == *container_id.as_bytes())
+                .expect("the container must appear at level 0");
+            assert!(
+                container.has_children,
+                "a container must still be descended into"
+            );
+            assert_eq!(
+                container.leaf_data.as_ref().map(|row| row.value.clone()),
+                Some(container_id.as_bytes().to_vec()),
+                "the container's own row is the only source of its own_hash"
+            );
+
+            let (level_one, _has_more, _deleted) =
+                get_nodes_at_level(context_id, 1, Some(&[*container_id.as_bytes()]), None)
+                    .expect("level 1");
+            let child = level_one
+                .iter()
+                .find(|node| node.id == *child_id.as_bytes())
+                .expect("the child must appear at level 1");
+            assert!(!child.has_children, "the child is a leaf");
+            assert!(child.leaf_data.is_some(), "a leaf still carries its row");
+        });
+    }
 
     #[test]
     fn test_config_creation() {

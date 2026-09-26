@@ -1,24 +1,8 @@
 #!/usr/bin/env python3
-"""Run CI's own checks locally, by reading the workflow instead of copying it.
+"""Run CI's Rust checks locally by reading ci-checks.yml instead of copying it.
 
-Why this exists
----------------
-The commands are already written down in `.github/workflows/ci-checks.yml`, and
-a second hand-maintained copy of them is worse than none: it drifts silently,
-and it drifts in the direction of running *less* than CI does. Three PRs in a
-row went red for exactly that reason, each on a different narrowing:
-
-* per-crate `cargo clippy` instead of `--workspace --all-targets`, which missed
-  a `-D warnings` error in a test file;
-* `cargo test -p <crate> --lib`, which never builds a crate's `tests/`
-  integration targets;
-* default features, which never compiles the `mock-attestation` module that CI
-  lints and tests in its own step.
-
-Every one of those looked like "I ran the tests". So this script does not hold a
-list of commands -- it *reads the job* and runs the steps it finds, in order. Add
-a step to CI and it appears here with no edit; change a flag in CI and the local
-run changes with it.
+A hand-kept copy drifts toward running less than CI. This runs the `run` steps of
+every job the `Rust` check needs, in order, so a CI change needs no edit here.
 
 Usage
 -----
@@ -28,11 +12,7 @@ Usage
     ./scripts/check-like-ci.py --skip deny --skip machete
     ./scripts/check-like-ci.py --job wasm-size    # a different job
 
-Failures do not stop the run, mirroring `if: ${{ !cancelled() }}` on the job's
-steps: CI reports every step it could, and so should this. That is also the
-behaviour worth having locally -- one pass tells you everything to fix rather
-than one thing at a time. `--fail-fast` opts out.
-
+Failures do not stop the run, like `if: !cancelled()` in CI; `--fail-fast` opts out.
 Exit status is 0 only if every step that ran passed.
 """
 
@@ -51,15 +31,10 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-checks.yml"
-DEFAULT_JOB = "rust"
+AGGREGATE_JOB = "rust"  # the required `Rust` check; its `needs` are the jobs run by default
+INSTALL_ACTION = "taiki-e/install-action"  # steps whose `tool:` binaries CI installs for later steps
 
-# Prerequisites CI has and a workstation may not. Reported once, up front, as
-# warnings rather than errors: a step that needs one will fail on its own and say
-# why, but knowing beforehand is the difference between "my change broke this"
-# and "this machine cannot run this step".
-#
-# Each entry is (predicate, message). The predicate returns True when the
-# prerequisite is MISSING.
+# (predicate, message) for things CI has and a workstation may not; True means missing.
 PREREQS = [
     (
         lambda: shutil.which("ifconfig") is None,
@@ -84,17 +59,29 @@ PREREQS = [
 ]
 
 
-def load_steps(workflow: Path, job: str) -> list[tuple[str, str, dict]]:
-    """The named job's `run` steps as (name, script, env), in workflow order.
-
-    Steps that use an action (`uses:`) carry no script to run -- checkout and
-    toolchain setup are the local machine's existing state -- so they are
-    dropped here rather than reported as skipped, which would be noise on every
-    single run.
-    """
+def load_workflow(workflow: Path) -> dict:
     with workflow.open() as handle:
-        doc = yaml.safe_load(handle)
+        return yaml.safe_load(handle)
 
+
+def default_jobs(doc: dict) -> list[str]:
+    """The jobs the aggregate `Rust` check waits on, so a new one is picked up here."""
+    needs = ((doc.get("jobs") or {}).get(AGGREGATE_JOB) or {}).get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def installed_tools(doc: dict, job: str) -> list[str]:
+    """Binaries the job installs through `taiki-e/install-action`, versions stripped."""
+    tools = []
+    for step in doc["jobs"][job].get("steps") or []:
+        if INSTALL_ACTION in (step.get("uses") or ""):
+            spec = (step.get("with") or {}).get("tool") or ""
+            tools += [tool.split("@")[0].strip() for tool in spec.split(",") if tool.strip()]
+    return tools
+
+
+def load_steps(doc: dict, workflow: Path, job: str) -> list[tuple[str, str, dict]]:
+    """The job's `run` steps as (name, script, env); `uses:` steps have nothing to run locally."""
     jobs = doc.get("jobs") or {}
     if job not in jobs:
         raise SystemExit(
@@ -110,20 +97,14 @@ def load_steps(workflow: Path, job: str) -> list[tuple[str, str, dict]]:
         script = step.get("run")
         if not script:
             continue
-        name = step.get("name") or f"step {index}"
+        name = f"{job}: {step.get('name') or f'step {index}'}"
         env = {**workflow_env, **job_env, **(step.get("env") or {})}
         steps.append((name, script, env))
     return steps
 
 
 def resolve_env(raw: dict) -> dict:
-    """CI's env, minus what only makes sense on a runner.
-
-    A `${{ ... }}` expression cannot be evaluated here, so those entries are
-    dropped: `CARGO_TARGET_DIR` pointed at the runner's workspace and a secret
-    token has no local value. Anything already exported wins, so a caller can
-    set `CALIMERO_AUTH_FRONTEND_SRC` and have it survive.
-    """
+    """CI's env without the `${{ }}` expressions only a runner can evaluate; exported values win."""
     env = dict(os.environ)
     for key, value in raw.items():
         if isinstance(value, str):
@@ -131,19 +112,14 @@ def resolve_env(raw: dict) -> dict:
                 continue
             rendered = value
         elif isinstance(value, bool):
-            # YAML reads `yes`/`no`/`true`/`false` as booleans, so a perfectly
-            # ordinary workflow value arrives here not-a-string. Actions renders
-            # these lowercased; dropping them instead (the first version of this
-            # function did) loses env the step was written to rely on.
+            # YAML reads true/false as booleans; Actions renders them lowercased.
             rendered = "true" if value else "false"
         elif isinstance(value, (int, float)):
             rendered = str(value)
         else:
             continue
         env.setdefault(key, rendered)
-    # CI runs with incremental compilation off. Matching it keeps the local
-    # target directory closer to CI's and, on a small disk, is the difference
-    # between finishing and running out of space.
+    # rust-cache turns incremental compilation off in CI.
     env.setdefault("CARGO_INCREMENTAL", "0")
     return env
 
@@ -157,7 +133,12 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--workflow", type=Path, default=DEFAULT_WORKFLOW)
-    parser.add_argument("--job", default=DEFAULT_JOB, help=f"default: {DEFAULT_JOB}")
+    parser.add_argument(
+        "--job",
+        action="append",
+        default=[],
+        help=f"repeatable; default: every job the {AGGREGATE_JOB!r} job needs",
+    )
     parser.add_argument("--list", action="store_true", help="print the steps and exit")
     parser.add_argument(
         "--only", action="append", default=[], metavar="PATTERN", help="run only matching steps"
@@ -169,10 +150,12 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print commands, run nothing")
     args = parser.parse_args()
 
-    steps = load_steps(args.workflow, args.job)
+    doc = load_workflow(args.workflow)
+    jobs = args.job or default_jobs(doc)
+    steps = [step for job in jobs for step in load_steps(doc, args.workflow, job)]
 
     if args.list:
-        print(f"{args.workflow.relative_to(REPO_ROOT)} :: job {args.job!r}\n")
+        print(f"{args.workflow.relative_to(REPO_ROOT)} :: jobs {', '.join(jobs)}\n")
         for number, (name, script, _) in enumerate(steps, start=1):
             first = script.strip().splitlines()[0]
             suffix = " …" if len(script.strip().splitlines()) > 1 else ""
@@ -188,7 +171,12 @@ def main() -> int:
         print("no steps selected", file=sys.stderr)
         return 1
 
-    warnings = [message for missing, message in PREREQS if missing()]
+    warnings = [message for missing, message in PREREQS if missing()] + [
+        f"`{tool}` is not on PATH; CI installs it with {INSTALL_ACTION} for the {job} job."
+        for job in dict.fromkeys(name.split(":")[0] for name, _, _ in selected)
+        for tool in installed_tools(doc, job)
+        if shutil.which(tool) is None
+    ]
     if warnings and not args.dry_run:
         print("=== prerequisites CI has that this machine may not ===")
         for message in warnings:
@@ -205,8 +193,7 @@ def main() -> int:
             continue
 
         started = time.monotonic()
-        # `bash -e` matches the workflow's `shell: bash -e {0}`, so a multi-line
-        # step stops at its first failing command here exactly as it does in CI.
+        # Actions runs `run:` steps with `bash -e`.
         completed = subprocess.run(
             ["bash", "-e", "-c", script],
             cwd=REPO_ROOT,
@@ -233,11 +220,7 @@ def main() -> int:
 
     failed = [name for name, status, _ in results if status != "ok"]
     ran = len(results)
-    # Three different reasons a step has no result, kept apart because they mean
-    # different things to whoever reads this: filtered out by --only/--skip,
-    # never reached because --fail-fast stopped the run, or simply absent. Rolled
-    # together as "skipped" this line once said "1 not selected" about a step
-    # that was very much selected and just never ran.
+    # Deselected by --only/--skip and never reached after --fail-fast are reported apart.
     unreached = len(selected) - ran if stopped_early else 0
     deselected = len(steps) - len(selected)
     tail = "".join(

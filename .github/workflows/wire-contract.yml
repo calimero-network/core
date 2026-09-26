@@ -1,9 +1,6 @@
 name: Wire Contract
 
-# Fast, Docker-free canary: the committed wire fixtures must round-trip through
-# their Rust DTOs. A field rename/removal/retype in an HTTP request/response DTO
-# reddens here, with a diff — the first signal that the hand-mirrored SDK types
-# need a matching update. Regenerate after an intended change with
+# Committed wire fixtures must round-trip through their Rust DTOs. Regenerate with
 # `UPDATE_FIXTURES=1 cargo test -p calimero-server-primitives --test wire_fixtures`.
 
 permissions:
@@ -37,22 +34,16 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v6
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: cargo-lock-deps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Wire-contract fixtures
         run: cargo test -p calimero-server-primitives --test wire_fixtures
 
-      # The fixtures are derived files, so regenerating them must be a no-op:
-      # this proves the documented regeneration command still works and that
-      # nobody hand-edited a fixture into a shape the DTO no longer produces.
+      # Fixtures are derived files, so regenerating must be a no-op - this proves
+      # the command still works and nobody hand-edited a fixture out of sync with its DTO.
       - name: Fixtures regenerate clean
         run: |
           UPDATE_FIXTURES=1 cargo test -p calimero-server-primitives --test wire_fixtures

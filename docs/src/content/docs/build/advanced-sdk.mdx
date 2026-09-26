@@ -281,7 +281,7 @@ pub struct Secrets {
 
 The macro **rejects at compile time** any field whose semantics assume the synced
 tree: CRDT types (`LwwRegister`, `Counter`, `GCounter`, `PNCounter`,
-`ReplicatedGrowableArray`), access-control collections (`SharedStorage`,
+`ReplicatedGrowableArray`, `FugueText`, `RichText`, `RichDocument`), access-control collections (`SharedStorage`,
 `UserStorage`, `FrozenStorage`), and authored collections (`AuthoredMap`,
 `AuthoredVector`). Private storage has exactly one writer — this node — so CRDT
 machinery is overhead with no semantic gain. Use a plain `u64` / `String` / `Vec`

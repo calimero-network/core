@@ -94,6 +94,24 @@ RUN set -e; \
 # the install is allowed to fail non-fatally (`|| echo`): libc6-dbg above
 # already covers the bulk of [unknown] frames, so a missing libgcc/libstdc++
 # dbgsym degrades flamegraph detail slightly rather than breaking the image.
+#
+# ⚠️ THE INDEX FETCH NEEDS THE SAME TOLERANCE, and used not to have it. The
+# `|| echo` guards the INSTALL; the `apt-get update` that pulls the ddebs index
+# sat unguarded one line above it, so an unreachable ddebs failed the whole
+# release image:
+#
+#   E: Some index files failed to download. They have been ignored, or old
+#      ones used instead.
+#   ERROR: failed to solve: ... exit code: 100
+#
+# ddebs.ubuntu.com is a third-party archive with no availability guarantee, and
+# this stated intent — optional symbols, never a broken image — only holds if a
+# missing INDEX is as survivable as a missing package.
+#
+# On failure the source is REMOVED and apt updated again, rather than `|| true`.
+# That keeps the main Ubuntu archive fatal: this second update refreshes every
+# source, so swallowing it wholesale would hide a real archive outage as well as
+# a ddebs one. Retries cover the brief case before either path is taken.
 # Only the release + release-updates pockets are used — `proposed` is Ubuntu's
 # untested staging pocket and would let an unstable dbgsym slip in on rebuild.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -103,7 +121,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME} main restricted universe multiverse" \
         "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-updates main restricted universe multiverse" \
         > /etc/apt/sources.list.d/ddebs.list \
-    && apt-get update \
+    && ( apt-get update -o Acquire::Retries=3 \
+         || { echo "[image] WARN: ddebs.ubuntu.com index unavailable — dropping the source and continuing without libgcc/libstdc++ dbgsym"; \
+              rm -f /etc/apt/sources.list.d/ddebs.list; \
+              apt-get update -o Acquire::Retries=3; } ) \
     && GCC_VER="$(dpkg-query -W -f='${Version}' libgcc-s1)" \
     && STDCPP_VER="$(dpkg-query -W -f='${Version}' libstdc++6)" \
     && ( apt-get install -y --no-install-recommends \

@@ -86,7 +86,7 @@ pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::account_bindings::{
     member_account_for_device_key, member_account_in_namespace, AccountBindingRepository,
-    BindingRejected, DeviceBinding,
+    BindingRejected, DeviceBinding, JOIN_SCOPE_EPOCH,
 };
 pub use self::account_devices::AccountDeviceRegistry;
 pub use self::account_namespaces::AccountNamespaceSet;
@@ -99,7 +99,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, revoke_device_in};
+pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -132,9 +132,10 @@ pub use self::namespace::{
     build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
     known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
-    open_relayed_join_for_read, open_sealed_root_op, open_sealed_root_op_for_group,
-    redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed,
-    seal_root_op_for_publish, seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
+    namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
+    open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
+    retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
+    seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
     sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
     KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
@@ -150,7 +151,8 @@ pub use self::permission_checker::PermissionChecker;
 
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, tee_admission_record,
-    tee_admission_records, TeeAdmissionPolicy, TeeAdmissionRecord,
+    tee_admission_records, TeeAdmissionPolicy, TeeAdmissionPolicyRead, TeeAdmissionRecord,
+    UndecodableOpLogEntry,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;

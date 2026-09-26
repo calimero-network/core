@@ -8,7 +8,7 @@ use calimero_server_primitives::admin::{
     JoinGroupApiRequest, JoinNamespaceApiResponse, JoinNamespaceApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -68,7 +68,7 @@ pub async fn handler(
     match result {
         Ok(resp) => {
             let namespace_id_hex = hex::encode(resp.group_id.to_bytes());
-            info!(namespace_id=%namespace_id_hex, member=%resp.member_identity, "Joined namespace successfully");
+            debug!(namespace_id=%namespace_id_hex, member=%resp.member_identity, "Joined namespace successfully");
             ApiResponse {
                 payload: JoinNamespaceApiResponse {
                     data: JoinNamespaceApiResponseData {

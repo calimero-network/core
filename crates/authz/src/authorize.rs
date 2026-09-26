@@ -217,6 +217,7 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             genesis,
             chain,
             cert,
+            ..
         } => {
             let verified = acl_at_cut.admit_device_link(genesis, chain, cert)?;
             check_op_is_the_certified_device(op, &verified)?;
@@ -275,6 +276,21 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 // `account` is necessarily taken on trust here.
                 None if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
                 _ => Err(Rejected::NotRootAdmin),
+            }
+        }
+        // Only the account may narrow its own device: the statement rides in the
+        // clear on every link, so any member could otherwise replay a superseded one.
+        OpPayload::DeviceDescoped {
+            account, device, ..
+        } => {
+            if op.author() == *account {
+                Ok(())
+            } else {
+                Err(Rejected::DeviceAccountMismatch {
+                    device: *device,
+                    bound: op.author(),
+                    claimed: *account,
+                })
             }
         }
         OpPayload::AccountKeysRotated { handoff } => {

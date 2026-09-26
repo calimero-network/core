@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use crate::proof_auth::{ProofPolicy, Refusal, MAX_PROVEN_BODY, PROOF_HEADER};
 use axum::body::Body;
 use axum::extract::OriginalUri;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
@@ -87,6 +88,24 @@ pub struct AuthenticatedNodeOwner;
 /// never cached from the session.
 #[derive(Clone, Debug)]
 pub struct AuthenticatedAccount(pub calimero_account::AccountId);
+
+/// The device whose key signed this request, when the caller proved it on the
+/// request itself.
+///
+/// Separate from [`AuthenticatedAccount`] rather than a field on it, because
+/// the two are known on different paths and collapsing them would hide that. A
+/// request-carried proof names a device — the certificate says which one. A
+/// session does not: `account_proof` mints a token whose subject is the
+/// ACCOUNT, and the device that logged in is discarded at that point.
+///
+/// That asymmetry is load-bearing downstream. Device revocation is a
+/// per-device, per-group governance row, so a caller whose device is unknown
+/// cannot be filtered by it — which is a real gap for sessions, not a property
+/// of the design. Making it a separate extension keeps the gap visible at every
+/// call site instead of hiding an `Option` inside a struct everyone
+/// destructures.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedDevice(pub calimero_primitives::identity::DeviceId);
 
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
@@ -177,18 +196,83 @@ pub async fn initialise(server_config: &ServerConfig, datastore: &Store) -> Resu
 }
 
 #[must_use]
-pub fn guard_layer(service: Arc<AuthService>) -> AuthGuardLayer {
-    AuthGuardLayer::new(service)
+/// Seconds since the Unix epoch, for the one rule on this path that needs a
+/// clock: whether a caller's proof is inside its window.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Run the permission check both admission paths share.
+///
+/// Extracted so the token path and the proof path cannot drift: they authorize
+/// against the same table, and a second copy of this is how one of them ends up
+/// a route behind the other.
+/// Returns the refusal when there is one, so the polarity is visible at every
+/// call site: `Some` is a rejection, and there is no success value to discard.
+fn authorization_refusal(
+    method: &Method,
+    full_uri: axum::http::Uri,
+    permissions: &[String],
+    subject: &str,
+) -> Option<Response> {
+    let perm_request = Request::builder()
+        .method(method.clone())
+        .uri(full_uri)
+        .body(Body::empty())
+        .expect("request built from an already-validated method and URI");
+
+    let validator = PermissionValidator::new();
+    let required = validator.determine_required_permissions(&perm_request);
+    if validator.validate_permissions(permissions, &required) {
+        return None;
+    }
+
+    warn!(
+        %subject,
+        ?required,
+        granted = ?permissions,
+        "permission denied: caller lacks the permissions this route requires",
+    );
+    let mut resp = StatusCode::FORBIDDEN.into_response();
+    resp.headers_mut().insert(
+        "X-Auth-Error",
+        HeaderValue::from_static("permission_denied"),
+    );
+    Some(resp)
+}
+
+/// The permissions a verified proof confers.
+///
+/// Exactly what an `account_proof` SESSION confers, read from that provider's
+/// own default rather than restated here. Both are the same claim — "this
+/// caller is an account" — arrived at two ways, and giving them different
+/// authority would mean the answer to "what does being an account get you"
+/// depended on how you proved it.
+fn proof_permissions() -> Vec<String> {
+    mero_auth::config::AccountProofConfig::default().session_permissions
+}
+
+pub fn guard_layer(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> AuthGuardLayer {
+    AuthGuardLayer::new(service, proof_policy)
 }
 
 #[derive(Clone)]
 pub struct AuthGuardLayer {
     service: Arc<AuthService>,
+    /// Absent when this node cannot serve proofs at all — it has minted no
+    /// signing key yet, so there is no name for a session statement to be
+    /// addressed to and nothing to compare against.
+    proof_policy: Option<ProofPolicy>,
 }
 
 impl AuthGuardLayer {
-    fn new(service: Arc<AuthService>) -> Self {
-        Self { service }
+    fn new(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> Self {
+        Self {
+            service,
+            proof_policy,
+        }
     }
 }
 
@@ -203,6 +287,7 @@ where
         AuthGuardService {
             inner,
             service: Arc::clone(&self.service),
+            proof_policy: self.proof_policy.clone(),
         }
     }
 }
@@ -211,6 +296,7 @@ where
 pub struct AuthGuardService<S> {
     inner: S,
     service: Arc<AuthService>,
+    proof_policy: Option<ProofPolicy>,
 }
 
 impl<S> Service<Request<Body>> for AuthGuardService<S>
@@ -229,6 +315,7 @@ where
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let mut inner = self.inner.clone();
         let service = Arc::clone(&self.service);
+        let proof_policy = self.proof_policy.clone();
         let (mut parts, body) = req.into_parts();
         let method = parts.method.clone();
         let headers = parts.headers.clone();
@@ -271,8 +358,96 @@ where
                                 }
                             }
                             None => {
-                                debug!("No Authorization header and no ?token= query parameter");
-                                return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                // No token of any kind. Before refusing, the one
+                                // other way a caller can say who it is: a proof
+                                // carried on the request itself.
+                                //
+                                // Deliberately last. A request holding a token is
+                                // decided by that token, so a caller cannot
+                                // present a weak proof alongside a rejected token
+                                // and have the proof answer instead.
+                                let Some(header) = parts.headers.get(&PROOF_HEADER) else {
+                                    debug!("no Authorization header, no ?token= and no proof");
+                                    return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                };
+                                let Some(policy) = proof_policy.as_ref() else {
+                                    debug!("a proof was presented to a node that serves none");
+                                    return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                };
+
+                                // The body is read HERE and nowhere else on this
+                                // path, because a proof commits to it. The token
+                                // path never touches it, so a streaming upload
+                                // authenticated by a token still streams.
+                                let bytes = match axum::body::to_bytes(body, MAX_PROVEN_BODY).await
+                                {
+                                    Ok(bytes) => bytes,
+                                    Err(_ignored) => {
+                                        debug!("a proven request's body exceeded the cap");
+                                        return Ok(
+                                            StatusCode::PAYLOAD_TOO_LARGE.into_response()
+                                        );
+                                    }
+                                };
+
+                                let full_uri = parts
+                                    .extensions
+                                    .get::<OriginalUri>()
+                                    .map_or_else(|| uri.clone(), |original| original.0.clone());
+
+                                let (account, device) = match policy.admit(
+                                    header.as_bytes(),
+                                    method.as_str(),
+                                    full_uri.path(),
+                                    &bytes,
+                                    now_secs(),
+                                ) {
+                                    Ok(admitted) => admitted,
+                                    Err(refusal) => {
+                                        debug!(?refusal, "proof refused");
+                                        let mut resp = match refusal {
+                                            // A caller this node was never asked
+                                            // to serve is told so, rather than
+                                            // being invited to re-authenticate
+                                            // against a door that will not open
+                                            // for it however it knocks.
+                                            Refusal::NotServed => {
+                                                StatusCode::FORBIDDEN.into_response()
+                                            }
+                                            Refusal::Malformed | Refusal::Unverified => {
+                                                StatusCode::UNAUTHORIZED.into_response()
+                                            }
+                                        };
+                                        resp.headers_mut().insert(
+                                            "X-Auth-Error",
+                                            HeaderValue::from_static("invalid_proof"),
+                                        );
+                                        return Ok(resp);
+                                    }
+                                };
+
+                                if let Some(resp) = authorization_refusal(
+                                    &method,
+                                    full_uri,
+                                    &proof_permissions(),
+                                    &account.to_string(),
+                                ) {
+                                    return Ok(resp);
+                                }
+
+                                // An account, and only ever an account. A proof
+                                // says a device speaks for an account root; it
+                                // says nothing about who owns this node, so the
+                                // node-owner marker is unreachable from here by
+                                // construction rather than by a check.
+                                parts.extensions.insert(AuthenticatedAccount(account));
+                                // The device too, so the revocation check that
+                                // runs where the group is known has something
+                                // to check. A session cannot supply this.
+                                parts.extensions.insert(AuthenticatedDevice(device));
+
+                                let req = Request::from_parts(parts, Body::from(bytes));
+                                return inner.call(req).await;
                             }
                         }
                     };
@@ -297,24 +472,12 @@ where
                     .get::<OriginalUri>()
                     .map_or_else(|| uri.clone(), |original| original.0.clone());
 
-                let perm_request = Request::builder()
-                    .method(method.clone())
-                    .uri(full_uri)
-                    .body(Body::empty())
-                    .expect("request built from an already-validated method and URI");
-
-                let validator = PermissionValidator::new();
-                let required = validator.determine_required_permissions(&perm_request);
-                if !validator.validate_permissions(&auth_response.permissions, &required) {
-                    warn!(
-                        key_id = %auth_response.key_id,
-                        ?required,
-                        granted = ?auth_response.permissions,
-                        "permission denied: token lacks the permissions this route requires",
-                    );
-                    let mut resp = StatusCode::FORBIDDEN.into_response();
-                    resp.headers_mut()
-                        .insert("X-Auth-Error", HeaderValue::from_static("permission_denied"));
+                if let Some(resp) = authorization_refusal(
+                    &method,
+                    full_uri,
+                    &auth_response.permissions,
+                    &auth_response.key_id,
+                ) {
                     return Ok(resp);
                 }
 
@@ -340,6 +503,33 @@ where
                         Ok(account) => {
                             debug!(%account, "account-anchored session: granting AuthenticatedAccount");
                             parts.extensions.insert(AuthenticatedAccount(account));
+
+                            // And the device, when the token names one, so a
+                            // session is filtered by revocation exactly as a
+                            // request-carried proof is. A token minted before
+                            // this claim existed names none and behaves as it
+                            // always did — unfilterable, which is the gap being
+                            // closed rather than one being opened.
+                            //
+                            // An unparseable value grants no device rather than
+                            // a wrong one: the claim is advisory to this layer,
+                            // and inventing a device id would make revocation
+                            // consult a row about somebody else.
+                            match auth_response
+                                .device
+                                .as_deref()
+                                .map(str::parse::<calimero_primitives::identity::DeviceId>)
+                            {
+                                Some(Ok(device)) => {
+                                    parts.extensions.insert(AuthenticatedDevice(device));
+                                }
+                                Some(Err(_)) => warn!(
+                                    %account,
+                                    "session names a device that does not parse; \
+                                     granting no device",
+                                ),
+                                None => {}
+                            }
                         }
                         Err(_) => {
                             // Minted by the account provider yet not a parseable
@@ -558,7 +748,7 @@ mod tests {
         key_manager.set_key("k-1", &key).await.unwrap();
 
         let (access_token, _) = token_manager
-            .generate_token_pair("k-1".to_owned(), vec!["admin".to_owned()], None)
+            .generate_token_pair("k-1".to_owned(), vec!["admin".to_owned()], None, None)
             .await
             .unwrap();
 
@@ -572,10 +762,12 @@ mod tests {
 
         Router::new()
             .route("/admin-api/applications", get(|| async { "ok" }))
-            .layer(super::guard_layer(Arc::new(AuthService::new(
-                Vec::new(),
-                token_manager,
-            ))))
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                // No proof policy: this test covers the token path, and giving
+                // it one would let a failure there be masked by admission here.
+                None,
+            ))
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
@@ -649,6 +841,201 @@ mod tests {
         let resp = super::unauthorized_response(&AuthError::InvalidToken("nope".to_owned()));
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(resp.headers().get("X-Auth-Error").is_none());
+    }
+
+    /// One GET through the real guard, with a token carrying exactly
+    /// `permissions` — or, when `send_token` is false, with no credential at
+    /// all.
+    ///
+    /// A sibling of `guarded_request` rather than a parameter on it: that one is
+    /// about what happens to a key *after* its token was minted, this one about
+    /// what a given scope reaches, and folding the two would make both harder to
+    /// read than either is now.
+    async fn scoped_request(path: &str, permissions: Vec<String>, send_token: bool) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "account_proof".to_owned(),
+            permissions.clone(),
+            None,
+        );
+        key_manager.set_key("k-1", &key).await.unwrap();
+
+        let (access_token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let mut builder = Request::builder().method(Method::GET).uri(path);
+        if send_token {
+            builder = builder.header("Authorization", format!("Bearer {access_token}"));
+        }
+
+        Router::new()
+            .route("/admin-api/namespaces", get(|| async { "ok" }))
+            .route("/admin-api/contexts", get(|| async { "ok" }))
+            .route("/admin-api/contexts/{context_id}", get(|| async { "ok" }))
+            .route("/admin-api/blobs", get(|| async { "ok" }))
+            .route(
+                "/admin-api/contexts/{context_id}/identities",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/{context_id}/identities-owned",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/{context_id}/storage",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/{context_id}/group",
+                get(|| async { "ok" }),
+            )
+            // Still shut to a delegated session, and mounted so a refusal here
+            // is the guard's 403 rather than a 404 from a route nobody added.
+            .route(
+                "/admin-api/contexts/for-application/{application_id}",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/contexts/with-executors/for-application/{application_id}",
+                get(|| async { "ok" }),
+            )
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                // No proof policy: this test covers the token path, and giving
+                // it one would let a failure there be masked by admission here.
+                None,
+            ))
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// The scope `account_proof` mints by default, verbatim.
+    fn delegated_session() -> Vec<String> {
+        vec![
+            "context:intent".to_owned(),
+            "context:list-own".to_owned(),
+            "context:query".to_owned(),
+            "context:subscribe".to_owned(),
+            "namespace:list-own".to_owned(),
+        ]
+    }
+
+    /// The criterion, through the guard a client actually meets: a delegated
+    /// session reaches the two caller-scoped listings and the single-context
+    /// read, where before it got a 403 from the permission layer and never saw
+    /// the handler that would have scoped its answer.
+    #[tokio::test]
+    async fn a_delegated_session_passes_the_guard_for_the_scoped_listings() {
+        for path in [
+            "/admin-api/namespaces",
+            "/admin-api/contexts",
+            "/admin-api/contexts/ctx-1",
+            // The four read sub-resources. Passing the guard is all this
+            // asserts: each handler then resolves the caller's groups and
+            // refuses a context they do not reach.
+            "/admin-api/contexts/ctx-1/identities",
+            "/admin-api/contexts/ctx-1/identities-owned",
+            "/admin-api/contexts/ctx-1/storage",
+            "/admin-api/contexts/ctx-1/group",
+        ] {
+            let resp = scoped_request(path, delegated_session(), true).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "a delegated session must pass the guard for GET {path}",
+            );
+        }
+    }
+
+    /// Blob enumeration stays shut to a delegated session (core #4019).
+    ///
+    /// `GET /admin-api/blobs` returns every blob the node holds, with no caller
+    /// scoping at all — on a relay, opening it would hand each tenant the blob
+    /// ids of every other one. It is deliberately not part of this change.
+    #[tokio::test]
+    async fn a_delegated_session_is_refused_blob_enumeration() {
+        let resp = scoped_request("/admin-api/blobs", delegated_session(), true).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers().get("X-Auth-Error").unwrap(),
+            "permission_denied",
+        );
+    }
+
+    /// And so do the context reads that still have no caller scoping of their
+    /// own — the ones the wide `context:list` reaches, which is why the narrow
+    /// `context:list-own` exists as a separate verb.
+    ///
+    /// Both enumerate every context on the node running a given application.
+    /// Unlike the four `/contexts/:id/*` reads, they are answered without ever
+    /// naming a context whose group could be checked, so there is nothing for
+    /// `admits_context` to narrow and they stay shut until they get an owner
+    /// model of their own.
+    #[tokio::test]
+    async fn a_delegated_session_is_refused_an_unscoped_context_sibling() {
+        for path in [
+            "/admin-api/contexts/for-application/app-1",
+            "/admin-api/contexts/with-executors/for-application/app-1",
+        ] {
+            let resp = scoped_request(path, delegated_session(), true).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::FORBIDDEN,
+                "a delegated session must NOT pass the guard for GET {path}",
+            );
+        }
+    }
+
+    /// Opening the listings must not have opened them to the world: with no
+    /// credential the guard still answers 401, before any permission is
+    /// considered.
+    #[tokio::test]
+    async fn the_scoped_listings_still_refuse_an_unauthenticated_caller() {
+        for path in [
+            "/admin-api/namespaces",
+            "/admin-api/contexts",
+            "/admin-api/contexts/ctx-1",
+        ] {
+            let resp = scoped_request(path, delegated_session(), false).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "GET {path} with no token must be 401",
+            );
+        }
+    }
+
+    /// The node owner's path through the guard is unchanged.
+    #[tokio::test]
+    async fn an_admin_token_still_reaches_every_listing() {
+        for path in [
+            "/admin-api/namespaces",
+            "/admin-api/contexts",
+            "/admin-api/contexts/ctx-1",
+            "/admin-api/blobs",
+            "/admin-api/contexts/ctx-1/identities",
+        ] {
+            let resp = scoped_request(path, vec!["admin".to_owned()], true).await;
+            assert_eq!(resp.status(), StatusCode::OK, "admin must reach GET {path}");
+        }
     }
 
     /// Unmapped `/admin-api/*` routes (governance subpaths, unhandled methods)

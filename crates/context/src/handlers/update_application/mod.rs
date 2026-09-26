@@ -272,7 +272,9 @@ fn resolve_context_and_application(
         Some(context) => context,
         None => {
             let Some(context) = context_client.get_context(&context_id)? else {
-                bail!("context '{}' does not exist", context_id);
+                bail!(crate::error::ContextError::ContextNotFound {
+                    context_id: context_id.to_string(),
+                });
             };
 
             context
@@ -283,7 +285,9 @@ fn resolve_context_and_application(
         Some(application) => application,
         None => {
             let Some(application) = node_client.get_application(&application_id)? else {
-                bail!("application with id '{}' not found", application_id);
+                bail!(crate::error::ContextError::ApplicationNotFound {
+                    application_id: application_id.to_string(),
+                });
             };
 
             application
@@ -562,10 +566,9 @@ fn verify_signer_continuity(
     // Get new application's metadata
     let new_bytecode_id = key::ApplicationMeta::new(*new_application_id);
     let Some(new_app_meta) = handle.get(&new_bytecode_id)? else {
-        bail!(
-            "new application with id '{}' not found in database",
-            new_application_id
-        );
+        bail!(crate::error::ContextError::ApplicationNotFound {
+            application_id: new_application_id.to_string(),
+        });
     };
 
     // Check signerId continuity.
@@ -745,7 +748,7 @@ pub(crate) async fn update_application_with_migration(
 
             // Log migration logs
             for log_line in &migration_logs {
-                info!(%context_id, migration_log = %log_line, "Migration log");
+                debug!(%context_id, migration_log = %log_line, "Migration log");
             }
 
             // Pre-commit migration_check (migration_v2). Run the app's

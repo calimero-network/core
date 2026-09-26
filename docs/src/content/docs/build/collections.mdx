@@ -31,7 +31,10 @@ merge behavior.
 | `SortedMap<K, V>` | Same merge as `UnorderedMap`, plus a node-local ordered index. | When you need range / prefix / pagination / sorted iteration. |
 | `SortedSet<V>` | Same merge as `UnorderedSet`, plus a node-local ordered index. | Ordered membership with range / prefix / pagination. |
 | `Vector<V>` | Append-only sequence; `push` mints a stable element id. | Ordered lists where you append and index. |
-| `ReplicatedGrowableArray` | Text-editing CRDT; characters ordered by neighbor + HLC. | Concurrent collaborative text. |
+| `FugueText` | Fugue sequence CRDT over run-length blocks; concurrent runs never interleave. | Collaborative plain text. |
+| `RichText<Sc>` | A `FugueText` plus write-once formatting marks. | One formatted body. |
+| `RichDocument<Sc>` | Ordered blocks, each with kind, depth, attributes and a `RichText` body, merged field by field. | Block documents: headings, paragraphs, lists. |
+| `ReplicatedGrowableArray` | Text-editing CRDT; characters ordered by neighbor + HLC. Concurrent runs can interleave. | Apps that already store RGA text. |
 | `LwwRegister<T>` | Last-writer-wins by HLC timestamp (ties broken by node id). | A single scalar/field where the latest write should win. |
 | `Counter` / `GCounter` / `PNCounter` | Per-executor slots summed at read. | Distributed counts; `PNCounter` allows decrements. |
 | `AuthoredMap<K, V>` | `UnorderedMap` where each entry is owned by its inserter. | Shared map where users own their own entries. |
@@ -75,7 +78,12 @@ merge behavior.
   so concurrent increments on different nodes all count. `GCounter` is
   increment-only; `PNCounter` also decrements.
 
-`ReplicatedGrowableArray` is the one to reach for when two people type into the
+<Aside type="tip" title="New collaborative text: use FugueText">
+  `FugueText`, `RichText` and `RichDocument` keep two runs typed at the same spot whole instead of interleaving them, and cost less per keystroke.
+  [Build a collaborative editor](/build/guides/collaborative-text/) shows how to wire an editor to them.
+</Aside>
+
+`ReplicatedGrowableArray` converges when two people type into the
 *same* position at once. Each character is an immutable node keyed by a `CharId`
 (HLC + sequence); merge is just the union of those nodes, and read order is a
 deterministic walk — so both editors land on the same text without coordination:

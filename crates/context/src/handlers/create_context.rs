@@ -212,16 +212,26 @@ impl Prepared<'_> {
         let mut effective_app_id = *application_id;
         let meta = MetaRepository::new(datastore)
             .load(&group_id)?
-            .ok_or_eyre("group not found")?;
+            .ok_or_else(|| crate::error::ContextError::GroupNotFound {
+                group_id: format!("{group_id:?}"),
+            })?;
 
         let identity_pk = identity_secret
             .as_ref()
             .ok_or_eyre("identity_secret required for group context creation")?
             .public_key();
 
+        crate::account_follow::require_reach(datastore, &group_id)?;
+
         let identity_account = crate::member_account::require(datastore, &group_id, &identity_pk)?;
         if !MembershipRepository::new(datastore).is_member(&group_id, &identity_account)? {
-            bail!("identity is not a member of group '{group_id:?}'");
+            // The identity here comes from the request's `identity_secret`
+            // when one is supplied, so it is often NOT this node -- naming the
+            // node would point at the wrong principal.
+            bail!(crate::error::ContextError::IdentityNotAGroupMember {
+                group_id: format!("{group_id:?}"),
+                identity: identity_pk.to_string(),
+            });
         }
 
         if !MembershipRepository::new(datastore).is_admin_or_has_capability(
@@ -256,7 +266,9 @@ impl Prepared<'_> {
             None => {
                 let fetched = node_client
                     .get_application(&effective_app_id)?
-                    .ok_or_eyre("application not found")?;
+                    .ok_or_else(|| crate::error::ContextError::ApplicationNotFound {
+                        application_id: effective_app_id.to_string(),
+                    })?;
                 // Confirmed absent in the match arm above, so `insert_new`
                 // (which caps the cache) is safe.
                 applications.insert_new(effective_app_id, fetched).clone()
@@ -614,7 +626,9 @@ async fn create_context(
     let row = datastore
         .handle()
         .get(&key::ApplicationMeta::new(context.application_id))?
-        .ok_or_eyre("application not found")?;
+        .ok_or_else(|| crate::error::ContextError::ApplicationNotFound {
+            application_id: context.application_id.to_string(),
+        })?;
     let coords = super::upgrade_group::registry_coords(&row)?.to_buf();
 
     // Register context in group BEFORE subscribing so that a registration

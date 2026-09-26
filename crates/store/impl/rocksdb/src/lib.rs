@@ -59,7 +59,8 @@ use calimero_store::slice::Slice;
 use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
 use rocksdb::{
-    ColumnFamily, DBRawIteratorWithThreadMode, Options, ReadOptions, Snapshot, WriteBatch, DB,
+    ColumnFamily, DBRawIteratorWithThreadMode, Options, ReadOptions, ReadTier, Snapshot,
+    WriteBatch, DB,
 };
 use strum::IntoEnumIterator;
 
@@ -244,14 +245,50 @@ impl Database<'_> for RocksDB {
         Ok(())
     }
 
+    /// Estimated bytes stored in `[start, end)`: flushed SST files plus the
+    /// memtables that have not been flushed yet.
+    ///
+    /// `get_approximate_sizes_cf` samples SST metadata — no scan, typically
+    /// sub-millisecond — but RocksDB's C API calls it with the files-only
+    /// flag, so anything still buffered in a memtable counts as zero. With a
+    /// 64MB write buffer per column family, a small or freshly written range
+    /// can live entirely in memory and would report 0 bytes indefinitely.
+    ///
+    /// The memtable half is a real scan, restricted to the memtable tier, so
+    /// its cost is bounded by the write buffer size rather than the range.
+    /// A key present in both an SST and a memtable (overwritten since the last
+    /// flush) is counted twice, and memtable tombstones are not subtracted:
+    /// this is an estimate for quotas and dashboards, not an audit figure.
     fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> EyreResult<u64> {
         let cf_handle = self.try_cf_handle(col)?;
-        // `get_approximate_sizes_cf` samples SST metadata — no scan,
-        // typically sub-millisecond. Returns an estimate (+/- compaction
-        // lag for recent deletes); exact bytes would require a real scan.
         let range = rocksdb::Range::new(start.as_ref(), end.as_ref());
         let sizes = self.db.get_approximate_sizes_cf(cf_handle, &[range]);
-        Ok(sizes.into_iter().next().unwrap_or(0))
+        let persisted = sizes.into_iter().next().unwrap_or(0);
+
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_read_tier(ReadTier::Memtable);
+        // Callers build `end` by incrementing a fixed-length prefix, which
+        // wraps to all zeroes when the prefix is all 0xFF. That end sorts
+        // before `start`, and means "to the end of the column".
+        let bounded = !end.as_ref().iter().all(|byte| *byte == 0);
+        if bounded {
+            read_opts.set_iterate_upper_bound(end.as_ref().to_vec());
+        }
+        let mut iter = self.db.raw_iterator_cf_opt(cf_handle, read_opts);
+        iter.seek(start.as_ref());
+        let mut buffered: u64 = 0;
+        while iter.valid() {
+            let (Some(key), Some(value)) = (iter.key(), iter.value()) else {
+                break;
+            };
+            buffered = buffered
+                .saturating_add(key.len() as u64)
+                .saturating_add(value.len() as u64);
+            iter.next();
+        }
+        iter.status()?;
+
+        Ok(persisted.saturating_add(buffered))
     }
 
     fn apply(&self, tx: &Transaction<'_>) -> EyreResult<()> {

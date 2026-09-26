@@ -1,0 +1,690 @@
+description: >
+  Block structure under concurrency, one document per case, one cluster boot.
+  Four cases run inside a partition window; split-versus-type runs inside a
+  stop_node window instead, because its specified outcome depends on the two
+  sides never having seen each other and partition_peers is a no-op under
+  --no-docker.
+name: Rich Collab Blocks
+
+# Fields every call and sync step shares, merged in with `<<:`.
+x-call: &call
+  type: call
+  context_id: "{{context_id}}"
+x-sync: &sync
+  type: wait_for_sync
+  context_id: "{{context_id}}"
+  nodes: [rich-node-1, rich-node-2, rich-node-3]
+  timeout: 180
+  trigger_sync: true
+
+# Defined individually so every port is pinned: the count form lets --e2e-mode
+# allocate ports dynamically, and a later start_node reconnects on base_port.
+nodes:
+  image: ghcr.io/calimero-network/merod:edge
+  rich-node-1:
+    port: 2800
+    rpc_port: 2900
+  rich-node-2:
+    port: 2801
+    rpc_port: 2901
+  rich-node-3:
+    port: 2802
+    rpc_port: 2902
+
+steps:
+  - name: Install rich-collab on Node 1
+    type: install_application
+    node: rich-node-1
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # A node cut off from its peers cannot lazily fetch bytecode, so install first.
+  - name: Install rich-collab on Node 2
+    type: install_application
+    node: rich-node-2
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+
+  - name: Install rich-collab on Node 3
+    type: install_application
+    node: rich-node-3
+    path: ../../dist/com.calimero.rich-collab-0.0.0.mpk
+    dev: true
+
+  - name: Create a 3-node mesh
+    type: create_mesh
+    context_node: rich-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - rich-node-2
+      - rich-node-3
+    outputs:
+      context_id: contextId
+
+
+  # ── merge, the one case that needs no second writer ────────────────────
+
+  - name: Create the merge document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: blocks-merge
+
+  - name: Add the merge head block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-merge
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      merge_head: result.output
+
+  - name: Add the merge tail block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-merge
+      after: "{{merge_head}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      merge_tail: result.output
+
+  - name: Type Left into the merge head block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-merge
+      block: "{{merge_head}}"
+      ops:
+        - insert: Left
+
+  - name: Type a bolded Right into the merge tail block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-merge
+      block: "{{merge_tail}}"
+      ops:
+        - insert: Right
+          attributes:
+            bold: "true"
+
+
+  # ── the three-block cases, seeded identically ──────────────────────────
+
+  - name: Create the move-versus-edit document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: blocks-move-vs-edit
+
+  - name: Add the move-versus-edit Alpha block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-move-vs-edit
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      mve_alpha: result.output
+
+  - name: Add the move-versus-edit Beta block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-move-vs-edit
+      after: "{{mve_alpha}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      mve_beta: result.output
+
+  - name: Add the move-versus-edit Gamma block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-move-vs-edit
+      after: "{{mve_beta}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      mve_gamma: result.output
+
+  - name: Type Alpha into the move-versus-edit first block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-edit
+      block: "{{mve_alpha}}"
+      ops:
+        - insert: Alpha
+
+  - name: Type Beta into the move-versus-edit second block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-edit
+      block: "{{mve_beta}}"
+      ops:
+        - insert: Beta
+
+  - name: Type Gamma into the move-versus-edit third block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-edit
+      block: "{{mve_gamma}}"
+      ops:
+        - insert: Gamma
+
+  - name: Create the move-versus-move document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: blocks-move-vs-move
+
+  - name: Add the move-versus-move Alpha block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-move-vs-move
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      mvm_alpha: result.output
+
+  - name: Add the move-versus-move Beta block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-move-vs-move
+      after: "{{mvm_alpha}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      mvm_beta: result.output
+
+  - name: Add the move-versus-move Gamma block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-move-vs-move
+      after: "{{mvm_beta}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      mvm_gamma: result.output
+
+  - name: Type Alpha into the move-versus-move first block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-move
+      block: "{{mvm_alpha}}"
+      ops:
+        - insert: Alpha
+
+  - name: Type Beta into the move-versus-move second block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-move
+      block: "{{mvm_beta}}"
+      ops:
+        - insert: Beta
+
+  - name: Type Gamma into the move-versus-move third block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-move
+      block: "{{mvm_gamma}}"
+      ops:
+        - insert: Gamma
+
+  - name: Create the delete-versus-edit document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: blocks-delete-vs-edit
+
+  - name: Add the delete-versus-edit Alpha block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-delete-vs-edit
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      dve_alpha: result.output
+
+  - name: Add the delete-versus-edit Beta block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-delete-vs-edit
+      after: "{{dve_alpha}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      dve_beta: result.output
+
+  - name: Add the delete-versus-edit Gamma block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-delete-vs-edit
+      after: "{{dve_beta}}"
+      kind: paragraph
+      depth: 0
+    outputs:
+      dve_gamma: result.output
+
+  - name: Type Alpha into the delete-versus-edit first block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-delete-vs-edit
+      block: "{{dve_alpha}}"
+      ops:
+        - insert: Alpha
+
+  - name: Type Beta into the delete-versus-edit second block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-delete-vs-edit
+      block: "{{dve_beta}}"
+      ops:
+        - insert: Beta
+
+  - name: Type Gamma into the delete-versus-edit third block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-delete-vs-edit
+      block: "{{dve_gamma}}"
+      ops:
+        - insert: Gamma
+
+  - name: Create the kind-versus-depth document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: blocks-kind-vs-depth
+
+  - name: Add the kind-versus-depth block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-kind-vs-depth
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      structure_block: result.output
+
+  - name: Type Alpha into the kind-versus-depth block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-kind-vs-depth
+      block: "{{structure_block}}"
+      ops:
+        - insert: Alpha
+
+  - name: Create the split-versus-type document
+    <<: *call
+    node: rich-node-1
+    method: create_doc
+    args:
+      doc: blocks-split-vs-type
+
+  - name: Add the split-versus-type block
+    <<: *call
+    node: rich-node-1
+    method: insert_block
+    args:
+      doc: blocks-split-vs-type
+      after: null
+      kind: paragraph
+      depth: 0
+    outputs:
+      split_block: result.output
+
+  - name: Type hello world into the split-versus-type block
+    <<: *call
+    node: rich-node-1
+    method: apply_delta
+    args:
+      doc: blocks-split-vs-type
+      block: "{{split_block}}"
+      ops:
+        - insert: hello world
+
+  - name: Wait for every seeded document to reach every node
+    <<: *sync
+    timeout: 90
+
+
+  # ── merge carries the tail's formatting into the head ──────────────────
+
+  - name: Node 2 merges the tail block into the head block
+    <<: *call
+    node: rich-node-2
+    method: merge_blocks
+    args:
+      doc: blocks-merge
+      first: "{{merge_head}}"
+      second: "{{merge_tail}}"
+
+  - name: The merged block kept the tail's bold and the tail block is gone
+    <<: *sync
+    timeout: 90
+    expect:
+      method: get_state_digest
+      args:
+        doc: blocks-merge
+      equals:
+        output: 'paragraph/0{:Left}{bold=true:Right};'
+
+
+  # ── the concurrent structure cases ─────────────────────────────────────
+
+  - name: Partition Node 1 from Node 2 and Node 3 (libp2p only; RPC stays up)
+    type: partition_peers
+    node: rich-node-1
+    peers:
+      - rich-node-2
+      - rich-node-3
+
+  - name: Settle after the partition takes effect
+    type: wait
+    seconds: 12
+
+  - name: Node 1 moves the third block to the top
+    <<: *call
+    node: rich-node-1
+    method: move_block
+    args:
+      doc: blocks-move-vs-edit
+      block: "{{mve_gamma}}"
+      after: null
+
+  - name: Node 2 types into the block Node 1 is moving
+    <<: *call
+    node: rich-node-2
+    method: apply_delta
+    args:
+      doc: blocks-move-vs-edit
+      block: "{{mve_gamma}}"
+      ops:
+        - retain: 5
+        - insert: "ZZ"
+
+  - name: Node 1 moves the middle block to the top
+    <<: *call
+    node: rich-node-1
+    method: move_block
+    args:
+      doc: blocks-move-vs-move
+      block: "{{mvm_beta}}"
+      after: null
+
+  - name: Node 2 moves the same block to the bottom
+    <<: *call
+    node: rich-node-2
+    method: move_block
+    args:
+      doc: blocks-move-vs-move
+      block: "{{mvm_beta}}"
+      after: "{{mvm_gamma}}"
+
+  - name: Node 1 deletes the middle block
+    <<: *call
+    node: rich-node-1
+    method: delete_block
+    args:
+      doc: blocks-delete-vs-edit
+      block: "{{dve_beta}}"
+
+  - name: Node 2 types into the block Node 1 is deleting
+    <<: *call
+    node: rich-node-2
+    method: apply_delta
+    args:
+      doc: blocks-delete-vs-edit
+      block: "{{dve_beta}}"
+      ops:
+        - retain: 4
+        - insert: "ZZ"
+
+  - name: Node 1 retypes the block as a heading and aligns it
+    <<: *call
+    node: rich-node-1
+    method: set_kind
+    args:
+      doc: blocks-kind-vs-depth
+      block: "{{structure_block}}"
+      kind: heading
+
+  - name: Node 1 sets the block's alignment
+    <<: *call
+    node: rich-node-1
+    method: set_attr
+    args:
+      doc: blocks-kind-vs-depth
+      block: "{{structure_block}}"
+      key: align
+      value: end
+
+  - name: Node 2 indents the same block
+    <<: *call
+    node: rich-node-2
+    method: set_depth
+    args:
+      doc: blocks-kind-vs-depth
+      block: "{{structure_block}}"
+      depth: 3
+
+  - name: Heal the partition
+    type: heal_peers
+    node: rich-node-1
+    peers:
+      - rich-node-2
+      - rich-node-3
+
+  - name: Wait for the libp2p mesh to reform
+    type: wait
+    seconds: 12
+
+  - name: The moved block leads the document and kept the peer's text
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: blocks-move-vs-edit
+      equals:
+        output: 'paragraph/0{:GammaZZ};paragraph/0{:Alpha};paragraph/0{:Beta};'
+
+  - name: The twice-moved block exists exactly once
+    <<: *sync
+    expect:
+      method: passage_count
+      args:
+        doc: blocks-move-vs-move
+        block: "{{mvm_beta}}"
+        needle: Beta
+      equals:
+        output: 1
+
+  - name: Read the twice-moved order on Node 1
+    <<: *call
+    node: rich-node-1
+    method: get_state_digest
+    args:
+      doc: blocks-move-vs-move
+    outputs:
+      moved_node1: result
+
+  - name: Read the twice-moved order on Node 2
+    <<: *call
+    node: rich-node-2
+    method: get_state_digest
+    args:
+      doc: blocks-move-vs-move
+    outputs:
+      moved_node2: result
+
+  - name: Read the twice-moved order on Node 3
+    <<: *call
+    node: rich-node-3
+    method: get_state_digest
+    args:
+      doc: blocks-move-vs-move
+    outputs:
+      moved_node3: result
+
+  # Which of the two moves wins is a last-write over `place`, so the placement
+  # is asserted as cross-replica equality rather than as a literal order.
+  - name: Assert the three replicas agree on one placement
+    type: json_assert
+    statements:
+      - 'json_equal({{moved_node1}}, {{moved_node2}})'
+      - 'json_equal({{moved_node2}}, {{moved_node3}})'
+
+  - name: Assert no block was lost to the contested move
+    type: assert
+    statements:
+      - "contains({{moved_node1}}, 'Alpha')"
+      - "contains({{moved_node1}}, 'Beta')"
+      - "contains({{moved_node1}}, 'Gamma')"
+
+  - name: The deleted block stays deleted despite the peer's edit
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: blocks-delete-vs-edit
+      equals:
+        output: 'paragraph/0{:Alpha};paragraph/0{:Gamma};'
+
+  - name: Kind, attribute and depth all survived, one row each
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: blocks-kind-vs-depth
+      equals:
+        output: 'heading/3[align=end]{:Alpha};'
+
+
+  # ── split versus typing in the tail, under real isolation ──────────────
+
+  - name: Stop Node 2 and Node 3 so Node 1 splits alone
+    type: stop_node
+    nodes: [rich-node-2, rich-node-3]
+
+  - name: Let the stop take effect
+    type: wait
+    seconds: 8
+
+  - name: Node 1 splits the block after hello
+    <<: *call
+    node: rich-node-1
+    method: split_block
+    args:
+      doc: blocks-split-vs-type
+      block: "{{split_block}}"
+      at: 5
+
+  - name: Stop Node 1 and start Node 2 so Node 2 types alone
+    type: stop_node
+    nodes: [rich-node-1]
+
+  - name: Let the stop on Node 1 take effect
+    type: wait
+    seconds: 8
+
+  - name: Start Node 2
+    type: start_node
+    nodes: [rich-node-2]
+    wait_for_ready: true
+    wait_timeout: 90
+
+  - name: Node 2 types at the end of the block Node 1 split
+    <<: *call
+    node: rich-node-2
+    method: apply_delta
+    args:
+      doc: blocks-split-vs-type
+      block: "{{split_block}}"
+      ops:
+        - retain: 11
+        - insert: "!!!"
+
+  - name: Start Node 1 and Node 3
+    type: start_node
+    nodes: [rich-node-1, rich-node-3]
+    wait_for_ready: true
+    wait_timeout: 90
+
+  - name: Let the mesh re-form
+    type: wait
+    seconds: 20
+
+  - name: The peer's text stayed in the first half of the split
+    <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: blocks-split-vs-type
+      equals:
+        output: 'paragraph/0{:hello!!!};paragraph/0{: world};'
+
+  - name: No node reported a stuck root-hash divergence
+    type: assert_log_absent
+    nodes: [rich-node-1, rich-node-2, rich-node-3]
+    patterns:
+      - "DIVERGENCE DETECTED"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

@@ -5,7 +5,7 @@ use calimero_account::AccountId;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 // `CompilerConfig` brings `push_middleware`/`enable_perfmap` into scope for the
 // Cranelift config built in `create_engine`.
 use wasmer::sys::{CompilerConfig, Cranelift};
@@ -164,7 +164,7 @@ impl Engine {
                 .map(|v| v == "true")
                 .unwrap_or(false)
             {
-                info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
+                tracing::info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
                 config.enable_perfmap();
             }
         }
@@ -449,7 +449,7 @@ impl Module {
         xcall_origin: Option<ContextId>,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
-        info!(%context_id, method, "Running WASM method");
+        debug!(%context_id, method, "Running WASM method");
         debug!(%context_id, method, input_len = input.len(), "WASM execution input");
 
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
@@ -510,7 +510,7 @@ impl Module {
 
         let outcome = logic.finish(err);
         if outcome.returns.is_ok() {
-            info!(%context_id, method, "WASM method execution completed");
+            debug!(%context_id, method, "WASM method execution completed");
             debug!(
                 %context_id,
                 method,
@@ -521,7 +521,7 @@ impl Module {
             );
             // Print WASM logs for debugging
             for (i, log) in outcome.logs.iter().enumerate() {
-                info!(%context_id, method, log_index = i, log_content = %log, "WASM_LOG");
+                debug!(%context_id, method, log_index = i, log_content = %log, "WASM_LOG");
             }
         }
 

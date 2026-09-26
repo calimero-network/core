@@ -100,21 +100,36 @@ primitives/                   # calimero-server-primitives
 
 ### Admin API
 
-Two of the three node-wide list endpoints are **caller-scoped** (#3941):
-`GET /admin-api/contexts` and `GET /admin-api/namespaces` return only what the
-caller's groups reach, resolved
-per request through `admin/caller_scope.rs`. A node-owner session, and a node
+Several admin reads are **caller-scoped** (#3941): `GET /admin-api/contexts`,
+`GET /admin-api/namespaces`, the single-context `GET /admin-api/contexts/{id}`
+and its four read sub-resources (`/identities`, `/identities-owned`, `/storage`,
+`/group`), plus `/namespaces/:id{,/groups}` and `/groups/:id{,/contexts}`,
+return only what the caller's groups reach, resolved per request
+through `admin/caller_scope.rs`. Every one that names a context applies the same
+`ListScope::admits` predicate the listing does, through the shared
+`caller_scope::admits_context` — deliberately one rule and one copy of it, so a
+context the listing hides cannot be reached by naming its id on any of them
+(`403`; a `404` still means the node does not hold it). At the permission layer they are
+gated on the narrow `context:list-own` / `namespace:list-own`, which is what a
+delegated `account_proof` session carries; the wide `context:list` /
+`namespace:list` still satisfies them, so operator tokens are unaffected. The
+two `for-application` listings are **not** scoped — they enumerate node-wide
+without ever naming a context whose group could be checked — and keep requiring
+the wide `context:list`. A node-owner session, and a node
 running without the auth guard at all (`AuthMode::Proxy`, the default), keep the
 node-wide view — narrowing there would empty the endpoint on every
 default-configured node without closing anything, since the proxy is what decides
 who gets through. `GET /admin-api/blobs` is **not** scoped: `BlobMeta` carries no
 owner and blobs are deduplicated by content hash with a `refs` count, so
-ownership is many-to-many and needs a model rather than an index.
+ownership is many-to-many and needs a model rather than an index (core #4019).
+It keeps requiring the node-wide `blob:list`, so a delegated session cannot
+enumerate blobs — opening it alongside the scoped reads above would hand every tenant
+the blob ids of every other one.
 
 ```
 GET  /admin-api/contexts              # List contexts (caller-scoped)
 POST /admin-api/contexts              # Create context
-GET  /admin-api/contexts/{id}          # Get context
+GET  /admin-api/contexts/{id}          # Get context (caller-scoped)
 DELETE /admin-api/contexts/{id}        # Delete context
 
 GET  /admin-api/namespaces            # List namespaces (caller-scoped)
@@ -221,11 +236,39 @@ rg -n "pub async fn" src/auth.rs
 
 ## Authentication
 
-Authentication handled via middleware in `src/auth.rs`:
+Authentication handled via middleware in `src/auth.rs`. Two paths reach the same
+guard, and a request may use either:
 
-- JWT token validation
-- Node authorization
-- Request signing verification
+- **A session.** A JWT bearer token, validated per request, optionally bound to a
+  node URL. `AuthenticatedAccount` / `AuthenticatedNodeOwner` / `AuthenticatedDevice`
+  are the extensions it injects.
+- **A request-carried proof** (`src/proof_auth.rs`). One header,
+  `X-Calimero-Proof`, holding a hex borsh `CallerProof`: the account root's
+  certificate over a device key, optionally the device's statement over a session
+  key, and a signature over *this* method, path and body. Nothing is issued to the
+  caller, so it works on a node the caller has no relationship with.
+
+The proof path is installed only when `AdminConfig::delegated_access` is set —
+`ProofPolicy::resolve` in `service_mounts.rs` is the single decision point. Three
+refusals, and they are deliberately distinct:
+
+| answer | meaning |
+| --- | --- |
+| `401` + `X-Auth-Error: invalid_proof` | `Malformed` or `Unverified` — bad signature, wrong node, outside its window, not a `CallerProof` |
+| `403` + `X-Auth-Error: invalid_proof` | `NotServed` — sound chain, but this node serves no delegated access and the caller is not its own account |
+| `401`, no header | no credential at all |
+
+Checks run cheapest-first (covers → freshness → node binding → one signature →
+the certificate chain's *n*), so a stale or misaddressed proof costs almost
+nothing to refuse.
+
+**Only the session link carries a node**, so a two-link (device-signed) proof has
+no node binding and is replayable at any node serving delegated access until it
+expires. A deployment relying on that binding must require the session link. See
+`CallerProof::verify`'s own docs, which state the asymmetry.
+
+`delegated-proof.yml` drives all of this against real nodes; `delegated-session.yml`
+covers the token path.
 
 ## Subscription authority
 

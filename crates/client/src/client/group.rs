@@ -22,7 +22,6 @@ use calimero_server_primitives::admin::LeaveContextApiResponse;
 use calimero_server_primitives::admin::LeaveGroupApiResponse;
 use calimero_server_primitives::admin::LeaveNamespaceApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
-use calimero_server_primitives::admin::ListGroupMembersApiResponse;
 use calimero_server_primitives::admin::ListSubgroupsApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
@@ -49,6 +48,9 @@ use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiResponse;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
 use calimero_server_primitives::admin::UpgradeGroupApiResponse;
+use calimero_server_primitives::admin::{
+    ListGroupMembersApiResponse, ListMemberDevicesApiResponse,
+};
 
 use crate::traits::ClientAuthenticator;
 use crate::traits::ClientStorage;
@@ -83,6 +85,35 @@ where
             .connection
             .get(&format!("admin-api/groups/{group_id}/members"))
             .await?;
+        Ok(response)
+    }
+
+    /// The devices each member of a group speaks with.
+    ///
+    /// Paginated because a group's device count is unbounded in a way its
+    /// member count is not -- one person may hold many -- so a caller that must
+    /// see all of them walks pages rather than trusting one response to be
+    /// whole. `offset`/`limit` pass straight through; omitting `limit` takes
+    /// the node's default.
+    pub async fn list_member_devices(
+        &self,
+        group_id: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<ListMemberDevicesApiResponse> {
+        let mut path = format!("admin-api/groups/{group_id}/member-devices");
+        let mut query = Vec::new();
+        if let Some(offset) = offset {
+            query.push(format!("offset={offset}"));
+        }
+        if let Some(limit) = limit {
+            query.push(format!("limit={limit}"));
+        }
+        if !query.is_empty() {
+            path.push('?');
+            path.push_str(&query.join("&"));
+        }
+        let response = self.connection.get(&path).await?;
         Ok(response)
     }
 

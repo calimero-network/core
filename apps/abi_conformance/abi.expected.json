@@ -87,6 +87,14 @@
             },
             "crdt_type": "authored_vector"
           }
+        },
+        {
+          "name": "document",
+          "type": {
+            "kind": "record",
+            "fields": [],
+            "crdt_type": "fugue_text"
+          }
         }
       ]
     },

@@ -1,17 +1,7 @@
 name: ABI Contract (abi-codegen)
 
-# Cross-repo ABI contract: every ABI core emits must be parseable by the
-# downstream @calimero-network/abi-codegen tool (mero-devtools-js). "Core breaks
-# first" — if a schema change here makes the tool unable to parse a current-core
-# ABI, this job fails at the source instead of the breakage shipping silently.
-#
-# This is the true integration half of the guard. The in-crate tests in
-# crates/wasm-abi only prove core's Rust enums match core's OWN bundled JSON
-# schema; they cannot see the tool. This job closes that gap.
-#
-# NOTE: until the matching mero-devtools-js change (schema + model sync) is
-# released on the pinned ref below, this job is expected to be RED — that is the
-# honest current state of the contract, not a flake.
+# Cross-repo contract: every ABI core emits must stay parseable by the downstream
+# abi-codegen tool; expected RED until the paired mero-devtools-js change ships.
 
 permissions:
   contents: read
@@ -20,19 +10,22 @@ on:
   push:
     branches: [master]
   pull_request:
+    # edited: a changed `devtools-ref:` line in the PR body must re-resolve the pair.
+    types: [opened, synchronize, reopened, edited]
     paths:
       - "crates/wasm-abi/**"
       - "apps/**"
       - "tools/calimero-abi/**"
       - "scripts/abi-contract-check.sh"
+      - "scripts/resolve-paired-ref.sh"
       - "scripts/build-all-apps.sh"
       - ".github/workflows/abi-contract.yml"
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  # Ref of mero-devtools-js to validate against. Bump to a release tag once the
-  # schema-sync change lands, so the contract is pinned to a published version.
+  # Bump to a release tag once the schema-sync change lands, to pin the contract
+  # to a published version.
   DEVTOOLS_REF: main
 
 jobs:
@@ -47,11 +40,23 @@ jobs:
           # fall back to the pushed commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Resolve mero-devtools-js ref (paired)
+        id: devtoolsref
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          SDK_REPO: https://github.com/calimero-network/mero-devtools-js.git
+          REF_KEY: devtools-ref
+        run: |
+          REF="$(bash scripts/resolve-paired-ref.sh "$DEVTOOLS_REF")"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Validating against mero-devtools-js@$REF"
+
       - name: Checkout mero-devtools-js
         uses: actions/checkout@v7
         with:
           repository: calimero-network/mero-devtools-js
-          ref: ${{ env.DEVTOOLS_REF }}
+          ref: ${{ steps.devtoolsref.outputs.ref }}
           path: mero-devtools-js
 
       - name: Setup Rust CI

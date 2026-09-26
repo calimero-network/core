@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Extension, Query};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,7 @@ use tracing::{debug, error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
+use crate::auth::permissions::PermissionValidator;
 use crate::auth::token::Claims;
 use crate::auth::validation::{sanitize_identifier, sanitize_string, ValidatedJson};
 use crate::server::AppState;
@@ -319,7 +321,12 @@ pub async fn token_handler(
     match state
         .0
         .token_generator
-        .generate_token_pair(key_id.clone(), auth_response.permissions, node_url)
+        .generate_token_pair(
+            key_id.clone(),
+            auth_response.permissions,
+            node_url,
+            auth_response.device,
+        )
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -478,6 +485,63 @@ pub async fn refresh_token_handler(
     }
 }
 
+/// What this call to `/auth/validate` actually is.
+///
+/// The endpoint has two callers, and only one of them is a reverse proxy. The
+/// other is a client checking whether its own session is still good — mero-js
+/// does `HEAD /auth/validate` with nothing but an `Authorization` header, and
+/// `mero-react` treats a non-200 as "logged out". Denying that because it
+/// carries no `X-Forwarded-Uri` would put every app back in a login loop, which
+/// is the outage this endpoint's contract test was written after.
+///
+/// So absence of the forwarded headers is not a failure to authorize. It is a
+/// different question being asked.
+enum Probe {
+    /// No forwarded headers. A client asking about its own token, and token
+    /// validity is the whole answer.
+    SessionGate,
+    /// A reverse proxy asking about a request it is holding, reconstructed so
+    /// the permission decision runs against the same shape a direct request
+    /// would have.
+    Forwarded(Box<Request<Body>>),
+    /// Forwarded headers present but unusable. Refused rather than treated as a
+    /// session check: once a proxy is asking, falling back to "token is valid"
+    /// answers a question nobody asked and answers it permissively.
+    Malformed,
+}
+
+/// Classify a validate call from its headers.
+///
+/// `X-Forwarded-Uri` is the switch, because it is the header that says a
+/// request other than this one is being decided. Traefik sets it, and the
+/// fields it sets come from the real request rather than from anything the
+/// client sent, which is what makes them safe to authorize on.
+fn classify(headers: &HeaderMap) -> Probe {
+    let Some(uri) = headers.get("X-Forwarded-Uri") else {
+        return Probe::SessionGate;
+    };
+    let Ok(uri) = uri.to_str() else {
+        return Probe::Malformed;
+    };
+
+    // Defaulting an absent method to GET would silently authorize a write under
+    // a read permission, so the method is required once the URI is present.
+    let Some(Ok(method)) = headers.get("X-Forwarded-Method").map(|m| m.to_str()) else {
+        return Probe::Malformed;
+    };
+
+    // Rebuilt as a real request rather than parsed into (path, method) here, so
+    // the decision goes through the SAME code a direct request does — including
+    // the `GET | HEAD` normalization. A second parse that forgot HEAD would 403
+    // every `HEAD /admin-api/blobs/:id`, which is a shipped client call, and it
+    // would do so only behind a proxy.
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .map_or(Probe::Malformed, |req| Probe::Forwarded(Box::new(req)))
+}
+
 /// Forward authentication validation handler
 ///
 /// This endpoint is designed for reverse proxies (nginx, Traefik, etc.) to validate
@@ -496,6 +560,23 @@ pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    // Classified before any token work: a malformed proxy probe is refused for
+    // the cost of two header reads, and the classification decides whether the
+    // permission check below runs at all.
+    let probe = classify(&headers);
+    if matches!(probe, Probe::Malformed) {
+        let mut error_headers = HeaderMap::new();
+        let _ignored = error_headers.insert(
+            "X-Auth-Error",
+            HeaderValue::from_static("malformed_forwarded_request"),
+        );
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "X-Forwarded-Uri was set without a usable X-Forwarded-Method",
+            Some(error_headers),
+        );
+    }
+
     let token =
         extract_token_from_headers(&headers).or_else(|| extract_token_from_forwarded_uri(&headers));
 
@@ -559,6 +640,37 @@ pub async fn validate_handler(
                     );
                 }
             };
+
+            // Authorize the request the proxy is holding — the step whose
+            // absence made this endpoint authenticate without authorizing, so
+            // any valid token reached any route behind the gate.
+            //
+            // Runs only for a forwarded probe. A session gate carries no request
+            // to decide, and inventing one would either deny every client
+            // session check or authorize a path nobody named.
+            if let Probe::Forwarded(request) = &probe {
+                let validator = PermissionValidator::new();
+                let required = validator.determine_required_permissions(request);
+
+                if !validator.validate_permissions(&claims.permissions, &required) {
+                    warn!(
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        ?required,
+                        "forward-auth: permission denied",
+                    );
+                    let mut error_headers = HeaderMap::new();
+                    let _ignored = error_headers.insert(
+                        "X-Auth-Error",
+                        HeaderValue::from_static("permission_denied"),
+                    );
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Token does not carry the permissions this route requires",
+                        Some(error_headers),
+                    );
+                }
+            }
 
             // Create response headers
             let mut response_headers = HeaderMap::new();
@@ -1029,7 +1141,7 @@ pub async fn mock_token_handler(
     match state
         .0
         .token_generator
-        .generate_token_pair(key_id.clone(), permissions, request.node_url)
+        .generate_token_pair(key_id.clone(), permissions, request.node_url, None)
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -1075,6 +1187,7 @@ mod tests {
 
     fn claims_for(sub: &str) -> Claims {
         Claims {
+            device: None,
             sub: sub.to_string(),
             iss: "calimero-test".to_string(),
             aud: "calimero-test".to_string(),
@@ -1210,5 +1323,152 @@ pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
                 None,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod forward_auth_tests {
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    use super::{classify, Probe};
+    use crate::auth::permissions::{
+        AdminPermission, BlobPermission, Permission, PermissionValidator,
+    };
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            let name = HeaderName::from_bytes(k.as_bytes()).unwrap();
+            let _ignored = h.insert(name, HeaderValue::from_str(v).unwrap());
+        }
+        h
+    }
+
+    /// The session gate must survive this change.
+    ///
+    /// `mero-js` calls `HEAD /auth/validate` carrying only an `Authorization`
+    /// header and treats anything but 200 as "logged out". Deciding that a call
+    /// with no forwarded headers is an unauthorized request would put every app
+    /// back in a login loop — the outage this endpoint's contract test exists
+    /// for. Absence of the headers is a different question, not a failed answer.
+    #[test]
+    fn a_call_with_no_forwarded_headers_is_a_session_gate() {
+        assert!(matches!(
+            classify(&headers(&[("Authorization", "Bearer x")])),
+            Probe::SessionGate
+        ));
+    }
+
+    /// A proxy probe is decided against the request it names, not this one.
+    #[test]
+    fn a_forwarded_probe_carries_the_named_method_and_path() {
+        let Probe::Forwarded(request) = classify(&headers(&[
+            ("X-Forwarded-Uri", "/admin-api/contexts"),
+            ("X-Forwarded-Method", "POST"),
+        ])) else {
+            panic!("expected a forwarded probe");
+        };
+
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.uri().path(), "/admin-api/contexts");
+    }
+
+    /// A query string travels in this header — that is how a token arrives on
+    /// routes that cannot set one — and must not become part of the path, or
+    /// every such request falls to the admin-api default-deny.
+    #[test]
+    fn a_forwarded_query_string_is_not_part_of_the_path() {
+        let Probe::Forwarded(request) = classify(&headers(&[
+            ("X-Forwarded-Uri", "/admin-api/contexts?token=abc"),
+            ("X-Forwarded-Method", "GET"),
+        ])) else {
+            panic!("expected a forwarded probe");
+        };
+
+        assert_eq!(request.uri().path(), "/admin-api/contexts");
+    }
+
+    /// A URI without a method is refused rather than assumed.
+    ///
+    /// Defaulting to GET would authorize a write under a read permission, and
+    /// falling back to the session-gate answer would report "your token is
+    /// valid" to a proxy that asked whether a request may proceed — a question
+    /// that was never answered, answered permissively.
+    #[test]
+    fn a_forwarded_uri_without_a_method_is_refused() {
+        assert!(matches!(
+            classify(&headers(&[("X-Forwarded-Uri", "/admin-api/contexts")])),
+            Probe::Malformed
+        ));
+    }
+
+    /// `HEAD` reported by a proxy must decide as `GET`.
+    ///
+    /// This is the regression the rebuild-the-request approach exists to make
+    /// impossible. `determine_required_permissions` normalizes `GET | HEAD`
+    /// because a HEAD probe on a mapped GET route would otherwise fall to the
+    /// admin-api default-deny — an incident that has already happened once, to
+    /// `getBlobInfo`, which is still a shipped `HEAD /admin-api/blobs/:id`.
+    ///
+    /// A second parse of the header that forgot HEAD would reintroduce it, and
+    /// only behind a proxy, where it is hardest to see. Routing the forwarded
+    /// method through the same code a direct request takes is what rules that
+    /// out structurally; this test pins the behaviour so the structure cannot
+    /// be quietly undone.
+    #[test]
+    fn a_forwarded_head_decides_as_a_get() {
+        let Probe::Forwarded(request) = classify(&headers(&[
+            ("X-Forwarded-Uri", "/admin-api/blobs/blob-1"),
+            ("X-Forwarded-Method", "HEAD"),
+        ])) else {
+            panic!("expected a forwarded probe");
+        };
+
+        let validator = PermissionValidator::new();
+        let required = validator.determine_required_permissions(&request);
+
+        assert!(
+            matches!(
+                required.as_slice(),
+                [Permission::Blob(BlobPermission::Get(_))]
+            ),
+            "a forwarded HEAD must require the GET permission, got {required:?}",
+        );
+        assert_ne!(
+            required,
+            vec![Permission::Admin(AdminPermission)],
+            "a forwarded HEAD fell to the admin-api default-deny",
+        );
+
+        // And the scoped token a client actually holds satisfies it.
+        assert!(validator.validate_permissions(&["blob:get[blob-1]".to_owned()], &required));
+    }
+
+    /// The whole point: a scoped token is decided against the route it named.
+    #[test]
+    fn a_scoped_token_is_judged_against_the_forwarded_route() {
+        let validator = PermissionValidator::new();
+        let scoped = vec!["context:list".to_owned()];
+
+        let Probe::Forwarded(allowed) = classify(&headers(&[
+            ("X-Forwarded-Uri", "/admin-api/contexts"),
+            ("X-Forwarded-Method", "GET"),
+        ])) else {
+            panic!("expected a forwarded probe");
+        };
+        assert!(validator
+            .validate_permissions(&scoped, &validator.determine_required_permissions(&allowed)));
+
+        // An unmapped operator route falls to the default-deny, and the same
+        // token must not reach it. Before this endpoint authorized anything,
+        // it did.
+        let Probe::Forwarded(denied) = classify(&headers(&[
+            ("X-Forwarded-Uri", "/admin-api/install-dev-application"),
+            ("X-Forwarded-Method", "POST"),
+        ])) else {
+            panic!("expected a forwarded probe");
+        };
+        assert!(!validator
+            .validate_permissions(&scoped, &validator.determine_required_permissions(&denied)));
     }
 }

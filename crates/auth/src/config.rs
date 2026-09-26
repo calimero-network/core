@@ -386,8 +386,10 @@ pub struct AccountProofConfig {
 
     /// Permissions granted to a session minted by this provider.
     ///
-    /// Defaults to `context:intent` and `context:query` — both halves of the
-    /// delegated surface, and deliberately nothing above them.
+    /// Defaults to `context:intent`, `context:query`, `context:subscribe`,
+    /// `context:list-own` and `namespace:list-own` — write, read, events and
+    /// the two caller-scoped listings that let a client find what it may act
+    /// on. Deliberately nothing above them.
     ///
     /// Each half is gated again past this point, so a session carrying them
     /// grants no authority of its own. A write: the warrant proves the author
@@ -410,9 +412,31 @@ pub struct AccountProofConfig {
     /// owns each context, so the scope decides who may ASK for a stream and
     /// never what that stream carries.
     ///
+    /// `context:list-own` and `namespace:list-own` join them on the same terms.
+    /// A delegated client that can read, write and subscribe still has no way to
+    /// find out WHICH contexts and namespaces it may do any of that to — it has
+    /// to be handed ids out of band, which on a relay means the relay keeping a
+    /// directory of its tenants' resources so the tenants do not have to.
+    ///
+    /// They are deliberately the `-own` scopes rather than `context:list` /
+    /// `namespace:list`. The two listing endpoints resolve the caller's groups
+    /// from the store on every request and return only what those admit
+    /// (`admin/caller_scope.rs`), so the narrow scope is the honest description
+    /// of what they grant. The wide ones would additionally have reached
+    /// `/contexts/:id/identities`, `/storage`, `/group`, the `for-application`
+    /// listings and the per-namespace reads, none of which is caller-scoped —
+    /// which on a relay is one tenant reading another's roster.
+    ///
     /// Do not add anything else. `admin`, `context:execute` or an alias scope
     /// would be authority this token confers by itself, which none of these
-    /// three is.
+    /// five is.
+    ///
+    /// **Upgrading a node that already has a `config.toml`:** this default only
+    /// applies where the field is absent. `merod init` writes the field, so a
+    /// node initialised before the two `-own` scopes existed keeps the old three
+    /// and its delegated clients keep getting 403 from the listings until an
+    /// operator adds them here. That is intentional — silently widening a
+    /// provisioned relay's sessions on upgrade is the worse failure.
     #[serde(default = "default_account_proof_permissions")]
     pub session_permissions: Vec<String>,
 }
@@ -424,8 +448,13 @@ fn default_challenge_ttl_secs() -> u64 {
 fn default_account_proof_permissions() -> Vec<String> {
     vec![
         "context:intent".to_owned(),
+        "context:list-own".to_owned(),
         "context:query".to_owned(),
         "context:subscribe".to_owned(),
+        // Sorted, so the pinned expectation in `account_proof`'s tests reads as
+        // a set rather than a history of what was added when.
+        "group:list-own".to_owned(),
+        "namespace:list-own".to_owned(),
     ]
 }
 

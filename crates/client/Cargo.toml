@@ -26,6 +26,8 @@ percent-encoding.workspace = true
 tracing.workspace = true
 
 # Calimero primitives
+borsh.workspace = true
+calimero-account.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-context-config.workspace = true

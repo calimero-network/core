@@ -32,15 +32,10 @@ jobs:
           override: true
           
       - name: Cache Rust dependencies
-        uses: actions/cache@v6
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: cargo-lock-deps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
             
       - name: Install jq
         run: |

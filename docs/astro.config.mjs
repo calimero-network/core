@@ -73,6 +73,7 @@ export default defineConfig({
               items: [
                 'build/guides',
                 'build/guides/collections',
+                'build/guides/collaborative-text',
                 'build/guides/events',
                 'build/guides/cross-context',
                 'build/guides/blobs',

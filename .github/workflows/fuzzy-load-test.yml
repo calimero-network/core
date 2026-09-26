@@ -4,54 +4,31 @@ permissions:
   contents: read
 
 on:
-  # Fire after Release completes on master — whenever Release republishes
-  # `merod:edge-profiling` (which covers Cargo.toml/Lock, crates/**,
-  # release.yml itself, deps/**, actions/**, and scripts/profiling/**),
-  # we want fuzzy-load-test to run against the fresh image.
-  # Without this, changes to the profiling image (e.g. #2218, which only
-  # touched release.yml) rebuild the image but never exercise it in a
-  # fuzzy run.
-  # Gated on Release success via a job-level `if` below.
+  # Runs after Release republishes merod:edge-profiling, so fuzzy-load-test
+  # exercises the fresh image. Gated on Release success via the job-level `if` below.
   workflow_run:
     workflows: ["Release"]
     types: [completed]
     branches: [master]
-  # Direct push trigger for paths that don't need a Release rebuild:
-  # - apps/** : app WASMs are compiled freshly in the Build Apps job,
-  #   not baked into the image, so no image rebuild is required.
-  # - workflows/fuzzy-tests/** and this workflow file: config-only.
-  # `crates/**` is intentionally omitted — Release already fires on it
-  # and rebuilds the image, and workflow_run below triggers fuzzy
-  # against the fresh image.
+  # Paths that don't require an image rebuild. `crates/**` is omitted -
+  # Release already rebuilds the image for it and workflow_run above covers it.
   push:
     branches: [master]
     paths:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-  # PR trigger — fires only on PRs that touch profiling-image paths.
-  # release.yml's `prepare.outputs.profiling_paths_changed` gate the
-  # `release-merod-profiling-container` job on the SAME path set, so
-  # `pr-<N>-profiling` is published before fuzzy-load-test consumes it
-  # via `scripts/determine-image-tag.sh`. Other PR paths skip both —
-  # they keep their cheap default behaviour. Same-repo PRs only;
-  # `prepare.outputs.docker_push` keeps fork PRs from pushing.
-  # `crates/**`/`apps/**` stay off on purpose (cost); the size regression a PR
-  # must catch is covered by ci-checks.yml's `wasm-size` job.
+  # Only fires on profiling-image paths; release.yml publishes pr-<N>-profiling
+  # for the same set first. Same-repo PRs only; crates/**/apps/** excluded for cost.
   pull_request:
     paths:
       - "scripts/profiling/**"
       - ".github/workflows/deps/prebuilt.profiling.Dockerfile"
       - ".github/workflows/fuzzy-load-test.yml"
       - "workflows/fuzzy-tests/**"
-  #
-  # Nightly soak: a longer run (default 60 minutes per app vs the 15
-  # minutes used for routine triggers) fires at 00:00 UTC daily. The
-  # 15-minute baseline gives statistically usable CPU samples and
-  # exercises most code paths — enough for catching regressions on
-  # every push. The nightly extends the window so slow leaks, rare
-  # cascade orderings, and gradual degradation that need >15 min to
-  # materialize still get caught daily.
+
+  # Nightly soak runs a longer window (60 min vs. 15) to catch slow leaks
+  # and gradual degradation that need more time to surface.
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
@@ -87,28 +64,22 @@ env:
   RUST_BACKTRACE: 1
   RUST_LOG: info,calimero_=debug
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  # Give merobox enough time on container stop to let perf flush perf.data
-  # on worker nodes (merobox v0.6.13+, calimero-network/merobox#238).
+  # Give merobox enough time on container stop to let perf flush perf.data.
   MEROBOX_STOP_TIMEOUT: 120
 
 jobs:
   build:
     name: Build Apps
     runs-on: ubuntu-24.04-8cpu
-    # When triggered via `workflow_run` (after Release completes), only
-    # proceed if Release succeeded — a failed Release means the
-    # edge-profiling image wasn't republished, and running fuzzy against
-    # a stale image is worse than not running at all. Other triggers
-    # (push to fuzzy-tests/** or workflow_dispatch) always run.
+    # Skip if Release failed - the profiling image wasn't republished, so
+    # running against a stale image is worse than not running.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          # Under workflow_run, github.sha is the default-branch HEAD —
-          # not the commit Release actually built from. Pin to the
-          # upstream commit so the fuzzy run's source tree matches the
-          # image. Falls back to github.sha for push / workflow_dispatch.
+          # Under workflow_run, github.sha is the default-branch HEAD, not
+          # the commit Release built from; pin to that commit instead.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Rust CI
@@ -192,20 +163,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          # Under workflow_run, github.sha is the default-branch HEAD —
-          # not the commit Release actually built from. Pin to the
-          # upstream commit so the fuzzy run's source tree matches the
-          # image. Falls back to github.sha for push / workflow_dispatch.
+          # Under workflow_run, github.sha is the default-branch HEAD, not
+          # the commit Release built from; pin to that commit instead.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
-          # The artifact's least-common-ancestor is apps/ (it holds only
-          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
-          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
-          # layout the merobox fuzzy configs reference.
+          # upload-artifact strips the apps/ prefix (least-common-ancestor);
+          # extract back under apps/ to match the fuzzy configs' paths.
           path: apps
 
       - name: Download build bundles
@@ -218,10 +185,8 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
-        # Default is 15 minutes for routine triggers (push, workflow_run,
-        # workflow_dispatch with empty input) and 60 minutes for the
-        # nightly schedule. workflow_dispatch.inputs.duration_override
-        # wins over both when set.
+        # duration_override wins if set; otherwise 60min for the nightly
+        # schedule, else 15min.
         run: |
           if [ -n "${{ github.event.inputs.duration_override }}" ]; then
             DURATION="${{ github.event.inputs.duration_override }}"
@@ -324,13 +289,8 @@ jobs:
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
 
-          # merobox 0.6.34+ persists per-container logs natively to
-          # data/container-logs/<name>.log on every `bootstrap run`,
-          # regardless of `stop_all_nodes` (calimero-network/merobox#207).
-          # This replaces the old background `docker logs -f` watcher.
-          # The fuzzy test cases run sequentially from the repo root and
-          # share one data/container-logs/, so clear it before each run to
-          # keep this case's logs isolated.
+          # merobox writes per-container logs to data/container-logs/ on every
+          # run; clear it first since test cases run sequentially and share it.
           LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/kv-store/docker-logs"
           rm -rf data/container-logs
 
@@ -345,8 +305,6 @@ jobs:
           exit_code=$?
           set +o pipefail
 
-          # Collect merobox's native per-container logs into this test
-          # case's artifact dir.
           for f in data/container-logs/*.log; do
               [ -e "$f" ] || continue
               cp -f "$f" "$LOGDIR/$(basename "$f")"
@@ -355,7 +313,6 @@ jobs:
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
 
-          # Cleanup vmagent
           "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
             "$TEST_CASE" \
             "$UPDATE_PID" \
@@ -424,20 +381,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          # Under workflow_run, github.sha is the default-branch HEAD —
-          # not the commit Release actually built from. Pin to the
-          # upstream commit so the fuzzy run's source tree matches the
-          # image. Falls back to github.sha for push / workflow_dispatch.
+          # Under workflow_run, github.sha is the default-branch HEAD, not
+          # the commit Release built from; pin to that commit instead.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
-          # The artifact's least-common-ancestor is apps/ (it holds only
-          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
-          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
-          # layout the merobox fuzzy configs reference.
+          # upload-artifact strips the apps/ prefix (least-common-ancestor);
+          # extract back under apps/ to match the fuzzy configs' paths.
           path: apps
 
       - name: Download build bundles
@@ -450,9 +403,6 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
-        # Default is 15 minutes for routine triggers and 60 minutes for
-        # the nightly schedule. See the equivalent step in
-        # fuzzy-test-kv-store for details.
         run: |
           if [ -n "${{ github.event.inputs.duration_override }}" ]; then
             DURATION="${{ github.event.inputs.duration_override }}"
@@ -555,8 +505,7 @@ jobs:
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
 
-          # Native merobox per-container logs — see the kv-store case for
-          # the rationale (calimero-network/merobox#207).
+          # Native merobox per-container logs - see the kv-store case for the rationale.
           LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/kv-store-with-handlers/docker-logs"
           rm -rf data/container-logs
 
@@ -579,7 +528,6 @@ jobs:
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
 
-          # Cleanup vmagent
           "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
             "$TEST_CASE" \
             "$UPDATE_PID" \
@@ -655,10 +603,8 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
-          # The artifact's least-common-ancestor is apps/ (it holds only
-          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
-          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
-          # layout the merobox fuzzy configs reference.
+          # upload-artifact strips the apps/ prefix (least-common-ancestor);
+          # extract back under apps/ to match the fuzzy configs' paths.
           path: apps
 
       - name: Download build bundles
@@ -671,9 +617,6 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
-        # Default is 15 minutes for routine triggers and 60 minutes for
-        # the nightly schedule. See the equivalent step in
-        # fuzzy-test-kv-store for details.
         run: |
           if [ -n "${{ github.event.inputs.duration_override }}" ]; then
             DURATION="${{ github.event.inputs.duration_override }}"
@@ -776,8 +719,7 @@ jobs:
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
 
-          # Native merobox per-container logs — see the kv-store case for
-          # the rationale (calimero-network/merobox#207).
+          # Native merobox per-container logs - see the kv-store case for the rationale.
           LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/scaffolding-e2e/docker-logs"
           rm -rf data/container-logs
 
@@ -874,10 +816,8 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
-          # The artifact's least-common-ancestor is apps/ (it holds only
-          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
-          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
-          # layout the merobox fuzzy configs reference.
+          # upload-artifact strips the apps/ prefix (least-common-ancestor);
+          # extract back under apps/ to match the fuzzy configs' paths.
           path: apps
 
       - name: Download build bundles
@@ -890,9 +830,6 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
-        # Default is 15 minutes for routine triggers and 60 minutes for
-        # the nightly schedule. See the equivalent step in
-        # fuzzy-test-kv-store for details.
         run: |
           if [ -n "${{ github.event.inputs.duration_override }}" ]; then
             DURATION="${{ github.event.inputs.duration_override }}"
@@ -995,8 +932,7 @@ jobs:
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
 
-          # Native merobox per-container logs — see the kv-store case for
-          # the rationale (calimero-network/merobox#207).
+          # Native merobox per-container logs - see the kv-store case for the rationale.
           LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/group-governance/docker-logs"
           rm -rf data/container-logs
 
@@ -1081,14 +1017,8 @@ jobs:
     if: always()
     steps:
       - name: Generate summary
-        # Priority must match the duration-resolution blocks in both
-        # fuzzy-test jobs above: `duration_override` first (it wins when
-        # set, regardless of trigger), schedule second, routine last.
-        # The three conditions are mutually exclusive in practice today
-        # because `schedule` events carry no `inputs`, but keeping the
-        # priority consistent avoids a silent drift if GitHub ever lets
-        # scheduled runs accept dispatch inputs or if a future operator
-        # adds another trigger that can set both.
+        # Priority must match the duration-resolution blocks in the fuzzy-test
+        # jobs above: duration_override wins, then schedule, then routine default.
         run: |
           if [ -n "${{ github.event.inputs.duration_override }}" ]; then
             RUN_KIND="Manual override (${{ github.event.inputs.duration_override }} min)"

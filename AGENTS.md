@@ -55,8 +55,7 @@ cargo fmt --check
 # every lint, so it passes locally and then fails in CI.
 cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 
-# Everything CI's `Rust` job runs, read from the workflow rather than copied
-# from it -- so it cannot drift into running less than CI does.
+# Every job behind CI's required `Rust` check, read from the workflow itself.
 ./scripts/check-like-ci.py --list          # what CI runs, in order
 ./scripts/check-like-ci.py                 # run all of it
 ./scripts/check-like-ci.py --only clippy   # or a subset, by name
@@ -267,15 +266,9 @@ Every node in a merobox run is the **same build against fresh state**. So it val
 
 ## Definition of Done
 
-**Run `./scripts/check-like-ci.py` rather than the list below by hand.** It reads
-`.github/workflows/ci-checks.yml` and runs that job's steps in order, continuing
-past a failure the way CI's `if: !cancelled()` does, so one pass reports
-everything. The list below is what it will run; keeping a second copy in your
-head is how PRs go red, and the drift is always in the direction of running
-*less* than CI. Three consecutive PRs died on three different narrowings:
-per-crate clippy instead of `--workspace --all-targets`, `-p <crate> --lib`
-instead of a crate's `tests/` integration targets, and default features instead
-of the `mock-attestation` step. Each one looked like "I ran the tests".
+**Run `./scripts/check-like-ci.py` rather than the list below by hand.**
+It reads `.github/workflows/ci-checks.yml` and runs the steps of every job the required `Rust` check waits on, continuing past a failure the way CI's `if: !cancelled()` does.
+A hand-kept copy of the list drifts toward running less than CI.
 
 Before creating a PR:
 
@@ -283,7 +276,7 @@ Before creating a PR:
 2. `cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings` passes.
    Run it with `-D`, the way CI does: `-A warnings` allows every lint, so it can only ever pass.
    `merod` also gets a second pass under `--features mock-attestation`, which CI runs separately.
-3. `cargo test` passes
+3. `cargo nextest run --workspace` and `cargo test --workspace --doc` pass (CI runs the tests under nextest)
 4. `cargo deny check licenses sources` passes (if modifying dependencies)
 5. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge
 6. **Prove it works.** For a bug fix, the PR description must show the fix works: the reproduction (command / test / merobox scenario), and before→after evidence (the failing log line or test output before, the passing result after). A fix with no reproduction and no regression test is not done.
@@ -320,7 +313,7 @@ Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx)
 - **Namespace**: A root group (a group with no parent). The application-instance boundary and identity scope for a node - each namespace has its own Ed25519 keypair, and all its subgroups and contexts share that identity. All groups in a namespace share one governance DAG.
 - **Group**: A governance boundary within a namespace. Has members, an inherited application, and one or more contexts. Membership, access control, and upgrades happen here via signed governance ops that propagate over P2P gossip; every group has at least one Admin.
 - **Context**: A running instance of a WASM application with its own isolated state, kept in sync across context members via CRDT replication. Belongs to exactly one group (32-byte `ContextId`).
-- **CRDTs**: Automatic conflict resolution - `GCounter`, `PnCounter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `UnorderedSet<T>`, `Vector<T>`, `ReplicatedGrowableArray` (see [crates/storage/AGENTS.md](crates/storage/AGENTS.md)).
+- **CRDTs**: Automatic conflict resolution - `GCounter`, `PnCounter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `UnorderedSet<T>`, `Vector<T>`, `FugueText`, `RichText`, `RichDocument`, `ReplicatedGrowableArray` (see [crates/storage/AGENTS.md](crates/storage/AGENTS.md)).
 - **DAG**: Causal ordering of governance ops and state deltas via parent references. Governance ops are either cleartext `RootOp`s (group creation, member join, key delivery) or encrypted `GroupOp`s (membership, capabilities).
 - **Gossipsub**: libp2p P2P broadcast; governance ops and deltas propagate per namespace/context topic.
 

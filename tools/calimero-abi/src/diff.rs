@@ -377,6 +377,9 @@ mod tests {
     const AUTHORED_MAP: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
     const UNORDERED_MAP: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}}"#;
     const SHARED_STORAGE: &str = r#"{"name":"acl","type":{"kind":"record","fields":[],"crdt_type":"shared_storage","inner_type":{"kind":"string"}}}"#;
+    const RGA_TEXT: &str = r#"{"name":"body","type":{"kind":"record","fields":[],"crdt_type":"replicated_growable_array"}}"#;
+    const FUGUE_TEXT: &str =
+        r#"{"name":"body","type":{"kind":"record","fields":[],"crdt_type":"fugue_text"}}"#;
     const COUNTER_U64: &str = r#"{"name":"counter","type":{"kind":"record","fields":[],"crdt_type":"lww_register","inner_type":{"kind":"u64"}}}"#;
     const COUNTER_STR: &str = r#"{"name":"counter","type":{"kind":"record","fields":[],"crdt_type":"lww_register","inner_type":{"kind":"string"}}}"#;
 
@@ -449,6 +452,18 @@ mod tests {
         let current = manifest(&format!("[{COUNTER_STR}]"));
         let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn rga_to_fugue_text_is_breaking() {
+        let findings = diff_checked(
+            &manifest(&format!("[{FUGUE_TEXT}]")),
+            &manifest(&format!("[{RGA_TEXT}]")),
+        )
+        .unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].field, "body");
         assert_eq!(findings[0].class, FindingClass::Breaking);
     }
 

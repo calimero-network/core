@@ -10,7 +10,7 @@ use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use rand::RngExt;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;
@@ -102,9 +102,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
             let parent_meta = match MetaRepository::new(&self.datastore).load(parent_id) {
                 Ok(Some(m)) => m,
                 _ => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "parent group '{parent_id:?}' not found"
-                    )));
+                    return ActorResponse::reply(Err(crate::error::ContextError::GroupNotFound {
+                        group_id: format!("{parent_id:?}"),
+                    }
+                    .into()));
                 }
             };
             // Authorization. Namespace-root admins may create a subgroup at
@@ -703,7 +704,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     .await;
                 }
 
-                info!(
+                debug!(
                     ?group_id,
                     ?parent_group_id,
                     %admin_identity,
@@ -849,9 +850,12 @@ fn load_app_meta(
 ) -> eyre::Result<ApplicationMetaValue> {
     let handle = datastore.handle();
     let key = calimero_store::key::ApplicationMeta::new(*application_id);
-    handle
-        .get(&key)?
-        .ok_or_else(|| eyre::eyre!("application '{application_id}' not found"))
+    handle.get(&key)?.ok_or_else(|| {
+        crate::error::ContextError::ApplicationNotFound {
+            application_id: application_id.to_string(),
+        }
+        .into()
+    })
 }
 
 /// A caller-chosen `bytecode_id` must point at locally-present bytecode of the

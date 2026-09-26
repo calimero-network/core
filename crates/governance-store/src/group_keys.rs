@@ -594,11 +594,18 @@ impl<'a> GroupKeyring<'a> {
             // older node wrote an op shape the current node can't decode.
             // Log the plaintext length + prefix so the failing op type can
             // be identified and either forward-migrated or skipped.
+            // The length and the codec error identify the schema drift. The
+            // PREFIX is decrypted plaintext -- a user's op, truncated -- so it
+            // stays at `debug!`: available with `RUST_LOG` on a node being
+            // debugged, absent from the operator's log store by default.
             tracing::warn!(
                 plaintext_len = plaintext.len(),
-                plaintext_prefix = %hex::encode(&plaintext[..plaintext.len().min(32)]),
                 error = %e,
                 "borsh decode inner GroupOp failed (codec/schema mismatch)"
+            );
+            tracing::debug!(
+                plaintext_prefix = %hex::encode(&plaintext[..plaintext.len().min(32)]),
+                "borsh decode inner GroupOp failed (plaintext prefix)"
             );
             KeyringError::InnerOpDecodeFailed(format!("{e}")).into()
         })
@@ -1176,7 +1183,7 @@ mod recipient_tests {
         repo.record_endorser(&gid, account, &account)
             .expect("endorse");
         let device = repo
-            .apply_link(&gid, &genesis, &[], &cert)
+            .apply_link(&gid, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("admitted")
             .device;
@@ -1309,7 +1316,7 @@ mod recipient_tests {
         repo.record_endorser(&gid, account, &account)
             .expect("endorse");
         let device = repo
-            .apply_link(&gid, &genesis, &[], &cert)
+            .apply_link(&gid, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("admitted")
             .device;

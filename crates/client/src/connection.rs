@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 // External crates
-use eyre::{bail, eyre, Result};
+use eyre::{bail, eyre, Result, WrapErr};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -16,6 +16,10 @@ use url::Url;
 
 // Local crate
 use crate::errors::ClientError;
+use crate::proof::RequestProofSigner;
+
+/// The header a node reads a request-carried proof from.
+const PROOF_HEADER: &str = "x-calimero-proof";
 use crate::storage::JwtToken;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
@@ -65,6 +69,21 @@ enum RequestType {
 }
 
 impl RequestType {
+    /// The HTTP method as it goes on the wire.
+    ///
+    /// A signature commits to this string, and the node compares it to the
+    /// method it received — so `DeleteWithBody` must say `DELETE`, which is
+    /// what is actually sent, not the name of the variant.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Delete | Self::DeleteWithBody => "DELETE",
+            Self::Patch => "PATCH",
+            Self::Put => "PUT",
+        }
+    }
+
     /// Whether re-sending this request after a 401 is safe.
     ///
     /// Idempotent verbs (GET/HEAD/PUT/DELETE) can be replayed with no
@@ -102,6 +121,25 @@ where
     // each firing its own `/auth/refresh` (which would burn a one-time refresh
     // token) or opening its own browser prompt.
     auth_lock: Arc<Mutex<()>>,
+    // Opt-in, and separate from `authenticator`: a proof is not a credential
+    // this connection was issued, it is one the caller mints per request. A
+    // connection may carry both — a node owner's token and a device key — and
+    // the node decides which it honours.
+    request_proof: Option<Arc<RequestProofSigner>>,
+}
+
+/// What a request signature commits to.
+///
+/// `path` is the URL path the node will see, with no query string: the
+/// signature covers the path alone, and a mismatch surfaces as a bad signature
+/// rather than as a bad path. `body` is the exact bytes that will be sent —
+/// serializing again between here and the wire would sign something that never
+/// travelled.
+#[derive(Clone, Copy, Debug)]
+struct RequestFacts<'a> {
+    method: &'a str,
+    path: &'a str,
+    body: &'a [u8],
 }
 
 impl<A, S> ConnectionInfo<A, S>
@@ -122,7 +160,47 @@ where
             authenticator,
             client_storage,
             auth_lock: Arc::new(Mutex::new(())),
+            request_proof: None,
         }
+    }
+
+    /// Sign every request with a device key, in addition to any token.
+    ///
+    /// Opt-in because most connections do not want it: a node's owner already
+    /// holds a credential on it, and signing as well would cost a signature per
+    /// call for nothing. It is for the caller that has no relationship with the
+    /// node it is talking to.
+    #[must_use]
+    pub fn with_request_proof(mut self, signer: RequestProofSigner) -> Self {
+        self.request_proof = Some(Arc::new(signer));
+        self
+    }
+
+    /// The `X-Calimero-Proof` value for one request, when this connection signs.
+    ///
+    /// Minted per attempt rather than per request: a proof expires, and a retry
+    /// after a 401 refresh may land outside the window the first one was signed
+    /// for. The auth header on the line above is reloaded for the same reason.
+    /// Fails the request rather than sending it unsigned.
+    ///
+    /// The tempting alternative is to warn and continue, so a connection that
+    /// also holds a token keeps working. That hides the thing worth knowing: a
+    /// caller that configured signing and is not signing has a broken key, and
+    /// would learn it only as an eventual refusal from a node — or not at all,
+    /// if the token carried the call. Failing here says which of the two it is,
+    /// locally, on the first request.
+    fn proof_header(&self, method: &str, path: &str, body: &[u8]) -> Result<Option<String>> {
+        let Some(signer) = self.request_proof.as_ref() else {
+            return Ok(None);
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| eyre!("the system clock is before the unix epoch: {err}"))?
+            .as_secs();
+        signer
+            .sign(method, path, body, now)
+            .map(Some)
+            .wrap_err("failed to sign this request")
     }
 
     /// The base API URL this connection targets.
@@ -194,13 +272,25 @@ where
         let requires_auth = self.path_requires_auth(path);
 
         // PUT is idempotent — safe to replay after a 401.
-        self.execute_request_with_auth_retry(requires_auth, true, |auth_header| {
-            let mut builder = self.client.put(url.clone()).body(data.clone());
-            if let Some(h) = auth_header {
-                builder = builder.header("Authorization", h);
-            }
-            builder.send()
-        })
+        self.execute_request_with_auth_retry(
+            requires_auth,
+            true,
+            RequestFacts {
+                method: "PUT",
+                path: url.path(),
+                body: &data,
+            },
+            |auth_header, proof_header| {
+                let mut builder = self.client.put(url.clone()).body(data.clone());
+                if let Some(h) = auth_header {
+                    builder = builder.header("Authorization", h);
+                }
+                if let Some(p) = proof_header {
+                    builder = builder.header(PROOF_HEADER, p);
+                }
+                builder.send()
+            },
+        )
         .await
     }
 
@@ -210,13 +300,25 @@ where
         let requires_auth = self.path_requires_auth(path);
 
         let response = self
-            .execute_request_with_auth_retry(requires_auth, true, |auth_header| {
-                let mut builder = self.client.get(url.clone());
-                if let Some(h) = auth_header {
-                    builder = builder.header("Authorization", h);
-                }
-                builder.send()
-            })
+            .execute_request_with_auth_retry(
+                requires_auth,
+                true,
+                RequestFacts {
+                    method: "GET",
+                    path: url.path(),
+                    body: &[],
+                },
+                |auth_header, proof_header| {
+                    let mut builder = self.client.get(url.clone());
+                    if let Some(h) = auth_header {
+                        builder = builder.header("Authorization", h);
+                    }
+                    if let Some(p) = proof_header {
+                        builder = builder.header(PROOF_HEADER, p);
+                    }
+                    builder.send()
+                },
+            )
             .await?;
 
         read_body_capped(response, MAX_BINARY_BODY_BYTES).await
@@ -228,13 +330,25 @@ where
         let requires_auth = self.path_requires_auth(path);
 
         let response = self
-            .execute_request_with_auth_retry(requires_auth, true, |auth_header| {
-                let mut builder = self.client.head(url.clone());
-                if let Some(h) = auth_header {
-                    builder = builder.header("Authorization", h);
-                }
-                builder.send()
-            })
+            .execute_request_with_auth_retry(
+                requires_auth,
+                true,
+                RequestFacts {
+                    method: "HEAD",
+                    path: url.path(),
+                    body: &[],
+                },
+                |auth_header, proof_header| {
+                    let mut builder = self.client.head(url.clone());
+                    if let Some(h) = auth_header {
+                        builder = builder.header("Authorization", h);
+                    }
+                    if let Some(p) = proof_header {
+                        builder = builder.header(PROOF_HEADER, p);
+                    }
+                    builder.send()
+                },
+            )
             .await?;
 
         Ok(response.headers().clone())
@@ -249,21 +363,47 @@ where
 
         let requires_auth = self.path_requires_auth(path);
 
+        // Serialized ONCE, here, rather than by `.json(&body)` inside the
+        // closure. A signature commits to the bytes that travel, so a second
+        // serialization is a second spelling: `serde_json` is deterministic
+        // enough that the two would usually agree, and "usually" is exactly the
+        // kind of agreement that fails in production on one unusual value.
+        // Sending the same `Vec` we hashed removes the question.
+        let body_bytes: Vec<u8> = match &body {
+            Some(value) => serde_json::to_vec(value)?,
+            None => Vec::new(),
+        };
+
         let response = self
             .execute_request_with_auth_retry(
                 requires_auth,
                 req_type.is_idempotent(),
-                |auth_header| {
+                RequestFacts {
+                    method: req_type.as_str(),
+                    path: url.path(),
+                    body: &body_bytes,
+                },
+                |auth_header, proof_header| {
                     let mut builder = match req_type {
                         RequestType::Get => self.client.get(url.clone()),
-                        RequestType::Post => self.client.post(url.clone()).json(&body),
+                        RequestType::Post => self.client.post(url.clone()),
                         RequestType::Delete => self.client.delete(url.clone()),
-                        RequestType::Patch => self.client.patch(url.clone()).json(&body),
-                        RequestType::Put => self.client.put(url.clone()).json(&body),
-                        RequestType::DeleteWithBody => self.client.delete(url.clone()).json(&body),
+                        RequestType::Patch => self.client.patch(url.clone()),
+                        RequestType::Put => self.client.put(url.clone()),
+                        RequestType::DeleteWithBody => self.client.delete(url.clone()),
                     };
+                    // Only the verbs that carried a JSON body before do now, so
+                    // a GET still goes out with no body and no content type.
+                    if body.is_some() {
+                        builder = builder
+                            .header(reqwest::header::CONTENT_TYPE, "application/json")
+                            .body(body_bytes.clone());
+                    }
                     if let Some(h) = auth_header {
                         builder = builder.header("Authorization", h);
+                    }
+                    if let Some(p) = proof_header {
+                        builder = builder.header(PROOF_HEADER, p);
                     }
                     builder.send()
                 },
@@ -412,10 +552,11 @@ where
         &self,
         requires_auth: bool,
         idempotent: bool,
+        facts: RequestFacts<'_>,
         request_builder: F,
     ) -> Result<reqwest::Response>
     where
-        F: Fn(Option<String>) -> Fut,
+        F: Fn(Option<String>, Option<String>) -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
         let mut retry_count = 0;
@@ -424,8 +565,12 @@ where
         loop {
             // Load a fresh auth header on EVERY iteration so retries use up-to-date tokens.
             let auth_header = self.ensure_auth_header(requires_auth).await?;
+            // Signed per attempt, for the same reason the token is reloaded:
+            // the proof carries an expiry, and a retry may land outside the
+            // window the first attempt was signed for.
+            let proof_header = self.proof_header(facts.method, facts.path, facts.body)?;
 
-            let response = request_builder(auth_header).await?;
+            let response = request_builder(auth_header, proof_header).await?;
 
             if response.status() == 401 && retry_count < MAX_RETRIES {
                 let Some(node_name) = &self.node_name else {

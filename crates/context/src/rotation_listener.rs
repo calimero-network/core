@@ -208,18 +208,8 @@ async fn run(
         // Two shapes of debt, and they are NOT interchangeable: a departure excludes
         // the account by name, a revocation excludes nobody (the device is already
         // out of the recipient list, and its account still holds other devices).
-        let (group_id, debt) = match event {
-            OpEvent::MemberRemoved { group_id, member } => (
-                ContextGroupId::from(group_id),
-                RotationDebt::MemberDeparted(member),
-            ),
-            OpEvent::DeviceRevoked {
-                group_id, device, ..
-            } => (
-                ContextGroupId::from(group_id),
-                RotationDebt::DeviceRevoked(device),
-            ),
-            _ => continue,
+        let Some((group_id, debt)) = debt_of(event) else {
+            continue;
         };
 
         // The row is the whole filter. `MemberRemoved` fires for an admin-initiated
@@ -253,6 +243,27 @@ async fn run(
     }
 }
 
+/// The rotation an event may leave owed. A narrowing owes the same one a revocation
+/// does: the device is out of the recipient list and still holds the old key.
+fn debt_of(event: OpEvent) -> Option<(ContextGroupId, RotationDebt)> {
+    match event {
+        OpEvent::MemberRemoved { group_id, member } => Some((
+            ContextGroupId::from(group_id),
+            RotationDebt::MemberDeparted(member),
+        )),
+        OpEvent::DeviceRevoked {
+            group_id, device, ..
+        }
+        | OpEvent::DeviceDescoped {
+            group_id, device, ..
+        } => Some((
+            ContextGroupId::from(group_id),
+            RotationDebt::DeviceRevoked(device),
+        )),
+        _ => None,
+    }
+}
+
 /// Ask the actor to rotate. It re-checks eligibility (admin, not the leaver, still
 /// owed) and declines quietly if this node is not the right one to act — so several
 /// admins reacting to the same departure is expected, not a problem.
@@ -269,5 +280,33 @@ async fn rotate(context_client: &ContextClient, group_id: ContextGroupId, debt: 
             "failed to rotate group key after a departure; the pending row remains and will \
              be retried (until it succeeds, the departed member can still read this group)"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_account::{AccountGenesis, DeviceId};
+    use calimero_primitives::identity::PrivateKey;
+
+    use super::*;
+
+    /// Without this a narrowing by a holder who is no admin there leaves the key
+    /// un-rotated until some admin restarts and sweeps.
+    #[test]
+    fn a_narrowing_wakes_the_same_rotation_a_revocation_does() {
+        let account = AccountGenesis::new(PrivateKey::from([7; 32]).public_key()).account_id();
+        let device = DeviceId::mint(account, [7; 16]);
+        let group = [0x42; 32];
+
+        let owed = debt_of(OpEvent::DeviceDescoped {
+            group_id: group,
+            account,
+            device,
+        });
+
+        assert!(matches!(
+            owed,
+            Some((g, RotationDebt::DeviceRevoked(d))) if g == ContextGroupId::from(group) && d == device
+        ));
     }
 }

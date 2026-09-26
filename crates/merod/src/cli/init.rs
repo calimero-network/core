@@ -28,7 +28,7 @@ use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use super::admin_creds::AdminCredArgs;
@@ -211,8 +211,10 @@ pub struct InitCommand {
     /// It signs a statement naming this node, this session's ephemeral key and
     /// the surface it is for, and presents it with the certificate proving the
     /// device belongs to its account. The node checks both and mints a session
-    /// scoped to `context:intent`, `context:query` and `context:subscribe` --
-    /// the delegated surface, and deliberately nothing above it.
+    /// scoped to `context:intent`, `context:query`, `context:subscribe`,
+    /// `context:list-own` and `namespace:list-own` -- the delegated surface
+    /// (write, read, events, and the two caller-scoped listings that let a
+    /// client discover what it may act on), and deliberately nothing above it.
     ///
     /// Off unless asked for, and that is the posture rather than an oversight: a
     /// node answers device-key logins only because its operator decided it
@@ -226,7 +228,7 @@ pub struct InitCommand {
     /// key to supply here.
     ///
     /// (`account_proof` is the provider that implements this; the flag is named
-    /// for what it lets an operator do, as `--public-intents` is.)
+    /// for what it lets an operator do, as `--delegated-access` is.)
     #[clap(long)]
     pub device_key_login: bool,
 
@@ -253,7 +255,7 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
-    /// Run this node as a delegated-execution relay: serve
+    /// Run this node as a delegated-access relay: serve
     /// `GET`/`POST /admin-api/contexts/:context_id/intents` without a node
     /// credential.
     ///
@@ -264,8 +266,20 @@ pub struct InitCommand {
     /// this member's, covers this exact intent, has not expired, has an unspent
     /// nonce, and this node holds `CAN_AUTHOR_ON_BEHALF` on the owning group.
     /// Nothing else on the admin API is opened.
-    #[clap(long, default_value_t = false)]
-    pub public_intents: bool,
+    ///
+    /// Accepts `--public-intents`, the previous name, for one release. The old
+    /// name says "intents" for something that now also governs reads such as
+    /// `GET /admin-api/namespaces`, which executes nothing — so it describes
+    /// neither half of what the flag does.
+    ///
+    /// A hidden `alias` rather than a `visible_alias`: the old name is kept
+    /// working, not advertised. Note that clap omits a plain `alias` from
+    /// `--help`, so anything that decides the flag exists by grepping help
+    /// output will conclude it is gone. The fleet image's build-time
+    /// conformance probe is exactly such a check, which is why it accepts both
+    /// spellings before this lands rather than after.
+    #[clap(long, alias = "public-intents", default_value_t = false)]
+    pub delegated_access: bool,
 
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
@@ -357,7 +371,7 @@ impl InitCommand {
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
-        let path = root_args.home.join(root_args.node_name);
+        let path = root_args.node_home()?;
 
         // Idempotent short-circuit FIRST: a plain re-run against an already
         // initialized node stays a credential-free no-op (provisioning
@@ -608,7 +622,7 @@ impl InitCommand {
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                 .collect(),
-            Some(AdminConfig::new(true, self.public_intents)),
+            Some(AdminConfig::new(true, self.delegated_access)),
             Some(JsonRpcConfig::new(true)),
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),
@@ -703,7 +717,7 @@ impl InitCommand {
                 let device = NodeDeviceRepository::new(&store)
                     .adopt_account(genesis)
                     .wrap_err("could not mint this node's device for that account")?;
-                info!(
+                debug!(
                     account = %device.account,
                     device = %device.device(),
                     "Minted this node's device under an account rooted elsewhere; \
@@ -715,7 +729,7 @@ impl InitCommand {
             let account_root = NodeDeviceRepository::new(&store)
                 .provision_account_root()
                 .wrap_err("could not provision this node's account root")?;
-            info!(
+            debug!(
                 account = %account_root.account(),
                 "Provisioned the node's account root",
             );
@@ -765,6 +779,35 @@ mod tests {
 
     use super::InitCommand;
 
+    /// The rename must not break a node image that still passes the old name.
+    ///
+    /// The fleet's `calimero-init.sh` writes `--public-intents`, and its
+    /// build-time conformance probe decides the flag exists by looking for it.
+    /// So the alias is what lets core and the image land independently, and it
+    /// is load-bearing until the image's merod is past this release. Asserted on
+    /// the parsed VALUE, not on parsing merely succeeding: an unknown flag that
+    /// clap silently ignored would also "parse".
+    #[test]
+    fn the_old_flag_name_still_sets_the_new_field() {
+        let old = InitCommand::try_parse_from(["merod", "--public-intents"])
+            .expect("--public-intents must keep parsing for one release");
+        assert!(
+            old.delegated_access,
+            "the old spelling must set the same field the new one does"
+        );
+
+        let new = InitCommand::try_parse_from(["merod", "--delegated-access"])
+            .expect("--delegated-access is the name going forward");
+        assert!(new.delegated_access);
+
+        let neither = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert!(
+            !neither.delegated_access,
+            "off by default: a relay must not open this surface because nobody \
+             mentioned it"
+        );
+    }
+
     // `merod init` is the only place the registry default is written, so both
     // arms decide whether a fresh node resolves apps at all.
     #[test]
@@ -806,7 +849,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("provisioned"),
+            node_name: Some(camino::Utf8PathBuf::from("provisioned")),
         };
 
         let init =
@@ -845,7 +888,7 @@ mod tests {
             .expect("utf8 tempdir path");
         let root_args = crate::cli::RootArgs {
             home: home.clone(),
-            node_name: camino::Utf8PathBuf::from("rootless"),
+            node_name: Some(camino::Utf8PathBuf::from("rootless")),
         };
 
         let init = InitCommand::try_parse_from([

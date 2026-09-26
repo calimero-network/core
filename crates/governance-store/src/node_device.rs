@@ -19,7 +19,7 @@
 //! keys were unchanged.
 
 use calimero_account::{
-    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey,
+    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope, KemPublicKey,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
@@ -28,8 +28,9 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountDeviceCert, NodeAccountNamespace, NodeAccountNamespaceValue, NodeAccountRoot,
-    NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
+    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
+    NodeDeviceIdentityValue, NodeRevokedFrom, NodeRevokedFromValue,
     NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
@@ -77,10 +78,13 @@ impl AccountRoot {
         self.secret.public_key()
     }
 
-    /// The signing key, for minting device certificates and root-key handoffs.
+    /// The signing key, for minting device certificates, root-key handoffs, and
+    /// the account-link proofs that assert this account to an outside verifier.
     ///
-    /// The only two things this key may ever do. It does not sign ops and does not
-    /// receive data, which is what allows it to live offline.
+    /// The only three things this key may ever do. It does not sign ops and does
+    /// not receive data, which is what allows it to live offline — and a link
+    /// proof is bounded and addressed precisely so it stays a once-per-verifier
+    /// act rather than a routine one.
     #[must_use]
     pub const fn signing_key(&self) -> &PrivateKey {
         &self.secret
@@ -372,8 +376,8 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
 pub struct KnownDeviceCert {
     /// The proof exactly as a link op carries it: genesis, handoff chain, cert.
     pub proof: AccountProof<DeviceCert>,
-    /// Applications this device may speak for. **Empty means all of them.**
-    pub applications: Vec<ApplicationId>,
+    /// The root-signed scope in force, which a link re-presents unchanged.
+    pub scope: AccountProof<DeviceScope>,
 }
 
 impl KnownDeviceCert {
@@ -383,6 +387,12 @@ impl KnownDeviceCert {
         self.proof.statement.device
     }
 
+    /// Applications this device may speak for. **Empty means all of them.**
+    #[must_use]
+    pub fn applications(&self) -> &[ApplicationId] {
+        &self.scope.statement.applications
+    }
+
     /// Does this device's scope reach a namespace serving `application`?
     ///
     /// `None` is a namespace whose metadata has not synced yet, so it names no
@@ -390,8 +400,7 @@ impl KnownDeviceCert {
     /// the pairing fan-out gives such a namespace.
     #[must_use]
     pub fn covers(&self, application: Option<ApplicationId>) -> bool {
-        self.applications.is_empty()
-            || application.is_some_and(|app| self.applications.contains(&app))
+        calimero_account::scope_covers(self.applications(), application)
     }
 }
 
@@ -483,6 +492,7 @@ impl<'a> NodeDeviceRepository<'a> {
                 root_secret: *secret.as_bytes(),
             },
         )?;
+        self.clear_revoked_from()?;
         Ok(AccountRoot { secret })
     }
 
@@ -608,8 +618,10 @@ impl<'a> NodeDeviceRepository<'a> {
         .into();
 
         let doomed_certificate = calimero_store::key::NodeDeviceCertificate::new();
+        let revoked_from = NodeRevokedFrom::new();
         let mut tx = Transaction::default();
         tx.put(&root_key, root_bytes);
+        tx.delete(&revoked_from);
         if doomed {
             tx.delete(&doomed_key);
             tx.delete(&doomed_certificate);
@@ -839,6 +851,42 @@ impl<'a> NodeDeviceRepository<'a> {
     /// speaking for the account that named it.
     fn clear_account_namespace(&self) -> EyreResult<()> {
         self.store.handle().delete(&NodeAccountNamespace::new())?;
+        Ok(())
+    }
+
+    /// The account and device a withdrawal took from this node, if one did.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn revoked_from(&self) -> EyreResult<Option<(AccountId, DeviceId)>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NodeRevokedFrom::new())?
+            .map(|value: NodeRevokedFromValue| {
+                (
+                    AccountId::from(value.account_id),
+                    DeviceId::from(value.device_id),
+                )
+            }))
+    }
+
+    /// Record why this node stopped being paired.
+    fn record_revoked_from(&self, account: AccountId, device: DeviceId) -> EyreResult<()> {
+        self.store.handle().put(
+            &NodeRevokedFrom::new(),
+            &NodeRevokedFromValue {
+                account_id: *account.as_bytes(),
+                device_id: *device.as_bytes(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Forget it: the node has a device or an account of its own again, so the
+    /// question the marker answers has stopped being asked.
+    fn clear_revoked_from(&self) -> EyreResult<()> {
+        self.store.handle().delete(&NodeRevokedFrom::new())?;
         Ok(())
     }
 
@@ -1077,6 +1125,7 @@ impl<'a> NodeDeviceRepository<'a> {
                 kem_secret: *kem_secret.as_bytes(),
             },
         )?;
+        self.clear_revoked_from()?;
 
         Ok(NodeDevice {
             account,
@@ -1136,7 +1185,7 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store scan or read failure.
-    pub fn legacy_device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+    pub fn legacy_device_certs(&self) -> EyreResult<Vec<NodeAccountDeviceCertValue>> {
         let keys = collect_keys_with_prefix(
             self.store,
             NodeAccountDeviceCert::new([0u8; 32]),
@@ -1147,10 +1196,7 @@ impl<'a> NodeDeviceRepository<'a> {
         let mut certs = Vec::with_capacity(keys.len());
         for key in keys {
             if let Some(value) = handle.get::<NodeAccountDeviceCert>(&key)? {
-                certs.push(KnownDeviceCert {
-                    proof: value.proof,
-                    applications: value.applications,
-                });
+                certs.push(value);
             }
         }
         Ok(certs)
@@ -1221,6 +1267,9 @@ impl<'a> NodeDeviceRepository<'a> {
         if held.device() != device {
             return Ok(false);
         }
+        // Before the root gate, because a node that cannot release the row is
+        // just as withdrawn and has the same question to answer.
+        self.record_revoked_from(held.account, device)?;
         let Some(root) = self.account_root()? else {
             return Ok(false);
         };
@@ -1307,7 +1356,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::test_fixtures::{test_group_id, test_store, test_store_without_account_root};
+    use crate::test_fixtures::{
+        device_scope, test_group_id, test_store, test_store_without_account_root,
+    };
     use crate::AccountBindingRepository;
     use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
@@ -1351,16 +1402,17 @@ mod tests {
         let two = ApplicationId::from([0x72; 32]);
         let proof = certified(&PrivateKey::from([0x34; 32]), [0x44; 32], [0x54; 32]);
 
+        let root = PrivateKey::from([0x34; 32]);
         let everything = KnownDeviceCert {
+            scope: device_scope(&root, &proof.statement, Vec::new(), 0),
             proof: proof.clone(),
-            applications: Vec::new(),
         };
         assert!(everything.covers(Some(one)));
         assert!(everything.covers(None));
 
         let narrow = KnownDeviceCert {
+            scope: device_scope(&root, &proof.statement, vec![one], 0),
             proof,
-            applications: vec![one],
         };
         assert!(narrow.covers(Some(one)));
         assert!(!narrow.covers(Some(two)));
@@ -1441,6 +1493,58 @@ mod tests {
             "and the namespace the withdrawn account named is not inherited by the next \
              pairing"
         );
+    }
+
+    /// The release is silent, so the marker has to outlive the row it released
+    /// and survive until the node pairs again.
+    #[test]
+    fn a_released_device_leaves_behind_what_revoked_it() {
+        let (store, _root_sk, held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+        assert_eq!(repo.revoked_from().expect("read"), None);
+
+        assert!(repo
+            .release_revoked_device(held.device())
+            .expect("release the withdrawn device"));
+
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            Some((held.account, held.device()))
+        );
+
+        let _paired = repo
+            .adopt_account(AccountGenesis::new(root(0x53)))
+            .expect("pair elsewhere");
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            None,
+            "pairing again is what answers the question, so the marker goes with it"
+        );
+    }
+
+    /// A rootless node keeps the row it cannot release, but it is just as
+    /// withdrawn - so the reason has to be recorded either way.
+    #[test]
+    fn a_rootless_node_records_the_withdrawal_it_cannot_act_on() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root(0x31)))
+            .expect("adopt");
+
+        assert!(!repo
+            .release_revoked_device(held.device())
+            .expect("nothing to release into"));
+
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            Some((held.account, held.device()))
+        );
+        assert!(
+            repo.provision_account_root().is_ok(),
+            "minting a root of its own is the other way out"
+        );
+        assert_eq!(repo.revoked_from().expect("read"), None);
     }
 
     /// A node holding no root has nothing to release into, so the row stays and
@@ -1535,7 +1639,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(store)
-            .apply_link(ns, &held.genesis, &[], &cert)
+            .apply_link(ns, &held.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
         held
@@ -1666,7 +1770,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &alice, &[], &cert)
+            .apply_link(&ns, &alice, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2116,7 +2220,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .apply_link(&ns, &mine.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
         assert!(
@@ -2409,7 +2513,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .apply_link(&ns, &mine.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2464,7 +2568,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &alice, &[], &cert)
+            .apply_link(&ns, &alice, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2568,7 +2672,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(store)
-            .apply_link(ns, &genesis, &[], &cert)
+            .apply_link(ns, &genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
         device
@@ -2659,7 +2763,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .apply_link(&ns, &mine.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -2696,7 +2800,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&ns, &alice, &[], &cert)
+            .apply_link(&ns, &alice, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 
@@ -3074,7 +3178,7 @@ mod tests {
         )
         .expect("sign the certificate");
         let _binding = AccountBindingRepository::new(&store)
-            .apply_link(&refuses, &paired.genesis, &[], &cert)
+            .apply_link(&refuses, &paired.genesis, &[], &cert, 0)
             .expect("store")
             .expect("the credential must be admissible");
 

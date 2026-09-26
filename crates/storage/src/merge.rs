@@ -73,7 +73,7 @@ pub use custom_registry::clear_custom_merge_registry;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::collections::crdt_meta::{CrdtType, CustomTypeId, MergeError, Mergeable};
-use crate::collections::{Counter, ReplicatedGrowableArray};
+use crate::collections::{Counter, FugueText, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
 /// Canonical wire format for a host→WASM root-state merge invocation.
@@ -462,6 +462,9 @@ pub fn merge_by_crdt_type(
         // a correct-but-unreached arm to satisfy the exhaustive match.
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
+        CrdtType::FugueText => merge_fugue_text(existing, incoming),
+        CrdtType::FugueTextBlock => merge_fugue_text_block(existing, incoming),
+
         // App-defined types
         CrdtType::Custom(type_id) => Err(MergeError::WasmRequired { type_id: *type_id }),
     }
@@ -572,6 +575,21 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     Mergeable::merge(&mut existing_rga, &incoming_rga)?;
 
     borsh::to_vec(&existing_rga).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
+fn merge_fugue_text(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    let mut existing_doc: FugueText =
+        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+    let incoming_doc: FugueText =
+        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+
+    Mergeable::merge(&mut existing_doc, &incoming_doc)?;
+
+    borsh::to_vec(&existing_doc).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
+fn merge_fugue_text_block(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    FugueText::<MainStorage>::merge_block_entry_bytes(existing, incoming)
 }
 
 /// Merge two UnorderedMaps.
@@ -687,7 +705,7 @@ fn merge_rotation_log(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, Merge
 #[cfg(test)]
 mod typed_dispatch_tests {
     use super::*;
-    use crate::collections::Counter;
+    use crate::collections::{Counter, Root};
     use crate::env;
     use serial_test::serial;
 
@@ -869,6 +887,32 @@ mod typed_dispatch_tests {
         );
 
         clear_merge_registry();
+    }
+
+    #[test]
+    #[serial]
+    fn merge_fugue_text_container_leaves_the_stored_document_unchanged() {
+        env::reset_for_testing();
+        let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name("merge_noop"));
+        doc.insert_str_with_replica(0, 1, "hello").unwrap();
+        let existing = borsh::to_vec(&*doc).unwrap();
+
+        doc.insert_str_with_replica(5, 2, " world").unwrap();
+        let incoming = borsh::to_vec(&*doc).unwrap();
+        assert_eq!(
+            existing, incoming,
+            "a Collection serializes only its element id, so two handles on one \
+             document are byte-identical however far their contents have diverged"
+        );
+
+        let merged = merge_by_crdt_type(&CrdtType::FugueText, &existing, &incoming)
+            .expect("the container arm must succeed");
+        assert_eq!(merged, existing, "the container merge must be byte-stable");
+        assert_eq!(
+            doc.get_text().unwrap(),
+            "hello world",
+            "the container merge must not touch the stored blocks"
+        );
     }
 
     /// P3 (core#2716): the rotation-log merge must be an order-invariant union

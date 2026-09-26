@@ -93,6 +93,20 @@ pub enum NamespacePermission {
     All(ResourceScope),
     Create(ResourceScope),
     List(ResourceScope),
+    /// Ask `GET /admin-api/namespaces` for the namespaces the CALLER reaches.
+    ///
+    /// Strictly weaker than [`Self::List`], which is the node-wide answer, and
+    /// held separately so a delegated session can be minted with the weaker one
+    /// alone. [`Self::List`] satisfies it (see `matches_namespace`), so nothing
+    /// that could reach the route before stops being able to.
+    ///
+    /// Like the other delegated scopes it decides who may ASK. What comes back
+    /// is decided per request by `admin/caller_scope.rs`, which resolves the
+    /// caller's groups from the store on every call and admits a namespace only
+    /// if the caller is in it — so this scope is never a substitute for
+    /// membership, and a removed member's listing shrinks when the governance op
+    /// lands rather than when their token expires.
+    ListOwn(ResourceScope),
     Manage(ResourceScope),
 }
 
@@ -102,6 +116,14 @@ pub enum GroupPermission {
     All(ResourceScope),
     Create(ResourceScope),
     List(ResourceScope),
+    /// The caller's slice of a group listing, not the node-wide answer.
+    ///
+    /// Held by a delegated session, which must reach a group it is a member of
+    /// and no other. [`Self::List`] satisfies it (see `matches_group`), so an
+    /// operator token reaches every route asking for this one — and the reverse
+    /// must never hold, or a delegated session inherits the node-wide read it
+    /// exists to be kept out of.
+    ListOwn(ResourceScope),
     Manage(ResourceScope),
 }
 
@@ -151,6 +173,27 @@ pub enum ContextPermission {
     All(ResourceScope),
     Create(ResourceScope),
     List(ResourceScope),
+    /// See a context in a listing the CALLER is scoped to: `GET
+    /// /admin-api/contexts`, and the single-context read `GET
+    /// /admin-api/contexts/:id`.
+    ///
+    /// Strictly weaker than [`Self::List`], which is the node-wide answer, and
+    /// separate from it so a delegated session can be minted with the weaker one
+    /// alone. [`Self::List`] satisfies it (see `satisfies`), so every token that
+    /// could reach those two routes before still can, at exactly the scope it
+    /// held.
+    ///
+    /// Deliberately NOT folded into [`Self::List`] itself: `context:list[<id>]`
+    /// is also what `/contexts/:id/identities`, `/identities-owned`, `/storage`,
+    /// `/group` and the two `for-application` listings require, and those are
+    /// not all caller-scoped. Widening `list` to reach a delegated session would
+    /// have opened them too.
+    ///
+    /// Like the other delegated scopes it decides who may ASK. Both routes
+    /// re-derive the caller's groups from the store per request
+    /// (`admin/caller_scope.rs`) and serve only what those admit, so this is
+    /// never a substitute for membership.
+    ListOwn(ResourceScope),
     Delete(ResourceScope),
     Leave(ResourceScope, UserScope),
     Invite(ResourceScope, UserScope),
@@ -443,6 +486,7 @@ impl FromStr for Permission {
                 match *action {
                     "create" => Ok(Permission::Namespace(NamespacePermission::Create(scope))),
                     "list" => Ok(Permission::Namespace(NamespacePermission::List(scope))),
+                    "list-own" => Ok(Permission::Namespace(NamespacePermission::ListOwn(scope))),
                     "manage" => Ok(Permission::Namespace(NamespacePermission::Manage(scope))),
                     "" => Ok(Permission::Namespace(NamespacePermission::All(scope))),
                     _ => Err(format!("Unknown namespace action: {action}")),
@@ -456,6 +500,7 @@ impl FromStr for Permission {
                 match *action {
                     "create" => Ok(Permission::Group(GroupPermission::Create(scope))),
                     "list" => Ok(Permission::Group(GroupPermission::List(scope))),
+                    "list-own" => Ok(Permission::Group(GroupPermission::ListOwn(scope))),
                     "manage" => Ok(Permission::Group(GroupPermission::Manage(scope))),
                     "" => Ok(Permission::Group(GroupPermission::All(scope))),
                     _ => Err(format!("Unknown group action: {action}")),
@@ -471,6 +516,7 @@ impl FromStr for Permission {
                 match *action {
                     "create" => Ok(Permission::Context(ContextPermission::Create(scope))),
                     "list" => Ok(Permission::Context(ContextPermission::List(scope))),
+                    "list-own" => Ok(Permission::Context(ContextPermission::ListOwn(scope))),
                     "delete" => Ok(Permission::Context(ContextPermission::Delete(scope))),
                     "leave" => Ok(Permission::Context(ContextPermission::Leave(
                         scope, user_scope,
@@ -657,6 +703,15 @@ impl fmt::Display for Permission {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "namespace:list{params}")
                 }
+                // `format_simple_params`, like the other scope-only verbs
+                // (`context:query`, `context:intent`): `format_params` appends
+                // the user-scope separator, so `namespace:list-own[ns-1]` would
+                // render as `namespace:list-own[ns-1,]` and stop matching the
+                // string an operator configured.
+                NamespacePermission::ListOwn(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "namespace:list-own{params}")
+                }
                 NamespacePermission::Manage(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "namespace:manage{params}")
@@ -675,6 +730,14 @@ impl fmt::Display for Permission {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "group:list{params}")
                 }
+                // `format_simple_params`, as the namespace and context variants
+                // use: `format_params` pads a trailing user slot, so
+                // `group:list-own[grp-1]` would render as `group:list-own[grp-1,]`
+                // and stop matching the string an operator configured.
+                GroupPermission::ListOwn(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "group:list-own{params}")
+                }
                 GroupPermission::Manage(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "group:manage{params}")
@@ -692,6 +755,11 @@ impl fmt::Display for Permission {
                 ContextPermission::List(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "context:list{params}")
+                }
+                // `format_simple_params` — see the note on the namespace twin.
+                ContextPermission::ListOwn(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "context:list-own{params}")
                 }
                 ContextPermission::Delete(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
@@ -877,6 +945,16 @@ impl Permission {
                 (ContextPermission::List(h_scope), ContextPermission::List(r_scope)) => {
                     matches_scope(h_scope, r_scope)
                 }
+                // `list` is the node-wide answer and `list-own` the caller's
+                // slice of it, so holding the former satisfies the latter. This
+                // direction only: `list-own` must NOT satisfy `list`, or a
+                // delegated session would reach `/contexts/:id/identities`,
+                // `/storage`, `/group` and the `for-application` listings, none
+                // of which is caller-scoped.
+                (
+                    ContextPermission::List(h_scope) | ContextPermission::ListOwn(h_scope),
+                    ContextPermission::ListOwn(r_scope),
+                ) => matches_scope(h_scope, r_scope),
                 (ContextPermission::Delete(h_scope), ContextPermission::Delete(r_scope)) => {
                     matches_scope(h_scope, r_scope)
                 }
@@ -965,6 +1043,7 @@ fn namespace_scope(perm: &NamespacePermission) -> &ResourceScope {
         NamespacePermission::All(scope)
         | NamespacePermission::Create(scope)
         | NamespacePermission::List(scope)
+        | NamespacePermission::ListOwn(scope)
         | NamespacePermission::Manage(scope) => scope,
     }
 }
@@ -980,6 +1059,14 @@ fn matches_namespace(held: &NamespacePermission, required: &NamespacePermission)
         (NamespacePermission::List(h_scope), NamespacePermission::List(r_scope)) => {
             matches_scope(h_scope, r_scope)
         }
+        // `list` is the node-wide answer, `list-own` the caller's slice of it.
+        // One direction only, for the reason spelled out on the context pair:
+        // `namespace:list` is also what `/namespaces/:id`, `/:id/identity` and
+        // `/:id/groups` require, and those are not caller-scoped.
+        (
+            NamespacePermission::List(h_scope) | NamespacePermission::ListOwn(h_scope),
+            NamespacePermission::ListOwn(r_scope),
+        ) => matches_scope(h_scope, r_scope),
         (NamespacePermission::Manage(h_scope), NamespacePermission::Manage(r_scope)) => {
             matches_scope(h_scope, r_scope)
         }
@@ -993,6 +1080,7 @@ fn group_scope(perm: &GroupPermission) -> &ResourceScope {
         GroupPermission::All(scope)
         | GroupPermission::Create(scope)
         | GroupPermission::List(scope)
+        | GroupPermission::ListOwn(scope)
         | GroupPermission::Manage(scope) => scope,
     }
 }
@@ -1008,6 +1096,14 @@ fn matches_group(held: &GroupPermission, required: &GroupPermission) -> bool {
         (GroupPermission::List(h_scope), GroupPermission::List(r_scope)) => {
             matches_scope(h_scope, r_scope)
         }
+        // `list` is the node-wide answer and `list-own` the caller's slice of
+        // it, so holding the former satisfies the latter. This direction only:
+        // `list-own` must NOT satisfy `list`, or a delegated session reaches
+        // every group on the node.
+        (
+            GroupPermission::List(h_scope) | GroupPermission::ListOwn(h_scope),
+            GroupPermission::ListOwn(r_scope),
+        ) => matches_scope(h_scope, r_scope),
         (GroupPermission::Manage(h_scope), GroupPermission::Manage(r_scope)) => {
             matches_scope(h_scope, r_scope)
         }
@@ -1472,5 +1568,61 @@ mod tests {
             .unwrap();
         let required = "context:alias".parse::<Permission>().unwrap();
         assert!(!held.satisfies(&required));
+    }
+
+    /// The wire spelling of the two narrow listing scopes, both directions.
+    ///
+    /// Pinned because the codec splits an action on `:` and these are the only
+    /// actions with a `-` inside them: a parser that split on `-` too, or a
+    /// `Display` that emitted `context:list:own`, would silently turn an
+    /// operator's configured scope into an unparseable string that
+    /// `validate_permissions` drops on the floor — which reads as a 403 in the
+    /// client, not as a typo here.
+    #[test]
+    fn the_narrow_listing_scopes_round_trip_through_their_strings() {
+        for spelling in [
+            "context:list-own",
+            "context:list-own[ctx-1]",
+            "namespace:list-own",
+            "namespace:list-own[ns-1]",
+        ] {
+            let parsed = spelling
+                .parse::<Permission>()
+                .unwrap_or_else(|e| panic!("`{spelling}` must parse: {e}"));
+            assert_eq!(parsed.to_string(), spelling, "round trip for `{spelling}`");
+        }
+    }
+
+    /// The hierarchy, at the level the strings express it.
+    ///
+    /// `list` is the node-wide answer and `list-own` the caller's slice, so one
+    /// direction holds and the other must not: `list-own` reaching `list` would
+    /// hand a delegated session the un-scoped context sub-resources.
+    #[test]
+    fn list_satisfies_list_own_but_never_the_reverse() {
+        let wide = "context:list".parse::<Permission>().unwrap();
+        let narrow = "context:list-own".parse::<Permission>().unwrap();
+
+        assert!(wide.satisfies(&narrow), "`list` must satisfy `list-own`");
+        assert!(
+            !narrow.satisfies(&wide),
+            "`list-own` must NOT satisfy `list`"
+        );
+
+        let wide_ns = "namespace:list".parse::<Permission>().unwrap();
+        let narrow_ns = "namespace:list-own".parse::<Permission>().unwrap();
+        assert!(wide_ns.satisfies(&narrow_ns));
+        assert!(!narrow_ns.satisfies(&wide_ns));
+
+        // The umbrella still covers the new verb.
+        assert!("namespace"
+            .parse::<Permission>()
+            .unwrap()
+            .satisfies(&narrow_ns));
+
+        // And the scope is still load-bearing within the narrow verb.
+        let mine = "context:list-own[ctx-1]".parse::<Permission>().unwrap();
+        let theirs = "context:list-own[ctx-2]".parse::<Permission>().unwrap();
+        assert!(!mine.satisfies(&theirs));
     }
 }

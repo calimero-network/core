@@ -1,0 +1,104 @@
+name: "Ephemeral presence e2e - Open subgroup, inherited member"
+description: >
+  Node 1 creates a namespace, an Open subgroup and a context inside it. Node 2
+  joins the namespace and the context, but never the subgroup itself, so it
+  reaches the context only by inheritance and holds only the namespace key.
+  Presence must flow both ways, with the exact slice and author, over WS and
+  SSE. kv-store is only a scaffold: its wasm is never called.
+
+nuke_on_start: true
+nuke_on_end: false
+
+# Pinned so the local script step can build the RPC URLs: node i+1 is served
+# on base_rpc_port + i.
+nodes:
+  count: 2
+  prefix: ephemeral-open-node
+  base_port: 8840
+  base_rpc_port: 8940
+
+steps:
+  - name: Install kv-store on node 1
+    type: install_application
+    node: ephemeral-open-node-1
+    path: "../../dist/com.calimero.kv-store-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Node 1 creates namespace
+    type: create_namespace
+    node: ephemeral-open-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node 1 creates namespace invitation for node 2
+    type: create_namespace_invitation
+    node: ephemeral-open-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: ephemeral-open-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+
+  - name: Node 1 creates a subgroup in the namespace
+    type: create_group_in_namespace
+    node: ephemeral-open-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: open-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Node 1 marks the subgroup Open
+    type: set_subgroup_visibility
+    node: ephemeral-open-node-1
+    group_id: "{{subgroup_id}}"
+    visibility: open
+
+  - name: Node 1 creates a context inside the Open subgroup
+    type: create_context
+    node: ephemeral-open-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{subgroup_id}}"
+    outputs:
+      ctx_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Node 2 joins the context by inheritance only
+    type: join_context
+    node: ephemeral-open-node-2
+    context_id: "{{ctx_id}}"
+    outputs:
+      node2_key: memberPublicKey
+
+  # Presence rides gossip, not the DAG: only the context topic mesh must form.
+  - name: Wait for the context gossip mesh
+    type: wait
+    seconds: 30
+
+  - name: "Presence flows both ways between the creator and the inherited member"
+    type: script
+    script: scripts/ephemeral-open-subgroup-e2e.sh
+    target: local
+    args:
+      - "http://localhost:8940"
+      - "http://localhost:8941"
+      - "{{ctx_id}}"
+      - "{{node1_key}}"
+      - "{{node2_key}}"
+
+  - name: Assert no panics on either node
+    type: assert_log_absent
+    nodes:
+      - ephemeral-open-node-1
+      - ephemeral-open-node-2
+    patterns:
+      - "panicked at"
+      - "FATAL"
+
+stop_all_nodes: true

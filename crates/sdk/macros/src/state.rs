@@ -1485,6 +1485,9 @@ fn generate_assign_deterministic_ids_impl(
                     | "SortedSet"
                     | "Counter"
                     | "ReplicatedGrowableArray"
+                    | "FugueText"
+                    | "RichText"
+                    | "RichDocument"
                     | "UserStorage"
                     | "FrozenStorage"
                     | "SharedStorage"
@@ -1566,6 +1569,35 @@ mod tests {
         let generics = item.generics.clone();
         let orig = StructOrEnumItem::Struct(item);
         generate_mergeable_impl(&ident, &generics, &orig).to_string()
+    }
+
+    /// A field the list misses falls back to `Id::random()` and never merges.
+    #[test]
+    fn assign_deterministic_ids_covers_every_text_crdt() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct AppRoot {
+                pub legacy: ReplicatedGrowableArray,
+                pub doc: FugueText,
+                pub rich: RichText<DefaultMarks>,
+                pub blocks: RichDocument<DefaultMarks>,
+                pub opaque: SomeUserType,
+            }
+        };
+        let ident = item.ident.clone();
+        let generics = item.generics.clone();
+        let orig = StructOrEnumItem::Struct(item);
+        let rendered = generate_assign_deterministic_ids_impl(&ident, &generics, &orig).to_string();
+
+        for field in ["legacy", "doc", "rich", "blocks"] {
+            assert!(
+                rendered.contains(&format!("self . {field} . reassign_deterministic_id")),
+                "`{field}` must be reassigned a deterministic id, in:\n{rendered}",
+            );
+        }
+        assert!(
+            !rendered.contains("opaque"),
+            "a non-collection field must not be reassigned, in:\n{rendered}",
+        );
     }
 
     /// Regression: the generator used to skip any field whose type string

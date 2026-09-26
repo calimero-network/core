@@ -112,6 +112,20 @@ pub enum AccountError {
         /// The device the caller is asking about.
         expected: DeviceId,
     },
+    /// The label names a different account than the genesis.
+    #[error("device label is for a different account than the supplied genesis")]
+    LabelAccountMismatch,
+    /// The label is not validly signed by the root key at its claimed epoch.
+    #[error("device label has an invalid signature for its claimed key epoch")]
+    LabelSignatureInvalid,
+    /// The label names a different device than the caller is asking about.
+    #[error("device label is for device {named}, not the {expected} being asked about")]
+    LabelDeviceMismatch {
+        /// The device the proof actually names.
+        named: DeviceId,
+        /// The device the caller is asking about.
+        expected: DeviceId,
+    },
     /// The warrant is not validly signed by the device key it names.
     #[error("warrant has an invalid signature for the device key it names")]
     WarrantSignatureInvalid,
@@ -166,4 +180,47 @@ pub enum AccountError {
     /// one presenting it.
     #[error("login statement is for a different audience than the one presenting it")]
     LoginAudienceMismatch,
+    /// The request signature does not verify for the key the chain above it
+    /// names.
+    #[error("request signature is invalid for the key that should have signed it")]
+    RequestSignatureInvalid,
+    /// The request signature is valid, but was minted for a different request.
+    ///
+    /// Its own variant, and it names the part, because the three cases send a
+    /// reader to different places: a method mismatch is a proof reused across
+    /// verbs, a path mismatch a proof reused across routes, and a body mismatch
+    /// the one that matters most — a signature captured from one write being
+    /// presented with different arguments.
+    #[error("request signature was minted for a different {part}")]
+    RequestMismatch {
+        /// Which part disagreed: `method`, `path` or `body`.
+        part: &'static str,
+    },
+    /// A timestamped link in a caller's chain has expired.
+    #[error("the {part} in this proof has expired")]
+    ProofExpired {
+        /// Which link: `request` or `session`.
+        part: &'static str,
+    },
+    /// A timestamped link is dated in the future by more than the tolerated
+    /// skew.
+    ///
+    /// Distinct from expiry, because the two send a reader opposite ways: an
+    /// expired proof is a caller that waited too long, a future-dated one is a
+    /// clock that disagrees, and diagnosing the second as the first is how a
+    /// skew problem gets treated as a session-length problem.
+    #[error("the {part} in this proof is dated in the future")]
+    ProofNotYetValid {
+        /// Which link: `request` or `session`.
+        part: &'static str,
+    },
+    /// The session statement delegates from a key the certificate does not
+    /// certify.
+    ///
+    /// The chain has to be continuous. Without this check a valid statement
+    /// signed by one of the account's *other* devices would carry a session
+    /// key here, and the request would verify against a device the presented
+    /// certificate never covered.
+    #[error("the session was signed by a device this certificate does not certify")]
+    SessionDeviceMismatch,
 }

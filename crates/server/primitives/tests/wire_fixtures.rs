@@ -16,11 +16,12 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    AccountDevicesApiResponse, AccountPairInitApiRequest, AddGroupMembersApiRequest,
-    ContextIdentitiesResponseData, CreateContextRequest, CreateContextResponseData,
-    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, IntentRelayApiResponse,
-    JoinGroupApiResponse, JoinNamespaceApiResponse, NodeIdentityApiResponse,
-    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
+    AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
+    AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ContextIdentitiesResponseData,
+    CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
+    GetMigrationStatusApiResponse, IntentRelayApiResponse, JoinGroupApiResponse,
+    JoinNamespaceApiResponse, NodeIdentityApiResponse, ReparentGroupApiRequest,
+    ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -123,4 +124,10 @@ wire_fixtures! {
     node_identity_res: NodeIdentityApiResponse => "identity/node_identity.res.json",
     account_pair_init_req: AccountPairInitApiRequest => "account/pair_init.req.json",
     account_devices_res: AccountDevicesApiResponse => "account/devices.res.json",
+    // The cross-repo pair: mdma verifies `domain ‖ payload` and decodes the
+    // signature as base64 and the key as hex. A retype here — hex signature,
+    // renamed field — is a verifier that refuses every proof, with no failure in
+    // this repo to point at it.
+    account_sign_with_root_req: AccountSignWithRootApiRequest => "account/sign_with_root.req.json",
+    account_sign_with_root_res: AccountSignWithRootApiResponse => "account/sign_with_root.res.json",
 }

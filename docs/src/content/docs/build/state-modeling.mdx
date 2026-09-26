@@ -54,7 +54,8 @@ design question is *what should concurrent writes do*:
 | Membership where adds must survive | `UnorderedSet<V>` / `SortedSet<V>` | Add-wins union: every concurrent add survives |
 | Key→value store | `UnorderedMap<K, V>` / `SortedMap<K, V>` | Add-wins keys; shared keys merge their values recursively |
 | Ordered, append + index | `Vector<V>` | Append-only; each push mints a stable element id |
-| Collaborative text | `ReplicatedGrowableArray` | Per-character RGA ordering; concurrent edits interleave |
+| Collaborative text | `FugueText`, or `RichText` / `RichDocument` for formatting and blocks | Concurrent runs typed at one spot stay whole |
+| Collaborative text an app already stores as RGA | `ReplicatedGrowableArray` | Per-character RGA ordering; concurrent edits interleave |
 
 The recursive-merge property is the lever you compose with: a
 `UnorderedMap<String, LwwRegister<String>>` is "a map where each key is its own
@@ -301,7 +302,9 @@ never branch state on `now()` inside a merge-replayed path.
   `Counter::increment` and `Rga::insert` read the executor id / HLC of the *live*
   call and intentionally **panic** when replayed in merge mode. Their deterministic
   siblings — `increment_for(device_id)` and `insert_str_at_timestamp(...)` — take
-  the value explicitly so replay is reproducible. This matters most in
+  the value explicitly so replay is reproducible. `FugueText`, `RichText` and
+  `RichDocument` writes panic the same way; seed them with
+  `insert_str_with_replica` and `mark_with_replica`. This matters most in
   [migrations](/build/migrations/).
 </Aside>
 

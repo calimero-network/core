@@ -51,7 +51,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::collect_keys_with_prefix;
-use crate::{CapabilitiesRepository, NamespaceRepository};
+use crate::key_covering_group;
 
 /// Does a departure from `group_id` require a key rotation?
 ///
@@ -71,8 +71,7 @@ use crate::{CapabilitiesRepository, NamespaceRepository};
 /// just produce a key nobody uses. Leaving such a subgroup revokes authorization, not
 /// read access; closing that gap is what leaving the NAMESPACE does.
 pub fn group_rotates_on_departure(store: &Store, group_id: &ContextGroupId) -> EyreResult<bool> {
-    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
-    Ok(!CapabilitiesRepository::new(store).is_open_chain_to_namespace(group_id, &namespace_id)?)
+    Ok(key_covering_group(store, group_id)? == *group_id)
 }
 
 /// Typed repository over the pending-key-rotation worklist.

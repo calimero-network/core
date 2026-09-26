@@ -282,13 +282,19 @@ pub struct LevelNode {
     /// Parent node ID (None for root children).
     pub parent_id: Option<[u8; 32]>,
 
-    /// Leaf data (present only for leaf nodes).
-    /// Includes full data and metadata for CRDT merge.
+    /// Entity data and metadata for CRDT merge. Present for leaves and for
+    /// collection containers, whose own row is the only source of their
+    /// `own_hash` (nothing else on this wire carries it).
     pub leaf_data: Option<TreeLeafData>,
+
+    /// Whether this node has children. Carrying it separately from `leaf_data`
+    /// is what lets a container both hand over its row and still be descended
+    /// into; deriving "is a leaf" from `leaf_data` cannot express that.
+    pub has_children: bool,
 }
 
 impl LevelNode {
-    /// Create an internal node.
+    /// Create an internal node with no row of its own.
     #[must_use]
     pub fn internal(id: [u8; 32], hash: [u8; 32], parent_id: Option<[u8; 32]>) -> Self {
         Self {
@@ -296,6 +302,7 @@ impl LevelNode {
             hash,
             parent_id,
             leaf_data: None,
+            has_children: true,
         }
     }
 
@@ -312,19 +319,38 @@ impl LevelNode {
             hash,
             parent_id,
             leaf_data: Some(data),
+            has_children: false,
+        }
+    }
+
+    /// Create an internal node that carries its own row - a collection
+    /// container, which the receiver must both apply and descend into.
+    #[must_use]
+    pub fn container(
+        id: [u8; 32],
+        hash: [u8; 32],
+        parent_id: Option<[u8; 32]>,
+        data: TreeLeafData,
+    ) -> Self {
+        Self {
+            id,
+            hash,
+            parent_id,
+            leaf_data: Some(data),
+            has_children: true,
         }
     }
 
     /// Check if this is a leaf node.
     #[must_use]
     pub fn is_leaf(&self) -> bool {
-        self.leaf_data.is_some()
+        !self.has_children
     }
 
     /// Check if this is an internal node.
     #[must_use]
     pub fn is_internal(&self) -> bool {
-        self.leaf_data.is_none()
+        self.has_children
     }
 
     /// Check if node is within valid bounds.
@@ -332,14 +358,13 @@ impl LevelNode {
     /// Call this after deserializing from untrusted sources.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        // Validate leaf data if present
-        if let Some(ref leaf_data) = self.leaf_data {
-            if !leaf_data.is_valid() {
-                return false;
-            }
+        // Childless and row-less is a dead end: nothing to apply, nothing to
+        // descend into, so no emitter can mean it.
+        if !self.has_children && self.leaf_data.is_none() {
+            return false;
         }
 
-        true
+        self.leaf_data.as_ref().is_none_or(TreeLeafData::is_valid)
     }
 }
 
@@ -558,6 +583,39 @@ mod tests {
         assert!(!node.is_internal());
         assert!(node.parent_id.is_none());
         assert!(node.is_valid());
+    }
+
+    /// A container is both at once, and a receiver reads the two independently:
+    /// the row to apply, the flag to descend.
+    #[test]
+    fn a_container_carries_a_row_and_still_has_children() {
+        let node = LevelNode::container([1; 32], [2; 32], None, make_leaf_data(3, vec![1, 2, 3]));
+
+        assert!(node.is_internal());
+        assert!(!node.is_leaf());
+        assert!(node.leaf_data.is_some());
+        assert!(node.is_valid());
+
+        let decoded: LevelNode =
+            borsh::from_slice(&borsh::to_vec(&node).expect("serialize")).expect("deserialize");
+        assert_eq!(node, decoded);
+    }
+
+    /// Childless and row-less is the one combination the field makes
+    /// expressible and no emitter can mean: nothing to apply, nothing to
+    /// descend into.
+    #[test]
+    fn a_childless_row_less_node_is_rejected() {
+        let dead_end = LevelNode {
+            id: [1; 32],
+            hash: [2; 32],
+            parent_id: None,
+            leaf_data: None,
+            has_children: false,
+        };
+
+        assert!(!dead_end.is_valid());
+        assert!(!LevelWiseResponse::new(0, vec![dead_end], false).is_valid());
     }
 
     #[test]

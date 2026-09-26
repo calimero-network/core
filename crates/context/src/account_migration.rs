@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::account_namespace::publish_device_certified;
 use crate::handlers::ensure_account_namespace::ensure_account_namespace;
@@ -77,7 +77,7 @@ async fn run(
         // another account is one no start could ever publish.
         if cert.proof.statement.account != root.account() {
             warn!(
-                device = %cert.device(),
+                device = %cert.proof.statement.device,
                 account = %cert.proof.statement.account,
                 "a cached device certificate names another account; dropping it"
             );
@@ -86,27 +86,37 @@ async fn run(
         // The registry is authoritative, except where the cache is strictly
         // narrower: an empty registry scope covers every application, so a cached
         // list of them is a narrowing and the next epoch is what makes it win.
-        let publishes = match registry.device(cert.device())? {
+        let device = cert.proof.statement.device;
+        let publishes = match registry.device(device)? {
             None => true,
-            Some((row, _epoch)) => row.applications.is_empty() && !cert.applications.is_empty(),
+            Some(row) => row.applications().is_empty() && !cert.applications.is_empty(),
         };
         if !publishes {
             continue;
         }
-        info!(
-            device = %cert.device(),
+        debug!(
+            %device,
             applications = ?cert.applications,
             "publishing a cached device certificate into the account namespace"
         );
+        let scope = crate::account_namespace::next_device_scope(
+            store,
+            Some(namespace),
+            &root,
+            &cert.proof,
+            &cert.applications,
+        )?;
+        let known = calimero_governance_store::KnownDeviceCert {
+            proof: cert.proof.clone(),
+            scope,
+        };
         landed &= publish_device_certified(
             store,
             node_client,
             ack_router,
             namespace,
             &signer_sk,
-            &root,
-            &cert.proof,
-            &cert.applications,
+            &known,
             "account_migration",
         )
         .await;
@@ -226,21 +236,21 @@ mod tests {
             .expect("read")
             .expect("the migration ensured it");
         let registry = AccountDeviceRegistry::new(&store, namespace);
-        let (scoped_row, scoped_epoch) = registry
+        let scoped_row = registry
             .device(scoped)
             .expect("read")
             .expect("the scoped device is in the registry");
-        assert_eq!(scoped_row.applications, vec![app(APP_ONE)]);
+        assert_eq!(scoped_row.applications(), [app(APP_ONE)]);
         assert_eq!(
-            scoped_epoch, 0,
+            scoped_row.scope.statement.scope_epoch, 0,
             "a device the registry did not hold starts at the first scope epoch"
         );
-        let (wide_row, wide_epoch) = registry
+        let wide_row = registry
             .device(wide)
             .expect("read")
             .expect("the unscoped device is in the registry");
-        assert!(wide_row.applications.is_empty());
-        assert_eq!(wide_epoch, 0);
+        assert!(wide_row.applications().is_empty());
+        assert_eq!(wide_row.scope.statement.scope_epoch, 0);
     }
 
     /// The registry is authoritative. A device already on the DAG keeps the scope
@@ -260,12 +270,13 @@ mod tests {
             .account_namespace()
             .expect("read")
             .expect("the holder names it");
-        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
             .device(device)
             .expect("read")
             .expect("the device the registry already held");
+        let epoch = recorded.scope.statement.scope_epoch;
         assert_eq!(
-            recorded.applications,
+            recorded.applications(),
             vec![app(APP_ONE)],
             "the registry's scope wins over the cache's"
         );
@@ -290,12 +301,13 @@ mod tests {
             .account_namespace()
             .expect("read")
             .expect("the holder names it");
-        let (narrowed, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let narrowed = AccountDeviceRegistry::new(&store, namespace)
             .device(device)
             .expect("read")
             .expect("the device is in the registry");
+        let epoch = narrowed.scope.statement.scope_epoch;
         assert_eq!(
-            narrowed.applications,
+            narrowed.applications(),
             vec![app(APP_ONE)],
             "an empty registry scope covers every application, so the cache narrows it"
         );

@@ -187,8 +187,10 @@ async fn set_member_auto_follow_handler_error_paths() {
         })
         .await
         .expect_err("unknown group should fail preflight");
+    // Names the GROUP. Both refusals in this test now say "not found", so
+    // asserting that alone would no longer tell them apart.
     assert!(
-        err.to_string().contains("not found"),
+        err.to_string().contains("not found") && err.to_string().contains("group"),
         "unexpected error: {err}"
     );
 
@@ -205,9 +207,18 @@ async fn set_member_auto_follow_handler_error_paths() {
         })
         .await
         .expect_err("stranger is not a member");
+    // Names the MEMBER the caller asked about, which is the whole reason the
+    // handler checks here rather than leaving it to the apply path's bail.
+    // `MembershipError::MemberNotFound` also carries a 404 to the admin API,
+    // where this used to surface as a scrubbed 500.
+    let rendered = err.to_string();
     assert!(
-        err.to_string().contains("not a member"),
+        rendered.contains("not found") && rendered.contains("member"),
         "unexpected error: {err}"
+    );
+    assert!(
+        rendered.contains(&calimero_context::test_support::account_for(&stranger).to_string()),
+        "the refusal must name the member that was checked: {err}"
     );
 
     // Alice's flags remain at the default produced by `add_group_member`
@@ -401,7 +412,9 @@ const MOCK_QUOTE_HEADER: &[u8] = b"MOCK_TDX_QUOTE_V1";
 
 /// The all-zero 48-byte measurement (96 hex chars) that `create_mock_quote`
 /// reports for `mrtd`/`rtmr*`. The owner's `TeeAdmissionPolicy` must allow this
-/// MRTD for the mock announcer to be admitted.
+/// value as both its MRTD **and** its RTMR3 for the mock announcer to be
+/// admitted: RTMR3 is mandatory because MRTD is shared by every image profile
+/// of a release, so it identifies the firmware rather than the image.
 const MOCK_MEASUREMENT_48_HEX: &str =
     "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
@@ -552,7 +565,11 @@ fn provision_tee_owner_with_sk(
             allowed_rtmr0: vec![],
             allowed_rtmr1: vec![],
             allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            // RTMR3 is mandatory: it is the only measurement that identifies the
+            // image, since MRTD is shared by every profile of a release.
+            // `create_mock_quote` reports the same all-zero 48 bytes for every
+            // register, so the policy names that value here too.
+            allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
             allowed_tcb_statuses: vec![],
             accept_mock: true,
         },
@@ -819,6 +836,323 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
             .expect("count after admit"),
         2,
         "member_count must increment to 2 (owner + admitted TEE node)"
+    );
+}
+
+/// Disable HA, then re-enable it: the replica must be re-admitted.
+///
+/// "Disable HA" is a `ReadOnlyTee` self-leave; "re-enable" is a fresh
+/// `TeeAttestationAnnounce` from the same node. This is the owner's half of
+/// the cycle -- the half that decides whether an admission op is ever
+/// published at all -- so it runs on the single-node harness.
+///
+/// A leave removes the membership row, but the governance op log is
+/// APPEND-ONLY: the original `MemberJoinedViaTeeAttestation` stays in it
+/// forever, and with it the quote hash that `admit_tee_node` checks against
+/// for replay (`is_quote_hash_used`, refusing with "TEE attestation quote
+/// already used").
+///
+/// So the question this test asks is whether the replay guard and
+/// re-admission can coexist: a node that re-announces must present a quote
+/// the group has never seen, or it can never rejoin a group it once left.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_tee_replica_is_re_admitted_after_it_leaves_and_announces_again() {
+    use calimero_governance_store::MembershipRepository;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+
+    let gid = ContextGroupId::from([0x93u8; 32]);
+    let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
+
+    let replica_sk = PrivateKey::random(&mut rng);
+    let replica_pk = replica_sk.public_key();
+    let replica_account = calimero_context::test_support::account_for(&replica_pk);
+    let pk_hash: [u8; 32] = Sha256::digest(*replica_pk).into();
+    let topic = format!("ns/{}", hex::encode(gid.to_bytes()));
+
+    // ---- Enable: the first announce admits the replica. ----
+    let first_nonce = [0x11u8; 32];
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            mock_quote_bytes(&first_nonce, &pk_hash),
+            replica_pk,
+            first_nonce,
+        ))
+        .await
+        .expect("deliver the first announce");
+
+    let admitted = wait_until(|| {
+        MembershipRepository::new(&node.store)
+            .role_of(&gid, &replica_account)
+            .ok()
+            .flatten()
+            .map(|r| r == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        admitted,
+        "first enable must admit the replica as ReadOnlyTee"
+    );
+
+    // ---- Disable: the replica self-leaves, exactly as `leave_namespace` does. ----
+    // The leave's validity is decided by the BINDING, not the membership row
+    // waited on above: `MemberLeft`'s apply resolves the signer through
+    // `member_account_in_namespace` and refuses if it does not name the
+    // leaving member. Admission writes the row and the binding as separate
+    // steps, so signing as soon as the row appears raced the binding and
+    // failed under CI load with "MemberLeft is self-leave only".
+    assert!(
+        wait_until(|| {
+            calimero_governance_store::member_account_in_namespace(&node.store, &gid, &replica_pk)
+                .ok()
+                .flatten()
+                == Some(replica_account)
+        })
+        .await,
+        "the replica's account binding must resolve before it can sign its own leave"
+    );
+
+    let leave = SignedGroupOp::sign(
+        &replica_sk,
+        gid.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: replica_account,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&node.store, &leave).expect("apply MemberLeft");
+
+    assert!(
+        MembershipRepository::new(&node.store)
+            .role_of(&gid, &replica_account)
+            .expect("role_of")
+            .is_none(),
+        "disable must remove the replica's membership row"
+    );
+
+    // ---- Re-enable: a FRESH quote, which is what a re-provisioned replica
+    // presents. The nonce differs, so the quote hash differs, so the replay
+    // guard must not fire.
+    let second_nonce = [0x22u8; 32];
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            mock_quote_bytes(&second_nonce, &pk_hash),
+            replica_pk,
+            second_nonce,
+        ))
+        .await
+        .expect("deliver the re-enable announce");
+
+    let re_admitted = wait_until(|| {
+        MembershipRepository::new(&node.store)
+            .role_of(&gid, &replica_account)
+            .ok()
+            .flatten()
+            .map(|r| r == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        re_admitted,
+        "re-enable must re-admit the replica: the leave removed its row, and the \
+         fresh quote has a hash this group has never recorded"
+    );
+}
+
+/// A fleet replica's quote must be recorded as spent the moment it admits.
+///
+/// No leave involved: this is the narrowest statement of the defect. A
+/// replica is an outsider joining the namespace, so `admit_tee_node`
+/// publishes its admission as a sealed `RootOp` on the NAMESPACE log, while
+/// `is_quote_hash_used` scanned only the per-group log for a `GroupOp`. It
+/// therefore answered `false` for every replica quote ever presented --
+/// including one it had just admitted on the line above -- so replay
+/// protection was inert for exactly the case it exists to protect.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_fleet_replica_quote_is_recorded_as_spent_when_it_admits() {
+    use calimero_governance_store::MembershipRepository;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let gid = ContextGroupId::from([0x95u8; 32]);
+    let _owner = provision_tee_owner(&node, &gid, &mut rng);
+
+    let replica_pk = PrivateKey::random(&mut rng).public_key();
+    let replica_account = calimero_context::test_support::account_for(&replica_pk);
+    let pk_hash: [u8; 32] = Sha256::digest(*replica_pk).into();
+    let nonce = [0x44u8; 32];
+    let quote = mock_quote_bytes(&nonce, &pk_hash);
+    let quote_hash: [u8; 32] = Sha256::digest(&quote).into();
+    let topic = format!("ns/{}", hex::encode(gid.to_bytes()));
+
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote,
+            replica_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+
+    assert!(
+        wait_until(|| MembershipRepository::new(&node.store)
+            .role_of(&gid, &replica_account)
+            .ok()
+            .flatten()
+            .is_some())
+        .await,
+        "the replica must be admitted"
+    );
+
+    // Waits for the OP-LOG entry, not for the membership row asserted above.
+    // The admission runs inside the handler's async block, and the membership
+    // write and the namespace op-log append are separate steps: observing one
+    // does not make the other visible yet. Asserting the second immediately
+    // after waiting for the first passed locally and flaked under CI load,
+    // which is a race in the test, not in the guard.
+    let recorded = wait_until(|| {
+        calimero_governance_store::is_quote_hash_used(&node.store, &gid, &quote_hash)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        recorded,
+        "the quote that just admitted a member must be recorded as used -- no leave \
+         involved, so this is about whether the guard can see the admission at all"
+    );
+}
+
+/// The same cycle, but the replica re-announces the SAME quote it first
+/// joined with.
+///
+/// This must be refused -- a replayed quote proves nothing about the node
+/// presenting it now -- and the refusal has to survive the leave, because the
+/// evidence it rests on is an op-log entry the leave does not erase.
+///
+/// Stated as a test because it is the load-bearing half of the pair above: if
+/// a stale quote were accepted after a leave, "re-admission works" would be
+/// indistinguishable from "replay protection is off".
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_replayed_quote_is_still_refused_after_the_replica_leaves() {
+    use calimero_governance_store::MembershipRepository;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+
+    let gid = ContextGroupId::from([0x94u8; 32]);
+    let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
+
+    let replica_sk = PrivateKey::random(&mut rng);
+    let replica_pk = replica_sk.public_key();
+    let replica_account = calimero_context::test_support::account_for(&replica_pk);
+    let pk_hash: [u8; 32] = Sha256::digest(*replica_pk).into();
+    let topic = format!("ns/{}", hex::encode(gid.to_bytes()));
+    let nonce = [0x33u8; 32];
+    let quote_hash: [u8; 32] = Sha256::digest(mock_quote_bytes(&nonce, &pk_hash)).into();
+
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            mock_quote_bytes(&nonce, &pk_hash),
+            replica_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver the first announce");
+    assert!(
+        wait_until(|| {
+            MembershipRepository::new(&node.store)
+                .role_of(&gid, &replica_account)
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await,
+        "precondition: the first announce must admit, or the replay case proves nothing"
+    );
+
+    // The leave's validity is decided by the BINDING, not the membership row
+    // waited on above: `MemberLeft`'s apply resolves the signer through
+    // `member_account_in_namespace` and refuses if it does not name the
+    // leaving member. Admission writes the row and the binding as separate
+    // steps, so signing as soon as the row appears raced the binding and
+    // failed under CI load with "MemberLeft is self-leave only".
+    assert!(
+        wait_until(|| {
+            calimero_governance_store::member_account_in_namespace(&node.store, &gid, &replica_pk)
+                .ok()
+                .flatten()
+                == Some(replica_account)
+        })
+        .await,
+        "the replica's account binding must resolve before it can sign its own leave"
+    );
+
+    let leave = SignedGroupOp::sign(
+        &replica_sk,
+        gid.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: replica_account,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&node.store, &leave).expect("apply MemberLeft");
+
+    // Same nonce, same quote, same hash -- already in the op log.
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            mock_quote_bytes(&nonce, &pk_hash),
+            replica_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver the replayed announce");
+
+    // The refusal is the ABSENCE of a re-admission, which no amount of waiting
+    // can prove on its own. So wait on something positive first: the quote is
+    // recorded as spent, which is the state the guard consults. Once that is
+    // true the guard can only refuse, and a short settle is enough to catch a
+    // re-admission that was going to happen anyway.
+    assert!(
+        wait_until(|| {
+            calimero_governance_store::is_quote_hash_used(&node.store, &gid, &quote_hash)
+                .unwrap_or(false)
+        })
+        .await,
+        "precondition: the first admission's quote must be on record, or this test \
+         would pass simply because nothing had happened yet"
+    );
+
+    sleep(Duration::from_millis(500)).await;
+    assert!(
+        MembershipRepository::new(&node.store)
+            .role_of(&gid, &replica_account)
+            .expect("role_of")
+            .is_none(),
+        "a quote already recorded in this group's op log must not re-admit, even \
+         though the leave removed the membership row"
     );
 }
 

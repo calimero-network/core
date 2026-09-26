@@ -75,6 +75,26 @@ status_of() { # status_of <method> <path> <token> [body]
     "$NODE_URL$path"
 }
 
+# A forward-auth probe: what a reverse proxy asks on behalf of a request it is
+# holding. `-X GET` because the proxy's own call is a GET whatever the request
+# it is asking about was — the method under decision travels in the header.
+forwarded_status() { # forwarded_status <fwd-method> <fwd-uri> <token>
+  local fwd_method="$1" fwd_uri="$2" token="$3"
+  curl -s -o /dev/null -w '%{http_code}' -m 10 -X GET \
+    -H "Authorization: Bearer $token" \
+    -H "X-Forwarded-Method: $fwd_method" \
+    -H "X-Forwarded-Uri: $fwd_uri" \
+    "$NODE_URL/auth/validate"
+}
+
+# A bare session check: no forwarded headers at all, which is what every SDK
+# client sends. `-I` is HEAD, the method the shipped client actually uses.
+session_gate_status() { # session_gate_status <token>
+  curl -s -o /dev/null -w '%{http_code}' -m 10 -I \
+    -H "Authorization: Bearer $1" \
+    "$NODE_URL/auth/validate"
+}
+
 echo "== auth-seam e2e against $NODE_URL =="
 
 # 1. Root login. The admin root key was minted at `merod init` from
@@ -141,6 +161,40 @@ check "app-id-scoped token rejected on GET /admin-api/contexts" 403 \
   "$(status_of GET /admin-api/contexts "$APP_SCOPED_TOKEN")"
 check "app-id-scoped token rejected on POST /jsonrpc" 403 \
   "$(status_of POST /jsonrpc "$APP_SCOPED_TOKEN" '{"jsonrpc":"2.0","id":1,"method":"execute","params":{}}')"
+
+# 6. The forward-auth hop. Until these, `/auth/validate` authenticated without
+#    authorizing: it verified the token, reported the caller's permissions in a
+#    header nothing downstream reads, and answered 200 whatever route the proxy
+#    named. Any valid token therefore reached every route behind the gate.
+#
+#    The session gate is checked FIRST and with HEAD, because that is the call
+#    the shipped client makes (`mero-js` does `httpClient.head('/auth/validate')`
+#    and reads a non-200 as "logged out"). A rule that denied a probe carrying no
+#    forwarded headers would put every app in a login loop — and `GET` passing
+#    would not have caught it, since GET is not the method that ships.
+check "HEAD /auth/validate with no forwarded headers (session gate)" 200 \
+  "$(session_gate_status "$CLIENT_TOKEN")"
+
+check "forward-auth admits a route the token satisfies" 200 \
+  "$(forwarded_status GET /admin-api/contexts "$CLIENT_TOKEN")"
+
+check "forward-auth denies a route the token does not satisfy" 403 \
+  "$(forwarded_status POST /admin-api/install-dev-application "$CLIENT_TOKEN")"
+
+# A forwarded HEAD must decide as a GET. `getBlobInfo` is a shipped
+# `HEAD /admin-api/blobs/:id`, and a forwarded-method parse that forgot the
+# normalization would 403 it — behind a proxy only, which is where it is
+# hardest to see. This has already happened once on the direct path.
+check "forward-auth normalizes a forwarded HEAD to GET" 200 \
+  "$(forwarded_status HEAD /admin-api/blobs/blob-1 "$ROOT_TOKEN")"
+
+# A proxy that names a URI without a method is refused rather than assumed: a
+# defaulted GET would authorize a write under a read permission.
+check "forward-auth refuses a forwarded URI with no method" 403 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X GET \
+      -H "Authorization: Bearer $CLIENT_TOKEN" \
+      -H "X-Forwarded-Uri: /admin-api/contexts" \
+      "$NODE_URL/auth/validate")"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

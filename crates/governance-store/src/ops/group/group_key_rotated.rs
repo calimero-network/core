@@ -71,7 +71,7 @@ pub(crate) fn apply_for_device(ctx: &mut GroupApplyCtx<'_>, device: &DeviceId) -
     // total order with the revoked device excluded from each.
     PendingDeviceRotationRepository::new(store).clear(group_id, device)?;
 
-    tracing::info!(
+    tracing::debug!(
         target: "calimero::governance::rotation",
         group_id = %hex::encode(group_id.to_bytes()),
         %device,

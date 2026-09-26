@@ -19,13 +19,24 @@ impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
                 .load(&group_id)?
                 .is_none()
             {
-                bail!("group '{group_id:?}' not found");
+                // Typed, so the admin API answers 404. As a bare `bail!` this
+                // reached the caller as a generic 500, and a control-plane
+                // script read that as "already left" and continued past a real
+                // failure.
+                bail!(crate::error::ContextError::GroupNotFound {
+                    group_id: format!("{group_id:?}"),
+                });
             }
 
             let Some(capabilities) = MembershipRepository::new(&self.datastore)
                 .effective_capabilities(&group_id, &member)?
             else {
-                bail!("identity is not a member of group '{group_id:?}'");
+                // Same category: the caller asked about something that is not
+                // there. `MemberNotFound` already maps to 404.
+                bail!(calimero_governance_store::MembershipError::MemberNotFound {
+                    group_id: format!("{group_id:?}"),
+                    member: member.to_string(),
+                });
             };
 
             Ok(GetMemberCapabilitiesResponse { capabilities })

@@ -4,6 +4,9 @@
 //! - LwwRegister
 //! - Counter
 //! - ReplicatedGrowableArray (RGA)
+//! - FugueText (Tree-Fugue collaborative text)
+//! - RichText (FugueText plus write-once formatting marks)
+//! - RichDocument (an ordered list of RichText blocks)
 //! - UnorderedMap
 //! - SortedMap
 //! - UnorderedSet
@@ -15,8 +18,8 @@
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
-    Counter, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
-    UnorderedSet, ValueRef, Vector,
+    Counter, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray, RichDocument, RichText,
+    SortedMap, SortedSet, UnorderedMap, UnorderedSet, ValueRef, Vector,
 };
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -275,6 +278,65 @@ impl Mergeable for ReplicatedGrowableArray {
         // so a concurrently-deleted char is never resurrected. Delegated to
         // a generic method so it is unit-testable across isolated storage scopes.
         self.merge_chars_from(other)?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// FugueText (Tree-Fugue collaborative text)
+// ============================================================================
+
+impl CrdtMeta for FugueText {
+    fn crdt_type() -> CrdtType {
+        CrdtType::FugueText
+    }
+
+    fn storage_strategy() -> StorageStrategy {
+        StorageStrategy::Blob
+    }
+
+    fn can_contain_crdts() -> bool {
+        false // Blocks hold characters, not CRDTs
+    }
+}
+
+#[diagnostic::do_not_recommend]
+impl Mergeable for FugueText {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.merge_blocks_from(other)?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// RichText (FugueText plus Peritext marks)
+// ============================================================================
+
+/// No `CrdtMeta`: a `RichText` serializes to nothing but its two inner
+/// collections' ids, so there is no blob for a tag to describe. The rows those
+/// collections own carry their own tags.
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> Mergeable for RichText<Sc> {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.merge_from(other)?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// RichDocument (an ordered list of RichText blocks)
+// ============================================================================
+
+/// No `CrdtMeta`, for the same reason `RichText` has none: the value serializes
+/// to its two inner collections' ids and nothing else.
+///
+/// `Block` deliberately has no `Mergeable` of its own. It is an internal row
+/// type with no ABI story, exactly like `TextBlock`, and keeping the rule here
+/// leaves one readable function instead of three.
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> Mergeable for RichDocument<Sc> {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.merge_from(other)?;
         Ok(())
     }
 }
@@ -1213,6 +1275,21 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> MergeStrategy for Counter<A
 
 #[diagnostic::do_not_recommend]
 impl MergeStrategy for ReplicatedGrowableArray {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for FugueText {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> MergeStrategy for RichText<Sc> {
+    const DISPATCHED: bool = false;
+}
+
+#[diagnostic::do_not_recommend]
+impl<Sc: MarkSchema> MergeStrategy for RichDocument<Sc> {
     const DISPATCHED: bool = false;
 }
 

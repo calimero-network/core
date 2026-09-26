@@ -26,6 +26,16 @@ pub mod vector;
 pub use vector::Vector;
 pub mod rga;
 pub use rga::ReplicatedGrowableArray;
+pub mod fugue;
+pub use fugue::{FugueError, FugueNode, FugueTree, Side};
+pub mod fugue_text;
+pub use fugue_text::FugueText;
+pub mod mark_schema;
+pub use mark_schema::{DefaultMarks, Expand, MarkSchema};
+pub mod rich_text;
+pub use rich_text::{AttrRun, Attrs, DeltaOp, DeltaUndo, Mark, MarkId, RichText, Span, UndoStep};
+pub mod rich_document;
+pub use rich_document::{Block, BlockId, BlockView, RichDocument};
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod blob_ref;
@@ -61,6 +71,10 @@ pub use nested_map::NestedMapOps;
 mod root;
 #[doc(hidden)]
 pub use root::Root;
+/// Sync-merge drop accounting, for harnesses that must not silently assert
+/// nothing when every delta is refused.
+#[cfg(any(test, feature = "testing"))]
+pub use root::{dropped_action_count, reset_dropped_action_count};
 pub mod error;
 pub use error::StoreError;
 

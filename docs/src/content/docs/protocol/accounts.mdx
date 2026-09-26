@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
 
 ## Two words this page leans on
 
@@ -387,8 +388,61 @@ POST /admin-api/account/devices/<DEVICE_ID>/relink
 It reports, per namespace, where the link landed and where it did not - `alreadyBound`, `noScopeKey`, `outOfScope` - for the same reason a revocation does: publication is per-DAG, so a partially reached device is a state an operator has to be able to see.
 Naming applications widens the device's scope and publishes the widened statement into the account namespace at the next scope epoch, since that scope is what every later namespace gain - on any device of the account - is judged against.
 
+Relink only ever adds, which is deliberate: a request meant to widen must never narrow by accident.
+Taking an application away is a separate operation, and it names the whole replacement rather than a delta:
+
+```bash
+PUT /admin-api/account/devices/<DEVICE_ID>/scope
+{ "scope": { "only": ["<APP_ID>"] } }   # or { "scope": "all" }
+```
+
+It records the replacement in the account namespace first, so every other device judges the change against it, then publishes `AccountDeviceDescoped` into every namespace this node takes part in that the new scope no longer reaches - whether or not the device was bound there, since that op is also what writes the scope floor - then binds the device into the ones it now does.
+The narrowing is **not** a revocation: it deletes the binding row and leaves no tombstone, so the `DeviceId` survives and a later widening re-binds the same device.
+A revocation would spend that id in every namespace at once, which is the difference between taking one application away and destroying the device.
+The rotation rides along where this node is an admin of the namespace *and* the device actually held a binding there, and is left owed otherwise; the response reports it per namespace, as `descoped`, `linkedIn` and `skipped` lists shaped like relink's.
+`linkedIn` names a namespace whose binding row is actually there after the publish, and a namespace whose link was published but not recorded - or whose narrowing did not publish at all - is reported under `skipped` with reason `failed`, since nothing re-drives it and repeating the same request is the repair.
+
+Three requests are refused before anything is signed.
+Naming the device that holds the account root is a `403`: that device signs every scope statement, so it always acts for every application and there is nothing to replace.
+Naming an application no namespace of this account targets is a `400`, because such a scope reaches nothing and would descope the device everywhere - an empty scope under another name.
+A list longer than a scope statement may carry is a `400` too, and repeats in it are dropped rather than signed.
+
+**A narrowing is ordered, because a root-signed statement is not a fresh op.**
+Every member of a namespace decrypts the ops published there, so any of them holds the statement a past narrowing carried and can re-publish it under their own signature and nonce - which is a genuinely new op, past both the signer check and the replay window.
+So every link carries the root-signed scope it was made under, and the binding records that scope's epoch; a narrowing applies only where the binding was made under a strictly *older* scope.
+Re-presenting yesterday's narrowing after today's widening therefore changes nothing, on every replica, in whatever order the two arrive.
+The old link is just as replayable as the old narrowing, so a narrowing also records its scope epoch as a floor for that account's device in that namespace, whether or not anything is bound there yet.
+A link made under a scope at or below the floor is refused, which is what keeps a stale link from re-binding a device the account narrowed out, and what lets a narrowing win when it arrives before the link it outranks.
+The floor is keyed by account and device together, so a statement signed by another account's root cannot raise it, and only the account's own key may publish the narrowing at all - the apply refuses one signed by any other member of the namespace.
+The same statement on the link is what moves scope enforcement off the publisher: a link into a namespace the scope does not reach is refused when it applies, not merely declined by a well-behaved sender.
+The projection's account plane folds the narrowing under the same ordering, because the at-cut gates resolve an author through that plane before they read a single live row: a plane that folded every link and no narrowing would keep authorising a narrowed device on every *other* replica, leaving only its own node refusing.
+It records the highest scope epoch a link was made under and the highest epoch a narrowing raised, and withdraws the binding when the view is read - both sides a maximum over the folded set, so the answer is a function of the ops rather than of the order they arrived in.
+
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
+
+**A device carries a name, and the name replicates.**
+A node-local alias names a device on one machine only, so a phone named on the laptop still shows as an id on the phone.
+The replicated name is a separate field, set through its own route:
+
+```bash
+PUT /admin-api/account/devices/<DEVICE_ID>/label
+{ "label": "Work laptop" }
+```
+
+It publishes `AccountDeviceLabelled` into the account namespace alone, and `GET /admin-api/account/devices` carries the result as each entry's `label`.
+The name is display only - it gates nothing, which is why it is the one account op the unified plane does not fold at all.
+Who may set it follows from who can sign: the node holding the account root attaches a root-signed statement and may name any device of the account, while a paired device holds no root and so may name only itself, where its own binding in the account namespace is the authority.
+Asking a paired node to name another device is a `403` rather than a publish nobody would accept.
+A device the account revoked has no live binding left, so it cannot rename itself on its way out, though the name it already carries stays in the listing beside its `revoked: true`.
+Names converge the way scopes do: the higher label epoch wins, and two minted at one epoch tie on the name itself, so replicas folding a race in opposite orders keep the same row.
+The name is bounded at the trust boundary rather than at the route alone - trimmed, non-empty, at most 64 bytes and free of control characters - because it is rendered verbatim beside other devices, where a newline forges the rows around it.
+Renames are also spaced out per device by a node-local cooldown, answered as `429`; it is deliberately not part of the apply, so two nodes with different clocks still fold the same ops to the same row.
+
+**A revoked device can say why it is unpaired.**
+Folding its own withdrawal is what releases a device's row, after which the node simply stops being paired and has nothing to point at.
+So the release records the account and device it lost, and `GET /admin-api/identity` reports it as `revokedFrom`.
+The field is absent on a node no revocation has reached, and it is dropped the moment the node pairs again or gets an account root of its own, since the question it answers has stopped being asked.
 
 **A device paired before all this has to learn the id once.**
 The desktop shows a link code carrying the root key and the account namespace id; running the idempotent `pair-init` on it mints nothing and starts the device following the account namespace.
@@ -404,6 +458,69 @@ One more namespace per account - a topic, beacons and a DAG - created lazily at 
 The id is not computable from the public account id, but the namespace's genesis is cleartext and names the founder account, so anyone who *learns* the id can link it to the account and watch beacon timing for device liveness.
 Project topics leak the same class of metadata today, and the same mitigation applies to both: the id is only as private as the invite that carried it.
 Per-namespace revocation latency is unchanged - a namespace that has not folded the unlink still honours the old binding - and the `application` a gain records is only what the gainer had folded at that moment, which decides who follows, never what the namespace actually runs.
+
+## Signing for a verifier that is not a node
+
+A service outside Calimero — the cloud's account linking, for one — needs the
+account root to sign something before it will file an account under a login. It
+already specifies what: a domain-separated signature over a challenge it issued
+and sealed itself.
+
+The node does not design that format. It produces it.
+
+```
+signature = ed25519( root_secret, DOMAIN ‖ payload )
+```
+
+where `DOMAIN` is one of a **closed set** the node knows and `payload` is
+whatever the verifier asked for — for the cloud, the UTF-8 of its challenge.
+
+### Why the domain is a name and not bytes
+
+"Sign these bytes with the account root" is a signing oracle, and the root is the
+one key that can certify a device — which is to say, take over the account. So
+the caller names a domain and the node supplies its bytes:
+
+```jsonc
+POST /admin-api/account/sign-with-root
+{ "domain": "mdma.account-login",      // a name from the allowlist
+  "payload": "65794a6c…" }             // hex; opaque to the node
+→ { "data": { "rootPublicKey": "<64 hex>",
+              "signature": "<base64>",
+              "accountId": "<64 hex>" } }
+```
+
+A length check would be the tempting shortcut — every credential Calimero itself
+designs signs a 32-byte `domain_hash` digest, so refusing 32-byte payloads looks
+like it separates the two worlds. It does not: `admitter_endorsement_payload`
+signs a raw concatenation of variable length, and nothing stops the next signing
+site from doing the same. A guard that depends on auditing every signing site
+forever is the wrong shape. Naming the reachable domains inverts it — a new
+signing site cannot become a target, because its domain is not on the list.
+
+`no_external_domain_shares_a_prefix_with_a_core_domain` keeps the two sets
+prefix-disjoint in both directions, because a caller-chosen payload can extend a
+message rightward into whatever follows.
+
+Offline, when the root is in cold storage and no node exists:
+
+```bash
+merod account sign-with-root --domain mdma.account-login \
+  --payload <HEX> --from ./phrase.txt
+```
+
+### What the signature establishes
+
+Possession of the root, and nothing else. Whether the payload is a challenge
+anyone issued, whether it is fresh, and whether the holder may link this account
+anywhere are all the verifier's — it issued the challenge and knows who to.
+
+<Aside type="caution">
+Different domains for different purposes is the security property, not tidiness.
+The cloud separates linking, login and recovery precisely so a signature gathered
+while linking cannot be replayed as a login. The node mirrors those constants
+rather than inventing its own: a `.v2` appears here only after it appears there.
+</Aside>
 
 ## Reading your account
 

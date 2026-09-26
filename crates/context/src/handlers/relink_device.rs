@@ -19,7 +19,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::info;
+use tracing::debug;
 
 use crate::error::ContextError;
 use crate::handlers::pair_device_complete::{
@@ -27,14 +27,14 @@ use crate::handlers::pair_device_complete::{
 };
 use crate::ContextManager;
 
-/// The certificate a relink will re-publish, and the scope it will use.
+/// The account root this node holds and the stored certificate for `device`.
 ///
 /// Every refusal lives here, in the order a caller can act on: wrong machine,
-/// unknown device, spent id. The widened scope is returned rather than written.
-fn resolve_target(
+/// unknown device, spent id. Shared with `rescope_device`, which needs the same
+/// three answers before it may sign a replacement scope.
+pub(crate) fn resolve_device(
     store: &Store,
     device: DeviceId,
-    applications: Vec<ApplicationId>,
 ) -> EyreResult<(AccountRoot, KnownDeviceCert)> {
     let devices = NodeDeviceRepository::new(store);
 
@@ -48,7 +48,7 @@ fn resolve_target(
     // The registry rather than the node-local cache: it is replicated, so a
     // sibling this node never certified itself is still one it can relink.
     let registry = AccountDeviceRegistry::new(store, root.account_namespace());
-    let Some((mut cached, _scope_epoch)) = registry.device(device)? else {
+    let Some(cached) = registry.device(device)? else {
         return Err(ContextError::PairingUnknownDevice {
             device: device.to_string(),
         }
@@ -57,16 +57,38 @@ fn resolve_target(
 
     require_not_revoked(store, device)?;
 
+    Ok((root, cached))
+}
+
+/// The certificate a relink will re-publish, and the scope it will use. The
+/// widened scope is returned rather than written.
+fn resolve_target(
+    store: &Store,
+    device: DeviceId,
+    applications: Vec<ApplicationId>,
+) -> EyreResult<(AccountRoot, KnownDeviceCert)> {
+    let (root, mut cached) = resolve_device(store, device)?;
+
     // An empty stored scope already covers every application, so adding to it could
     // only narrow the device rather than widen it.
-    if !applications.is_empty() && !cached.applications.is_empty() {
+    let mut widened = cached.applications().to_vec();
+    if !applications.is_empty() && !widened.is_empty() {
         for application in applications {
-            if !cached.applications.contains(&application) {
-                cached.applications.push(application);
+            if !widened.contains(&application) {
+                widened.push(application);
             }
         }
     }
 
+    // Re-signed here rather than after the fan-out: the links it publishes each
+    // carry the statement, so the widening has to exist before the first one.
+    cached.scope = crate::account_namespace::next_device_scope(
+        store,
+        Some(root.account_namespace()),
+        &root,
+        &cached.proof,
+        &widened,
+    )?;
     Ok((root, cached))
 }
 
@@ -106,7 +128,7 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
 
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let scope = cached.applications.clone();
+        let scope = cached.applications().to_vec();
 
         ActorResponse::r#async(
             async move {
@@ -120,7 +142,7 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
                 )
                 .await;
 
-                info!(%account, %device, ?outcomes, "relinked a device of this account");
+                debug!(%account, %device, ?outcomes, "relinked a device of this account");
 
                 // The statement is the only durable record of the widening, so a
                 // response carrying a scope nothing recorded would be a lie.
@@ -130,9 +152,7 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
                     &ack_router,
                     root.account_namespace(),
                     &signer_sk,
-                    &root,
-                    &cached.proof,
-                    &scope,
+                    &cached,
                     "relink_device",
                 )
                 .await
@@ -294,7 +314,7 @@ mod tests {
         let (_root, widened) =
             resolve_target(&store, device, vec![app(APP_TWO)]).expect("extend the scope");
 
-        assert_eq!(widened.applications, vec![app(APP_ONE), app(APP_TWO)]);
+        assert_eq!(widened.applications(), vec![app(APP_ONE), app(APP_TWO)]);
     }
 
     /// An empty scope already covers every application, so naming one must not
@@ -308,9 +328,9 @@ mod tests {
         let (_root, cached) = resolve_target(&store, device, vec![app(APP_ONE)]).expect("repair");
 
         assert!(
-            cached.applications.is_empty(),
+            cached.applications().is_empty(),
             "an all-applications device stayed all-applications, got {:?}",
-            cached.applications
+            cached.applications()
         );
     }
 
@@ -323,7 +343,7 @@ mod tests {
 
         let (_root, cached) = resolve_target(&store, device, vec![app(APP_ONE)]).expect("extend");
 
-        assert_eq!(cached.applications, vec![app(APP_ONE)]);
+        assert_eq!(cached.applications(), vec![app(APP_ONE)]);
     }
 
     /// The rest of what a member holds in a namespace it has joined: a
@@ -433,13 +453,13 @@ mod tests {
             .expect("the manager answers")
             .expect("relinked");
 
-        let (recorded, epoch) = AccountDeviceRegistry::new(&store, namespace)
+        let recorded = AccountDeviceRegistry::new(&store, namespace)
             .device(device)
             .expect("read")
             .expect("the relink recorded the device");
-        assert_eq!(recorded.applications, vec![app(APP_ONE), app(APP_TWO)]);
+        assert_eq!(recorded.applications(), [app(APP_ONE), app(APP_TWO)]);
         assert_eq!(
-            epoch, 1,
+            recorded.scope.statement.scope_epoch, 1,
             "the certification itself is epoch 0; the relink is the statement after it"
         );
     }

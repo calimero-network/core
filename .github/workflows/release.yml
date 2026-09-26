@@ -12,8 +12,7 @@ on:
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"
-      # prebuilt.profiling.Dockerfile COPYs these scripts into the
-      # edge-profiling image, so changes here need to rebuild.
+      # COPYed into the profiling image by prebuilt.profiling.Dockerfile.
       - "scripts/profiling/**"
   pull_request:
     paths:
@@ -37,7 +36,6 @@ env:
     cargo-mero
   AUTH_BINARIES: |-
     mero-auth
-  # Binaries to publish to Homebrew
   HOMEBREW_BINARIES: |-
     merod
     meroctl
@@ -45,13 +43,8 @@ env:
     cargo-mero
   DOCKER_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
-  # Windows is built from the same matrix but publishes a narrower set than the
-  # unix targets: `merod`, because the desktop app bundles it and its in-app
-  # version switcher downloads `merod_x86_64-pc-windows-msvc.tar.gz` straight
-  # from these releases, and `meroctl`, because a Windows user driving a node
-  # needs the CLI. The rest (`mero-abi`, `cargo-mero`, `mero-auth`) have never
-  # been compiled for Windows, and a break in any of them would red the whole
-  # release rather than the one binary nobody asked for.
+  # Windows ships only merod (the desktop app's version switcher downloads it) and meroctl;
+  # the other binaries were never built for Windows.
   WINDOWS_BINARIES: |-
     merod
     meroctl
@@ -72,14 +65,8 @@ jobs:
       docker_push: ${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
-      # On a PR, true iff this PR touches files that affect the
-      # profiling binaries / image. Used to enable the otherwise
-      # PR-skipped profiling build steps and the
-      # `release-merod-profiling-container` job, which in turn lets
-      # `fuzzy-load-test.yml`'s `pull_request` trigger pull a fresh
-      # `pr-<N>-profiling` image and validate the change before merge.
-      # Defaults to `false` so non-profiling PRs keep their current
-      # cheap behaviour.
+      # PR-only: enables the profiling build and image so fuzzy-load-test.yml can
+      # validate a fresh `pr-<N>-profiling` image before merge.
       profiling_paths_changed: ${{ steps.profiling_paths.outputs.changed || 'false' }}
     steps:
       - name: Checkout code
@@ -112,27 +99,12 @@ jobs:
               docker_release=true
             elif [ "${{ github.run_attempt }}" != "1" ] \
               && [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
-              # The release shell exists (this run created it on an earlier
-              # attempt, or someone created it by hand after a race) but no
-              # binaries were ever attached, so re-arm the upload.
-              #
-              # Only on a re-run. The shell is created seconds into the
-              # release commit's own run, while the binaries land ~40min
-              # later, so on a first attempt "shell with no assets" is the
-              # normal state of a release that is still building — not a
-              # release that needs rescuing. Re-arming there made every
-              # ordinary commit pushed inside that window believe it owned
-              # the release too, and the second one to reach the upload
-              # died on "an asset called ... already exists".
+              # Re-arm only on a re-run: on a first attempt, a shell with no assets is
+              # just a release still building, owned by another run.
               binary_release=true
             elif [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
-              # Same shape, but on a first attempt, so this push is not the
-              # one that owns the release. Either the release is still
-              # building (fine, say nothing useful about it) or its build
-              # failed and nobody noticed. Say so rather than skipping in
-              # silence: the fix is to re-run the release commit's own run,
-              # because the tag points at that commit and the assets have
-              # to be built from it -- not from whatever landed since.
+              # A failed release build must be fixed by re-running its own run, since the
+              # tag points at that commit.
               echo "::warning::Release $version exists with no assets. If its build failed, re-run that run; this push will not upload binaries."
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
@@ -145,18 +117,8 @@ jobs:
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
-      # Create the tag + release NOW, while ${{ github.sha }} is still the
-      # head of master. A workflow's GITHUB_TOKEN is an integration token,
-      # and GitHub rejects integration-token release/tag creation whose
-      # target is anything but the current branch head with
-      # `403 Resource not accessible by integration`
-      # (https://github.com/cli/cli/issues/9514). Release Binaries runs
-      # hours later (build + big-machine queue); if any PR merges to master
-      # in that window, the release-cut commit is no longer head and the
-      # upload step can no longer create the release. Creating it here
-      # shrinks the race window from hours to seconds. The upload step then
-      # finds the existing release and only attaches assets, which is
-      # always permitted.
+      # GITHUB_TOKEN is an integration token, and GitHub rejects release/tag creation whose target
+      # is not the branch head; create it now, before master moves, so the later upload only attaches.
       - name: Create release at trigger time
         if: github.event_name == 'push' && steps.version_info.outputs.binary_release == 'true'
         env:
@@ -177,12 +139,7 @@ jobs:
             exit 1
           fi
 
-      # Match the file set that defines the profiling image's content:
-      # the entrypoint + helper scripts baked into the image, the
-      # Dockerfile itself, and the fuzzy workflow that exercises it.
-      # Use `gh api` (same pattern as scripts/determine-image-tag.sh)
-      # rather than `tj-actions/changed-files` so we don't need to
-      # change the prepare job's checkout depth.
+      # `gh api` rather than tj-actions/changed-files, to avoid changing the checkout depth.
       - name: Detect profiling-relevant changes
         id: profiling_paths
         if: github.event_name == 'pull_request'
@@ -212,10 +169,8 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.runner }}
 
-    # Every `run:` below is bash (readarray, tar, $BINARIES). Windows runners
-    # default to pwsh, where those scripts are not merely unportable but
-    # silently different, so the shell is pinned for the whole job rather than
-    # per step.
+    # Every `run:` below is bash; Windows runners default to pwsh, where these
+    # scripts silently behave differently, so the shell is pinned job-wide.
     defaults:
       run:
         shell: bash
@@ -230,10 +185,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # arm64 is evicted before its next build ever restores it, and its size evicts the caches PRs read.
       - name: Setup rust cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: release
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
 
       - name: Install libclang (Linux)
         if: runner.os == 'Linux'
@@ -241,16 +198,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libclang-dev
 
-      # `rocksdb` is pulled with `bindgen-runtime`, so librocksdb-sys needs a
-      # libclang at build time on every platform. Linux installs one above;
-      # the Windows image already ships LLVM, but nothing points bindgen at it.
+      # `rocksdb` uses `bindgen-runtime`, so librocksdb-sys needs libclang everywhere;
+      # the Windows image ships LLVM but nothing points bindgen at it.
       - name: Point bindgen at the image's LLVM (Windows)
         if: runner.os == 'Windows'
         run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
 
-      # aws-lc-sys (rustls' provider, reached via libp2p-tls) assembles its
-      # x86_64 primitives with NASM on windows-msvc and fails the build if it
-      # is absent. Not needed on unix, which uses the system assembler.
+      # aws-lc-sys (rustls via libp2p-tls) needs NASM on windows-msvc;
+      # unix uses the system assembler.
       - name: Install NASM (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -259,11 +214,8 @@ jobs:
         if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
         run: brew install bash
 
-      # The mock TEE attestation path must never be compiled into a released
-      # binary: with `mock-attestation` off, `is_mock_quote` /
-      # `verify_mock_attestation` / `generate_mock_attestation` do not exist, so a
-      # MOCK_TDX_QUOTE_V1 blob just fails real DCAP parsing and is rejected. Fail
-      # the release if anything pulls the feature into the production build.
+      # mock-attestation must never compile into a release binary: with it off, a
+      # MOCK_TDX_QUOTE_V1 blob fails real DCAP parsing and is rejected.
       - name: Guard - mock-attestation must not leak into the release build
         run: |
           if cargo tree -e features -i calimero-tee-attestation -p merod | grep -q 'mock-attestation'; then
@@ -272,9 +224,7 @@ jobs:
           fi
           echo "OK: mock-attestation is not enabled in the production merod build"
 
-      # Windows ships a narrower set than the unix targets (see
-      # WINDOWS_BINARIES above), so the list the steps below iterate is
-      # resolved once here instead of each step re-deriving it and drifting.
+      # Resolved once so the steps below cannot drift from WINDOWS_BINARIES.
       - name: Resolve the binaries this target publishes
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -297,11 +247,8 @@ jobs:
 
           readarray -t binaries <<< "$TARGET_BINARIES"
 
-          # Only the file inside the archive gains Windows' mandatory `.exe`.
-          # The archive itself keeps the `<binary>_<target>.tar.gz` name every
-          # consumer already resolves by target triple - the desktop app's
-          # in-app merod switcher among them - so adding a platform does not
-          # change how any of them find an asset.
+          # Only the file inside gains `.exe`; the archive keeps `<binary>_<target>.tar.gz`,
+          # which consumers (the desktop app's merod switcher) resolve by target triple.
           suffix=""
           if [ "$RUNNER_OS" = "Windows" ]; then
             suffix=".exe"
@@ -311,13 +258,32 @@ jobs:
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary$suffix"
           done
 
+      # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
+      # Ships because mdma's manager shells out to it to verify TDX quotes; linux/amd64 image only.
+      - name: Build calimero-tee-verify (Linux only)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          # With mock-attestation compiled in, the verifier would accept a forged
+          # MOCK_TDX_QUOTE_V1 blob.
+          if cargo tree -e features -p calimero-tee-attestation --features cli | grep -q 'mock-attestation'; then
+            echo "::error::mock-attestation leaked into the released calimero-tee-verify"
+            exit 1
+          fi
+          echo "OK: mock-attestation is not enabled in calimero-tee-verify"
+
+          cargo build -p calimero-tee-attestation --bin calimero-tee-verify \
+            --features cli --release --target ${{ matrix.target }}
+
+          tar -czf artifacts/calimero-tee-verify_${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release calimero-tee-verify
+
       - name: Build profiling binaries (with frame pointers and debug symbols)
         if: ${{ (github.event_name != 'pull_request' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         run: |
           readarray -t binaries <<< "$BINARIES"
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
-          # Build with frame pointers and enable Wasmer PerfMap profiling feature
+          # calimero-context/profiling enables Wasmer PerfMap.
           RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-context/profiling
 
       - name: Compress profiling artifacts using gzip
@@ -352,16 +318,8 @@ jobs:
     runs-on: big-machine
     needs: [prepare, build-binaries]
     concurrency:
-      # Keyed on the commit (or the PR), never on the release version. A
-      # version key puts every master push inside one release window into
-      # a single group, and GitHub resolves that contention by cancelling
-      # the older run -- so a commit that built perfectly still shows up
-      # red on master. A per-commit key leaves only the contention dedup
-      # is actually for: a re-run racing the attempt it replaces.
-      #
-      # `github.job` is deliberately absent: it is null everywhere except
-      # inside step execution, so using it here silently collapsed the
-      # binaries and app-bundle jobs into one shared group.
+      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
+      # No `github.job` here: it is null outside steps, which collapses jobs into one group.
       group: ${{ github.workflow }}-release-binaries-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
@@ -410,26 +368,14 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
-  # Publishes the kv-store demo app as a signed .mpk release asset, so a
-  # downstream SDK e2e (mero-js, mero-react) can fetch an app bundle from the
-  # SAME tag it fetches `merod` from, instead of committing a binary fixture
-  # that silently rots as the manifest schema moves. It also gives the release
-  # its only end-to-end exercise of `cargo-mero`: the toolchain is shipped as a
-  # binary below, but nothing else in this workflow actually runs `bundle`.
-  #
-  # Signed with the dev key on purpose. The dev seed is well-known and
-  # deterministic, so the bundle's ApplicationId -- hash(package, signer) -- is
-  # stable across every release, which is what makes it usable as a test
-  # fixture. The registry refuses dev-signed bundles, so this artifact
-  # structurally cannot escape into real distribution.
+  # Dev-signed kv-store .mpk: exercises `cargo mero bundle` end-to-end, giving SDK e2e suites a stable
+  # ApplicationId. Dev-signed bundles are registry-refused, so this can't leak into real distribution.
   release-app-bundle:
     name: Release App Bundle
     runs-on: ubuntu-latest
     needs: [prepare]
     concurrency:
-      # Per-commit, not per-version: a version key makes two master pushes
-      # in one release window contend, and the older run is cancelled --
-      # red master for a commit that was never broken.
+      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
@@ -454,8 +400,7 @@ jobs:
       - name: Build the kv-store bundle
         run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
 
-      # Gated like `release-binaries`: a PR builds the bundle (so a break in
-      # `cargo mero bundle` fails the PR that caused it) but publishes nothing.
+      # PRs still build the bundle so a `cargo mero bundle` break fails there; only releases publish.
       - name: Upload the bundle to the release
         if: needs.prepare.outputs.binary_release == 'true'
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
@@ -475,7 +420,7 @@ jobs:
 
     steps:
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
 
@@ -503,19 +448,10 @@ jobs:
         run: |
           set -x
 
-          # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
 
-          # Publish all publishable crates from the workspace, skipping excluded packages.
-          # --no-verify skips the build-verification step; --no-git-* avoids git ops.
-          #
-          # Retry the publish: crates.io index propagation can lag, so cargo's
-          # built-in "wait for the crate to appear in the index" loop after one
-          # crate may time out, and packaging the *next* crate then fails to
-          # resolve the just-published prerelease dependency
-          # ("failed to select a version for ... = ^X.Y.Z-rc.N"). cargo-workspaces
-          # skips crates that are already on crates.io, so re-running resumes from
-          # the failed crate once the index has caught up.
+          # Retry: crates.io index lag can make the next crate fail to resolve a just-published prerelease
+          # dependency; cargo-workspaces skips already-published crates, so a retry resumes where it failed.
           publish() {
             cargo ws publish --yes --allow-dirty --force '*' \
               --no-verify \
@@ -535,9 +471,7 @@ jobs:
     name: Release Merod container
     needs: [prepare, build-binaries]
     concurrency:
-      # Per-commit, not per-version: a version key makes two master pushes
-      # in one release window contend, and the older run is cancelled --
-      # red master for a commit that was never broken.
+      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-merod-container-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
@@ -569,9 +503,7 @@ jobs:
     name: Release Mero Auth container
     needs: [prepare, build-binaries]
     concurrency:
-      # Per-commit, not per-version: a version key makes two master pushes
-      # in one release window contend, and the older run is cancelled --
-      # red master for a commit that was never broken.
+      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-mero-auth-container-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
@@ -601,18 +533,11 @@ jobs:
 
   release-merod-profiling-container:
     name: Release Merod Profiling container
-    # PRs that don't touch profiling paths still skip this job to keep
-    # CI cost low. PRs that DO touch profiling paths build and push
-    # `pr-<N>-profiling`, which `fuzzy-load-test.yml`'s pull_request
-    # trigger then exercises so contributors can verify before merge.
-    # `prepare.outputs.docker_push` already gates against fork PRs
-    # (forks can't push to ghcr).
+    # `prepare.outputs.docker_push` already excludes fork PRs, which cannot push to ghcr.
     if: ${{ github.event_name != 'pull_request' || needs.prepare.outputs.profiling_paths_changed == 'true' }}
     needs: [prepare, build-binaries]
     concurrency:
-      # Per-commit, not per-version: a version key makes two master pushes
-      # in one release window contend, and the older run is cancelled --
-      # red master for a commit that was never broken.
+      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-merod-profiling-container-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
@@ -707,8 +632,6 @@ jobs:
 
           gh pr create -f || true
 
-  # Opens the fleet bump PRs. After `release-binaries`, not alongside `prepare`:
-  # the tag exists in seconds but its binaries land ~40 minutes later.
   fleet-bump:
     name: Open SDK bump PRs
     if: needs.prepare.outputs.binary_release == 'true'
@@ -716,6 +639,5 @@ jobs:
     uses: ./.github/workflows/fleet-bump.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
-    # GH_APP_PRIVATE_KEY, which the called workflow uses to mint a per-repository
-    # installation token.
+    # GH_APP_PRIVATE_KEY, which the called workflow uses to mint a per-repository installation token.
     secrets: inherit

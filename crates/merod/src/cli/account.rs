@@ -53,6 +53,11 @@ enum AccountSubcommands {
     Warrant(WarrantCommand),
     /// Sign a session request offline, for a client that holds no node
     LoginStatement(LoginStatementCommand),
+
+    /// Sign one request, so a caller's identity travels with it.
+    SignRequest(SignRequestCommand),
+    /// Sign a verifier's payload with the account root, offline
+    SignWithRoot(SignWithRootCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -131,6 +136,8 @@ impl AccountCommand {
             AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
             AccountSubcommands::LoginStatement(cmd) => cmd.run(),
+            AccountSubcommands::SignRequest(cmd) => cmd.run(),
+            AccountSubcommands::SignWithRoot(cmd) => cmd.run(root_args).await,
         }
     }
 }
@@ -466,22 +473,152 @@ pub struct LoginStatementCommand {
 
 /// Map the `--audience` spelling onto the variant it names.
 ///
-/// Split out because it is the only branching this command does, and each arm
-/// binds a session to a different surface: getting it wrong hands a token
-/// obtained by one client to another, which is the whole reason the field is
-/// signed over.
-///
-/// A web origin is passed through verbatim rather than normalized. The verifier
-/// compares it byte for byte against what the browser sends, so "helpfully"
-/// stripping a trailing slash here would produce a statement the browser's own
-/// origin no longer matches.
+/// A thin alias over [`calimero_account::Audience::from_spelling`], kept because
+/// the call sites read better for it — the mapping itself lives in the crate so
+/// this command and the admin API cannot bind different surfaces for one string,
+/// which would hand a proof minted by one client to another.
 fn parse_audience(spelling: &str) -> calimero_account::Audience {
-    match spelling.trim() {
-        "cli" => calimero_account::Audience::Cli,
-        other if other.starts_with("http://") || other.starts_with("https://") => {
-            calimero_account::Audience::WebOrigin(other.to_owned())
+    calimero_account::Audience::from_spelling(spelling)
+}
+
+/// Sign one request.
+///
+/// The bottom link of the chain a delegated caller presents, and the only one
+/// minted per call. The other two — a device certificate and, on the long
+/// chain, a login statement — are minted by `sign-cert` and `login-statement`
+/// and reused for their lifetimes.
+///
+/// Signs with whatever secret it is handed. On the SHORT chain that is the
+/// device key itself, which is what a script or a CI step holds; on the long
+/// chain it is the ephemeral session key `login-statement --generate-session-key`
+/// printed. The node's verifier accepts both, so the choice here is about where
+/// the key lives rather than about what the node will take.
+#[derive(Debug, Parser)]
+pub struct SignRequestCommand {
+    /// The HTTP method, exactly as it will be sent.
+    ///
+    /// Not folded. `HEAD` and `GET` are the same PERMISSION — the node's
+    /// permission table treats a HEAD read of a mapped GET route as a GET — and
+    /// they are different REQUESTS. A signature layer that folded them would
+    /// let a proof minted for one be presented as the other.
+    #[arg(long)]
+    method: String,
+
+    /// The path, WITHOUT the query string.
+    ///
+    /// Excluded deliberately: a proxy may rewrite a query — a token parameter
+    /// most of all — and signing over bytes something else is entitled to
+    /// change means failing for reasons the caller cannot see. Anything that
+    /// must be bound belongs in the body.
+    #[arg(long)]
+    path: String,
+
+    /// The request body, exactly as it will be sent. Empty when there is none.
+    ///
+    /// The signature commits to a hash of these bytes, so a body re-serialized
+    /// between signing and sending is a signature for a different request. An
+    /// absent body is not a special case: it commits to the hash of nothing.
+    #[arg(long, default_value = "")]
+    body: String,
+
+    /// The key that signs, as a secret, 64 hex chars.
+    ///
+    /// The public half is derived rather than taken, as everywhere else here: a
+    /// caller able to NAME a key it does not hold could mint a signature it
+    /// cannot produce.
+    #[arg(long, value_name = "HEX")]
+    signer_secret: String,
+
+    /// Seconds from now that the signature stays honourable.
+    ///
+    /// Short is right. The window is what bounds replay and nothing else does —
+    /// a captured signature performs the identical request until it expires.
+    #[arg(long, default_value_t = 300)]
+    valid_for: u64,
+
+    /// The device credential from `account sign-cert`, hex.
+    ///
+    /// Supplying it makes this print the whole `X-Calimero-Proof` header rather
+    /// than the signature alone. A node needs the chain, not one link: the
+    /// signature says a key signed this request, and only the credential says
+    /// whose key it is.
+    ///
+    /// Assembled here rather than by whatever presents the header, because the
+    /// three links are already the encodings the node deserializes and a second
+    /// place that concatenates them is a second spelling of a signed structure.
+    #[arg(long, value_name = "HEX")]
+    credential: Option<String>,
+
+    /// The login statement from `account login-statement`, hex.
+    ///
+    /// Present on the three-link chain, where `--signer-secret` is the session
+    /// key. Omit it on the two-link chain, where the device key signs the
+    /// request itself — that is a different encoding, not a shorter one.
+    #[arg(long, value_name = "HEX", requires = "credential")]
+    session: Option<String>,
+}
+
+/// Decode a hex-encoded, borsh-serialized link of the chain.
+///
+/// Named in the error, because the three are indistinguishable as hex and the
+/// most likely mistake is passing them in the wrong order.
+fn decode_borsh<T: borsh::BorshDeserialize>(raw: &str, what: &str) -> EyreResult<T> {
+    let bytes =
+        hex::decode(raw.trim()).map_err(|err| eyre::eyre!("--{what} is not valid hex: {err}"))?;
+    borsh::from_slice(&bytes).map_err(|err| eyre::eyre!("--{what} is not a valid encoding: {err}"))
+}
+
+impl SignRequestCommand {
+    fn run(self) -> EyreResult<()> {
+        let secret = PrivateKey::from(parse_key(&self.signer_secret, "signer-secret")?);
+
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let expires_at = issued_at.saturating_add(self.valid_for);
+
+        let signature = calimero_account::RequestSig::sign(
+            &secret,
+            &self.method,
+            &self.path,
+            self.body.as_bytes(),
+            issued_at,
+            expires_at,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the request: {err}"))?;
+
+        // The signature first and alone on its line, so a caller can take it
+        // with `head -1` and a scenario can capture it by regex — the same
+        // shape `warrant` and `login-statement` emit.
+        println!(
+            "{}",
+            hex::encode(borsh::to_vec(&signature).wrap_err("Failed to encode the signature")?)
+        );
+        println!("Signer:  {}", hex::encode(secret.public_key()));
+        println!("Expires: {expires_at}");
+
+        // The header only when a credential was given: without one there is no
+        // chain to present, and printing a half-built value would invite
+        // someone to send it.
+        if let Some(credential) = &self.credential {
+            let account_proof = decode_borsh(credential, "credential")?;
+            let session = self
+                .session
+                .as_deref()
+                .map(|raw| decode_borsh(raw, "session"))
+                .transpose()?;
+            let proof = calimero_account::CallerProof {
+                account_proof,
+                session,
+                request: signature,
+            };
+            println!(
+                "Proof:   {}",
+                hex::encode(borsh::to_vec(&proof).wrap_err("Failed to encode the proof")?)
+            );
         }
-        other => calimero_account::Audience::CodeSigningId(other.to_owned()),
+
+        Ok(())
     }
 }
 
@@ -626,6 +763,91 @@ impl SignCertCommand {
     }
 }
 
+/// Sign a payload an outside verifier specified, with the account root.
+///
+/// The offline counterpart to `POST /admin-api/account/sign-with-root`, and the
+/// cold-storage half of it: with `--from` this needs no node, no home and no
+/// init, which is the case a running node cannot serve — a root that lives on
+/// paper because it deliberately lives nowhere else.
+///
+/// **The verifier owns the format, not core.** mdma already specifies what the
+/// root must sign and shipped before this did, so the payload comes from the
+/// caller verbatim and this supplies only the domain. A signature core finds
+/// tidier is a signature that fails at the far end.
+///
+/// **`--domain` is a name from a closed set.** Signing caller-supplied bytes
+/// under a caller-supplied prefix is a signing oracle over the one key that can
+/// certify a device, which is account takeover. See
+/// `calimero_account::ExternalSigningDomain`.
+#[derive(Debug, Parser)]
+pub struct SignWithRootCommand {
+    /// Which verifier's domain to sign under.
+    #[arg(long, value_name = "NAME", value_parser = parse_external_domain)]
+    domain: calimero_account::ExternalSigningDomain,
+
+    /// The bytes to sign after the domain, hex-encoded.
+    ///
+    /// For mdma this is the hex of its challenge string — the nonce it sealed
+    /// and handed out, UTF-8 then hex. Hex rather than raw text because the
+    /// field is bytes: a verifier that signs something non-textual should not
+    /// need a second flag.
+    #[arg(long, value_name = "HEX")]
+    payload: String,
+
+    /// Read the account root from a 24-word recovery phrase at PATH instead of
+    /// from a node's store. `-` reads the phrase from stdin.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+/// Resolve `--domain` at parse time, so an unknown name fails with clap's own
+/// error listing the accepted set rather than after a store has been opened.
+fn parse_external_domain(name: &str) -> Result<calimero_account::ExternalSigningDomain, String> {
+    calimero_account::ExternalSigningDomain::from_name(name).ok_or_else(|| {
+        format!(
+            "unknown signing domain; expected one of: {}",
+            calimero_account::ExternalSigningDomain::names().join(", ")
+        )
+    })
+}
+
+impl SignWithRootCommand {
+    async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let payload = hex::decode(self.payload.trim())
+            .wrap_err("--payload must be an even-length hex string")?;
+
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+
+        let (public_key, signature) =
+            calimero_account::sign_external(root.signing_key(), self.domain, &payload)
+                .map_err(|err| eyre::eyre!("failed to sign: {err}"))?;
+
+        // Base64 for the signature and hex for the key, because that is the pair
+        // the consuming verifiers expect — mdma's `verify_login_proof` decodes
+        // exactly this way, and re-encoding at the client is a step that can be
+        // got wrong silently.
+        use base64::Engine as _;
+        println!(
+            "{}",
+            base64::engine::general_purpose::STANDARD.encode(signature)
+        );
+        println!();
+        println!("Account:    {}", root.account());
+        println!("Root key:   {}", hex::encode(public_key.digest()));
+        println!();
+        // The domain is printed without its trailing NUL, which is a separator
+        // rather than something a reader needs to see.
+        let domain_bytes = self.domain.as_bytes();
+        let printable = String::from_utf8_lossy(&domain_bytes[..domain_bytes.len() - 1]);
+        println!(
+            "Signed `{printable}` followed by the payload. Hand the signature and root key \n\
+             to the verifier that issued the payload; it needs nothing else from this machine."
+        );
+
+        Ok(())
+    }
+}
+
 impl RevokeProofCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         let device = parse_device(&self.device)?;
@@ -677,7 +899,14 @@ impl RevokeProofCommand {
 /// CLI on a replacement machine generally cannot reproduce. Saying so is more
 /// useful than failing to decode a row.
 async fn open_store(root_args: &RootArgs) -> EyreResult<Store> {
-    let path = root_args.home.join(&root_args.node_name);
+    // The `--node`-less case reaches here only for a command that was *not*
+    // given `--from`, so the missing name is worth naming alongside the
+    // alternative: the offline signers want a phrase, not a node.
+    let path = root_args.node_home().wrap_err(
+        "This command reads the account root from a node's store. Pass \
+         `--from <PHRASE-FILE>` to sign from a recovery phrase instead, which \
+         needs no node.",
+    )?;
     if !ConfigFile::exists(&path) {
         bail!("Node is not initialized in {path:?}");
     }
@@ -994,6 +1223,70 @@ mod tests {
     use calimero_account::{Audience, DeviceId};
 
     use super::*;
+
+    /// `--session` without `--credential` is refused at parse time.
+    ///
+    /// Alone it would be silently dropped: the proof is only assembled when a
+    /// credential is present, so a caller passing just a session would get the
+    /// bare signature back and have no way to tell it had been ignored.
+    #[test]
+    fn a_session_without_a_credential_is_rejected() {
+        use clap::Parser;
+
+        let err = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &"11".repeat(32),
+            "--session",
+            "aabb",
+        ])
+        .expect_err("--session must require --credential");
+        assert!(
+            err.to_string().contains("credential"),
+            "the error must name what is missing: {err}"
+        );
+    }
+
+    /// Both together parse, and neither is required for the historical
+    /// signature-only output.
+    #[test]
+    fn the_proof_flags_are_optional_and_pair() {
+        use clap::Parser;
+
+        let bare = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &"11".repeat(32),
+        ])
+        .expect("the signature-only form must keep working");
+        assert!(bare.credential.is_none());
+        assert!(bare.session.is_none());
+
+        let full = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &"11".repeat(32),
+            "--credential",
+            "aabb",
+            "--session",
+            "ccdd",
+        ])
+        .expect("credential plus session is the three-link form");
+        assert_eq!(full.credential.as_deref(), Some("aabb"));
+        assert_eq!(full.session.as_deref(), Some("ccdd"));
+    }
 
     /// A fixed root, so these tests assert on derivation rather than on a key that
     /// changes per run. Not a secret: it owns nothing anywhere.

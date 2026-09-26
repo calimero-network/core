@@ -156,15 +156,83 @@ Asking before signing is not politeness. A nonce is spent from a monotonic per-d
 
 `POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.
 
-So a node may be run as a relay, with `merod init --public-intents` (or `server.admin.public_intents = true` in `config.toml`). It opens exactly the two routes above and nothing else, because they are the two that carry their own credential:
+So a node may be run as a relay, with `merod init --delegated-access` (or `server.admin.delegated_access = true` in `config.toml`). Both were called `public-intents` / `public_intents` until recently; the old flag and the old config key are still accepted for one release, but the name described only the write half and the surface now covers caller-scoped reads too. It does two things. First, it moves the two routes above onto the unauthenticated router, because they are the two that carry their own credential:
 
 - the warrant is signed by the author's device key and commits to this context, this method and these exact arguments;
 - it is refused unless unexpired, its nonce unspent, and the relay holds `CAN_AUTHOR_ON_BEHALF` — all before anything is executed or published;
 - the delta is attributed to the author, and every peer re-checks both signature layers and re-authorizes at the cut.
 
+Second, it turns on the request-carried proof path, so a caller holding an account root and a device key can authenticate *any* admin request by signing it, rather than by holding a session on a node it has no relationship with. That half is what the caller-scoped reads are for — `GET /admin-api/contexts`, `/namespaces`, and the per-resource reads each narrow to the caller's own groups, resolved per request. It is also why the flag is no longer called `public-intents`: the name described the first half only, and reads execute nothing.
+
 A node token proves none of that, and none of that needs one. What is left is signature verification on an unauthenticated request — cheap, and refused before execution; rate-limiting that hop belongs to the deployment's reverse proxy, as it does for the other public routes.
 
 Off by default: a self-hosted node's operator did not ask for an unauthenticated surface, and the routes are useless to them anyway, since a member with a node authors its own writes.
+
+### Signing a request instead of holding a session
+
+A session is a bearer token: obtained once, presented many times, and worth
+stealing for as long as it lives. The alternative is to prove who you are *on
+each request*, which is what the second half of the flag turns on.
+
+The caller sends one header:
+
+```
+X-Calimero-Proof: <hex of a borsh-encoded CallerProof>
+```
+
+and that value is a chain of three links:
+
+| link | signed by | says |
+| --- | --- | --- |
+| `account_proof` | the account root | this device key belongs to this account |
+| `session` | the device key | this session key may act for this device, on **this node**, until |
+| `request` | the session key | this exact method, path and body, from here until |
+
+The middle link is optional. With it — the **three-link chain** — the device key
+never signs a request, so a leaked session key cannot be escalated into use of
+the device itself. Without it, the **two-link chain**, the device key signs each
+request directly; that is `meroctl`'s shape, where a CLI run by the key's holder
+has nowhere better to put a session key than the same process.
+
+The node checks the links cheapest-first — the request's own window before any
+signature, one signature before the certificate chain's *n* — so a stale or
+misaddressed proof costs almost nothing to refuse.
+
+#### What a proof is bound to, and what it is not
+
+The signature commits to the method, the path and a hash of the body. It does
+**not** cover the query string: a proxy may rewrite a query — a token parameter
+most of all — and signing over bytes something else is entitled to change means
+failing for reasons the caller cannot see. Anything that must be bound belongs
+in the body.
+
+The expiry is what bounds replay, and nothing else does: a captured proof
+performs the identical request until it lapses. Keep it to minutes.
+
+**Only the session link carries a node.** A three-link proof minted for one
+relay is refused by another, because the statement names the first relay's
+signing key. A two-link proof has no node field at all, so there is nothing to
+bind — a deployment that depends on that binding must require the session link.
+The asymmetry is deliberate, and it is why `VerifiedCaller::audience` is an
+`Option` rather than a default: both shapes say "this chain had no session", and
+a caller that cares has to look.
+
+#### The three refusals, and why they differ
+
+| answer | meaning |
+| --- | --- |
+| `401` + `X-Auth-Error: invalid_proof` | the chain did not verify — bad signature, wrong node, outside its window, or not a `CallerProof` at all |
+| `403` + `X-Auth-Error: invalid_proof` | the chain is sound, and this node was not asked to serve that account |
+| `401`, no proof header | no credential was presented; opening this path did not open the route |
+
+The 403 is the one worth keeping distinct. A caller told `401` will reasonably
+try again with a fresh proof; a caller told `403` knows the door will not open
+however it knocks, because the node is not running with `--delegated-access`.
+
+`delegated-proof.yml` exercises all of it against real nodes — including the
+node binding, which it makes testable by presenting a proof minted for one relay
+at a second relay that also serves delegated access, so a refusal can only be
+the binding.
 
 ### It is the gate only under embedded auth
 

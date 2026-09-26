@@ -34,13 +34,29 @@ pub(crate) fn mount_runtime_services(
     let mut service_count = 0usize;
     let auth_enabled = auth_service.is_some();
 
+    // Resolved once, here, for the same reason `name_this_node` is: this is the
+    // first point holding both the configuration and a store. A node that has
+    // minted no signing key yet gets `None` and serves no proofs, which is
+    // correct rather than a degradation — it is in no namespace, so there is
+    // nothing for a caller to be a member of.
+    let proof_policy = crate::proof_auth::ProofPolicy::resolve(
+        &datastore,
+        config
+            .admin
+            .as_ref()
+            .is_some_and(|admin| admin.delegated_access),
+    );
+
     if let Some((path, router)) = jsonrpc::service(
         config,
         ctx_client.clone(),
         node_client.clone(),
         auth_enabled,
     ) {
-        app = app.nest(&path, with_optional_auth(router, auth_service.clone()));
+        app = app.nest(
+            &path,
+            with_optional_auth(router, auth_service.clone(), proof_policy.clone()),
+        );
         service_count += 1;
     }
 
@@ -50,7 +66,10 @@ pub(crate) fn mount_runtime_services(
         ctx_client.clone(),
         auth_enabled,
     ) {
-        app = app.route(&path, with_optional_auth(handler, auth_service.clone()));
+        app = app.route(
+            &path,
+            with_optional_auth(handler, auth_service.clone(), proof_policy.clone()),
+        );
         service_count += 1;
     }
 
@@ -61,7 +80,10 @@ pub(crate) fn mount_runtime_services(
         datastore.clone(),
         auth_enabled,
     ) {
-        app = app.nest(path, with_optional_auth(router, auth_service.clone()));
+        app = app.nest(
+            path,
+            with_optional_auth(router, auth_service.clone(), proof_policy.clone()),
+        );
         service_count += 1;
     }
 
@@ -70,7 +92,8 @@ pub(crate) fn mount_runtime_services(
             app = app.nest_service(site_path.as_str(), serve_dir);
         }
 
-        let admin_router = with_optional_auth(protected_router, auth_service).merge(public_router);
+        let admin_router =
+            with_optional_auth(protected_router, auth_service, proof_policy).merge(public_router);
         app = app.nest(&api_path, admin_router);
         service_count += 1;
     }
@@ -86,30 +109,46 @@ pub(crate) fn mount_runtime_services(
     }
 }
 
-fn with_optional_auth<R>(router: R, auth_service: Option<Arc<mero_auth::AuthService>>) -> R
+fn with_optional_auth<R>(
+    router: R,
+    auth_service: Option<Arc<mero_auth::AuthService>>,
+    proof_policy: Option<crate::proof_auth::ProofPolicy>,
+) -> R
 where
     R: AuthLayerExt,
 {
     if let Some(service) = auth_service {
-        router.with_auth_guard(service)
+        router.with_auth_guard(service, proof_policy)
     } else {
         router
     }
 }
 
 trait AuthLayerExt: Sized {
-    fn with_auth_guard(self, service: Arc<mero_auth::AuthService>) -> Self;
+    fn with_auth_guard(
+        self,
+        service: Arc<mero_auth::AuthService>,
+        proof_policy: Option<crate::proof_auth::ProofPolicy>,
+    ) -> Self;
 }
 
 impl AuthLayerExt for Router {
-    fn with_auth_guard(self, service: Arc<mero_auth::AuthService>) -> Self {
-        self.layer(auth::guard_layer(service))
+    fn with_auth_guard(
+        self,
+        service: Arc<mero_auth::AuthService>,
+        proof_policy: Option<crate::proof_auth::ProofPolicy>,
+    ) -> Self {
+        self.layer(auth::guard_layer(service, proof_policy))
     }
 }
 
 impl AuthLayerExt for axum::routing::MethodRouter {
-    fn with_auth_guard(self, service: Arc<mero_auth::AuthService>) -> Self {
-        self.layer(auth::guard_layer(service))
+    fn with_auth_guard(
+        self,
+        service: Arc<mero_auth::AuthService>,
+        proof_policy: Option<crate::proof_auth::ProofPolicy>,
+    ) -> Self {
+        self.layer(auth::guard_layer(service, proof_policy))
     }
 }
 

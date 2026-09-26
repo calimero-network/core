@@ -220,6 +220,12 @@ pub enum CrdtType {
     /// boundary (snapshots, persisted index metadata, mixed-binary peers),
     /// surfacing as `EntityIndex` borsh decode failures.
     RotationLog,
+
+    /// Collaborative text with Fugue ordering, stored as run-length blocks.
+    FugueText,
+
+    /// One run-length block of a [`FugueText`](Self::FugueText) document.
+    FugueTextBlock,
 }
 
 /// Current-format tags are the legacy tag plus this offset.
@@ -273,6 +279,8 @@ impl BorshSerialize for CrdtType {
                 writer.write_all(&[tag(14)])?;
                 BorshSerialize::serialize(id, writer)
             }
+            Self::FugueText => writer.write_all(&[tag(15)]),
+            Self::FugueTextBlock => writer.write_all(&[tag(16)]),
         }
     }
 }
@@ -325,6 +333,8 @@ impl BorshDeserialize for CrdtType {
             )?))),
             13 => Ok(Self::RotationLog),
             14 if !legacy => Ok(Self::Custom(CustomTypeId::deserialize_reader(reader)?)),
+            15 if !legacy => Ok(Self::FugueText),
+            16 if !legacy => Ok(Self::FugueTextBlock),
             _ => Err(borsh::io::Error::new(
                 borsh::io::ErrorKind::InvalidData,
                 "unknown CrdtType discriminant",
@@ -429,6 +439,7 @@ impl CrdtType {
                 | Self::SortedSet { .. }
                 | Self::Vector { .. }
                 | Self::Rga
+                | Self::FugueText
         )
     }
 
@@ -511,6 +522,8 @@ mod tests {
         assert!(CrdtType::SortedSet.is_collection());
         assert!(CrdtType::Vector.is_collection());
         assert!(CrdtType::Rga.is_collection());
+        assert!(CrdtType::FugueText.is_collection());
+        assert!(!CrdtType::FugueTextBlock.is_collection());
         assert!(!CrdtType::lww_register().is_collection());
         assert!(!CrdtType::GCounter.is_collection());
         assert!(!CrdtType::PnCounter.is_collection());
@@ -555,6 +568,8 @@ mod tests {
             CrdtType::SharedStorage,
             CrdtType::Custom(CustomTypeId::of("my_type")),
             CrdtType::RotationLog,
+            CrdtType::FugueText,
+            CrdtType::FugueTextBlock,
         ];
 
         for crdt_type in &types {
@@ -583,6 +598,8 @@ mod tests {
             CrdtType::SharedStorage,
             CrdtType::Custom(CustomTypeId::of("my_type")),
             CrdtType::RotationLog,
+            CrdtType::FugueText,
+            CrdtType::FugueTextBlock,
         ];
 
         for crdt_type in &types {
@@ -616,6 +633,8 @@ mod tests {
             tag(&CrdtType::Custom(CustomTypeId::of("c"))),
             CRDT_TYPE_TAG_V2 + 14
         );
+        assert_eq!(tag(&CrdtType::FugueText), CRDT_TYPE_TAG_V2 + 15);
+        assert_eq!(tag(&CrdtType::FugueTextBlock), CRDT_TYPE_TAG_V2 + 16);
     }
 
     /// These bytes are persisted, sent on the wire and hashed into `delta_id`,
@@ -643,6 +662,8 @@ mod tests {
                 CrdtType::Custom(CustomTypeId::of("my_type")),
                 &[0x8E, 172, 230, 240, 133, 239, 162, 33, 227],
             ),
+            (CrdtType::FugueText, &[0x8F]),
+            (CrdtType::FugueTextBlock, &[0x90]),
         ];
 
         for (crdt_type, expected) in frozen {

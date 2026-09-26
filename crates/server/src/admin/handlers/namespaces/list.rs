@@ -8,11 +8,11 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, ListNamespacesQuery, NamespaceApiResponse,
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
 pub async fn handler(
@@ -20,11 +20,12 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -32,7 +33,7 @@ pub async fn handler(
         }
     };
 
-    info!(%offset, %limit, account = ?scope.account(), "Listing namespaces");
+    debug!(%offset, %limit, account = ?scope.account(), "Listing namespaces");
 
     // An account scope pages the CALLER's namespaces, so the filter has to run
     // before `offset` is applied — hence the unpaginated fetch and the manual

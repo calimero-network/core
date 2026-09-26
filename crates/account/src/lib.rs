@@ -52,6 +52,7 @@
 //! | `device` | Device credentials: [`KemPublicKey`], [`DeviceCert`], and its verification |
 //! | `revocation` | Withdrawing a device: [`DeviceRevocation`] and its self-contained proof |
 //! | `scope` | What a device may speak for: [`DeviceScope`] and its self-contained proof |
+//! | `label` | What a device is called: [`DeviceLabel`] and its self-contained proof |
 //! | `warrant` | Delegated authorship: [`Warrant`] and its self-contained [`Delegation`] |
 //! | `pairing` | Linking a new device: [`PairingOffer`], its statement, and the human-compared code |
 //! | `domain` | Every signing domain in one place, so they stay pairwise distinct |
@@ -65,11 +66,15 @@
 //! keeps working regardless of which module it moved to.
 
 mod account;
+mod caller;
 mod device;
 mod domain;
 mod error;
+mod external;
+mod label;
 mod login;
 mod pairing;
+mod request;
 mod revocation;
 mod root_key;
 mod scope;
@@ -92,13 +97,17 @@ pub use calimero_primitives::identity::{
 pub use crate::account::{
     AccountGenesis, AccountMemberEndorsement, VerifiedEndorsement, ACCOUNT_GENESIS_VERSION,
 };
+pub use crate::caller::{CallerProof, VerifiedCaller};
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
+pub use crate::external::{sign_external, ExternalSigningDomain};
+pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
 pub use crate::login::{Audience, LoginStatement};
 pub use crate::pairing::PairingOffer;
+pub use crate::request::RequestSig;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
-pub use crate::scope::{DeviceScope, SignedDeviceScope, VerifiedDeviceScope};
+pub use crate::scope::{scope_covers, DeviceScope, SignedDeviceScope, VerifiedDeviceScope};
 pub use crate::signed::{AccountProof, DeviceBound, RootSigned, Verified};
 pub use crate::warrant::{
     Delegation, VerifiedWarrant, Warrant, WarrantTerms, MAX_WARRANT_CITED_HEADS,

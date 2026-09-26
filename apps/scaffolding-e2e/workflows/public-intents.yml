@@ -1,0 +1,251 @@
+name: E2E Scaffolding - Public Intents
+description: >
+  A relay serves delegated execution with no node credential at all, and opens
+  nothing else.
+
+  This is the posture a hosted fleet node actually runs, and nothing tested it.
+  `--public-intents` / `server.admin.public_intents` appeared nowhere in `apps/`,
+  `.github/`, `e2e-tests/` or `workflows/` — the flag that decides whether a
+  hosted relay is reachable by the clients it exists for had no coverage, so the
+  only evidence it worked was that production had not visibly broken.
+
+  Two nodes, identical but for the flag, and every assertion is made against
+  both. That pairing is what makes the result mean anything: a single node
+  answering 200 proves only that something answered. The same unauthenticated
+  request answering 200 where the flag is set and 401 where it is not proves the
+  flag is what opened the route — and nothing else in the scenario could have.
+
+  Three things are asserted, and the third is the one a happy-path scenario
+  would miss:
+
+    1. Discovery works unauthenticated, and its answer names the executor
+       account. Refused, a client cannot address a warrant at all, and learns
+       that only after spending a nonce from its monotonic sequence on one.
+    2. The write works unauthenticated. The warrant is the credential; no
+       Authorization header is sent anywhere in the script, deliberately.
+    3. The neighbouring admin routes still refuse. `--public-intents` opens the
+       intent pair and nothing else, so a change that moved the whole admin
+       router onto the public one — or widened the exemption by prefix rather
+       than by shape — passes every check above and fails here.
+
+force_pull_image: false
+
+# The flag only does anything under embedded auth. Under proxy mode core
+# installs no guard on either router, so moving a route between them changes
+# nothing a caller can observe, and a scenario run that way would pass whether
+# or not the feature worked.
+auth_mode: embedded
+
+nodes:
+  count: 2
+  # The merod built from this branch, not a release: the posture under test is a
+  # property of this tree's router wiring.
+  image: merod:local
+  prefix: public-intents-node
+  # The whole experiment. Node-1 serves the intent pair publicly; node-2 is
+  # identical and does not, which is the control every assertion is read
+  # against. Applied at INIT rather than by a later `merod config`, because
+  # merobox's `start_node` re-initialises a node and rewrites config.toml, so a
+  # config write before a restart is discarded.
+  init_args:
+    public-intents-node-1:
+      # Deliberately the OLD spelling. The flag is `--delegated-access` now,
+      # with `--public-intents` kept as a hidden alias for one release, and the
+      # fleet's node image still passes the old name — so this scenario is what
+      # proves the alias actually works on a real binary. A compat path nothing
+      # exercises is a compat path that is already broken.
+      - --public-intents
+
+steps:
+  - name: Login on public-intents-node-1
+    type: login
+    node: public-intents-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on public-intents-node-2
+    type: login
+    node: public-intents-node-2
+    username: dev
+    password: dev-password
+
+  # --- Setup: a namespace both nodes belong to, and a context in it ---
+  #
+  # These steps hold credentials and are expected to. The posture under test is
+  # what a caller with NO credential can reach, which only the script asserts.
+
+  - name: Install application on node-1
+    type: install_application
+    node: public-intents-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: public-intents-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: public-intents-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: public-intents-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      account_node2: memberAccount
+
+  - name: Create a context in the namespace
+    type: create_context
+    node: public-intents-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  # Node-2 joins so the control is a fair one: the closed node must hold the
+  # same context, or its 401 could be a 404 wearing a different number.
+  - name: Node-2 joins the context
+    type: join_context
+    node: public-intents-node-2
+    context_id: '{{context_id}}'
+
+  - name: Both nodes are in the context
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - public-intents-node-1
+      - public-intents-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # --- An author holding only a key ---
+
+  - name: Stop node-2 so its account root can be read
+    type: stop_node
+    nodes: public-intents-node-2
+
+  - name: Mint a device for node-2's account, offline
+    type: node_exec
+    node: public-intents-node-2
+    args: [account, sign-cert, --generate]
+    capture:
+      author_credential: '^([0-9a-f]{100,})$'
+      author_secret: '^Secret: +([0-9a-f]{64})$'
+      author_account: '^Account: +([0-9a-f]{64})$'
+    outputs:
+      author_credential: author_credential
+      author_secret: author_secret
+      author_account: author_account
+
+  - name: Start node-2 again
+    type: start_node
+    nodes: public-intents-node-2
+
+  - name: Both nodes are back in the context
+    type: wait_for_sync
+    nodes:
+      - public-intents-node-1
+      - public-intents-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Read the relay's own account
+    type: node_identity
+    node: public-intents-node-1
+    outputs:
+      relay_account: accountId
+
+  # Bit 9 = 512. Without it the intent below is refused for a reason that has
+  # nothing to do with the flag, and the scenario would report the wrong thing.
+  - name: Grant the relay CAN_AUTHOR_ON_BEHALF
+    type: set_member_capabilities
+    node: public-intents-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{relay_account}}'
+    capabilities: 512
+
+  - name: The author mints a warrant
+    type: node_exec
+    node: public-intents-node-2
+    # `warrant` is offline — it opens no datastore — so the node can stay up.
+    allow_running: true
+    args:
+      - account
+      - warrant
+      - --context
+      - '{{context_id}}'
+      - --executor
+      - '{{relay_account}}'
+      - --method
+      - set
+      # Byte-identical to what the script POSTs. The warrant commits to a hash
+      # of these bytes, so re-indenting them in either place mints a warrant
+      # that verifies as a signature and is refused as authorisation.
+      - --args
+      - '{"key":"delegated","value":"from-a-member-with-no-node"}'
+      - --nonce
+      - '1'
+      - --valid-for
+      - '300'
+      - --device-secret
+      - '{{author_secret}}'
+      - --credential
+      - '{{author_credential}}'
+    capture:
+      warrant: '^([0-9a-f]{200,})$'
+    outputs:
+      warrant: warrant
+
+  # --- The posture itself ---
+  #
+  # A script rather than merobox steps, because the property under test is the
+  # absence of a credential and every client library supplies one. `curl` is the
+  # only caller here that can be trusted not to help.
+  - name: Delegated execution is served without a credential, and nothing else is
+    type: script
+    script: scripts/public-intents.sh
+    target: local
+    args:
+      - public-intents-node-1
+      - public-intents-node-2
+      - '{{context_id}}'
+      - '{{warrant}}'
+      - '{{author_credential}}'
+
+  # The write has to be real, not merely accepted: a relay could answer 200 and
+  # produce a delta the network drops.
+  - name: The delegated write reaches the other node
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - public-intents-node-1
+      - public-intents-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    # `equals` is matched against the whole call envelope, not a bare value —
+    # `{"output": ...}` — so the nesting here is the shape, not decoration.
+    expect:
+      method: get
+      args:
+        key: "delegated"
+      equals:
+        output: "from-a-member-with-no-node"

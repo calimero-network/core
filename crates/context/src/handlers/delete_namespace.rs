@@ -43,7 +43,9 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 .load(&namespace_id)?
                 .is_none()
             {
-                bail!("namespace '{namespace_id:?}' not found");
+                bail!(crate::error::ContextError::NamespaceNotFound {
+                    namespace_id: format!("{namespace_id:?}"),
+                });
             }
 
             // Admin authorization against the namespace root.
