@@ -90,9 +90,9 @@ did not exist until the join it was meant to enable. `participate_in` still mint
 nodes initialised by older binaries, and reuses the provisioned key otherwise.
 
 **On a TEE node the store is encrypted from `init`, or not at all.** `merod init
---kms-url <URL>` fetches the storage key from mero-kms-phala *before* writing the
+--kms-url <URL>` fetches the storage key from mero-kms *before* writing the
 signing identity and account root, opens the store encrypted, and saves
-`[tee.kms.phala]` so `run` fetches the same key (the KMS derives it from the peer
+`[tee.kms]` so `run` fetches the same key (the KMS derives it from the peer
 id). Adding `[tee]` to a node that was initialised without it does not work, and not
 only because those keys already sit in plaintext. The encrypted store decrypts every
 read, so the plaintext rows `init` wrote cannot be read back and `run` fails. The KMS
@@ -104,7 +104,7 @@ allowlists are set, and `init` deliberately does not. The key is fetched before 
 it was.
 
 **Every key the KMS releases is sealed to the TD** (`src/kms/sealed.rs`). TLS ends
-wherever `kms-phala-url` points, and that URL is operator-written metadata, so a
+wherever `kms-url` points, and that URL is operator-written metadata, so a
 plain-hex key was readable by any proxy in front of the genuine KMS. `/attest`
 commits to the KMS's X25519 transport key, the get-key quote commits to a one-time
 key, and the reply is AES-256-GCM under X25519+HKDF of the two. merod refuses a KMS
@@ -117,24 +117,14 @@ and its `role`, `tag` and (with `MERO_TEE_PROFILE`) `profile` must match what wa
 asked for. `MERO_TEE_MIN_VERSION` refuses a release older than the floor, so
 naming an old but validly signed release is not a downgrade.
 
-**The KMS's compose hash is pinned too** (`src/kms/event_log.rs`). Node keys are
-derived from the KMS's dstack *app* key, so anything running under that app can
-derive them, and the app owner can upgrade it to another compose file whose
-registers may still be allowlisted (mero-tee#338). merod replays the `eventLog`
-`/attest` returns, recomputing each RTMR3 event digest from its contents, and
-trusts the `compose-hash` event only if the replay reproduces the quote's RTMR3.
-That hash must be in the policy's `kms_allowed_event_payload`; a release policy
-without one is refused. The config-policy path checks
-`tee.kms.phala.attestation.allowed_compose_hashes` when it is set, and warns when
-it is not. Mock quotes carry no event log and skip the check.
-
-**A TDX cluster KMS is pinned by its registers instead** (`KmsBackend::Tdx`,
-`kms.backend = "tdx"` in the release policy, `tee.kms.phala.attestation.backend`
-in config). mero-kms with `MERO_KMS_BACKEND=tdx` runs as a locked GCP TDX image
-with no dstack; its RTMR3 is the image's own boot measurement, fixed per image,
-so the five registers pin its code and there is no compose file. A `tdx` policy
-must not name a compose hash (refused), and a policy without `kms.backend` is a
-dstack policy, so files published before the field existed keep their check.
+**The KMS is pinned by its registers.** The only KMS is mero-kms running as a
+frozen GCP TDX cluster, one per release, booted from a locked image whose
+RTMR3 is the image's own boot measurement. The KMS's MRTD and RTMR0-3 must each
+be in the policy's `kms_allowed_mrtd` / `kms_allowed_rtmr0..3` (release path) or
+`tee.kms.attestation.allowed_mrtd` / `allowed_rtmr0..3` (config path); together
+they pin the code the KMS runs, and so who can derive node keys. There is no
+event log to replay and no compose hash. The default `/attest` binding is
+`SHA-256("mero-kms-attest-v1")`, in lockstep with mero-kms.
 
 **`merod kms disk-key`** fetches the key that unlocks the image's LUKS2 data disk,
 before that disk (and so this node's home) exists. It needs no `--node`. It uses a
@@ -221,7 +211,7 @@ src/
 │   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling
 ├── defaults.rs       # Default values
-├── kms/              # Key management service (sealed release, RTMR3 compose-hash check)
+├── kms/              # Key management service (sealed release, register-pinned KMS attestation)
 ├── kms_policy.rs     # KMS policy
 └── version.rs        # Version checking
 ```

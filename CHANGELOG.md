@@ -4,15 +4,12 @@
 
 ### Added
 
-- **merod verifies a KMS that runs as a TDX cluster, with no dstack**
-  (`tee.kms.phala.attestation.backend = "tdx"`, or `kms.backend = "tdx"` in the
-  release or external policy). mero-kms can now run as a locked GCP TDX image
-  whose keys derive from a root held only in its replicas' memory (mero-tee
-  `docs/design/gcp-tdx-kms.md`). Such a KMS has no dstack event log; its RTMR3 is
-  its image's own boot measurement, so merod pins it by all five registers and
-  skips the compose-hash check. A `tdx` policy that names a compose hash is
-  refused, and a policy without `kms.backend` is still a dstack policy that must
-  name one.
+- **merod verifies a KMS that runs as a TDX cluster.** mero-kms runs as a
+  frozen GCP TDX cluster, one per release, booted from a locked image whose keys
+  derive from a root held only in its replicas' memory. Its RTMR3 is its image's
+  own boot measurement, so merod pins it by MRTD and RTMR0-3 alone. This is now
+  the only KMS merod talks to; see **Removed** for the dstack KMS path it
+  replaces.
 
 - **`AuthoredSortedMap<K, V>`** — an `AuthoredMap` with an ordered view, so a
   reader can `prefix` / `range` / `page` / `keys` instead of walking the whole
@@ -123,6 +120,24 @@
   with the posture nobody intended — in either direction.
 
 ### Removed
+
+- **The Phala / dstack KMS path. BREAKING — no compatibility shim.** The only
+  KMS is mero-kms as a GCP TDX cluster (above); every upgrade brings new nodes
+  and a new KMS, so nothing old has to keep working:
+  - The config section `[tee.kms.phala]` is now `[tee.kms]`, with the same
+    `url`, `tls.*` and `attestation.*` keys (`TeeConfig.kms: Option<KmsConfig>`,
+    `TeeConfig::kms(url)`; `PhalaKmsConfig` is gone). A config that still says
+    `[tee.kms.phala]` no longer configures a KMS.
+  - dstack KMS verification is gone: no RTMR3 event-log replay, no compose-hash
+    check, no `tee.kms.phala.attestation.allowed_compose_hashes`, no
+    `kms_allowed_event_payload` in the release policy, and no `backend` /
+    `kms.backend` selector. `/attest`'s `eventLog` is no longer read.
+  - The signed release asset merod fetches is `kms-attestation-policy.json`
+    (was `kms-phala-attestation-policy.json`); its `merod_config_path` is
+    `tee.kms.attestation`.
+  - The default `/attest` binding is `SHA-256("mero-kms-attest-v1")` (was
+    `mero-kms-phala-attest-v1`), in lockstep with mero-kms, so this merod only
+    verifies a KMS from the same generation.
 
 - **`upgradePolicy`** from the namespace and group-info responses (`GET
   admin-api/namespaces`, `.../namespaces/:id`, `.../namespaces/for-application/:id`,

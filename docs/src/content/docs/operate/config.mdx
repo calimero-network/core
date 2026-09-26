@@ -345,20 +345,20 @@ KMS and refuses to start without it. **Create a TEE node with `merod init --kms-
 signing identity and account root, so a store encrypted only from the first `run`
 would already hold both in plaintext. Having been written unencrypted, that store also
 could not be opened encrypted at all, because every read is decrypted. `--kms-url`
-fetches the key before anything is written and saves `[tee.kms.phala]` with that URL.
+fetches the key before anything is written and saves `[tee.kms]` with that URL.
 
 The KMS is verified against the signed mero-tee release policy, so `init --kms-url`
 requires the release to be named in `MERO_TEE_VERSION` (or `MERO_KMS_VERSION` /
 `MERO_KMS_RELEASE_TAG`) and refuses otherwise. A store encrypted with a key from an
 unverified KMS would be readable by whoever runs that endpoint.
 
-### `[tee.kms.phala]`
+### `[tee.kms]`
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `url` | URL | — (required if present) | URL of the Phala Cloud KMS service. |
+| `url` | URL | — (required if present) | URL of the mero-kms service (the KMS cluster for this release). |
 
-#### `[tee.kms.phala.tls]`
+#### `[tee.kms.tls]`
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -366,7 +366,7 @@ unverified KMS would be readable by whoever runs that endpoint.
 | `client_cert_path` | path | unset | PEM client certificate for mTLS. Must be set together with `client_key_path`. |
 | `client_key_path` | path | unset | PEM client private key for mTLS. Must be set together with `client_cert_path`. |
 
-#### `[tee.kms.phala.attestation]`
+#### `[tee.kms.attestation]`
 
 Policy for verifying KMS self-attestation before requesting storage keys.
 
@@ -380,9 +380,7 @@ Policy for verifying KMS self-attestation before requesting storage keys.
 | `allowed_rtmr1` | array of string (hex) | `[]` | Allowed KMS RTMR1 values. Required when `enabled` and not `accept_mock`. |
 | `allowed_rtmr2` | array of string (hex) | `[]` | Allowed KMS RTMR2 values. Required when `enabled` and not `accept_mock`. |
 | `allowed_rtmr3` | array of string (hex) | `[]` | Allowed KMS RTMR3 values. Required when `enabled` and not `accept_mock`. |
-| `allowed_compose_hashes` | array of string (hex) | `[]` | Released KMS compose hashes (32-byte SHA-256, the payload of the KMS's RTMR3 `compose-hash` event). When set, merod replays the KMS's RTMR3 event log against its quote and refuses any other compose file. Unset skips the check with a warning; the signed release policy always sets it. |
-| `backend` | `"dstack"` \| `"tdx"` | `"dstack"` | What kind of KMS this is. `tdx` is mero-kms as a GCP TDX cluster replica with no dstack: its RTMR3 is its image's boot measurement, so the five register allowlists pin it and `allowed_compose_hashes` must be empty. An external policy file sets it with `kms.backend`. |
-| `binding_b64` | string (base64) | unset | Optional 32-byte binding value for the `/attest` call. Defaults to the domain-separator binding. |
+| `binding_b64` | string (base64) | unset | Optional 32-byte binding value for the `/attest` call. Defaults to the domain-separator binding, `SHA-256("mero-kms-attest-v1")`. |
 | `policy_json_path` | path | unset | Path to an externally-generated attestation policy JSON (for startup scripts that fetch/verify signed policy artifacts). |
 
 ## Representative `config.toml`

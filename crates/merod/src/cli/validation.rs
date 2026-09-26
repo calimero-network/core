@@ -444,30 +444,18 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
 
     // Check TEE KMS configuration
     if let Some(ref tee_config) = config.tee {
-        // Check if any KMS provider is configured.
-        // Currently only Phala is supported; extend this check when adding new providers.
-        let has_kms_provider = tee_config.kms.phala.is_some();
-        // Future providers would be checked here:
-        // let has_kms_provider = tee_config.kms.phala.is_some()
-        //     || tee_config.kms.other_provider.is_some();
+        let Some(kms) = &tee_config.kms else {
+            bail!("TEE is enabled but no KMS is configured. Please configure it under [tee.kms].");
+        };
 
-        if !has_kms_provider {
-            bail!(
-                "TEE is enabled but no KMS provider is configured. \
-                 Please configure the 'phala' KMS provider under [tee.kms.phala]."
+        kms.attestation.validate_enabled_policy()?;
+        validate_kms_tls_config(&kms.url, &kms.tls)?;
+
+        if kms.attestation.enabled && kms.attestation.accept_mock {
+            tracing::warn!(
+                "tee.kms.attestation.accept_mock=true is enabled. \
+                 This should only be used for development/testing."
             );
-        }
-
-        if let Some(phala) = &tee_config.kms.phala {
-            phala.attestation.validate_enabled_policy()?;
-            validate_kms_tls_config(&phala.url, &phala.tls)?;
-
-            if phala.attestation.enabled && phala.attestation.accept_mock {
-                tracing::warn!(
-                    "tee.kms.phala.attestation.accept_mock=true is enabled. \
-                     This should only be used for development/testing."
-                );
-            }
         }
     }
 
@@ -479,7 +467,7 @@ fn validate_kms_tls_config(kms_url: &url::Url, tls: &KmsTlsConfig) -> EyreResult
 
     if tls.ca_cert_path.is_some() && !uses_https {
         bail!(
-            "tee.kms.phala.tls.ca_cert_path requires tee.kms.phala.url to use https:// (current: {})",
+            "tee.kms.tls.ca_cert_path requires tee.kms.url to use https:// (current: {})",
             kms_url
         );
     }
@@ -487,28 +475,23 @@ fn validate_kms_tls_config(kms_url: &url::Url, tls: &KmsTlsConfig) -> EyreResult
     let has_client_cert = tls.client_cert_path.is_some();
     let has_client_key = tls.client_key_path.is_some();
     if has_client_cert != has_client_key {
-        bail!(
-            "tee.kms.phala.tls.client_cert_path and tee.kms.phala.tls.client_key_path must be set together"
-        );
+        bail!("tee.kms.tls.client_cert_path and tee.kms.tls.client_key_path must be set together");
     }
     if has_client_cert && !uses_https {
         bail!(
-            "tee.kms.phala.tls.client_cert_path/client_key_path require tee.kms.phala.url to use https:// (current: {})",
+            "tee.kms.tls.client_cert_path/client_key_path require tee.kms.url to use https:// (current: {})",
             kms_url
         );
     }
 
     for (field_name, path_opt) in [
+        ("tee.kms.tls.ca_cert_path", tls.ca_cert_path.as_deref()),
         (
-            "tee.kms.phala.tls.ca_cert_path",
-            tls.ca_cert_path.as_deref(),
-        ),
-        (
-            "tee.kms.phala.tls.client_cert_path",
+            "tee.kms.tls.client_cert_path",
             tls.client_cert_path.as_deref(),
         ),
         (
-            "tee.kms.phala.tls.client_key_path",
+            "tee.kms.tls.client_key_path",
             tls.client_key_path.as_deref(),
         ),
     ] {
@@ -758,7 +741,7 @@ mod tests {
         let err = validate_kms_tls_config(&url, &tls)
             .expect_err("TLS pinning over HTTP must fail")
             .to_string();
-        assert!(err.contains("requires tee.kms.phala.url to use https://"));
+        assert!(err.contains("requires tee.kms.url to use https://"));
     }
 
     #[test]

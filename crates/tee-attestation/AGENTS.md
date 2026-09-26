@@ -117,9 +117,9 @@ Generation and verification are asymmetric and live in separate modules for a re
 
 Mock quotes (`is_mock_quote`, magic header `MOCK_QUOTE_HEADER = b"MOCK_TDX_QUOTE_V1"`) exist purely so the generate/verify protocol flow can be exercised on non-TDX dev machines and in CI. `verify_mock_attestation` unconditionally sets `quote_verified = true` since there is no real signature to check - it only re-checks nonce and app hash. Never call it on a quote you haven't already confirmed with `is_mock_quote`; it errors out if the header doesn't match, but the caller is still responsible for deciding whether mock quotes are policy-acceptable at all (see below).
 
-## dstack / Phala KMS Relationship
+## Relationship to the KMS
 
-This crate has no dstack or Phala-specific code - it is a generic TDX quote generate/verify library. The Phala Cloud KMS integration lives in `crates/merod/src/kms/mod.rs`: `merod` calls `generate_attestation` to produce its own quote when authenticating to a Phala KMS endpoint, and calls `verify_attestation` / `verify_mock_attestation` to check quotes returned by that KMS (e.g. from its `/attest` endpoint) before trusting a fetched storage encryption key. The mock/real decision and the `accept_mock` policy enforcement (reject a mock quote unless explicitly allowed) is entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
+This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/merod/src/kms/mod.rs`: `merod` calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision with its `accept_mock` enforcement (reject a mock quote unless explicitly allowed), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
 
 ## Key Files
 
