@@ -244,6 +244,83 @@ steps:
     patterns:
       - "panicked at"
     tail_lines: 20000
+  # ---------- A member cannot write TEE data itself ----------
+  # These run last: the refused calls log the `#[app::tee]` guard's message,
+  # which the member-side assertion above must not see. They check the app's
+  # own guards on an honest node. The storage tests in
+  # `tee_only_tamper_resistance` check the merge, which is what stops a member
+  # whose node skips those guards.
+
+  - name: The face the TEE recorded, as the player sees it
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: get_roll
+    args:
+      roll_id: "after-policy"
+    outputs:
+      tee_face: result
+
+  - name: A member cannot run the TEE method to rig a new roll
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: resolve_roll
+    args:
+      roll_id: "rigged"
+      sides: 6
+    expected_failure: true
+
+  - name: A member cannot re-resolve a roll the TEE already recorded
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: resolve_roll
+    args:
+      roll_id: "after-policy"
+      sides: 6
+    expected_failure: true
+
+  - name: Give any leaked write time to propagate
+    type: wait
+    seconds: 10
+
+  - name: The rigged roll does not exist on the owner
+    type: call
+    node: tee-dice-owner
+    context_id: "{{context_id}}"
+    method: get_roll
+    args:
+      roll_id: "rigged"
+    outputs:
+      rigged_on_owner: result
+
+  - name: The recorded face is unchanged on the owner
+    type: call
+    node: tee-dice-owner
+    context_id: "{{context_id}}"
+    method: get_roll
+    args:
+      roll_id: "after-policy"
+    outputs:
+      face_on_owner: result
+
+  - name: The recorded face is unchanged on the player
+    type: call
+    node: tee-dice-player
+    context_id: "{{context_id}}"
+    method: get_roll
+    args:
+      roll_id: "after-policy"
+    outputs:
+      face_on_player: result
+
+  - name: Assert no member write landed
+    type: json_assert
+    statements:
+      - 'json_equal({{rigged_on_owner}}, {"output": null})'
+      - 'json_equal({{face_on_owner}}, {{tee_face}})'
+      - 'json_equal({{face_on_player}}, {{tee_face}})'
 
 stop_all_nodes: false
 restart: false

@@ -959,9 +959,8 @@ fn arm_signer_resolver_for_cut(
             // resolution its own apply used. A lookup failure refuses (`None`)
             // rather than falling back to the TEE's own account, which would
             // quietly change which writer sets it matches.
-            match calimero_governance_store::is_tee_authority(&store, &group, &account) {
-                Ok(true) => Some(calimero_account::AccountId::TEE_AUTHORITY),
-                Ok(false) => Some(account),
+            match calimero_governance_store::writer_account(&store, &group, account) {
+                Ok(writer) => Some(writer),
                 Err(err) => {
                     tracing::warn!(
                         %err,

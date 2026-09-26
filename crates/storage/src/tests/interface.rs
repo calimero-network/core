@@ -3965,3 +3965,283 @@ mod subtree_tombstone_convergence {
         }
     }
 }
+
+/// Nobody but the TEE authority can create, change, extend, delete or re-own
+/// `TeeOnly` state. These drive the merge path directly, the way a malicious
+/// member's node would. Such a node can skip the app's local guards entirely,
+/// but it cannot make an honest peer's merge accept its write.
+///
+/// The TEE authority is `AccountId::TEE_AUTHORITY`. A node resolves a signing
+/// key to it only for an attested TEE that the namespace's authoring policy
+/// allows. Any other key resolves to its own account, so `ctx_for(key)` below
+/// is what an honest peer passes for every member's write.
+mod tee_only_tamper_resistance {
+    use std::collections::BTreeSet;
+
+    use calimero_account::AccountId;
+    use ed25519_dalek::SigningKey;
+
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::entities::StorageType;
+    use crate::env;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, MainInterface, StorageError};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+    use crate::tests::common::{
+        account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
+        build_signed_shared_action, setup_root_for_main,
+    };
+
+    const ANCHOR: Id = Id::new([0x7A; 32]);
+    const VALUE: Id = Id::new([0x7B; 32]);
+
+    fn key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn tee_writers() -> BTreeSet<AccountId> {
+        BTreeSet::from([AccountId::TEE_AUTHORITY])
+    }
+
+    /// The context an honest peer applies a member's write under: the member's
+    /// own account, whether it is resolved alone (a repair) or alongside the
+    /// causal writer set (a delta).
+    fn member_contexts(member: &SigningKey) -> [ApplyContext; 2] {
+        [
+            apply_ctx_for(account_of_key(member)),
+            ApplyContext {
+                effective_writers: Some(crate::entities::full_mask(tee_writers())),
+                delta_id: None,
+                delta_hlc: None,
+                signer_account: Some(account_of_key(member)),
+            },
+        ]
+    }
+
+    fn stored(id: Id) -> Option<Vec<u8>> {
+        MainStorage::storage_read(Key::Entry(id))
+    }
+
+    /// Plant a TEE-only cell the way the TEE's first write does: the anchor with
+    /// writer set `{TEE_AUTHORITY}`, and its value entry, both signed by the TEE
+    /// and applied under the TEE authority. Returns the TEE's device key.
+    fn tee_cell() -> SigningKey {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let tee = key(0x7E);
+        let tee_ctx = apply_ctx_for(AccountId::TEE_AUTHORITY);
+        let n = env::time_now();
+
+        let anchor = build_signed_shared_action(
+            true,
+            ANCHOR,
+            b"anchor".to_vec(),
+            tee_writers(),
+            n,
+            &tee,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(anchor, &tee_ctx).unwrap();
+        let value = build_signed_member_action(
+            true,
+            VALUE,
+            ANCHOR,
+            b"face=4".to_vec(),
+            n + 1_000,
+            &tee,
+            vec![root],
+        );
+        MainInterface::apply_action(value, &tee_ctx).unwrap();
+        tee
+    }
+
+    fn assert_refused(result: Result<(), StorageError>, what: &str) {
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "{what} must be refused at merge, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_member_cannot_create_a_tee_only_cell() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let member = key(0x4D);
+        for (i, ctx) in member_contexts(&member).iter().enumerate() {
+            let id = Id::new([0x60 + i as u8; 32]);
+            let genesis = build_signed_shared_action(
+                true,
+                id,
+                b"face=6".to_vec(),
+                tee_writers(),
+                env::time_now(),
+                &member,
+                vec![root.clone()],
+            );
+            assert_refused(
+                MainInterface::apply_action(genesis, ctx),
+                "a member's genesis of a TEE-only cell",
+            );
+            assert!(stored(id).is_none());
+            assert!(Index::<MainStorage>::get_metadata(id).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn a_member_cannot_overwrite_the_tee_value() {
+        let _tee = tee_cell();
+        let member = key(0x4D);
+        for ctx in member_contexts(&member) {
+            let forged = build_signed_member_action(
+                false,
+                VALUE,
+                ANCHOR,
+                b"face=6".to_vec(),
+                env::time_now() + 1_000_000_000,
+                &member,
+                vec![],
+            );
+            assert_refused(
+                MainInterface::apply_action(forged, &ctx),
+                "a member's overwrite of the TEE's value",
+            );
+        }
+        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+    }
+
+    #[test]
+    fn a_member_cannot_add_an_entry_under_the_tee_anchor() {
+        let _tee = tee_cell();
+        let member = key(0x4D);
+        for (i, ctx) in member_contexts(&member).iter().enumerate() {
+            let entry = Id::new([0x70 + i as u8; 32]);
+            let forged = build_signed_member_action(
+                true,
+                entry,
+                ANCHOR,
+                b"roll-r9=6".to_vec(),
+                env::time_now(),
+                &member,
+                vec![],
+            );
+            assert_refused(
+                MainInterface::apply_action(forged, ctx),
+                "a member's new entry under the TEE anchor",
+            );
+            assert!(stored(entry).is_none());
+        }
+    }
+
+    #[test]
+    fn a_member_cannot_delete_tee_data() {
+        let _tee = tee_cell();
+        let member = key(0x4D);
+        for ctx in member_contexts(&member) {
+            let forged =
+                build_signed_member_delete(VALUE, ANCHOR, &member, env::time_now() + 1_000_000_000);
+            assert_refused(
+                MainInterface::apply_action(forged, &ctx),
+                "a member's delete of TEE data",
+            );
+        }
+        assert!(!Index::<MainStorage>::is_deleted(VALUE).unwrap());
+        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+    }
+
+    #[test]
+    fn a_member_cannot_take_over_the_tee_writer_set() {
+        let _tee = tee_cell();
+        let member = key(0x4D);
+        let mine = BTreeSet::from([account_of_key(&member)]);
+        for ctx in member_contexts(&member) {
+            let rotation = build_signed_shared_action(
+                false,
+                ANCHOR,
+                b"anchor".to_vec(),
+                mine.clone(),
+                env::time_now() + 1_000_000_000,
+                &member,
+                vec![],
+            );
+            assert_refused(
+                MainInterface::apply_action(rotation, &ctx),
+                "a member's rotation of the TEE writer set",
+            );
+        }
+        let metadata = Index::<MainStorage>::get_metadata(ANCHOR).unwrap().unwrap();
+        match metadata.storage_type {
+            StorageType::Shared { writers, .. } => {
+                assert_eq!(
+                    writers.keys().copied().collect::<BTreeSet<_>>(),
+                    tee_writers()
+                );
+            }
+            other => panic!("the anchor must stay Shared, got {other:?}"),
+        }
+    }
+
+    /// A member who captures one of the TEE's genuine signed writes cannot edit
+    /// its payload and pass it off: the signature covers the data.
+    #[test]
+    fn an_edited_copy_of_a_genuine_tee_write_is_refused() {
+        let tee = tee_cell();
+        let mut captured = build_signed_member_action(
+            false,
+            VALUE,
+            ANCHOR,
+            b"face=2".to_vec(),
+            env::time_now() + 1_000_000_000,
+            &tee,
+            vec![],
+        );
+        if let Action::Update { data, .. } = &mut captured {
+            *data = b"face=6".to_vec();
+        }
+        assert_refused(
+            MainInterface::apply_action(captured, &apply_ctx_for(AccountId::TEE_AUTHORITY)),
+            "an edited copy of a TEE write",
+        );
+        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+    }
+
+    /// Authority comes from the node's resolution, never from the key alone. A
+    /// TEE whose authority was withdrawn (policy changed, or removed from the
+    /// group) resolves to its own account, and its writes stop landing.
+    #[test]
+    fn a_tee_key_without_the_authority_is_refused_like_any_member() {
+        let tee = tee_cell();
+        let write = build_signed_member_action(
+            false,
+            VALUE,
+            ANCHOR,
+            b"face=1".to_vec(),
+            env::time_now() + 1_000_000_000,
+            &tee,
+            vec![],
+        );
+        assert_refused(
+            MainInterface::apply_action(write, &apply_ctx_for(account_of_key(&tee))),
+            "a write by a TEE key that no longer holds the authority",
+        );
+        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+    }
+
+    /// The control for every test above: the same write, by the TEE authority,
+    /// lands. The refusals are about who wrote, not a broken write path.
+    #[test]
+    fn the_tee_authority_can_update_its_value() {
+        let tee = tee_cell();
+        let write = build_signed_member_action(
+            false,
+            VALUE,
+            ANCHOR,
+            b"face=5".to_vec(),
+            env::time_now() + 1_000_000_000,
+            &tee,
+            vec![],
+        );
+        MainInterface::apply_action(write, &apply_ctx_for(AccountId::TEE_AUTHORITY)).unwrap();
+        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=5"[..]));
+    }
+}

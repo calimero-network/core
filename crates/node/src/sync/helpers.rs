@@ -479,9 +479,14 @@ pub(crate) fn signer_account_for(
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
-    calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
+    let account = calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
         .ok()
-        .flatten()
+        .flatten()?;
+    // The same TEE-authority mapping the delta path's resolver applies. Without
+    // it, a TEE's `TeeOnly` writes reach a peer by delta but are refused when
+    // they arrive by repair, so a peer that catches up by repair never gets them.
+    // A lookup error refuses, as a missing binding does above.
+    calimero_governance_store::writer_account(store, &group_id, account).ok()
 }
 
 /// What a receiver should do with one incoming leaf.

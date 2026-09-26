@@ -232,6 +232,29 @@ pub fn is_tee_authority(
     )
 }
 
+/// The account a write by `account` is checked against at merge.
+///
+/// [`AccountId::TEE_AUTHORITY`] for a TEE authority of `group_id` (see
+/// [`is_tee_authority`]), so its writes match a `TeeOnly` cell's writer set.
+/// `account` itself for everyone else, so no other signer can ever match it.
+/// Every path that resolves a signer for the merge must go through this, or a
+/// path that skips it refuses the TEE's writes.
+///
+/// # Errors
+/// Any governance store read error. A caller must refuse the write on an
+/// error, not fall back to `account`.
+pub fn writer_account(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+) -> EyreResult<AccountId> {
+    Ok(if is_tee_authority(store, group_id, &account)? {
+        AccountId::TEE_AUTHORITY
+    } else {
+        account
+    })
+}
+
 /// [`is_tee_authority`] for the device key that signed a delta in `context_id`.
 ///
 /// `false` for a context owned by no group, and for a key bound to no account in
@@ -601,6 +624,7 @@ mod tests {
 
     use super::{
         is_tee_authority, read_tee_authoring_policy, tee_admission_record, tee_admission_records,
+        writer_account,
     };
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
@@ -732,6 +756,51 @@ mod tests {
             .unwrap();
 
         assert!(!is_tee_authority(&store, &ns_gid, &member).unwrap());
+    }
+
+    /// Only an attested TEE that the policy allows is resolved to the TEE
+    /// authority, the sole writer of `TeeOnly` state. Everyone else, including a
+    /// member holding a matching admission record and a TEE whose authority was
+    /// withdrawn, resolves to their own account and cannot match that writer set.
+    #[test]
+    fn only_a_policy_allowed_tee_resolves_to_the_tee_authority() {
+        let store = test_store();
+        let mut rng = rand::rng();
+        let ns_gid = ContextGroupId::from([0xAE; 32]);
+        let tee = AccountId::from([0x44; 32]);
+        let member = AccountId::from([0x45; 32]);
+        let admin = AccountId::from([0x46; 32]);
+        let signer_sk = PrivateKey::random(&mut rng);
+        let membership = MembershipRepository::new(&store);
+        let log = |seq: u64, op: &SignedGroupOp| {
+            append_op_log_entry(&store, &ns_gid, seq, &borsh::to_vec(op).unwrap()).unwrap();
+        };
+
+        log(1, &tee_join_op(&signer_sk, ns_gid, 1, tee, [0x09; 32]));
+        log(2, &tee_join_op(&signer_sk, ns_gid, 2, member, [0x0A; 32]));
+        membership
+            .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+        membership
+            .add_member(&ns_gid, &member, GroupMemberRole::Member)
+            .unwrap();
+        membership
+            .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        let resolve = |account| writer_account(&store, &ns_gid, account).unwrap();
+
+        // Authorship off: nobody is the authority, the TEE included.
+        for account in [tee, member, admin] {
+            assert_eq!(resolve(account), account);
+        }
+
+        log(3, &authoring_policy_op(&signer_sk, ns_gid, 3, &["m1"]));
+        assert_eq!(resolve(tee), AccountId::TEE_AUTHORITY);
+        assert_eq!(resolve(member), member, "a member is never the authority");
+        assert_eq!(resolve(admin), admin, "nor is an admin");
+
+        membership.remove_member(&ns_gid, &tee).unwrap();
+        assert_eq!(resolve(tee), tee, "a removed TEE loses the authority");
     }
 
     #[test]
