@@ -9,8 +9,8 @@ const ENTRY_PREFIXES: [&str; 2] = ["* `", "- `"]; // list bullet plus the name's
 const ENTRY_SEPARATOR: &str = " - "; // between the closing backtick and the entry text
 const RETURNS_HEADING: &str = "# Returns"; // the method section describing the return value
 
-/// An item's doc: one line per attribute, one leading space stripped, outer
-/// blank lines trimmed. `None` when nothing but blank lines remain.
+/// An item's doc: its lines in order, one leading space stripped from each,
+/// outer blank lines trimmed. `None` when nothing but blank lines remain.
 pub fn doc_text(attrs: &[Attribute]) -> Option<String> {
     join_trimmed(&doc_lines(attrs))
 }
@@ -141,8 +141,14 @@ fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
             else {
                 return None;
             };
-            let value = value.value();
-            Some(value.strip_prefix(' ').unwrap_or(&value).to_owned())
+            Some(value.value())
+        })
+        // A block comment (`/** */`) arrives as one attribute holding several lines.
+        .flat_map(|value| {
+            value
+                .split('\n')
+                .map(|line| line.strip_prefix(' ').unwrap_or(line).to_owned())
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -179,6 +185,18 @@ mod tests {
             doc_text(&attrs(&["", " Summary.", "", "   indented", " last", ""])).as_deref(),
             Some("Summary.\n\n  indented\nlast")
         );
+    }
+
+    #[test]
+    fn a_multi_line_attribute_splits_into_lines() {
+        let block = attrs(&["\n Summary.\n\n # Arguments\n * `a` - first.\n"]);
+        assert_eq!(
+            doc_text(&block).as_deref(),
+            Some("Summary.\n\n# Arguments\n* `a` - first.")
+        );
+        let docs = method_docs(&block);
+        assert_eq!(docs.doc.as_deref(), Some("Summary."));
+        assert_eq!(docs.param("a"), Some("first."));
     }
 
     #[test]
