@@ -1,7 +1,7 @@
 //! `GroupOp::TeeAuthorityEvidence` apply handler.
 //!
-//! The evidence proves itself, so any member may publish it. What apply checks
-//! is the proof: the quote verifies offline against the collateral it carries,
+//! Published by whoever vouched for the admission. What apply checks is the
+//! proof: the quote verifies offline against the collateral it carries,
 //! binds the key it names, and satisfies the namespace's admission policy. A
 //! failure refuses the op, so it never reaches the log.
 
@@ -27,11 +27,14 @@ pub(crate) fn apply(
     {
         bail!("TeeAuthorityEvidence is namespace-scoped; it must be published on the root");
     }
+    // The same voucher rule as the admission itself: an admin, or a TEE
+    // already admitted. The evidence proves itself, so this only keeps the
+    // log free of evidence nobody authorised to vouch would publish.
     let Some(signer) = ctx.signer_account()? else {
-        bail!(MembershipError::TeeVerifierNotMember);
+        bail!(MembershipError::TeeVerifierNotAuthorized);
     };
     ctx.membership_policy()
-        .require_tee_attestation_verifier_membership(&signer)?;
+        .require_tee_attestation_verifier(&signer)?;
 
     let verdict =
         crate::tee::verify_authority_evidence(attested_key, quote, collateral, attested_at)?;

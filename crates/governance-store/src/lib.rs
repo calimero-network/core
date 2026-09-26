@@ -152,8 +152,9 @@ pub use self::permission_checker::PermissionChecker;
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
     read_tee_admission_policy, read_tee_authoring_policy, tee_admission_record,
-    tee_admission_records, tee_authorities_for_context, writer_account, TeeAdmissionPolicy,
-    TeeAdmissionPolicyRead, TeeAdmissionRecord, UndecodableOpLogEntry,
+    tee_admission_records, tee_authorities_for_context, tee_authority_evidence, tee_authority_key,
+    writer_account, TeeAdmissionPolicy, TeeAdmissionPolicyRead, TeeAdmissionRecord,
+    TeeAuthorityEvidenceRecord, UndecodableOpLogEntry,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;

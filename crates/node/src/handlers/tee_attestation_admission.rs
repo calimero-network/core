@@ -7,6 +7,7 @@
 //!
 //! The heavy lifting (policy lookup, governance op signing, DAG interaction) is
 //! delegated to `calimero_governance_store` via the `ContextClient`.
+use calimero_context_client::group::TeeAdmissionOutcome;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_tee_attestation::verify_attestation;
@@ -29,10 +30,55 @@ pub(crate) fn public_key_binding_hash(public_key: &PublicKey) -> [u8; 32] {
     Sha256::digest(**public_key).into()
 }
 
+/// What became of one TEE admission request, however it arrived.
+///
+/// The broadcast receiver and the direct-request responder both go through
+/// [`verify_and_admit`], so the rule for who gets in is written once. They
+/// differ only in what they do with the answer: the broadcast logs it, the
+/// direct responder sends it back to the node that asked.
+#[derive(Debug)]
+pub(crate) enum TeeAdmissionVerdict {
+    /// The credential does not certify the attested key.
+    ForeignCredential,
+    /// The quote or its nonce binding did not verify.
+    AttestationInvalid,
+    /// Verification passed; this is what `admit_tee_node` did with it.
+    Decided(TeeAdmissionOutcome),
+}
+
+impl TeeAdmissionVerdict {
+    /// The requester is in: this node admitted it, or it already was a member.
+    pub(crate) const fn admitted(&self) -> bool {
+        matches!(
+            self,
+            Self::Decided(TeeAdmissionOutcome::Admitted | TeeAdmissionOutcome::AlreadyMember)
+        )
+    }
+
+    /// Why the requester is not in, for its log. Empty when [`Self::admitted`].
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::ForeignCredential => {
+                "the account credential does not certify the attested key".to_owned()
+            }
+            Self::AttestationInvalid => "the attestation did not verify".to_owned(),
+            Self::Decided(TeeAdmissionOutcome::NotAVoucher) => {
+                "this node is neither an admin nor an admitted TEE of the namespace, so it may not \
+                 vouch; ask another admitter"
+                    .to_owned()
+            }
+            Self::Decided(TeeAdmissionOutcome::Admitted | TeeAdmissionOutcome::AlreadyMember) => {
+                String::new()
+            }
+        }
+    }
+}
+
 /// Handle a `TeeAttestationAnnounce` broadcast on a namespace gossip topic.
 ///
 /// Verifies the TDX quote, checks measurements against the group's TEE admission
 /// policy, and publishes a `MemberJoinedViaTeeAttestation` governance op if valid.
+/// Nobody is waiting on the answer, so it is logged and dropped.
 pub async fn handle_tee_attestation_announce(
     context_client: &calimero_context_client::client::ContextClient,
     source: libp2p::PeerId,
@@ -42,6 +88,35 @@ pub async fn handle_tee_attestation_announce(
     group_id_bytes: [u8; 32],
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<()> {
+    let verdict = verify_and_admit(
+        context_client,
+        source,
+        quote_bytes,
+        public_key,
+        nonce,
+        group_id_bytes,
+        account,
+    )
+    .await?;
+    tracing::debug!(%source, %public_key, ?verdict, "TEE attestation announce handled");
+    Ok(())
+}
+
+/// Verify one TEE's attestation and, if it passes, have the context manager
+/// admit it.
+///
+/// `Err` is reserved for the refusals `admit_tee_node` raises (policy mismatch,
+/// reused quote, no policy set) and for faults. Everything that is an ordinary
+/// answer comes back as a [`TeeAdmissionVerdict`].
+pub(crate) async fn verify_and_admit(
+    context_client: &calimero_context_client::client::ContextClient,
+    source: libp2p::PeerId,
+    quote_bytes: Vec<u8>,
+    public_key: PublicKey,
+    nonce: [u8; 32],
+    group_id_bytes: [u8; 32],
+    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+) -> eyre::Result<TeeAdmissionVerdict> {
     let group_id = ContextGroupId::from(group_id_bytes);
 
     // The credential arrives unauthenticated on a gossip message, so it is
@@ -57,7 +132,7 @@ pub async fn handle_tee_attestation_announce(
             %public_key,
             "TEE announcement carried a credential that is not the attested key's; ignoring"
         );
-        return Ok(());
+        return Ok(TeeAdmissionVerdict::ForeignCredential);
     }
 
     // Without the `mock-attestation` feature there is no mock path: every quote
@@ -87,7 +162,7 @@ pub async fn handle_tee_attestation_announce(
             nonce_verified = verification_result.nonce_verified,
             "TEE attestation verification failed"
         );
-        return Ok(());
+        return Ok(TeeAdmissionVerdict::AttestationInvalid);
     }
 
     let quote_hash: [u8; 32] = Sha256::digest(&quote_bytes).into();
@@ -139,11 +214,14 @@ pub async fn handle_tee_attestation_announce(
             rtmr3,
             tcb_status,
             is_mock,
-            evidence: Some(calimero_context_client::group::TeeAuthorityEvidencePayload {
-                quote: quote_bytes,
-                collateral,
-                attested_at,
-            }),
+            evidence: Some(
+                calimero_context_client::group::TeeAuthorityEvidencePayload {
+                    quote: quote_bytes,
+                    collateral,
+                    attested_at,
+                },
+            ),
         })
         .await
+        .map(TeeAdmissionVerdict::Decided)
 }

@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.11.0-rc.44"
+version = "0.11.0-rc.46"
 exclude = [
     "./crates/git-hooks",
     "./apps/abi_conformance",
@@ -25,6 +25,7 @@ exclude = [
     "./apps/migration-harness-example",
     "./apps/sorted-kv-store",
     "./apps/sorted-set-store",
+    "./apps/authored-sorted-kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
@@ -140,6 +141,7 @@ members = [
     "./apps/migration-harness-example",
     "./apps/sorted-kv-store",
     "./apps/sorted-set-store",
+    "./apps/authored-sorted-kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_client::group::AdmitTeeNodeRequest;
+use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
@@ -13,7 +13,8 @@ use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    GroupKeyring, MembershipRepository, NamespaceRepository, TeeAdmissionPolicyRead,
+    GroupKeyring, MembershipPolicy, MembershipRepository, NamespaceRepository,
+    TeeAdmissionPolicyRead,
 };
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
@@ -94,7 +95,10 @@ async fn deliver_group_key_to_member(
 ///
 /// Peers verify it offline at apply, which is what lets them treat the TEE as
 /// the TEE authority without trusting this node's check of its quote.
-#[expect(clippy::too_many_arguments, reason = "one publish, each argument distinct")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one publish, each argument distinct"
+)]
 async fn publish_authority_evidence(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -147,10 +151,36 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let (_signer, node_sk) = match self.resolve_signer(&group_id) {
+        let (signer, node_sk) = match self.resolve_signer(&group_id) {
             Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+
+        // Every member node receives the announce, but only an admin or an
+        // already-admitted TEE may vouch for it — peers refuse the op from
+        // anyone else (`require_tee_attestation_verifier`). Stand down here,
+        // before publishing an op that could never apply anywhere. Not an
+        // error: on most member nodes this is the expected outcome, and the
+        // admission is left to a node that may vouch.
+        let signer_account =
+            match crate::member_account::require(&self.datastore, &group_id, &signer) {
+                Ok(account) => account,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+        match MembershipPolicy::new(&self.datastore, group_id)
+            .is_tee_attestation_verifier(&signer_account)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                debug!(
+                    %member,
+                    ?group_id,
+                    "not an admin or admitted TEE here; leaving the TEE admission to one"
+                );
+                return ActorResponse::reply(Ok(TeeAdmissionOutcome::NotAVoucher));
+            }
+            Err(err) => return ActorResponse::reply(Err(err)),
+        }
 
         let policy = match calimero_governance_store::read_tee_admission_policy(
             &self.datastore,
@@ -214,10 +244,24 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         if !policy.allowed_rtmr0.is_empty() && !policy.allowed_rtmr0.iter().any(|a| a == &rtmr0) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR0 not in policy allowlist")));
         }
-        if !policy.allowed_rtmr1.is_empty() && !policy.allowed_rtmr1.iter().any(|a| a == &rtmr1) {
+        // RTMR1 and RTMR2 are MANDATORY, for RTMR3's sake (see below). RTMR3 is
+        // extended from public inputs, so it only proves which image ran if the
+        // kernel (RTMR1) and the command line + initrd (RTMR2) that ran before
+        // `calimero-init` are pinned too; otherwise a custom kernel or initrd
+        // can extend RTMR3 with a locked profile's string. RTMR0 (the VM's
+        // hardware configuration) stays optional.
+        if policy.allowed_rtmr1.is_empty() || policy.allowed_rtmr2.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "TEE admission policy has an empty allowed_rtmr1 or allowed_rtmr2 — both must be \
+                 specified. RTMR3 is extended from public inputs, so it only identifies the image \
+                 when the kernel (RTMR1) and command line + initrd (RTMR2) are pinned too. Take \
+                 the values from the release's published-mrtds.json."
+            )));
+        }
+        if !policy.allowed_rtmr1.iter().any(|a| a == &rtmr1) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR1 not in policy allowlist")));
         }
-        if !policy.allowed_rtmr2.is_empty() && !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
+        if !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR2 not in policy allowlist")));
         }
         // RTMR3 IS MANDATORY, and it is the only field that pins the image.
@@ -298,7 +342,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 Err(e) => return ActorResponse::reply(Err(e)),
             };
             let Some(evidence) = evidence.filter(|_| !has_evidence) else {
-                return ActorResponse::reply(Ok(()));
+                return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
             let datastore = self.datastore.clone();
             let node_client = self.node_client.clone();
@@ -315,7 +359,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         member,
                         evidence,
                     )
-                    .await
+                    .await?;
+                    Ok(TeeAdmissionOutcome::AlreadyMember)
                 }
                 .into_actor(self),
             );
@@ -484,7 +529,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 // handler) has neither admin authority nor the member's
                 // signing key, so it can't do it here.
 
-                Ok(())
+                Ok(TeeAdmissionOutcome::Admitted)
             }
             .into_actor(self),
         )

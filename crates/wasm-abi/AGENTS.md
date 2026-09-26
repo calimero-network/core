@@ -48,7 +48,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | `TypeRef` | enum (untagged) | `Reference { $ref }`, `Scalar(ScalarType)`, `Collection { collection, crdt_type, inner_type }` |
 | `ScalarType` | enum (`kind` tag) | `Bool`, `I32`, `I64`, `U32`, `U64`, `F32`, `F64`, `String`, `Bytes { size, encoding }`, `Unit` |
 | `CollectionType` | enum (`kind` tag) | `List { items }`, `Map { key, value }` (key custom-(de)serialized to accept a bare `"string"`), `Record { fields }`, `Tuple { elements }` (positional, so `(K, V)` describes `[k, v]` rather than a record's `{"0":k,"1":v}`) |
-| `CrdtCollectionType` | enum (`#[non_exhaustive]`) | `LwwRegister`, `Counter`, `Vector`, `UnorderedMap`, `SortedMap`, `AuthoredMap`, `UnorderedSet`, `SortedSet`, `ReplicatedGrowableArray`, `FugueText`, `AuthoredVector`, `SharedStorage` |
+| `CrdtCollectionType` | enum (`#[non_exhaustive]`) | `LwwRegister`, `Counter`, `Vector`, `UnorderedMap`, `SortedMap`, `AuthoredMap`, `AuthoredSortedMap`, `UnorderedSet`, `SortedSet`, `ReplicatedGrowableArray`, `FugueText`, `AuthoredVector`, `SharedStorage` |
 | `CollectionCategory` | enum | `Convergent` / `Replayable` / `IdentityGated` - classification returned by `collection_category()`, exhaustively matched (no wildcard) so a new `CrdtCollectionType` variant fails to compile until categorized |
 | `MethodIntent` | enum, `#[default] Unspecified` | `ReadOnly` (`#[app::view]`), `Mutating`, `Unspecified` (fail-safe: treated as write lock) |
 | `XCallCallers` | enum, `#[default] AnyInNamespace` | Who may call an `#[app::xcall]` method: `AnyInNamespace` or `SameApp` (`from_same_app`) |
@@ -58,7 +58,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 `collection_category()` is the single source of truth for migration safety, consumed by both `downgrade.rs` (the core L1 upgrade gate) and the `mero-abi diff` CI lint:
 - **Convergent** (`LwwRegister`, `Vector`, `UnorderedMap`/`Set`, `SortedMap`/`Set`) - a migrate may freely rebuild these; no per-entry provenance to lose.
 - **Replayable** (`Counter`, `ReplicatedGrowableArray`, `FugueText`) - per-executor/per-position state; converges only if the migrate body replays deterministically.
-- **IdentityGated** (`AuthoredMap`, `AuthoredVector`, `SharedStorage`) - ownership/writer-set derived from `env::executor_id()`; a naive rebuild diverges and downgrading to a non-gated type silently strips authorship/ACL.
+- **IdentityGated** (`AuthoredMap`, `AuthoredSortedMap`, `AuthoredVector`, `SharedStorage`) - ownership/writer-set derived from `env::executor_id()`; a naive rebuild diverges and downgrading to a non-gated type silently strips authorship/ACL.
 
 `Manifest::extract_state_schema()` slices out just `state_root` plus its transitive type dependencies (walking `TypeDef`/`TypeRef` recursively) - the form the node embeds and reads, separate from the full method/event ABI.
 

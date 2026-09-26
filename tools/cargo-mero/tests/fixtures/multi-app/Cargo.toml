@@ -13,6 +13,7 @@ edition = "2021"
 package = "com.example.multi-app"
 name = "Multi App"
 description = "cargo-mero multi-service pipeline fixture"
+guide = "GUIDE.md"
 
 [[workspace.metadata.calimero.services]]
 name = "svc-a"

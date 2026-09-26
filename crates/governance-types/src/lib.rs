@@ -716,7 +716,8 @@ pub enum GroupOp {
     /// measurements and TCB status against the admission policy. An op that
     /// fails is never applied, so the log holds only verified evidence.
     ///
-    /// Namespace-root only. Any member may publish it, because it proves itself.
+    /// Namespace-root only, published by a TEE voucher: an admin or an
+    /// already-admitted TEE, the same rule as the admission itself.
     TeeAuthorityEvidence {
         /// The admitted TEE's account.
         member: AccountId,

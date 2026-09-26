@@ -29,7 +29,7 @@ cargo install --path tools/cargo-mero      # picked up as `cargo mero`
 
 | Command | Purpose |
 | ------- | ------- |
-| `new <name>` | Scaffold an app (Cargo.toml, lib.rs with a TestHost test) |
+| `new <name>` | Scaffold an app (Cargo.toml, lib.rs with a TestHost test, GUIDE.md) |
 | `build` | Emit the ABI from `src/*.rs`, compile to wasm32, `wasm-opt -Oz`, embed the ABI as `calimero_abi_v1` |
 | `test` | Run node-free TestHost unit tests + `tests/converge.rs` |
 | `bundle` | Build all services, write + sign `manifest.json`, tar the `.mpk` |

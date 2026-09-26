@@ -46,10 +46,11 @@ where
     storage: Element,
 }
 
-impl<K, V> AuthoredMap<K, V, MainStorage>
+impl<K, V, S> AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     /// Creates a new, empty `AuthoredMap` with a random ID.
     ///
@@ -57,7 +58,7 @@ where
     /// `new_with_field_name`.
     pub fn new() -> Self {
         Self {
-            inner: UnorderedMap::new(),
+            inner: <UnorderedMap<K, V, S>>::new(),
             storage: Element::new(None),
         }
     }
@@ -68,7 +69,9 @@ where
         let mut storage = Element::new_with_field_name(None, Some(field_name.to_string()));
         storage.metadata.crdt_type = Some(CrdtType::UserStorage);
         Self {
-            inner: UnorderedMap::new_with_field_name(&format!("__authored_map_{field_name}")),
+            inner: <UnorderedMap<K, V, S>>::new_with_field_name(&format!(
+                "__authored_map_{field_name}"
+            )),
             storage,
         }
     }
@@ -91,10 +94,11 @@ where
     }
 }
 
-impl<K, V> Default for AuthoredMap<K, V, MainStorage>
+impl<K, V, S> Default for AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn default() -> Self {
         Self::new()

@@ -9,6 +9,7 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../templates/converge.rs.tmpl"),
     ),
     ("README.md", include_str!("../templates/README.md.tmpl")),
+    ("GUIDE.md", include_str!("../templates/GUIDE.md.tmpl")),
     (".gitignore", include_str!("../templates/gitignore.tmpl")),
 ];
 

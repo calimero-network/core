@@ -222,11 +222,24 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Member)
         .is_ok());
 
+    // Only an admin or an already-admitted TEE may vouch for an attestation:
+    // peers trust the verifier's claimed measurements, so plain membership
+    // would let any member mint a "TEE" for an arbitrary key.
+    let tee = AccountId::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+    MembershipRepository::new(&store)
+        .add_member(&gid, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    assert!(membership.require_tee_attestation_verifier(&admin).is_ok());
+    assert!(membership.require_tee_attestation_verifier(&tee).is_ok());
+    let err = membership
+        .require_tee_attestation_verifier(&member)
+        .expect_err("a plain member must not vouch for a TEE");
+    assert!(matches!(
+        err.downcast_ref::<MembershipError>(),
+        Some(MembershipError::TeeVerifierNotAuthorized)
+    ));
     assert!(membership
-        .require_tee_attestation_verifier_membership(&member)
-        .is_ok());
-    assert!(membership
-        .require_tee_attestation_verifier_membership(&outsider)
+        .require_tee_attestation_verifier(&outsider)
         .is_err());
     assert!(membership.read_required_tee_admission_policy().is_err());
 
@@ -281,8 +294,8 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec!["r0".to_owned()],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["x".to_owned()],
+            allowed_rtmr2: vec!["y".to_owned()],
             allowed_rtmr3: vec!["z".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: false,
@@ -360,8 +373,8 @@ fn membership_policy_rules_report_rejection_reasons() {
     let policy = TeeAllowlistPolicy {
         allowed_mrtd: vec!["m-ok".to_owned()],
         allowed_rtmr0: vec!["r0-ok".to_owned()],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
+        allowed_rtmr1: vec!["anything".to_owned()],
+        allowed_rtmr2: vec!["anything".to_owned()],
         allowed_rtmr3: vec!["anything".to_owned()],
         allowed_tcb_statuses: vec!["ok".to_owned()],
         accept_mock: false,
@@ -512,8 +525,8 @@ fn validate_allowlists_empty_tcb_enforces_secure_default() {
     let policy = TeeAllowlistPolicy {
         allowed_mrtd: vec!["m-ok".to_owned()],
         allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
+        allowed_rtmr1: vec!["x".to_owned()],
+        allowed_rtmr2: vec!["x".to_owned()],
         allowed_rtmr3: vec!["x".to_owned()],
         allowed_tcb_statuses: vec![],
         accept_mock: false,

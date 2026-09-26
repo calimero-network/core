@@ -77,7 +77,7 @@ meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a 
 <Steps>
 
 1. **Scaffold.**
-   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`. There is no build script - `cargo mero build` emits the ABI itself.
+   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), `tests/converge.rs`, and `GUIDE.md` (the app's guide for agents, with the five sections the registry requires). There is no build script - `cargo mero build` emits the ABI itself.
 
    ```
    $ cargo mero new my-app
@@ -193,6 +193,7 @@ Keys are kebab-case.
 | `description` | `metadata.description` | omitted |
 | `author` | `metadata.author` | omitted |
 | `icon` | `metadata.icon` | required unless `--no-icon` |
+| `guide` | `metadata.guide` | omitted |
 | `license` | `metadata.license` | omitted |
 | `tags` | `metadata.tags` | empty |
 | `min-runtime-version` | `minRuntimeVersion` | `0.1.0` |
@@ -203,6 +204,9 @@ Keys are kebab-case.
 | `services` | `services[]` | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
 
 `icon` is a filesystem path (resolved against the directory of the table that declares it), not the manifest value itself: `cargo mero bundle` reads the PNG and writes a base64-encoded `data:image/png;base64,...` URI into `metadata.icon`.
+`guide` is a path to the app's Markdown guide for agents, resolved exactly like `icon`; `cargo mero bundle` reads the file as UTF-8 and writes its full text into `metadata.guide`.
+A missing or unreadable file fails the bundle and names the path it tried.
+cargo-mero does not check the guide's content; the app registry defines its required sections when you publish.
 `slug` names the deep-link handler (`https://links.calimero.network/<slug>/...`) and defaults to `package` when unset.
 `author` is not just displayed: the registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) on publish, and refuses a new version of the package when it doesn't match.
 

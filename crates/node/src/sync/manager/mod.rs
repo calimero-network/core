@@ -180,6 +180,9 @@ pub struct SyncManager {
     >,
     pub(super) open_subgroup_join_rx: Option<OpenSubgroupJoinRx>,
     pub(super) relay_sealed_join_rx: Option<RelaySealedJoinRx>,
+    /// Set by [`SyncManager::with_tee_admission_rx`]; the node wires it in
+    /// `run.rs`, and a manager built without it never takes that driver arm.
+    pub(super) tee_admission_rx: Option<super::driver::TeeAdmissionRx>,
 
     /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
     /// Set via [`SyncManager::set_session_handles`] after the actor is
@@ -254,6 +257,7 @@ impl Clone for SyncManager {
             ns_join_rx: None,
             open_subgroup_join_rx: None,
             relay_sealed_join_rx: None,
+            tee_admission_rx: None,
             // Cloned `SyncManager`s never drive the `start` loop, so
             // they don't need a session-dispatch handle or a results
             // receiver. The bridge holds its own clone of the
@@ -314,6 +318,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::NamespaceJoinRequest { .. }
             | InitPayload::OpenSubgroupJoinRequest { .. }
             | InitPayload::RelaySealedJoinRequest { .. }
+            | InitPayload::TeeAdmissionRequest { .. }
     )
 }
 
@@ -450,6 +455,7 @@ impl SyncManager {
             ns_join_rx: Some(ns_join_rx),
             open_subgroup_join_rx: Some(open_subgroup_join_rx),
             relay_sealed_join_rx: Some(relay_sealed_join_rx),
+            tee_admission_rx: None,
             session_tx: None,
             session_result_rx: None,
             metrics: None,
@@ -504,6 +510,14 @@ impl SyncManager {
     /// any clones are taken; recording sites resolve `self.metrics` via
     /// [`SyncManager::metrics`] (which falls back to a no-op collector if
     /// this hasn't been called).
+    /// Attach the receiver for direct TEE admission requests
+    /// ([`NodeClient::request_tee_admission`]). A separate setter rather than a
+    /// `new` argument, like the `SyncClient` half, so that test harnesses that
+    /// never exercise it need not build the channel.
+    pub(crate) fn with_tee_admission_rx(&mut self, rx: super::driver::TeeAdmissionRx) {
+        self.tee_admission_rx = Some(rx);
+    }
+
     pub(crate) fn set_metrics(&mut self, metrics: Arc<dyn super::metrics::SyncMetricsCollector>) {
         self.metrics = Some(metrics);
     }
@@ -577,6 +591,7 @@ impl SyncManager {
             ns_join_rx,
             open_subgroup_join_rx,
             relay_sealed_join_rx,
+            self.tee_admission_rx.take(),
             session_tx,
             session_result_rx,
             self.sync_config.frequency,
@@ -3519,7 +3534,8 @@ impl SyncManager {
             let pop_context = match &payload {
                 InitPayload::NamespaceJoinRequest { namespace_id, .. }
                 | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. }
-                | InitPayload::RelaySealedJoinRequest { namespace_id, .. } => {
+                | InitPayload::RelaySealedJoinRequest { namespace_id, .. }
+                | InitPayload::TeeAdmissionRequest { namespace_id, .. } => {
                     ContextId::from(*namespace_id)
                 }
                 _ => context_id,
@@ -3537,6 +3553,12 @@ impl SyncManager {
                 | InitPayload::OpenSubgroupJoinRequest {
                     joiner_public_key, ..
                 } => *joiner_public_key == their_identity,
+                // The key being admitted must be the key that proved itself on
+                // this transport, or a dialer could prove one identity and
+                // relay another replica's attestation.
+                InitPayload::TeeAdmissionRequest { public_key, .. } => {
+                    *public_key == their_identity
+                }
                 _ => true,
             };
             if !pop_ok || !join_binding_ok {
@@ -3615,6 +3637,32 @@ impl SyncManager {
         {
             self.handle_relay_sealed_join_request(*namespace_id, signed_op_bytes, stream, nonce)
                 .await?;
+            return Ok(Some(()));
+        }
+
+        // Namespace-scoped with a sentinel context id, like the joins above, and
+        // not membership-gated: the requester is by definition not a member yet.
+        // What admits it is the attestation it carries, checked exactly as the
+        // broadcast receiver checks it.
+        if let InitPayload::TeeAdmissionRequest {
+            namespace_id,
+            quote_bytes,
+            public_key,
+            nonce: attestation_nonce,
+            account,
+        } = payload
+        {
+            self.handle_tee_admission_request(
+                peer_id,
+                namespace_id,
+                quote_bytes,
+                public_key,
+                attestation_nonce,
+                account,
+                stream,
+                nonce,
+            )
+            .await?;
             return Ok(Some(()));
         }
 
@@ -3881,6 +3929,9 @@ impl SyncManager {
             InitPayload::RelaySealedJoinRequest { .. } => {
                 unreachable!("handled by early return above")
             }
+            InitPayload::TeeAdmissionRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
             InitPayload::GroupKeyRequest { .. }
             | InitPayload::GroupKeyRequestWithResponderProof { .. } => {
                 unreachable!("handled by early return above")
@@ -3995,6 +4046,13 @@ impl super::driver::SyncDriverDispatch for SyncManager {
         params: calimero_node_primitives::client::RelaySealedJoinParams,
     ) -> eyre::Result<()> {
         SyncManager::initiate_relay_sealed_join(self, params).await
+    }
+
+    async fn initiate_tee_admission(
+        &self,
+        params: calimero_node_primitives::client::TeeAdmissionParams,
+    ) -> eyre::Result<PeerId> {
+        SyncManager::initiate_tee_admission(self, params).await
     }
 }
 
@@ -4266,6 +4324,16 @@ mod init_pop_gate_tests {
                 namespace_id: [0; 32],
                 signed_op_bytes: vec![],
             },
+            // Admits the key it names, so the dialer must prove it holds that
+            // key on this transport — otherwise it could relay another
+            // replica's attestation and have it admitted on its own stream.
+            InitPayload::TeeAdmissionRequest {
+                namespace_id: [0; 32],
+                quote_bytes: vec![],
+                public_key: [0; 32].into(),
+                nonce: [0; 32],
+                account: calimero_context::test_support::credential(&[0x42; 32].into()),
+            },
         ];
         for p in &requires {
             assert!(
@@ -4524,6 +4592,7 @@ mod handshake;
 mod namespace_join;
 mod namespace_sync;
 mod relay_sealed_join;
+mod tee_admission;
 
 // Re-exported for the `tests` submodule, which reaches these namespace helpers
 // via `super::super::` (they now live in `namespace_sync`).

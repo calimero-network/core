@@ -485,8 +485,15 @@ pub(crate) fn signer_account_for(
     // The same TEE-authority mapping the delta path's resolver applies. Without
     // it, a TEE's `TeeOnly` writes reach a peer by delta but are refused when
     // they arrive by repair, so a peer that catches up by repair never gets them.
-    // A lookup error refuses, as a missing binding does above.
-    calimero_governance_store::writer_account(store, &group_id, &signer, account).ok()
+    //
+    // A lookup error keeps the signer's own account rather than refusing. Only a
+    // positive answer maps anyone to the TEE authority, so the fallback can never
+    // grant a write; refusing instead turned a transient governance read error on
+    // a joining node into a repair it could never complete.
+    Some(
+        calimero_governance_store::writer_account(store, &group_id, &signer, account)
+            .unwrap_or(account),
+    )
 }
 
 /// What a receiver should do with one incoming leaf.

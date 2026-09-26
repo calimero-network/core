@@ -1185,14 +1185,29 @@ fn outer_type_ident(ty: &Type) -> Option<String> {
 }
 
 /// Whether a field type is a single-owner identity-gated collection that the
-/// one-tap `migrate_my_entries()` sweeps. Matches `AuthoredMap`/`AuthoredVector`
+/// one-tap `migrate_my_entries()` sweeps. Matches the authored collections
 /// only. `SharedStorage` (group writer-set) is deliberately excluded: its value
 /// converts via the organic writer-write substrate, and a batch re-write would
 /// force a `T: Clone` bound on every shared value type.
 fn is_identity_gated_collection(ty: &Type) -> bool {
     matches!(
         outer_type_ident(ty).as_deref(),
-        Some("AuthoredMap" | "AuthoredVector")
+        Some("AuthoredMap" | "AuthoredSortedMap" | "AuthoredVector")
+    )
+}
+
+/// Whether the sweep should drive this field through its KEYS rather than its
+/// indices — true for the map-shaped authored collections, false for
+/// `AuthoredVector`.
+///
+/// A predicate rather than an equality test against `"AuthoredMap"`, because
+/// that equality is exactly what went stale when the second map-shaped authored
+/// collection arrived: `AuthoredSortedMap` would have fallen through to the
+/// vector branch and been swept by index.
+fn is_authored_map_shaped(ty: &Type) -> bool {
+    matches!(
+        outer_type_ident(ty).as_deref(),
+        Some("AuthoredMap" | "AuthoredSortedMap")
     )
 }
 
@@ -1221,7 +1236,7 @@ fn generate_migrate_my_entries_impl(
         if !is_identity_gated_collection(field_type) {
             continue;
         }
-        let is_authored_map = outer_type_ident(field_type).as_deref() == Some("AuthoredMap");
+        let is_authored_map = is_authored_map_shaped(field_type);
 
         let access = if let Some(name) = &field.ident {
             quote! { self.#name }
@@ -1480,6 +1495,7 @@ fn generate_assign_deterministic_ids_impl(
                     | "Ownable"
                     | "AccessControl"
                     | "AuthoredMap"
+                    | "AuthoredSortedMap"
             )
         )
     }

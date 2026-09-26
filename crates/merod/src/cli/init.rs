@@ -1,6 +1,6 @@
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, IdentityConfig, NetworkConfig,
-    NodeMode, ServerConfig, SyncConfig,
+    NodeMode, ServerConfig, SyncConfig, TeeConfig,
 };
 use calimero_context::config::ContextConfig;
 use calimero_governance_store::NodeDeviceRepository;
@@ -14,7 +14,9 @@ use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
+use calimero_store::db::Database;
 use calimero_store::Store;
+use calimero_store_encryption::EncryptedDatabase;
 use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
 use core::net::IpAddr;
@@ -27,9 +29,11 @@ use mero_auth::config::{
 use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 use tracing::{debug, info, warn};
 use url::Url;
+use zeroize::Zeroizing;
 
 use super::admin_creds::AdminCredArgs;
 use super::auth_mode::AuthModeArg;
@@ -353,6 +357,24 @@ pub struct InitCommand {
     /// default written into a fresh `config.toml`.
     #[clap(long)]
     pub registry_url: Option<Url>,
+
+    /// Encrypt the datastore from its first write, with a storage key released
+    /// by the mero-kms-phala service at URL.
+    ///
+    /// For TEE nodes. `init` is where the node's signing identity and account
+    /// root are written, so a store encrypted only from the first `run` would
+    /// already hold both in plaintext -- and, having been written unencrypted,
+    /// could not be opened encrypted at all. With this flag the key is fetched
+    /// before anything is written, and `[tee.kms.phala]` is saved so `run`
+    /// fetches the same key.
+    ///
+    /// The KMS is verified against the signed mero-tee release policy, so the
+    /// release must be named (`MERO_TEE_VERSION`, `MERO_KMS_VERSION` or
+    /// `MERO_KMS_RELEASE_TAG`); `init` refuses otherwise. An unverified KMS
+    /// could hand out a key its operator knows, which would make the encryption
+    /// decorative.
+    #[clap(long, value_name = "URL")]
+    pub kms_url: Option<Url>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -468,6 +490,16 @@ impl InitCommand {
             )?;
         }
 
+        let identity = Keypair::generate_ed25519();
+
+        // The storage key, fetched BEFORE anything is written -- and before a
+        // `--force` wipe -- so a KMS that cannot be reached, or does not verify,
+        // leaves the node home exactly as it was. See `--kms-url`.
+        let kms = match self.kms_url.clone() {
+            Some(url) => Some(fetch_init_storage_key(url, &identity).await?),
+            None => None,
+        };
+
         // Destructive re-init. Only reachable with `--force`: the
         // credential-free no-op and the corrupt-config bail both returned in
         // the short-circuit above, and the credentials are already validated.
@@ -539,7 +571,6 @@ impl InitCommand {
             info!("Created the admin account (user: {username})");
         }
 
-        let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
         let mut listen: Vec<Multiaddr> = vec![];
@@ -667,6 +698,10 @@ impl InitCommand {
             DEFAULT_REGISTRY_URL.parse().expect("valid URL")
         }));
 
+        // Saved so `merod run` fetches the same key: the KMS derives it from this
+        // node's peer id, so every run gets back the key `init` encrypted with.
+        config.tee = kms.as_ref().map(|(tee, _)| tee.clone());
+
         // `save` writes config.toml atomically and owner-only (0600); the file
         // holds the private key, so this keeps it unreadable to other users.
         config.save(&path).await?;
@@ -674,7 +709,10 @@ impl InitCommand {
         // `config` is fully consumed below; `datastore_path` is cloned so the
         // store's owned copy is independent.
         let datastore_path = path.join(&config.datastore.path);
-        let store = Store::open::<RocksDB>(&StoreConfig::new(datastore_path.clone()))?;
+        let store = match kms {
+            Some((_, key)) => open_encrypted_store(datastore_path.clone(), key)?,
+            None => Store::open::<RocksDB>(&StoreConfig::new(datastore_path.clone()))?,
+        };
 
         // The key this node signs ops with, minted here rather than on first join.
         //
@@ -747,6 +785,45 @@ impl InitCommand {
 
         Ok(())
     }
+}
+
+/// Fetch the storage key for a node being initialised with `--kms-url`.
+///
+/// The same key fetch `merod run` performs, with one difference: `run` accepts
+/// a KMS verified against allowlists in config.toml, and at `init` there are
+/// none -- so the signed release policy is required, and without it `init`
+/// refuses rather than trusting whatever answers at the URL.
+async fn fetch_init_storage_key(
+    url: Url,
+    identity: &Keypair,
+) -> EyreResult<(TeeConfig, Zeroizing<Vec<u8>>)> {
+    let Some(policy) = crate::kms_policy::resolve_policy().await? else {
+        bail!(
+            "--kms-url needs the signed mero-tee release policy to verify the KMS, and no \
+             release is named. Set MERO_TEE_VERSION (or MERO_KMS_VERSION / \
+             MERO_KMS_RELEASE_TAG) to the release this node runs. Without it the KMS is \
+             unverified, and a key from an unverified KMS may be known to whoever runs it."
+        );
+    };
+    let tee = TeeConfig::phala(url);
+    let peer_id = identity.public().to_peer_id().to_base58();
+    info!(%peer_id, "Fetching the storage key from the KMS before writing the datastore");
+    let key = crate::kms::fetch_storage_key(&tee.kms, &peer_id, identity, Some(&policy))
+        .await
+        .wrap_err(
+            "could not fetch the storage key from the KMS; nothing was written, so the node \
+             can be initialised again once the KMS is reachable",
+        )?;
+    Ok((tee, Zeroizing::new(key)))
+}
+
+/// Open a fresh datastore encrypted under `key`, the way `merod run` opens it.
+fn open_encrypted_store(path: camino::Utf8PathBuf, key: Zeroizing<Vec<u8>>) -> EyreResult<Store> {
+    let inner = RocksDB::open(&StoreConfig::new(path))?;
+    // `to_vec` hands `wrap` its own copy; `KeyManager` zeroizes it on drop and
+    // `key` is wiped when it goes out of scope here.
+    let encrypted = EncryptedDatabase::wrap(inner, key.to_vec())?;
+    Ok(Store::new(Arc::new(encrypted)))
 }
 
 /// Parse `--account-root` as hex.
@@ -830,6 +907,111 @@ mod tests {
         assert!(
             InitCommand::try_parse_from(["merod", "--registry-url", "not a url"]).is_err(),
             "an unparseable override must fail arg parsing, not fall back"
+        );
+    }
+
+    /// `--kms-url` with no release to verify the KMS against is refused, and
+    /// refused before anything is written.
+    ///
+    /// Without the signed release policy the KMS would go unverified, and a key
+    /// from an unverified KMS may be known to whoever runs the endpoint -- the
+    /// store would look encrypted and not be. Refusing before any write matters
+    /// as much: config.toml is what marks a node initialised, so a home left
+    /// with one would never be retried.
+    #[tokio::test]
+    async fn kms_url_without_a_named_release_is_refused_before_any_write() {
+        // Read-only on the environment: skip rather than mutate process env,
+        // which other tests read concurrently.
+        if [
+            "MERO_KMS_RELEASE_TAG",
+            "MERO_KMS_VERSION",
+            "MERO_TEE_VERSION",
+        ]
+        .iter()
+        .any(|var| std::env::var(var).is_ok_and(|value| !value.trim().is_empty()))
+        {
+            eprintln!("skipping: a KMS release is named in this environment");
+            return;
+        }
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let home = camino::Utf8PathBuf::from_path_buf(home.path().to_path_buf())
+            .expect("utf8 tempdir path");
+        let root_args = crate::cli::RootArgs {
+            home: home.clone(),
+            node_name: Some(camino::Utf8PathBuf::from("tee")),
+        };
+        let init = InitCommand::try_parse_from(["merod", "--kms-url", "https://kms.example/"])
+            .expect("--kms-url parses");
+
+        let err = init
+            .run(root_args)
+            .await
+            .expect_err("an unverifiable KMS must not be used to encrypt the store");
+        assert!(
+            format!("{err:#}").contains("no release is named"),
+            "the refusal must say what is missing; got: {err:#}"
+        );
+        assert!(
+            !home.join("tee").join("config.toml").exists(),
+            "a refused init must not leave a config.toml behind"
+        );
+        assert!(
+            !home.join("tee").join("data").exists(),
+            "a refused init must not create a datastore"
+        );
+    }
+
+    /// What `init` writes through [`super::open_encrypted_store`] is ciphertext
+    /// on disk: readable with the key, unreadable without it.
+    ///
+    /// The point of `--kms-url` is that the signing identity and account root
+    /// are never written in plaintext, so this provisions exactly those, the
+    /// way `init` does, and then reads the same RocksDB directory both ways.
+    #[test]
+    fn an_encrypted_init_store_holds_the_account_root_as_ciphertext() {
+        use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+        use calimero_store::config::StoreConfig;
+        use calimero_store::Store;
+        use calimero_store_rocksdb::RocksDB;
+        use zeroize::Zeroizing;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("data")).expect("utf8 tempdir path");
+        let key = Zeroizing::new(vec![0x5a; 32]);
+
+        let provisioned = {
+            let store = super::open_encrypted_store(path.clone(), key.clone())
+                .expect("open a fresh encrypted store");
+            let _signing_key = NamespaceRepository::new(&store)
+                .provision_node_identity()
+                .expect("provision the signing identity");
+            NodeDeviceRepository::new(&store)
+                .provision_account_root()
+                .expect("provision the account root")
+                .account()
+        };
+
+        {
+            let plain = Store::open::<RocksDB>(&StoreConfig::new(path.clone()))
+                .expect("the directory still opens as plain RocksDB");
+            let read = NodeDeviceRepository::new(&plain).account_root();
+            assert!(
+                !matches!(read, Ok(Some(ref root)) if root.account() == provisioned),
+                "without the key the account root must not be readable"
+            );
+        }
+
+        let reopened = super::open_encrypted_store(path, key).expect("reopen with the same key");
+        let root = NodeDeviceRepository::new(&reopened)
+            .account_root()
+            .expect("read the account root")
+            .expect("an account root was provisioned");
+        assert_eq!(
+            root.account(),
+            provisioned,
+            "the key reads back what init wrote"
         );
     }
 

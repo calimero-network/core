@@ -89,6 +89,20 @@ elsewhere: the certificate must be signed over that key BEFORE the join, and the
 did not exist until the join it was meant to enable. `participate_in` still mints for
 nodes initialised by older binaries, and reuses the provisioned key otherwise.
 
+**On a TEE node the store is encrypted from `init`, or not at all.** `merod init
+--kms-url <URL>` fetches the storage key from mero-kms-phala *before* writing the
+signing identity and account root, opens the store encrypted, and saves
+`[tee.kms.phala]` so `run` fetches the same key (the KMS derives it from the peer
+id). Adding `[tee]` to a node that was initialised without it does not work, and not
+only because those keys already sit in plaintext. The encrypted store decrypts every
+read, so the plaintext rows `init` wrote cannot be read back and `run` fails. The KMS
+is verified against the signed release policy, so `--kms-url` requires
+`MERO_TEE_VERSION` (or `MERO_KMS_VERSION` / `MERO_KMS_RELEASE_TAG`) and refuses
+without it; `run` would accept an unverified KMS when neither the release nor config
+allowlists are set, and `init` deliberately does not. The key is fetched before the
+`--force` wipe and before anything is written, so a failed fetch leaves the home as
+it was.
+
 ```bash
 # Print the 24-word phrase to stdout.
 merod --node node1 account export

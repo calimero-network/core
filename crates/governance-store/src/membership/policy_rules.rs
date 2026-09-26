@@ -58,6 +58,10 @@ pub const TEE_REJECT_RTMR0: &str = "rtmr0_not_allowed";
 pub const TEE_REJECT_RTMR1: &str = "rtmr1_not_allowed";
 pub const TEE_REJECT_RTMR2: &str = "rtmr2_not_allowed";
 pub const TEE_REJECT_RTMR3: &str = "rtmr3_not_allowed";
+/// The POLICY names no RTMR1 — an incomplete policy, not a refused node.
+pub const TEE_REJECT_RTMR1_EMPTY: &str = "rtmr1_allowlist_empty";
+/// The POLICY names no RTMR2 — an incomplete policy, not a refused node.
+pub const TEE_REJECT_RTMR2_EMPTY: &str = "rtmr2_allowlist_empty";
 /// The POLICY names no RTMR3 — an incomplete policy, not a refused node.
 pub const TEE_REJECT_RTMR3_EMPTY: &str = "rtmr3_allowlist_empty";
 /// The POLICY names no MRTD — likewise the policy, not the node.
@@ -80,6 +84,19 @@ pub enum MembershipPolicyRejection {
     /// always refused this; the op-apply path skipped it, so the two disagreed
     /// about what the same stored policy meant.
     MrtdAllowlistEmpty,
+    /// The policy names no RTMR1 at all.
+    ///
+    /// Required for the same reason as RTMR3: see [`Self::Rtmr2AllowlistEmpty`].
+    Rtmr1AllowlistEmpty,
+    /// The policy names no RTMR2 at all.
+    ///
+    /// RTMR3 is extended by `calimero-init` with a string built from public
+    /// inputs, so it only proves which image ran if everything that ran BEFORE
+    /// `calimero-init` is pinned too. The firmware measures the kernel into
+    /// RTMR1 and the kernel command line and initrd into RTMR2; leave either
+    /// unpinned and a custom kernel or initrd can extend RTMR3 with the locked
+    /// profile's string and pass as that image.
+    Rtmr2AllowlistEmpty,
     /// The policy names no RTMR3 at all.
     ///
     /// Distinct from `Rtmr3NotAllowed` because the remedy is the opposite: the
@@ -130,6 +147,18 @@ impl std::fmt::Display for MembershipPolicyValidationError {
                  no MRTD. An empty allowlist is not a wildcard -- set allowed_mrtd from the \
                  release's published-mrtds.json. A mock fleet names the all-zero measurement \
                  that create_mock_quote reports, exactly as it already does for RTMR3"
+            }
+            MembershipPolicyRejection::Rtmr1AllowlistEmpty => {
+                "MemberJoinedViaTeeAttestation rejected: the group's TEE admission policy names \
+                 no RTMR1. RTMR1 measures the kernel; without it a custom kernel can replay the \
+                 RTMR3 extension of a locked image. Set allowed_rtmr1 from the release's \
+                 published-mrtds.json"
+            }
+            MembershipPolicyRejection::Rtmr2AllowlistEmpty => {
+                "MemberJoinedViaTeeAttestation rejected: the group's TEE admission policy names \
+                 no RTMR2. RTMR2 measures the kernel command line and initrd; without it a \
+                 custom initrd can replay the RTMR3 extension of a locked image. Set \
+                 allowed_rtmr2 from the release's published-mrtds.json"
             }
             MembershipPolicyRejection::Rtmr3AllowlistEmpty => {
                 "MemberJoinedViaTeeAttestation rejected: the group's TEE admission policy names \
@@ -210,7 +239,7 @@ pub fn validate_tee_attestation_allowlists(
     // publish an admission its peers then accept, so the allowlist would bind
     // whoever happened to ask and nobody else.
     //
-    // Empty is a refusal rather than a skip, unlike the RTMR0-2 loop below.
+    // Empty is a refusal rather than a skip, unlike RTMR0 in the loop below.
     // MRTD identifies the firmware, not the image -- it is identical across
     // every profile of a release and constant across most releases -- so RTMR3
     // is the only field that names which image ran. A policy without it admits
@@ -218,6 +247,25 @@ pub fn validate_tee_attestation_allowlists(
     if policy.allowed_rtmr3.is_empty() {
         return Err(MembershipPolicyValidationError {
             reason: MembershipPolicyRejection::Rtmr3AllowlistEmpty,
+        });
+    }
+
+    // RTMR1 and RTMR2 are mandatory for RTMR3's sake. `calimero-init` extends
+    // RTMR3 with `calimero-rtmr3-v2:<role>:<profile>:<root_hash>` -- public
+    // inputs -- so RTMR3 only proves which image ran if the code that ran
+    // before `calimero-init` is pinned as well. The firmware measures the
+    // kernel into RTMR1 and the command line + initrd into RTMR2. With either
+    // unpinned, a custom kernel or initrd can extend RTMR3 with a locked
+    // profile's string and pass as that image. RTMR0 (the VM's hardware
+    // configuration) stays optional: it varies with machine shape, not image.
+    if policy.allowed_rtmr1.is_empty() {
+        return Err(MembershipPolicyValidationError {
+            reason: MembershipPolicyRejection::Rtmr1AllowlistEmpty,
+        });
+    }
+    if policy.allowed_rtmr2.is_empty() {
+        return Err(MembershipPolicyValidationError {
+            reason: MembershipPolicyRejection::Rtmr2AllowlistEmpty,
         });
     }
 
@@ -281,8 +329,8 @@ mod rtmr3_is_mandatory {
         TeeAllowlistPolicy {
             allowed_mrtd: vec![MRTD.to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["00".to_owned()],
+            allowed_rtmr2: vec!["00".to_owned()],
             allowed_rtmr3,
             allowed_tcb_statuses: vec!["UpToDate".to_owned()],
             accept_mock: false,
@@ -366,6 +414,52 @@ mod rtmr3_is_mandatory {
         assert!(
             err.to_string().contains("names \nno RTMR3") || err.to_string().contains("no RTMR3")
         );
+    }
+
+    /// RTMR3 is extended from public inputs, so it only names the image when
+    /// the kernel (RTMR1) and command line + initrd (RTMR2) are pinned too:
+    /// with either unpinned, a custom kernel or initrd can extend RTMR3 with a
+    /// locked profile's string and reproduce exactly the value the policy names.
+    #[test]
+    fn a_policy_naming_no_rtmr1_or_rtmr2_admits_nobody() {
+        let mut p = policy(vec![RTMR3_LOCKED.to_owned()]);
+        p.allowed_rtmr1 = vec![];
+        let mut c = claims(RTMR3_LOCKED);
+        c.rtmr1 = "a-kernel-this-policy-never-named";
+        let err = validate_tee_attestation_allowlists(&p, &c)
+            .expect_err("an empty allowed_rtmr1 must refuse, not skip");
+        assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr1AllowlistEmpty);
+        assert!(err.to_string().contains("no RTMR1"), "got: {err}");
+
+        let mut p = policy(vec![RTMR3_LOCKED.to_owned()]);
+        p.allowed_rtmr2 = vec![];
+        let mut c = claims(RTMR3_LOCKED);
+        c.rtmr2 = "an-initrd-this-policy-never-named";
+        let err = validate_tee_attestation_allowlists(&p, &c)
+            .expect_err("an empty allowed_rtmr2 must refuse, not skip");
+        assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr2AllowlistEmpty);
+        assert!(err.to_string().contains("no RTMR2"), "got: {err}");
+    }
+
+    /// A pinned RTMR3 does not survive an unpinned-then-mismatched kernel: the
+    /// replayed-RTMR3 case, with the kernel the policy actually names.
+    #[test]
+    fn a_locked_rtmr3_on_a_different_kernel_is_refused() {
+        let mut c = claims(RTMR3_LOCKED);
+        c.rtmr1 = "a-custom-kernel";
+        let err = validate_tee_attestation_allowlists(&policy(vec![RTMR3_LOCKED.to_owned()]), &c)
+            .expect_err("a matching RTMR3 on an unapproved kernel must not be admitted");
+        assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr1NotAllowed);
+    }
+
+    /// RTMR0 measures the VM's hardware configuration, which varies with
+    /// machine shape rather than image, so it stays optional.
+    #[test]
+    fn an_empty_rtmr0_allowlist_is_still_a_skip() {
+        let mut c = claims(RTMR3_LOCKED);
+        c.rtmr0 = "any-machine-shape";
+        validate_tee_attestation_allowlists(&policy(vec![RTMR3_LOCKED.to_owned()]), &c)
+            .expect("an unpinned RTMR0 must not refuse");
     }
 
     #[test]

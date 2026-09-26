@@ -88,6 +88,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "tracks per-entry authorship for multi-writer convergence; use `UnorderedMap` instead.",
     ),
     (
+        "AuthoredSortedMap",
+        "tracks per-entry authorship for multi-writer convergence; use `SortedMap` instead.",
+    ),
+    (
         "AuthoredVector",
         "tracks per-entry authorship for multi-writer convergence; use `Vector` instead.",
     ),
@@ -675,6 +679,7 @@ mod tests {
         "UserStorage<String>",
         "FrozenStorage<String>",
         "AuthoredMap<String, String>",
+        "AuthoredSortedMap<String, String>",
         "AuthoredVector<String>",
     ];
 

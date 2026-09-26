@@ -43,9 +43,28 @@ where
     /// in the group. Used by the mero-tee fleet sidecar after the manager
     /// assigns it to a group via /api/fleet/should-join.
     pub async fn fleet_join(&self, group_id: String) -> Result<FleetJoinResponse> {
+        self.fleet_join_with_admitters(group_id, Vec::new()).await
+    }
+
+    /// [`Self::fleet_join`], also asking `admitter_addrs` for admission
+    /// directly before relying on the broadcast.
+    ///
+    /// The addresses are libp2p multiaddrs ending in `/p2p/<peer id>`, and name
+    /// who to ask, never who may admit: each peer applies the vouching rule.
+    pub async fn fleet_join_with_admitters(
+        &self,
+        group_id: String,
+        admitter_addrs: Vec<String>,
+    ) -> Result<FleetJoinResponse> {
         let response = self
             .connection
-            .post("admin-api/tee/fleet-join", FleetJoinRequest { group_id })
+            .post(
+                "admin-api/tee/fleet-join",
+                FleetJoinRequest {
+                    group_id,
+                    admitter_addrs,
+                },
+            )
             .await?;
         Ok(response)
     }

@@ -1701,7 +1701,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     let tee_member_account = enrol_member(&store, &ns_gid, &tee_member);
 
     // Replica bootstrap state: namespace meta + the verifier recorded as an
-    // admin member (so `require_tee_attestation_verifier_membership` passes —
+    // admin member (so `require_tee_attestation_verifier` passes —
     // in the real fleet-join flow this row is seeded from the KeyDelivery
     // signer by `seed_bootstrap_admin_if_absent`), plus the group key the
     // replica received via KeyDelivery so it can decrypt the group ops.
@@ -1736,8 +1736,8 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
@@ -1838,6 +1838,120 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     );
 }
 
+/// Peers never see the quote behind a `MemberJoinedViaTeeAttestation` — only
+/// the measurements its signer claims — so who may sign it decides who gets the
+/// group key. A plain `Member` must not be able to admit an arbitrary key as a
+/// TEE by copying measurements the policy allows; an already-admitted TEE may
+/// vouch for the next one.
+#[test]
+fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+
+    let namespace_id = [0xB4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let member_sk = PrivateKey::random(&mut rng);
+    let tee_sk = PrivateKey::random(&mut rng);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    let member_account = enrol_member(&store, &ns_gid, &member_sk.public_key());
+    let tee_account = enrol_member(&store, &ns_gid, &tee_sk.public_key());
+    let forged_account = enrol_member(&store, &ns_gid, &PublicKey::from([0xF1; 32]));
+    let vouched_account = enrol_member(&store, &ns_gid, &PublicKey::from([0xF2; 32]));
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    let repo = MembershipRepository::new(&store);
+    repo.add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    repo.add_member(&ns_gid, &member_account, GroupMemberRole::Member)
+        .unwrap();
+    repo.add_member(&ns_gid, &tee_account, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    let group_key = [0x5Au8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let sign_group_op = |sk: &PrivateKey, nonce: u64, op: &GroupOp| {
+        SignedNamespaceOp::sign(
+            sk,
+            namespace_id.into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+    let join = |member: AccountId, quote_hash: [u8; 32]| GroupOp::MemberJoinedViaTeeAttestation {
+        member,
+        quote_hash,
+        mrtd: "m1".to_owned(),
+        rtmr0: "r0".to_owned(),
+        rtmr1: "r1".to_owned(),
+        rtmr2: "r2".to_owned(),
+        rtmr3: "r3".to_owned(),
+        tcb_status: "UpToDate".to_owned(),
+        role: GroupMemberRole::ReadOnlyTee,
+    };
+
+    let policy = GroupOp::TeeAdmissionPolicySet {
+        allowed_mrtd: vec!["m1".to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec!["r1".to_owned()],
+        allowed_rtmr2: vec!["r2".to_owned()],
+        allowed_rtmr3: vec!["r3".to_owned()],
+        allowed_tcb_statuses: vec![],
+        accept_mock: false,
+    };
+    gov.apply_signed_op(&sign_group_op(&admin_sk, 1, &policy))
+        .expect("the admin sets the TEE admission policy");
+
+    // A plain member forges an admission with policy-matching measurements.
+    let _refused = gov.apply_signed_op(&sign_group_op(
+        &member_sk,
+        1,
+        &join(forged_account, [0x01; 32]),
+    ));
+    assert_eq!(
+        repo.role_of(&ns_gid, &forged_account).unwrap(),
+        None,
+        "a plain member must not be able to admit a TEE"
+    );
+    assert!(
+        !is_tee_admitted_identity(&store, &ns_gid, &forged_account).unwrap(),
+        "a refused admission must leave no admission record"
+    );
+
+    // An already-admitted TEE vouches for the next one.
+    gov.apply_signed_op(&sign_group_op(
+        &tee_sk,
+        1,
+        &join(vouched_account, [0x02; 32]),
+    ))
+    .expect("an admitted TEE may vouch for another TEE");
+    assert_eq!(
+        repo.role_of(&ns_gid, &vouched_account).unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "a TEE vouched for by an admitted TEE is admitted"
+    );
+}
+
 #[test]
 fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // Regression: a TEE replica that bootstraps the namespace ROOT via the
@@ -1930,8 +2044,8 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
@@ -8428,8 +8542,8 @@ fn a_tee_admission_binds_the_replicas_device() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             // RTMR3 is mandatory: it is the only measurement that identifies the
             // image, since MRTD is shared by every profile of a release. This
             // fixture is about device binding, so it names the value its own
@@ -8472,8 +8586,8 @@ fn a_tee_admission_binds_the_replicas_device() {
                 quote_hash: [0x11; 32],
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
-                rtmr1: String::new(),
-                rtmr2: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
                 rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
@@ -8540,8 +8654,8 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             // RTMR3 is mandatory: it is the only measurement that identifies the
             // image, since MRTD is shared by every profile of a release. This
             // fixture is about device binding, so it names the value its own
@@ -8584,8 +8698,8 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
                 quote_hash: [0x11; 32],
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
-                rtmr1: String::new(),
-                rtmr2: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
                 rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
@@ -11626,4 +11740,177 @@ fn a_buffered_link_folds_after_a_target_application_it_reaches_transitively() {
     for link_signer_sorts_first in [true, false] {
         replay_link_after_target_application(link_signer_sorts_first, true);
     }
+}
+
+/// An invitation signed by `inviter_sk` for the namespace root, naming
+/// `admitter` and admitting at `invited_role`, with the endorsement that
+/// admitter gives `member` for it.
+fn endorsed_invitation_from(
+    inviter_sk: &PrivateKey,
+    admitter_sk: &PrivateKey,
+    ns_id: calimero_governance_types::NamespaceId,
+    member: &calimero_account::AccountId,
+    invited_role: u8,
+    invitation_nonce: [u8; 32],
+) -> (
+    calimero_context_config::types::SignedGroupOpenInvitation,
+    Box<calimero_governance_types::AdmitterEndorsement>,
+) {
+    use sha2::{Digest, Sha256};
+
+    let mut signed = test_signed_invitation_with_admitters(
+        inviter_sk,
+        ContextGroupId::from(ns_id.to_bytes()),
+        0,
+        vec![crate::test_fixtures::account_for(&admitter_sk.public_key())],
+    );
+    signed.invitation.invited_role = invited_role;
+    signed.invitation.invitation_nonce = invitation_nonce;
+    let inv_bytes = borsh::to_vec(&signed.invitation).unwrap();
+    signed.inviter_signature = hex::encode(
+        inviter_sk
+            .sign(&Sha256::digest(&inv_bytes))
+            .unwrap()
+            .to_bytes(),
+    );
+    let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+        admitter_sk,
+        &ns_id.to_bytes(),
+        member,
+        &signed.invitation.invitation_nonce,
+    )
+    .expect("sign admitter endorsement");
+    (signed, Box::new(endorsement))
+}
+
+/// Parked relayed joins replay in causal order, not in the op log's key order.
+///
+/// THE FIELD FAILURE. A replica that takes the namespace key late — a TEE fleet
+/// node, admitted by attestation and handed the key by pull — parks every
+/// relayed join it received before then, and replays them when the key lands.
+/// Y's join names X as its inviter, so its apply gate resolves X's key through
+/// the binding X's OWN join records. The log is keyed by delta id, a content
+/// hash, so walking it in key order replays Y before X about half the time; Y
+/// is refused with "invitation inviter .. lacks permission", the refusal is
+/// logged and skipped, and nothing re-drives it. The replica then holds no
+/// binding for Y, and refuses every invitation Y mints with the same message —
+/// which is what an admitter hands back to a joiner as "invitation rejected".
+///
+/// Both orderings of the two delta ids are exercised, so a pass cannot come
+/// from a lucky draw of the hashes.
+async fn replay_relayed_joins_in_causal_order(dependent_sorts_first: bool) {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let case = format!("dependent join sorts first: {dependent_sorts_first}");
+    let (store, _node_client, _ack_router, ns_id, admin_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+
+    // X joins as an admin, invited by the namespace admin; Y is invited by X.
+    // The admin names itself the admitter on both and endorses both.
+    let x_sk = PrivateKey::from([0x61u8; 32]);
+    let x = crate::test_fixtures::account_for(&x_sk.public_key());
+    let y_sk = PrivateKey::from([0x62u8; 32]);
+    let y = crate::test_fixtures::account_for(&y_sk.public_key());
+
+    let join = |sk: &PrivateKey, member, (signed_invitation, endorsement)| {
+        let mut op = SignedNamespaceOp::sign(
+            sk,
+            ns_id,
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                joined_at: 0,
+                account: crate::test_fixtures::real_join_account(&sk.public_key()),
+            }),
+        )
+        .expect("the joiner signs");
+        op.admitter_endorsement = Some(endorsement);
+        op
+    };
+    let x_join = join(
+        &x_sk,
+        x,
+        endorsed_invitation_from(&admin_sk, &admin_sk, ns_id, &x, 0, [0x71; 32]),
+    );
+    let y_join = join(
+        &y_sk,
+        y,
+        endorsed_invitation_from(&x_sk, &admin_sk, ns_id, &y, 1, [0x72; 32]),
+    );
+
+    // Sealed under a key this replica does not hold yet, and carried by a
+    // remote relayer (the retry pass skips this node's own ops). Y's envelope
+    // cites X's, which is how the relayer's DAG recorded them. The relayer's key
+    // is searched for one that puts the two delta ids in the order this case
+    // needs.
+    let namespace_key = [0x5Bu8; 32];
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let envelope = |relayer: &PrivateKey, parents: Vec<[u8; 32]>, nonce: u64, inner| {
+        SignedNamespaceOp::sign(
+            relayer,
+            ns_id,
+            parents,
+            nonce,
+            NamespaceOp::RootRelaySealed {
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_relayed_op(&namespace_key, inner).expect("seal"),
+            },
+        )
+        .expect("the relayer signs the envelope")
+    };
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let (x_outer, y_outer) = (0u8..=255)
+        .find_map(|seed| {
+            let relayer = PrivateKey::from([seed; 32]);
+            let x_outer = envelope(&relayer, vec![], 1, &x_join);
+            let y_outer = envelope(&relayer, vec![x_outer.content_hash().unwrap()], 2, &y_join);
+            let y_first = y_outer.content_hash().unwrap() < x_outer.content_hash().unwrap();
+            (y_first == dependent_sorts_first).then_some((x_outer, y_outer))
+        })
+        .expect("some relayer key yields each ordering");
+
+    for outer in [&x_outer, &y_outer] {
+        let parked = gov.apply_signed_op(outer).expect("the op is accepted");
+        assert!(
+            !parked.key_unwrap_failures.is_empty(),
+            "{case}: precondition: without the key the relay must park"
+        );
+    }
+
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("the key is delivered");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the retry pass runs");
+
+    let members = MembershipRepository::new(&store);
+    assert!(
+        members.is_member(&ns_gid, &x).expect("read membership"),
+        "{case}: the inviter's join must land"
+    );
+    assert!(
+        members.is_member(&ns_gid, &y).expect("read membership"),
+        "{case}: the join X invited must land too; replayed ahead of X's own join, \
+         its inviter resolves to no account and it is refused for good"
+    );
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &y_sk.public_key())
+            .expect("read binding"),
+        Some(y),
+        "{case}: and Y's key must be bound, or every invitation Y mints is refused here"
+    );
+}
+
+#[actix::test]
+async fn relayed_joins_replay_causally_when_the_dependent_sorts_first() {
+    replay_relayed_joins_in_causal_order(true).await;
+}
+
+#[actix::test]
+async fn relayed_joins_replay_causally_when_the_dependent_sorts_last() {
+    replay_relayed_joins_in_causal_order(false).await;
 }
