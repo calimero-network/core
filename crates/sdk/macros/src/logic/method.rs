@@ -460,10 +460,13 @@ impl PublicLogicMethod<'_> {
                     params: __params,
                     returns: ::core::option::Option::Some(__returns),
                     returns_nullable: #returns_nullable,
+                    returns_doc: ::core::option::Option::None,
                     errors: ::std::vec![],
                     intent: #intent,
                     xcall_callable: #xcall_callable,
                     xcall_callers: #xcall_callers,
+                    destructive: false,
+                    idempotent: false,
                 });
             }
         }

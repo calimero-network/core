@@ -362,6 +362,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert!(validate_manifest(&manifest).is_ok());
@@ -385,6 +388,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert!(matches!(
@@ -451,6 +457,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert!(validate_manifest(&manifest).is_err());

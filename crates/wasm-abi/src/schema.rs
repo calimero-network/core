@@ -200,6 +200,9 @@ pub struct Method {
     pub returns: Option<TypeRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returns_nullable: Option<bool>,
+    /// What the return value means, from the method's `# Returns` doc section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns_doc: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub errors: Vec<Error>,
     /// Read/write intent declared by the app author. Absent on modules compiled
@@ -217,6 +220,14 @@ pub struct Method {
     /// [`XCallCallers::AnyInNamespace`] so they keep their prior behaviour.
     #[serde(default, skip_serializing_if = "XCallCallers::is_any_in_namespace")]
     pub xcall_callers: XCallCallers,
+    /// Deletes or irreversibly overwrites data (`#[app::destructive]`). A hint for
+    /// callers; the node does not act on it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub destructive: bool,
+    /// Repeating the call with the same arguments has no further effect
+    /// (`#[app::idempotent]`). A hint for callers; the node does not act on it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub idempotent: bool,
 }
 
 /// `skip_serializing_if` predicate for a defaulted `bool` field. serde passes
@@ -850,6 +861,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         // Serialize and deserialize
@@ -882,6 +896,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
@@ -903,6 +920,9 @@ mod tests {
             intent: MethodIntent::ReadOnly,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("read_only"), "expected 'read_only' in {json}");
@@ -920,6 +940,9 @@ mod tests {
             intent: MethodIntent::Mutating,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         };
         let json_mut = serde_json::to_string(&m_mut).unwrap();
         assert!(
@@ -940,6 +963,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         };
         let json2 = serde_json::to_string(&m2).unwrap();
         assert!(
@@ -966,6 +992,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(
@@ -1188,6 +1217,9 @@ mod tests {
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
             xcall_callers: Default::default(),
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
         };
         let json = serde_json::to_value(&documented).unwrap();
         assert_eq!(json["doc"], "Apply a batch.\n\n# Errors\nToo many edits.");
@@ -1277,5 +1309,46 @@ mod tests {
                 }],
             }
         );
+    }
+
+    #[test]
+    fn method_hints_round_trip_and_are_omitted_by_default() {
+        let hinted = Method {
+            name: "wipe".to_owned(),
+            doc: None,
+            params: vec![],
+            returns: Some(TypeRef::u32()),
+            returns_nullable: None,
+            returns_doc: Some("How many entries were removed.".to_owned()),
+            errors: vec![],
+            intent: MethodIntent::Mutating,
+            xcall_callable: false,
+            xcall_callers: Default::default(),
+            destructive: true,
+            idempotent: true,
+        };
+        let json = serde_json::to_value(&hinted).unwrap();
+        assert_eq!(json["returns_doc"], "How many entries were removed.");
+        assert_eq!(json["destructive"], true);
+        assert_eq!(json["idempotent"], true);
+        let back: Method = serde_json::from_value(json).unwrap();
+        assert_eq!(back.returns_doc, hinted.returns_doc);
+        assert!(back.destructive && back.idempotent);
+
+        let plain = Method {
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
+            ..hinted
+        };
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        for key in ["returns_doc", "destructive", "idempotent"] {
+            assert!(
+                !plain_json.contains(key),
+                "{key} must be omitted: {plain_json}"
+            );
+        }
+        let old: Method = serde_json::from_str(r#"{"name":"wipe","params":[]}"#).unwrap();
+        assert!(old.returns_doc.is_none() && !old.destructive && !old.idempotent);
     }
 }

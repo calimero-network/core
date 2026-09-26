@@ -14,6 +14,9 @@ fn method(name: &str) -> Method {
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
         xcall_callers: Default::default(),
+        returns_doc: None,
+        destructive: false,
+        idempotent: false,
     }
 }
 

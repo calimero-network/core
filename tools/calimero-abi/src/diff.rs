@@ -770,4 +770,37 @@ mod tests {
         let value = serde_json::to_value(field).unwrap();
         assert_eq!(value[DOC_KEY], "x", "{value}");
     }
+
+    #[test]
+    fn method_docs_and_hints_are_never_findings() {
+        let with_method = |extra: &str| {
+            manifest_raw(&UNDOCUMENTED.replace(
+                r#""methods":[]"#,
+                &format!(r#""methods":[{{"name":"wipe","params":[]{extra}}}]"#),
+            ))
+        };
+        let plain = with_method("");
+        let hinted = with_method(
+            r#","doc":"Wipes.","returns_doc":"Nothing left.","destructive":true,"idempotent":true"#,
+        );
+        assert!(diff_checked(&hinted, &plain).unwrap().is_empty());
+        assert!(diff_checked(&plain, &hinted).unwrap().is_empty());
+    }
+
+    #[test]
+    fn field_literally_named_doc_type_change_is_reported() {
+        let manifest_with = |kind: &str| {
+            manifest_raw(&format!(
+                r#"{{"schema_version":"wasm-abi/1","types":{{
+                    "Root":{{"kind":"record","fields":[{{"name":"doc","type":{{"kind":"{kind}"}}}}]}}
+                }},"methods":[],"events":[],"state_root":"Root"}}"#
+            ))
+        };
+        let baseline = manifest_with("u64");
+        let current = manifest_with("string");
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].field, "doc");
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
 }
