@@ -154,6 +154,15 @@
 
 ### Fixed
 
+- **Quotes from a debug TD are refused.** A TD launched with
+  `TDATTRIBUTES.DEBUG` reports the same MRTD and RTMRs as the production TD it
+  came from, but its host can read and write its memory, so no measurement
+  allowlist could tell them apart. `verify_attestation` now reports
+  `quote_verified == false` for a debug TD, so `is_valid()` and `policy_valid()`
+  refuse it everywhere they are used: TEE admission, merod's KMS check, mero-kms
+  key release and `calimero-tee-verify`. Production GCP TDs set only
+  `SEPT_VE_DISABLE`; a test pins that the real quote fixture is not flagged.
+
 - **merod refuses a KMS that is not running a released compose file**
   (mero-tee#338). Node keys are derived from the KMS's dstack *app* key, so
   anything running under that app can derive them, and the app owner can upgrade

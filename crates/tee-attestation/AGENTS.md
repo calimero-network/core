@@ -111,7 +111,7 @@ Generation and verification are asymmetric and live in separate modules for a re
 **Generate** (`src/generate.rs`): report data (`nonce || app_hash`, 64 bytes) goes in, a `Quote` comes out. On Linux this is a real hardware call through `configfs-tsm` into the TDX module; the returned raw bytes are re-parsed with `tdx_quote::Quote::from_bytes` purely to convert them into the serializable `Quote` struct for transport/storage. Off Linux, `generate_attestation` silently degrades to `generate_mock_attestation` - same function signature, different guarantees, so callers must always check `result.is_mock` before trusting anything.
 
 **Verify** (`src/verify.rs`): a `Quote`'s raw bytes go in, a `VerificationResult` comes out. Three independent checks compose into `is_valid()`:
-1. `quote_verified` - cryptographic: DCAP verify() against collateral fetched from Intel's PCS, using current wall-clock time for freshness.
+1. `quote_verified` - cryptographic: DCAP verify() against collateral fetched from Intel's PCS, using current wall-clock time for freshness, **and** the TD is not a debug TD (`TDATTRIBUTES.DEBUG`, bit 0).
 2. `nonce_verified` - `report_data[0..32] == nonce`, defeats replay of an old quote.
 3. `application_hash_verified` - `report_data[32..64] == expected_app_hash`. This argument is **mandatory** (not `Option`) by design: an attestation that doesn't bind to a specific application/identity is meaningless as an authorization artifact, so there is no "skip the binding check" code path.
 
@@ -136,6 +136,7 @@ This crate has no dstack or Phala-specific code - it is a generic TDX quote gene
 
 ## Invariants and Gotchas
 
+- **A debug TD is never crypto-valid**: `TDATTRIBUTES.DEBUG` leaves MRTD and RTMRs unchanged but lets the host read the TD's memory, so no measurement allowlist can catch it. `verify_attestation` folds the check into `quote_verified`, which is what every caller builds on. Do not move it into `policy_valid` alone: the enforcement layers that use `is_valid()` directly (admission, merod's KMS check, mero-kms) would lose it.
 - **App hash binding is not optional at verify time**: both `verify_attestation` and `verify_mock_attestation` take `expected_app_hash: &[u8; 32]` as a required argument, never `Option`. If you're tempted to add a "verify without app hash" convenience function, don't - that would let an attestation for one application be replayed to authorize a different one.
 - **`is_mock` must be checked by every caller of `generate_attestation`**: *under the `mock-attestation` feature* the function silently returns a mock result on non-Linux instead of erroring, so code that assumes "if this returned Ok, it's a real TDX quote" is wrong on any non-Linux build with that feature on (dev laptops, the mock harness). Without the feature (the default, and every release build) the non-Linux body errors instead, so `is_mock` can never be `true` there - but keep the check: it is what makes the caller correct in both configurations.
 - **Mock quotes are format-tagged, not crypto-tagged**: `is_mock_quote` only checks for a 17-byte magic prefix (`MOCK_TDX_QUOTE_V1`). There is no signature distinguishing a mock from a real quote beyond this header - do not rely on it as a security boundary, only as a routing signal for which verify function to call.

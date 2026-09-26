@@ -21,7 +21,13 @@ use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
 /// — is expected to enforce a policy over them. See [`Self::is_valid`].
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
-    /// Whether the quote's cryptographic signature is valid.
+    /// Whether the quote's cryptographic signature is valid and the TD is not a
+    /// debug TD.
+    ///
+    /// A debug TD (`TDATTRIBUTES.DEBUG`) reports the same measurements as the
+    /// production TD it was launched from, but its host can read and write its
+    /// memory. No measurement allowlist can tell the two apart, so the check
+    /// lives here, where every caller inherits it through [`Self::is_valid`].
     pub quote_verified: bool,
     /// Whether the nonce in the report data matches the expected value.
     pub nonce_verified: bool,
@@ -190,6 +196,11 @@ fn tcb_evaluation_data_number_of(tcb_info_json: &str) -> Option<u32> {
     }
 }
 
+/// `TDATTRIBUTES.DEBUG` is bit 0 of the little-endian `TDATTRIBUTES` field.
+fn is_debug_td(tdattributes: &[u8; 8]) -> bool {
+    tdattributes[0] & 1 == 1
+}
+
 /// Verify a TDX attestation quote.
 ///
 /// This performs **crypto/structural verification only**: it checks the DCAP
@@ -271,7 +282,16 @@ pub async fn verify_attestation(
 
     let tcb_evaluation_data_number = tcb_evaluation_data_number_of(&collateral.tcb_info);
 
-    let (quote_verified, tcb_status, advisory_ids) = match verify(quote_bytes, &collateral, now) {
+    let debug_td = is_debug_td(&tdx_quote.body.tdattributes);
+    if debug_td {
+        error!(
+            tdattributes=%hex::encode(tdx_quote.body.tdattributes),
+            "Quote is from a debug TD, whose memory its host can read: REJECTED"
+        );
+    }
+
+    let (signature_verified, tcb_status, advisory_ids) = match verify(quote_bytes, &collateral, now)
+    {
         Ok(verified_report) => {
             info!("Quote cryptographic verification: PASSED");
             info!(
@@ -290,6 +310,7 @@ pub async fn verify_attestation(
             (false, None, Vec::new())
         }
     };
+    let quote_verified = signature_verified && !debug_td;
 
     // Verify nonce matches report_data[0..32]
     let nonce_verified = &report_data[..32] == nonce;
@@ -451,7 +472,31 @@ pub fn verify_mock_attestation(
 mod tests {
     use dcap_qvl::collateral::INTEL_PCS_URL;
 
-    use super::{collateral_source_from, tcb_evaluation_data_number_of};
+    use super::{collateral_source_from, is_debug_td, tcb_evaluation_data_number_of};
+
+    #[test]
+    fn a_td_with_the_debug_bit_set_is_a_debug_td() {
+        assert!(is_debug_td(&[0x01, 0, 0, 0, 0, 0, 0, 0]));
+        // Other attribute bits set alongside DEBUG do not hide it.
+        assert!(is_debug_td(&[0x01, 0, 0, 0, 0x10, 0, 0, 0x40]));
+    }
+
+    #[test]
+    fn other_attribute_bits_are_not_debug() {
+        assert!(!is_debug_td(&[0; 8]));
+        // SEPT_VE_DISABLE (bit 28) is set on production GCP TDs.
+        assert!(!is_debug_td(&[0, 0, 0, 0x10, 0, 0, 0, 0]));
+        // DEBUG is bit 0 of byte 0, not the top bit of the last byte.
+        assert!(!is_debug_td(&[0, 0, 0, 0, 0, 0, 0, 0x01]));
+        assert!(!is_debug_td(&[0x02, 0, 0, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn a_real_production_quote_is_not_a_debug_td() {
+        let quote = tdx_quote::Quote::from_bytes(include_bytes!("../tests/fixtures/tdx_quote"))
+            .expect("fixture parses");
+        assert!(!is_debug_td(&quote.body.tdattributes));
+    }
 
     /// The default must stay Intel PCS. Changing it changes which collateral a
     /// node is judged against, and therefore which hosts it admits.
