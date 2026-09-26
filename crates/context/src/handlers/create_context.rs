@@ -387,6 +387,8 @@ async fn create_context(
         false, // init always writes state
         None,  // context init is never an xcall
         false, // nor a TEE trigger
+        // Nor does it open anything: nothing is sealed to a context not yet made.
+        calimero_runtime::logic::SealingContext::default(),
     )
     .await?;
 

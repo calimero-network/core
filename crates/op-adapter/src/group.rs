@@ -149,6 +149,14 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             scope: ScopeId::from(group.to_bytes()),
             restricted: matches!(mode, VisibilityMode::Restricted),
         }),
+        // TEE authorship plane, folded so the TEE authority resolves at a cut.
+        // `TeeAuthorityEvidence` is not mapped here: its payload is what the
+        // quote proves, and verifying a quote is `calimero-governance-store`'s
+        // job, which decodes that op itself.
+        GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => Some(OpPayload::TeeAuthoringPolicySet {
+            group,
+            allowed_mrtd: allowed_mrtd.clone(),
+        }),
         _ => None,
     }
 }

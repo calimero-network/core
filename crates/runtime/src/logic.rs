@@ -94,6 +94,26 @@ pub struct VMContext<'a> {
     /// by an RPC caller. Gates the enclave-only host functions (`tee_origin`,
     /// `tee_random_bytes`), and is what an `#[app::tee]` method checks.
     pub tee_trigger: bool,
+    /// What this run may do with sealed envelopes: the key it opens them with,
+    /// and the TEE authority keys a `TeeSecret` is sealed to. Set by the node.
+    pub sealing: SealingContext,
+}
+
+/// The keys behind the sealing host functions (`seal_to`, `open_sealed`,
+/// `tee_authority_keys`), supplied by the node for one run.
+///
+/// Held by the host, never copied into guest memory: a guest gets only what an
+/// envelope opens to.
+#[derive(Clone, Debug, Default)]
+pub struct SealingContext {
+    /// The key envelopes sealed to this run's executor open with, or `None`
+    /// when this run may not open any. The node withholds it from a run on a
+    /// TEE node that the TEE scheduler did not fire, so a JSON-RPC call on that
+    /// node cannot read what is sealed to the TEE.
+    pub opener: Option<std::sync::Arc<calimero_primitives::identity::PrivateKey>>,
+    /// The attested keys of the context's TEE authorities, for a TEE-triggered
+    /// run; empty otherwise.
+    pub tee_authority_keys: Vec<[u8; DIGEST_SIZE]>,
 }
 
 impl<'a> VMContext<'a> {
@@ -125,6 +145,7 @@ impl<'a> VMContext<'a> {
             governance_position: None,
             xcall_origin: None,
             tee_trigger: false,
+            sealing: SealingContext::default(),
         }
     }
 }

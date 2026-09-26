@@ -2517,6 +2517,29 @@ impl SyncManager {
                                 continue;
                             }
 
+                            // A revoked device passes the cut check below by
+                            // citing heads from before its revocation, and a head
+                            // has nothing built on it to vouch that anyone
+                            // accepted it earlier (core#4070). Dropped, not
+                            // remembered: if an authorized author later builds on
+                            // it, it arrives again as a parent and is accepted.
+                            if calimero_governance_store::DenyListRepository::new(
+                                &datastore_for_heads,
+                            )
+                            .is_revoked_signer_for_context(&context_id, &author)
+                            .unwrap_or_else(|err| {
+                                warn!(%context_id, %author, %err, "revoked-signer lookup failed; leaving the head to the cut check");
+                                false
+                            }) {
+                                warn!(
+                                    %context_id,
+                                    %author,
+                                    head_id = ?head_id,
+                                    "DAG-catchup: rejecting head delta from a revoked device"
+                                );
+                                continue;
+                            }
+
                             {
                                 use crate::handlers::state_delta::{
                                     authorize_delta_at_edge_projected, resolve_cut_membership,
