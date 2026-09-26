@@ -25,3 +25,21 @@ fn a_request_can_ask_for_the_key_binding() {
             .bind_node_key
     );
 }
+
+#[test]
+fn a_request_can_ask_for_the_transport_key_binding() {
+    let req: TeeAttestRequest = serde_json::from_str(&format!(
+        r#"{{"nonce":"{NONCE}","applicationId":null,"bindTransportKey":true}}"#
+    ))
+    .unwrap();
+    assert!(req.bind_transport_key);
+    assert!(
+        !req.bind_node_key,
+        "the two bindings are asked for separately"
+    );
+    assert!(
+        TeeAttestRequest::new(NONCE.to_owned(), None)
+            .with_transport_key_binding()
+            .bind_transport_key
+    );
+}

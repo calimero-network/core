@@ -213,6 +213,30 @@ pub fn attest_key_binding(app_hash: Option<&[u8; 32]>, public_key: &[u8; 32]) ->
     hasher.finalize().into()
 }
 
+/// Domain separator for [`attest_transport_binding`].
+pub const ATTEST_TRANSPORT_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.transport-key.v1";
+
+/// The value the attest endpoint puts in report data bytes `32..64` when a
+/// client asks it to bind the node's X25519 transport key: SHA-256 over the
+/// domain, the 32 bytes that would have been there otherwise (`inner`: the
+/// key binding, else the app hash, else zeros), and the transport key.
+///
+/// The transport key is what a client encrypts its requests to (the server's
+/// sealed transport). TLS in front of a node ends wherever the operator points
+/// it, so a proxy there reads everything; a request sealed to a key that only
+/// the attested TD holds is unreadable to it. Binding the key into the quote is
+/// what makes "only the attested TD holds it" something a client can check.
+/// Client and node must compute this identically, so both use this function.
+#[must_use]
+pub fn attest_transport_binding(inner: &[u8; 32], transport_key: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(ATTEST_TRANSPORT_BINDING_DOMAIN);
+    hasher.update(inner);
+    hasher.update(transport_key);
+    hasher.finalize().into()
+}
+
 /// Build report data from nonce and optional application hash.
 ///
 /// # Arguments
@@ -232,7 +256,7 @@ pub fn build_report_data(nonce: &[u8; 32], app_hash: Option<&[u8; 32]>) -> [u8; 
 
 #[cfg(test)]
 mod tests {
-    use super::{attest_key_binding, build_report_data};
+    use super::{attest_key_binding, attest_transport_binding, build_report_data};
 
     #[test]
     fn the_key_binding_commits_to_the_key_and_the_app() {
@@ -259,4 +283,36 @@ mod tests {
         let report_data = build_report_data(&[0x33; 32], Some(&bound));
         assert_eq!(&report_data[32..], &bound);
     }
+
+    #[test]
+    fn the_transport_binding_commits_to_the_key_and_what_it_wraps() {
+        let transport = [0x44; 32];
+        let inner = attest_key_binding(Some(&[0x22; 32]), &[0x11; 32]);
+        let bound = attest_transport_binding(&inner, &transport);
+
+        assert_ne!(
+            bound,
+            attest_transport_binding(&inner, &[0x45; 32]),
+            "another key"
+        );
+        assert_ne!(
+            bound,
+            attest_transport_binding(&[0u8; 32], &transport),
+            "the key binding it wraps"
+        );
+        assert_ne!(bound, inner, "never the unwrapped binding");
+    }
+
+    /// Fixed vector, repeated verbatim in mero-js: the two sides are separate
+    /// implementations of one binding, and this keeps them the same one.
+    #[test]
+    fn the_transport_binding_matches_the_published_vector() {
+        assert_eq!(
+            hex::encode(attest_transport_binding(&[0x11; 32], &[0x22; 32])),
+            TRANSPORT_BINDING_VECTOR
+        );
+    }
+
+    const TRANSPORT_BINDING_VECTOR: &str =
+        "30274595433e8afc5d4035e30a2b599d93caf0d470867527f13dc6af92fa12a8";
 }
