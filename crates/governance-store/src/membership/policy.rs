@@ -11,8 +11,8 @@ use super::super::{
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
     TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_MRTD_EMPTY, TEE_REJECT_RTMR0,
-    TEE_REJECT_RTMR1, TEE_REJECT_RTMR2, TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY,
-    TEE_REJECT_TCB_STATUS,
+    TEE_REJECT_RTMR1, TEE_REJECT_RTMR1_EMPTY, TEE_REJECT_RTMR2, TEE_REJECT_RTMR2_EMPTY,
+    TEE_REJECT_RTMR3, TEE_REJECT_RTMR3_EMPTY, TEE_REJECT_TCB_STATUS,
 };
 use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
@@ -187,6 +187,8 @@ impl<'a> MembershipPolicy<'a> {
                 MembershipPolicyRejection::Rtmr1NotAllowed => TEE_REJECT_RTMR1,
                 MembershipPolicyRejection::Rtmr2NotAllowed => TEE_REJECT_RTMR2,
                 MembershipPolicyRejection::Rtmr3NotAllowed => TEE_REJECT_RTMR3,
+                MembershipPolicyRejection::Rtmr1AllowlistEmpty => TEE_REJECT_RTMR1_EMPTY,
+                MembershipPolicyRejection::Rtmr2AllowlistEmpty => TEE_REJECT_RTMR2_EMPTY,
                 MembershipPolicyRejection::Rtmr3AllowlistEmpty => TEE_REJECT_RTMR3_EMPTY,
             };
             record_membership_policy_rejection(reason);

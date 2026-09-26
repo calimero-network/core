@@ -1736,8 +1736,8 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
@@ -1913,8 +1913,8 @@ fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
     let policy = GroupOp::TeeAdmissionPolicySet {
         allowed_mrtd: vec!["m1".to_owned()],
         allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
+        allowed_rtmr1: vec!["r1".to_owned()],
+        allowed_rtmr2: vec!["r2".to_owned()],
         allowed_rtmr3: vec!["r3".to_owned()],
         allowed_tcb_statuses: vec![],
         accept_mock: false,
@@ -2044,8 +2044,8 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             allowed_rtmr3: vec!["r3".to_owned()],
             allowed_tcb_statuses: vec!["ok".to_owned()],
             accept_mock: true,
@@ -8542,8 +8542,8 @@ fn a_tee_admission_binds_the_replicas_device() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             // RTMR3 is mandatory: it is the only measurement that identifies the
             // image, since MRTD is shared by every profile of a release. This
             // fixture is about device binding, so it names the value its own
@@ -8586,8 +8586,8 @@ fn a_tee_admission_binds_the_replicas_device() {
                 quote_hash: [0x11; 32],
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
-                rtmr1: String::new(),
-                rtmr2: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
                 rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
@@ -8654,8 +8654,8 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
             allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
             // RTMR3 is mandatory: it is the only measurement that identifies the
             // image, since MRTD is shared by every profile of a release. This
             // fixture is about device binding, so it names the value its own
@@ -8698,8 +8698,8 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
                 quote_hash: [0x11; 32],
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
-                rtmr1: String::new(),
-                rtmr2: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
                 rtmr3: "r3".to_owned(),
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,

@@ -72,6 +72,22 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                  release, so add the new one when upgrading."
             )));
         }
+        // RTMR1 and RTMR2 are required for RTMR3's sake. `calimero-init` extends
+        // RTMR3 from public inputs, so it only names the image when the kernel
+        // (RTMR1) and the command line + initrd (RTMR2) that ran before it are
+        // pinned too; otherwise a custom kernel or initrd can reproduce a
+        // locked profile's RTMR3. RTMR0 varies with machine shape and stays
+        // optional.
+        if allowed_rtmr1.is_empty() || allowed_rtmr2.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "allowed_rtmr1 and allowed_rtmr2 must each name at least one measurement. RTMR3 \
+                 is extended from public inputs, so it only identifies the image when the kernel \
+                 (RTMR1) and the kernel command line + initrd (RTMR2) are pinned as well -- \
+                 without them a custom kernel or initrd can reproduce a locked profile's RTMR3. \
+                 Take the values for each profile you accept from that release's \
+                 published-mrtds.json."
+            )));
+        }
 
         let preflight = match self.governance_preflight(&group_id, true) {
             Ok(preflight) => preflight,

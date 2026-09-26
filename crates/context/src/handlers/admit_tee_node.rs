@@ -204,10 +204,24 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         if !policy.allowed_rtmr0.is_empty() && !policy.allowed_rtmr0.iter().any(|a| a == &rtmr0) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR0 not in policy allowlist")));
         }
-        if !policy.allowed_rtmr1.is_empty() && !policy.allowed_rtmr1.iter().any(|a| a == &rtmr1) {
+        // RTMR1 and RTMR2 are MANDATORY, for RTMR3's sake (see below). RTMR3 is
+        // extended from public inputs, so it only proves which image ran if the
+        // kernel (RTMR1) and the command line + initrd (RTMR2) that ran before
+        // `calimero-init` are pinned too; otherwise a custom kernel or initrd
+        // can extend RTMR3 with a locked profile's string. RTMR0 (the VM's
+        // hardware configuration) stays optional.
+        if policy.allowed_rtmr1.is_empty() || policy.allowed_rtmr2.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "TEE admission policy has an empty allowed_rtmr1 or allowed_rtmr2 — both must be \
+                 specified. RTMR3 is extended from public inputs, so it only identifies the image \
+                 when the kernel (RTMR1) and command line + initrd (RTMR2) are pinned too. Take \
+                 the values from the release's published-mrtds.json."
+            )));
+        }
+        if !policy.allowed_rtmr1.iter().any(|a| a == &rtmr1) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR1 not in policy allowlist")));
         }
-        if !policy.allowed_rtmr2.is_empty() && !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
+        if !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR2 not in policy allowlist")));
         }
         // RTMR3 IS MANDATORY, and it is the only field that pins the image.
