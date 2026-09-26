@@ -80,7 +80,9 @@ pub enum SubCommands {
     Account(AccountCommand),
     Auth(AuthCommand),
     Config(ConfigCommand),
-    Init(InitCommand),
+    // Boxed: `init` carries far more flags than any other subcommand, and an
+    // unboxed variant sizes the whole enum to it.
+    Init(Box<InitCommand>),
     Kms(KmsCommand),
     #[command(alias = "up")]
     Run(RunCommand),
