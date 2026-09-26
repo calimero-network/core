@@ -25,7 +25,7 @@ pub async fn handler(
     {
         Ok(Some(application_id)) => {
             info!(application_id=%application_id, "Application installed successfully");
-            super::precompile(&state, application_id).await;
+            super::precompile(&state, application_id);
             ApiResponse {
                 payload: InstallApplicationResponse::new(application_id),
             }

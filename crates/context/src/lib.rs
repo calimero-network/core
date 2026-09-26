@@ -425,6 +425,13 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<XCallPolicyMap>>,
 
+    /// Module compiles in flight, keyed like `modules`. A request that needs a
+    /// module already being compiled waits for that compile rather than
+    /// starting a second one: the first request after an install, which
+    /// compiles in the background, then waits only for what is left of it.
+    /// An entry lives only while its compile runs.
+    compiling: HashMap<(BlobId, Option<String>), handlers::execute::SharedCompile>,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -506,6 +513,7 @@ impl ContextManager {
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
             xcall_methods: BoundedCache::new(MAX_CACHED_MODULES, "xcall_methods"),
+            compiling: HashMap::new(),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),

@@ -67,11 +67,12 @@ mod tests {
     use futures_util::io::Cursor;
 
     use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::blobs::BlobId;
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
 
     use super::*;
-    use crate::test_support::actor::over;
+    use crate::test_support::actor;
 
     /// Compiles run on the node's global runtime, which must be multi-threaded;
     /// `actix::test` runs on a current-thread one, so start one beside it.
@@ -95,21 +96,21 @@ mod tests {
     /// The smallest module the runtime accepts: it only exports its memory.
     const WASM: &[u8] = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00";
 
-    #[actix::test]
-    async fn precompiling_fills_the_module_cache_once() {
+    /// A harness with `wasm` installed as a single-wasm application.
+    async fn installed(wasm: &[u8], id: u8) -> (actor::Harness, ApplicationId, BlobId) {
         global_runtime();
         let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
         calimero_governance_store::NodeDeviceRepository::new(&store)
             .provision_account_root()
             .expect("provision the account root an initialised node has");
-        let harness = over(store.clone()).await;
+        let harness = actor::over(store.clone()).await;
 
         let (blob_id, size) = harness
             .node_client
-            .add_blob(Cursor::new(WASM), Some(WASM.len() as u64), None)
+            .add_blob(Cursor::new(wasm), Some(wasm.len() as u64), None)
             .await
             .expect("store the wasm");
-        let application_id = ApplicationId::from([7; 32]);
+        let application_id = ApplicationId::from([id; 32]);
         store
             .handle()
             .put(
@@ -129,7 +130,12 @@ mod tests {
                 ),
             )
             .expect("install the application");
+        (harness, application_id, blob_id)
+    }
 
+    #[actix::test]
+    async fn precompiling_fills_the_module_cache_once() {
+        let (harness, application_id, _) = installed(WASM, 7).await;
         let request = PrecompileApplicationRequest { application_id };
         let first = harness.manager.send(request).await.expect("mailbox");
         assert_eq!(first.expect("precompiles"), 1, "the one module is compiled");
@@ -141,10 +147,30 @@ mod tests {
         );
     }
 
+    /// A request that needs a module while it is being compiled — the first
+    /// context right after an install — waits for that compile instead of
+    /// starting a second one.
+    #[actix::test]
+    async fn requests_during_a_compile_share_it() {
+        // Its own bytes (two memory pages), so its own blob and compile count.
+        const OTHER_WASM: &[u8] =
+            b"\0asm\x01\0\0\0\x05\x03\x01\x00\x02\x07\x0a\x01\x06memory\x02\x00";
+        let (harness, application_id, blob_id) = installed(OTHER_WASM, 8).await;
+        let request = PrecompileApplicationRequest { application_id };
+        let (first, second) =
+            tokio::join!(harness.manager.send(request), harness.manager.send(request));
+        assert!(first.expect("mailbox").is_ok() && second.expect("mailbox").is_ok());
+        assert_eq!(
+            crate::handlers::execute::tests_support::compiles(&blob_id),
+            1,
+            "both requests were served by one compile"
+        );
+    }
+
     #[actix::test]
     async fn precompiling_an_application_not_installed_fails() {
         let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
-        let harness = over(store).await;
+        let harness = actor::over(store).await;
         let outcome = harness
             .manager
             .send(PrecompileApplicationRequest {

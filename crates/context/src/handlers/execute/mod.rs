@@ -1871,53 +1871,34 @@ impl ContextManager {
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let cache_key = (blob_id, service_name.clone());
-        let lookup_key = cache_key.clone();
 
         async {}
             .into_actor(self)
-            .map(move |_, act, _ctx| {
-                if let Some(cached) = act.modules.get(&lookup_key) {
-                    return Either::Left(cached.clone());
+            .then(move |(), act, _ctx| {
+                if let Some(cached) = act.modules.get(&cache_key) {
+                    return actix::fut::ready(Ok(cached.clone()))
+                        .into_actor(act)
+                        .boxed_local();
                 }
-                Either::Right((act.node_client.clone(), act.vm_limits))
-            })
-            .then(move |either, act, _ctx| {
-                let (node_client, vm_limits) = match either {
-                    Either::Left(module) => {
-                        return actix::fut::ready(Ok(module)).into_actor(act).boxed_local()
-                    }
-                    Either::Right(parts) => parts,
-                };
-                async move {
-                    let Some(bytecode) = node_client
-                        .application_bytes_from_blob(&blob_id, service_name.as_deref())
-                        .await?
-                    else {
-                        bail!("bytecode blob {} not found in blobstore", blob_id);
-                    };
-                    // Extract the read-only and xcall method sets from the ABI
-                    // before the bytes move into the compile task. A missing
-                    // manifest is fine: read-only defaults to the write lock,
-                    // and an absent xcall set just leaves the method ungated.
-                    let read_only_set = extract_read_only_set(&bytecode);
-                    let xcall_policies = extract_xcall_policies(&bytecode);
-                    let module = calimero_utils_actix::global_runtime()
-                        .spawn_blocking(move || {
-                            calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
-                        })
-                        .await
-                        .wrap_err("WASM compilation task failed")??;
-                    Ok((module, read_only_set, xcall_policies))
-                }
-                .into_actor(act)
-                .map_ok(
-                    move |(module, read_only_set, xcall_policies): (
-                        calimero_runtime::Module,
-                        _,
-                        _,
-                    ),
-                          act,
-                          _ctx| {
+                // Join a compile already running for this module, or start one.
+                let compile = act
+                    .compiling
+                    .entry(cache_key.clone())
+                    .or_insert_with(|| {
+                        compile_module(
+                            act.node_client.clone(),
+                            act.vm_limits,
+                            blob_id,
+                            service_name,
+                        )
+                    })
+                    .clone();
+                compile
+                    .into_actor(act)
+                    .map(move |compiled, act, _ctx| {
+                        let _ = act.compiling.remove(&cache_key);
+                        let (module, read_only_set, xcall_policies) =
+                            compiled.map_err(|err| eyre::eyre!("{err:?}"))?;
                         let _ = act.modules.insert(cache_key.clone(), module.clone());
                         if let Some(set) = read_only_set {
                             let _ = act.read_only_methods.insert(cache_key.clone(), set);
@@ -1926,10 +1907,9 @@ impl ContextManager {
                         if let Some(policies) = xcall_policies {
                             let _ = act.xcall_methods.insert(cache_key, policies);
                         }
-                        module
-                    },
-                )
-                .boxed_local()
+                        Ok(module)
+                    })
+                    .boxed_local()
             })
             .map_err(|err, _act, _ctx| {
                 error!(?err, "failed to initialize module for execution");
@@ -1937,6 +1917,88 @@ impl ContextManager {
                 err
             })
     }
+}
+
+/// A compiled module with the method sets read from its ABI.
+pub(crate) type CompiledModule = (
+    calimero_runtime::Module,
+    Option<Arc<HashSet<String>>>,
+    Option<Arc<crate::XCallPolicyMap>>,
+);
+
+/// A module compile every request that needs the module can wait on.
+pub(crate) type SharedCompile = futures_util::future::Shared<
+    futures_util::future::LocalBoxFuture<'static, Result<CompiledModule, Arc<eyre::Report>>>,
+>;
+
+/// Counts compiles started per blob, so a test can tell a shared compile from
+/// two.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use calimero_primitives::blobs::BlobId;
+
+    static COMPILES: Mutex<Option<HashMap<BlobId, usize>>> = Mutex::new(None);
+
+    pub(crate) fn count_compile(blob_id: BlobId) {
+        let mut compiles = COMPILES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *compiles
+            .get_or_insert_with(HashMap::new)
+            .entry(blob_id)
+            .or_default() += 1;
+    }
+
+    pub(crate) fn compiles(blob_id: &BlobId) -> usize {
+        let compiles = COMPILES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        compiles
+            .as_ref()
+            .and_then(|c| c.get(blob_id).copied())
+            .unwrap_or(0)
+    }
+}
+
+/// Read a module's bytecode and compile it on the blocking pool.
+fn compile_module(
+    node_client: NodeClient,
+    vm_limits: calimero_runtime::logic::VMLimits,
+    blob_id: calimero_primitives::blobs::BlobId,
+    service_name: Option<String>,
+) -> SharedCompile {
+    use futures_util::FutureExt;
+
+    #[cfg(test)]
+    tests_support::count_compile(blob_id);
+
+    async move {
+        let Some(bytecode) = node_client
+            .application_bytes_from_blob(&blob_id, service_name.as_deref())
+            .await?
+        else {
+            bail!("bytecode blob {} not found in blobstore", blob_id);
+        };
+        // Extract the read-only and xcall method sets from the ABI before the
+        // bytes move into the compile task. A missing manifest is fine:
+        // read-only defaults to the write lock, and an absent xcall set just
+        // leaves the method ungated.
+        let read_only_set = extract_read_only_set(&bytecode);
+        let xcall_policies = extract_xcall_policies(&bytecode);
+        let module = global_runtime()
+            .spawn_blocking(move || {
+                calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
+            })
+            .await
+            .wrap_err("WASM compilation task failed")??;
+        Ok((module, read_only_set, xcall_policies))
+    }
+    .map_err(Arc::new)
+    .boxed_local()
+    .shared()
 }
 
 /// The upgrade target, from this node's one configured source. `false` ⇒ that
