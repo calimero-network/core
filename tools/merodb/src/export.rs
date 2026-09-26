@@ -196,6 +196,7 @@ fn try_decode_collection_entry_from_index(
 
     let TypeDef::Record {
         fields: record_fields,
+        ..
     } = manifest.types.get(root_name)?
     else {
         eprintln!(
@@ -681,6 +682,7 @@ fn decode_state_entry(
     eprintln!("[decode_state_entry] State root type: {root_name}");
     let Some(TypeDef::Record {
         fields: record_fields,
+        ..
     }) = manifest.types.get(root_name)
     else {
         eprintln!("[decode_state_entry] State root type '{root_name}' not found in manifest types");
@@ -2121,7 +2123,7 @@ fn decode_state_root_bfs(
         root_name
     );
 
-    let TypeDef::Record { fields } = manifest
+    let TypeDef::Record { fields, .. } = manifest
         .types
         .get(root_name)
         .ok_or_else(|| eyre::eyre!("State root type '{}' not found in manifest", root_name))?

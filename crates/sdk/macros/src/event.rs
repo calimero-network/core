@@ -144,6 +144,7 @@ fn generate_abi_events_impl(
                 ::calimero_sdk::abi::Event {
                     name: #name.to_owned(),
                     payload: #payload,
+                    doc: ::core::option::Option::None,
                 }
             }
         })

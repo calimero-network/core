@@ -1,6 +1,4 @@
-use calimero_wasm_abi::schema::{
-    Error, Event, Manifest, Method, MethodIntent, TypeDef, TypeRef, Variant,
-};
+use calimero_wasm_abi::schema::{Error, Event, Manifest, Method, TypeDef, TypeRef, Variant};
 use calimero_wasm_abi::validate::validate_manifest;
 
 #[test]
@@ -16,6 +14,7 @@ fn test_invariant_events_use_payload_not_type() {
     manifest.events.push(Event {
         name: "TestEvent".to_string(),
         payload: Some(TypeRef::string()),
+        doc: None,
     });
 
     // This should pass validation
@@ -34,10 +33,12 @@ fn test_invariant_variant_payload_structure() {
     let _ = manifest.types.insert(
         "TestVariant".to_string(),
         TypeDef::Variant {
+            doc: None,
             variants: vec![Variant {
                 name: "TestVariant".to_string(),
                 code: None,
                 payload: Some(TypeRef::string()),
+                doc: None,
             }],
         },
     );
@@ -57,16 +58,11 @@ fn test_invariant_error_payload_structure() {
     // Add a method with error that has payload
     manifest.methods.push(Method {
         name: "test_method".to_string(),
-        params: vec![],
-        returns: None,
-        returns_nullable: None,
         errors: vec![Error {
             code: "TEST_ERROR".to_string(),
             payload: Some(TypeRef::string()),
         }],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should pass validation
@@ -84,18 +80,13 @@ fn test_invariant_variable_bytes_no_size() {
     // Add a method with variable bytes (no size)
     manifest.methods.push(Method {
         name: "test_method".to_string(),
-        params: vec![],
         returns: Some(TypeRef::Scalar(
             calimero_wasm_abi::schema::ScalarType::Bytes {
                 size: None,
                 encoding: None,
             },
         )),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should pass validation
@@ -113,7 +104,6 @@ fn test_invariant_map_string_key() {
     // Add a method with map that has string key
     manifest.methods.push(Method {
         name: "test_method".to_string(),
-        params: vec![],
         returns: Some(TypeRef::Collection {
             collection: calimero_wasm_abi::schema::CollectionType::Map {
                 key: Box::new(TypeRef::Scalar(
@@ -124,11 +114,7 @@ fn test_invariant_map_string_key() {
             crdt_type: None,
             inner_type: None,
         }),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should pass validation
@@ -144,22 +130,21 @@ fn test_invariant_no_dangling_refs() {
     };
 
     // Add a type definition
-    let _ = manifest
-        .types
-        .insert("TestType".to_string(), TypeDef::Record { fields: vec![] });
+    let _ = manifest.types.insert(
+        "TestType".to_string(),
+        TypeDef::Record {
+            doc: None,
+            fields: vec![],
+        },
+    );
 
     // Add a method that references the type
     manifest.methods.push(Method {
         name: "test_method".to_string(),
-        params: vec![],
         returns: Some(TypeRef::Reference {
             ref_: "TestType".to_string(),
         }),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should pass validation
@@ -177,15 +162,10 @@ fn test_invariant_detects_dangling_refs() {
     // Add a method that references a non-existent type
     manifest.methods.push(Method {
         name: "test_method".to_string(),
-        params: vec![],
         returns: Some(TypeRef::Reference {
             ref_: "NonExistentType".to_string(),
         }),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should fail validation
@@ -212,7 +192,6 @@ fn test_invariant_detects_dangling_refs_in_inner_type() {
     // Add a method with a Collection that has inner_type referencing a non-existent type
     manifest.methods.push(Method {
         name: "test_method".to_string(),
-        params: vec![],
         returns: Some(TypeRef::Collection {
             collection: calimero_wasm_abi::schema::CollectionType::Record { fields: vec![] },
             crdt_type: Some(calimero_wasm_abi::schema::CrdtCollectionType::LwwRegister),
@@ -220,11 +199,7 @@ fn test_invariant_detects_dangling_refs_in_inner_type() {
                 ref_: "NonExistentType".to_string(),
             })),
         }),
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should fail validation because NonExistentType is referenced in inner_type
@@ -250,23 +225,11 @@ fn test_invariant_deterministic_ordering() {
     // Add methods in unsorted order
     manifest.methods.push(Method {
         name: "z_method".to_string(),
-        params: vec![],
-        returns: None,
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
     manifest.methods.push(Method {
         name: "a_method".to_string(),
-        params: vec![],
-        returns: None,
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
+        ..Default::default()
     });
 
     // This should fail validation because methods are not sorted

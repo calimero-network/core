@@ -56,11 +56,21 @@ impl Default for Manifest {
 #[serde(tag = "kind")]
 pub enum TypeDef {
     #[serde(rename = "record")]
-    Record { fields: Vec<Field> },
+    Record {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        doc: Option<String>,
+        fields: Vec<Field>,
+    },
     #[serde(rename = "variant")]
-    Variant { variants: Vec<Variant> },
+    Variant {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        doc: Option<String>,
+        variants: Vec<Variant>,
+    },
     #[serde(rename = "bytes")]
     Bytes {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        doc: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         size: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,6 +78,8 @@ pub enum TypeDef {
     },
     #[serde(rename = "alias")]
     Alias {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        doc: Option<String>,
         target: TypeRef,
         /// ECMA-262 source text constraining the newtype's values. Descriptive
         /// only - the node does not enforce it; generated clients use it to
@@ -85,6 +97,8 @@ pub struct Field {
     pub type_: TypeRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// Variant in a variant type
@@ -95,6 +109,8 @@ pub struct Variant {
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<TypeRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// Whether a method can persist *shared* state — the bytes the root hash is
@@ -172,14 +188,21 @@ impl XCallCallers {
 }
 
 /// Method definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Method {
     pub name: String,
+    /// The method's doc comment, minus its `# Arguments` section (that moves
+    /// onto the params). Absent when the method has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub params: Vec<Parameter>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returns: Option<TypeRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returns_nullable: Option<bool>,
+    /// What the return value means, from the method's `# Returns` doc section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns_doc: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub errors: Vec<Error>,
     /// Read/write intent declared by the app author. Absent on modules compiled
@@ -197,6 +220,14 @@ pub struct Method {
     /// [`XCallCallers::AnyInNamespace`] so they keep their prior behaviour.
     #[serde(default, skip_serializing_if = "XCallCallers::is_any_in_namespace")]
     pub xcall_callers: XCallCallers,
+    /// Deletes or irreversibly overwrites data (`#[app::destructive]`). A hint for
+    /// callers; the node does not act on it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub destructive: bool,
+    /// Repeating the call with the same arguments has no further effect
+    /// (`#[app::idempotent]`). A hint for callers; the node does not act on it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub idempotent: bool,
 }
 
 /// `skip_serializing_if` predicate for a defaulted `bool` field. serde passes
@@ -214,6 +245,8 @@ pub struct Parameter {
     pub type_: TypeRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// Error definition
@@ -231,6 +264,8 @@ pub struct Event {
     #[serde(rename = "payload")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<TypeRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// Type reference - either inline or reference to a named type
@@ -564,7 +599,7 @@ impl Manifest {
         visited: &mut HashSet<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match type_def {
-            TypeDef::Record { fields } => {
+            TypeDef::Record { fields, .. } => {
                 for field in fields {
                     Self::collect_dependencies_from_type_ref(
                         &field.type_,
@@ -574,7 +609,7 @@ impl Manifest {
                     )?;
                 }
             }
-            TypeDef::Variant { variants } => {
+            TypeDef::Variant { variants, .. } => {
                 for variant in variants {
                     if let Some(ref payload) = variant.payload {
                         Self::collect_dependencies_from_type_ref(
@@ -817,13 +852,10 @@ mod tests {
                 name: "param1".to_owned(),
                 type_: TypeRef::string(),
                 nullable: None,
+                doc: None,
             }],
             returns: Some(TypeRef::i32()),
-            returns_nullable: None,
-            errors: Vec::new(),
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
+            ..Default::default()
         });
 
         // Serialize and deserialize
@@ -847,13 +879,10 @@ mod tests {
                 name: "param1".to_owned(),
                 type_: TypeRef::string(),
                 nullable: None,
+                doc: None,
             }],
             returns: Some(TypeRef::string()),
-            returns_nullable: None,
-            errors: Vec::new(),
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
+            ..Default::default()
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
@@ -867,13 +896,8 @@ mod tests {
         // ReadOnly serialises as "read_only" and round-trips.
         let m = Method {
             name: "query".to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::ReadOnly,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
+            ..Default::default()
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("read_only"), "expected 'read_only' in {json}");
@@ -883,13 +907,8 @@ mod tests {
         // Mutating serialises as "mutating" and round-trips.
         let m_mut = Method {
             name: "mutate".to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::Mutating,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
+            ..Default::default()
         };
         let json_mut = serde_json::to_string(&m_mut).unwrap();
         assert!(
@@ -902,13 +921,7 @@ mod tests {
         // Unspecified is omitted from JSON (backward-compatible wire format).
         let m2 = Method {
             name: "unspecified".to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
+            ..Default::default()
         };
         let json2 = serde_json::to_string(&m2).unwrap();
         assert!(
@@ -927,13 +940,7 @@ mod tests {
         // Default false is omitted from JSON — old manifests stay identical.
         let m = Method {
             name: "f".to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
-            intent: MethodIntent::Unspecified,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
+            ..Default::default()
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(
@@ -1007,10 +1014,13 @@ mod tests {
         // extract_state_schema (the EMBEDDED form the node reads) carries both.
         let mut full = Manifest::new();
         full.state_root = Some("Root".to_owned());
-        drop(
-            full.types
-                .insert("Root".to_owned(), TypeDef::Record { fields: vec![] }),
-        );
+        drop(full.types.insert(
+            "Root".to_owned(),
+            TypeDef::Record {
+                doc: None,
+                fields: vec![],
+            },
+        ));
         full.state_version = Some(3);
         full.migrations = vec![MigrationEdgeAbi {
             method: "m".to_owned(),
@@ -1134,5 +1144,144 @@ mod tests {
             "CrdtType enum in wasm-abi.schema.json is out of sync with CrdtCollectionType — \
              update the JSON schema to match the Rust enum"
         );
+    }
+
+    #[test]
+    fn doc_round_trips_and_is_omitted_when_absent() {
+        let documented = Method {
+            name: "set_blocks".to_owned(),
+            doc: Some("Apply a batch.\n\n# Errors\nToo many edits.".to_owned()),
+            params: vec![Parameter {
+                name: "now".to_owned(),
+                type_: TypeRef::u64(),
+                nullable: None,
+                doc: Some("Caller's unix seconds.".to_owned()),
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&documented).unwrap();
+        assert_eq!(json["doc"], "Apply a batch.\n\n# Errors\nToo many edits.");
+        assert_eq!(json["params"][0]["doc"], "Caller's unix seconds.");
+        let back: Method = serde_json::from_value(json).unwrap();
+        assert_eq!(back.doc, documented.doc);
+        assert_eq!(back.params[0].doc, documented.params[0].doc);
+
+        let bare = Method {
+            doc: None,
+            params: vec![Parameter {
+                doc: None,
+                ..documented.params[0].clone()
+            }],
+            ..documented.clone()
+        };
+        let bare_json = serde_json::to_string(&bare).unwrap();
+        assert!(
+            !bare_json.contains("doc"),
+            "absent doc must be omitted: {bare_json}"
+        );
+
+        let event = Event {
+            name: "BlockSet".to_owned(),
+            payload: None,
+            doc: Some("A block changed.".to_owned()),
+        };
+        let event_json = serde_json::to_value(&event).unwrap();
+        assert_eq!(event_json["doc"], "A block changed.");
+        let old: Event = serde_json::from_str(r#"{"name":"BlockSet"}"#).unwrap();
+        assert_eq!(old.doc, None);
+    }
+
+    #[test]
+    fn every_type_def_branch_carries_doc() {
+        let doc = || Some("Documented.".to_owned());
+        let defs = [
+            TypeDef::Record {
+                doc: doc(),
+                fields: vec![Field {
+                    name: "a".to_owned(),
+                    type_: TypeRef::u32(),
+                    nullable: None,
+                    doc: doc(),
+                }],
+            },
+            TypeDef::Variant {
+                doc: doc(),
+                variants: vec![Variant {
+                    name: "A".to_owned(),
+                    code: None,
+                    payload: None,
+                    doc: doc(),
+                }],
+            },
+            TypeDef::Bytes {
+                doc: doc(),
+                size: Some(32),
+                encoding: None,
+            },
+            TypeDef::Alias {
+                doc: doc(),
+                target: TypeRef::string(),
+                pattern: None,
+            },
+        ];
+        for def in defs {
+            let json = serde_json::to_value(&def).unwrap();
+            assert_eq!(json["doc"], "Documented.", "{json}");
+            let back: TypeDef = serde_json::from_value(json).unwrap();
+            assert_eq!(back, def);
+        }
+
+        let old: TypeDef = serde_json::from_str(
+            r#"{"kind":"record","fields":[{"name":"a","type":{"kind":"u32"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            old,
+            TypeDef::Record {
+                doc: None,
+                fields: vec![Field {
+                    name: "a".to_owned(),
+                    type_: TypeRef::u32(),
+                    nullable: None,
+                    doc: None,
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn method_hints_round_trip_and_are_omitted_by_default() {
+        let hinted = Method {
+            name: "wipe".to_owned(),
+            returns: Some(TypeRef::u32()),
+            returns_doc: Some("How many entries were removed.".to_owned()),
+            intent: MethodIntent::Mutating,
+            destructive: true,
+            idempotent: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&hinted).unwrap();
+        assert_eq!(json["returns_doc"], "How many entries were removed.");
+        assert_eq!(json["destructive"], true);
+        assert_eq!(json["idempotent"], true);
+        let back: Method = serde_json::from_value(json).unwrap();
+        assert_eq!(back.returns_doc, hinted.returns_doc);
+        assert!(back.destructive && back.idempotent);
+
+        let plain = Method {
+            returns_doc: None,
+            destructive: false,
+            idempotent: false,
+            ..hinted
+        };
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        for key in ["returns_doc", "destructive", "idempotent"] {
+            assert!(
+                !plain_json.contains(key),
+                "{key} must be omitted: {plain_json}"
+            );
+        }
+        let old: Method = serde_json::from_str(r#"{"name":"wipe","params":[]}"#).unwrap();
+        assert!(old.returns_doc.is_none() && !old.destructive && !old.idempotent);
     }
 }

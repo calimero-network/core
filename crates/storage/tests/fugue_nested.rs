@@ -388,7 +388,7 @@ fn the_abi_describes_a_document_map_down_to_its_text() {
         })
     );
 
-    let TypeDef::Record { fields } = registry
+    let TypeDef::Record { fields, .. } = registry
         .into_types()
         .remove("Doc")
         .expect("the document must be registered")

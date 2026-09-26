@@ -370,6 +370,7 @@ impl PublicLogicMethod<'_> {
                     name: #arg_name.to_owned(),
                     type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                     nullable: #nullable,
+                    doc: ::core::option::Option::None,
                 }
             }
         });
@@ -458,10 +459,10 @@ impl PublicLogicMethod<'_> {
                     params: __params,
                     returns: ::core::option::Option::Some(__returns),
                     returns_nullable: #returns_nullable,
-                    errors: ::std::vec![],
                     intent: #intent,
                     xcall_callable: #xcall_callable,
                     xcall_callers: #xcall_callers,
+                    ..::core::default::Default::default()
                 });
             }
         }

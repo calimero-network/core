@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, LinkedList, VecDequ
 
 use indexmap::{IndexMap, IndexSet};
 
-use crate::schema::{CollectionType, Event, ScalarType, TypeDef, TypeRef};
+use crate::schema::{CollectionType, Event, Field, ScalarType, TypeDef, TypeRef, Variant};
 
 /// Collects named type definitions while a manifest is being built.
 ///
@@ -40,7 +40,7 @@ impl TypeRegistry {
         let _ = self.in_progress.remove(name);
         match self.types.get(name) {
             Some(existing) => assert!(
-                *existing == def,
+                same_shape(existing, &def),
                 "ABI type name collision: {name} defined with two different shapes. \
                  Rename one side with #[abi(name = \"...\")] on its derive; if this is \
                  one generic used with two different type arguments, define a separate \
@@ -55,6 +55,50 @@ impl TypeRegistry {
     #[must_use]
     pub fn into_types(self) -> BTreeMap<String, TypeDef> {
         self.types
+    }
+}
+
+/// Two type definitions collide, rather than redefine, when they differ only
+/// in `doc`: prose is not part of the wire shape, so two same-named types
+/// documented differently should not panic.
+fn same_shape(a: &TypeDef, b: &TypeDef) -> bool {
+    without_docs(a) == without_docs(b)
+}
+
+fn without_docs(def: &TypeDef) -> TypeDef {
+    match def {
+        TypeDef::Record { fields, .. } => TypeDef::Record {
+            doc: None,
+            fields: fields
+                .iter()
+                .map(|f| Field {
+                    doc: None,
+                    ..f.clone()
+                })
+                .collect(),
+        },
+        TypeDef::Variant { variants, .. } => TypeDef::Variant {
+            doc: None,
+            variants: variants
+                .iter()
+                .map(|v| Variant {
+                    doc: None,
+                    ..v.clone()
+                })
+                .collect(),
+        },
+        TypeDef::Bytes { size, encoding, .. } => TypeDef::Bytes {
+            doc: None,
+            size: *size,
+            encoding: encoding.clone(),
+        },
+        TypeDef::Alias {
+            target, pattern, ..
+        } => TypeDef::Alias {
+            doc: None,
+            target: target.clone(),
+            pattern: pattern.clone(),
+        },
     }
 }
 
