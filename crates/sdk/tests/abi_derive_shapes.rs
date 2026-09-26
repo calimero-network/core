@@ -429,3 +429,28 @@ fn alias_doc_reaches_the_manifest() {
         })
     );
 }
+
+#[app::event]
+pub enum DocumentedEvent {
+    /// A block changed.
+    ///
+    /// Carries the new block id.
+    BlockSet(u32),
+    Cleared,
+}
+
+#[test]
+fn event_docs_reach_the_manifest() {
+    let mut reg = TypeRegistry::new();
+    assert_eq!(
+        to_value(<DocumentedEvent as AbiEvents>::abi_events(&mut reg)).expect("events serialize"),
+        json!([
+            {
+                "name": "BlockSet",
+                "payload": { "kind": "u32" },
+                "doc": "A block changed.\n\nCarries the new block id.",
+            },
+            { "name": "Cleared" },
+        ])
+    );
+}
