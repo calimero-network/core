@@ -78,8 +78,8 @@ On a TEE node, TLS at a reverse proxy leaves a gap. The proxy runs outside the
 enclave, so everything that crosses it is readable there: bearer tokens,
 JSON-RPC arguments, results. A genuine quote says what runs inside the TD. It
 says nothing about who reads the bytes on the way in. **Sealed transport**
-closes that gap by encrypting each request to a key that only the attested TD
-holds, so the proxy carries traffic it cannot read.
+closes that gap by encrypting traffic end to end to the attested TD, so the
+proxy carries traffic it cannot read.
 
 - At startup the server makes an X25519 **transport key**. It lives only in the
   process's memory, inside the TD, and a restart replaces it.
@@ -87,45 +87,67 @@ holds, so the proxy carries traffic it cannot read.
   `transportPublicKey` and commits to it in the quote's report data (see
   [the attestation quote](/protocol/tee-attestation/#the-attestation-quote)).
   The client verifies the quote with a verifier it trusts, then accepts the key.
-- The client wraps the whole HTTP request (method, path, headers, body), encrypts
-  it to that key under a one-time key of its own, and posts it to `/sealed/v1`
+- The client opens a **session** with a
+  [Noise](http://www.noiseprotocol.org/noise.html) `NK` handshake to that key
+  (`Noise_NK_25519_AESGCM_SHA256`, posted to `/sealed/v2/handshake`). The
+  transport key only authenticates the node. The session keys come from both
+  sides' ephemeral keys, which are discarded when the handshake ends.
+- The client wraps each HTTP request (method, path, headers, body), seals it
+  under the session and posts it to `/sealed/v2`
   (`application/vnd.calimero.sealed`). The node opens it and routes the inner
   request exactly like a direct one, so auth, permissions and limits apply
-  unchanged. The response comes back sealed under the same exchange
-  (X25519 → HKDF-SHA256 → AES-256-GCM).
+  unchanged. The response streams back in sealed frames as the node produces
+  it.
 
-A proxy sees one opaque POST each way. It cannot read the request. It cannot
-forge a response the client accepts, because only the key holder can derive the
-response key. It cannot replay a request either: each one carries a timestamp
-that must be within five minutes of the node's clock, and each one-time key is
-accepted once.
+**Forward secrecy.** A session lasts at most an hour, and ten minutes unused.
+After that the node drops its keys, and nothing can open what was sent in it,
+not even the transport key. Someone who records traffic and later extracts the
+transport key from the TD can run the handshake again, but the node answers
+with a fresh ephemeral key, so they get different session keys. A client simply
+opens a new session when its old one ends.
+
+A proxy sees opaque POSTs. It cannot read a request or a response. It cannot
+forge a response, or reorder, drop or cut short its frames, without the client
+noticing. It cannot replay a request either: each carries a request id its
+session accepts once.
 
 Refusals of the envelope itself come back in the clear, since there is nothing
-to seal them under. `409` with code `stale_transport_key` means the node has
-restarted, and the client must attest again. `400` covers `malformed`,
-`undecryptable`, `stale_request` and `replayed_request`.
+to seal them under:
 
-**Limits.** SSE streams and WebSockets cannot be buffered into one sealed reply.
-The node answers a sealed stream request with a `501` inside the envelope, so
-those still need TLS you trust. A sealed body, and the response sealed back, are
-each capped at 64 MiB.
+| Status | Code | Meaning |
+| --- | --- | --- |
+| `409` | `stale_transport_key` | The node restarted. Attest again; never take a key from this response. |
+| `409` | `unknown_session` | The session expired or the node restarted. Open a new session. Nothing in the request ran, so it is safe to send again. |
+| `400` | `malformed`, `undecryptable`, `replayed_request`, `unsupported_version` | The envelope was refused. |
 
-In mero-js, attest once and hand the sealing fetch to the client:
+**Streams.** Server-sent events are sealed frame by frame like any other
+response, so subscriptions are covered. A stream still open when its session
+expires is cut off without an end frame, and the client reconnects under a new
+session. WebSockets cannot cross a POST; the node answers a sealed upgrade with
+a `501` inside the envelope, so subscribe over SSE instead.
+
+**Limits.** A sealed request body is capped at 64 MiB. Responses have no cap:
+they stream in frames of at most 64 KiB.
+
+In mero-js, hand the sealing fetch to the client and give it a way to attest:
 
 ```ts
 import { MeroJs, createSealedFetch, fetchAttestedTransportKey } from '@calimero-network/mero-js';
 
-const transportPublicKey = await fetchAttestedTransportKey(teeNode.admin, verifyWithMyVerifier);
 const mero = new MeroJs({
   baseUrl,
-  fetch: createSealedFetch({ baseUrl, transportPublicKey }),
+  fetch: createSealedFetch({
+    baseUrl,
+    transportPublicKey: () => fetchAttestedTransportKey(teeNode.admin, verifyWithMyVerifier),
+  }),
 });
 ```
 
 `verifyWithMyVerifier` must verify the quote with something other than the node
 being attested (your own node's `/tee/verify-quote`, or `calimero-tee-verify`).
 It must also check that the report data is the nonce followed by the transport
-binding that `fetchAttestedTransportKey` passes to it.
+binding that `fetchAttestedTransportKey` passes to it. Passing a function lets
+the client attest again, through your verifier, when the node restarts.
 
 ## Key & identity storage
 

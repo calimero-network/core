@@ -26,6 +26,10 @@ ring.workspace = true
 rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The sealed transport's handshake. `risky-raw-split` hands over the session
+# keys, which frame requests and responses of any size (Noise transport
+# messages stop at 64 KiB).
+snow = { workspace = true, features = ["default-resolver", "risky-raw-split"] }
 tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
