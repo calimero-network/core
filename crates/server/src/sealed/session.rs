@@ -4,6 +4,7 @@ use core::time::Duration;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
+use curve25519_dalek::montgomery::MontgomeryPoint;
 use snow::params::NoiseParams;
 use zeroize::Zeroizing;
 
@@ -27,10 +28,12 @@ pub(super) const SESSION_ID_LEN: usize = 16;
 pub const SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60);
 /// How long an unused session's keys are kept.
 const SESSION_IDLE: Duration = Duration::from_secs(10 * 60);
-/// Sessions held at once. Opening one needs no credential, so beyond this the
-/// least recently used session is dropped rather than a new one refused; its
-/// client simply opens another.
-const MAX_SESSIONS: usize = 1 << 14;
+/// Sessions held at once. Opening one needs no credential, so beyond this a
+/// session is dropped rather than a new one refused, and its client simply opens
+/// another: first one that never carried a request, then the least recently
+/// used. A flood of handshakes therefore displaces its own sessions before any
+/// client's.
+pub(super) const MAX_SESSIONS: usize = 1 << 14;
 /// Request ids remembered per session. An id at or below the oldest one
 /// forgotten is refused too, so a request can be replayed neither inside nor
 /// below the window.
@@ -54,6 +57,18 @@ pub(super) fn respond(
     message_1: &[u8],
     session_id: &SessionId,
 ) -> Result<(Vec<u8>, SessionKeys), Refusal> {
+    // A low-order ephemeral key makes every Diffie-Hellman with it zero, keys
+    // anybody can compute. Only the client that sent one could exploit that, but
+    // there is no reason to open a session on it.
+    let client_ephemeral = message_1.first_chunk::<32>().ok_or_else(super::malformed)?;
+    let shared = Zeroizing::new(
+        MontgomeryPoint(*client_ephemeral)
+            .mul_clamped(*transport_secret)
+            .0,
+    );
+    if shared.iter().all(|byte| *byte == 0) {
+        return Err(super::malformed());
+    }
     let handshake = builder()
         .local_private_key(transport_secret.as_slice())
         .build_responder()
@@ -117,6 +132,8 @@ struct Session {
     keys: SessionKeys,
     expires: Instant,
     idle_until: Instant,
+    /// Whether a request has opened under this session.
+    used: bool,
     seen: ReplayWindow,
 }
 
@@ -141,7 +158,7 @@ impl Sessions {
             let least_recent = self
                 .map
                 .iter()
-                .min_by_key(|(_, session)| session.idle_until)
+                .min_by_key(|(_, session)| (session.used, session.idle_until))
                 .map(|(id, _)| *id);
             if let Some(id) = least_recent {
                 let _dropped = self.map.remove(&id);
@@ -153,9 +170,20 @@ impl Sessions {
                 keys,
                 expires: now + SESSION_LIFETIME,
                 idle_until: now + SESSION_IDLE,
+                used: false,
                 seen: ReplayWindow::default(),
             },
         );
+    }
+
+    /// Drop every session past its lifetime or idle limit, and with it the
+    /// only copy of its keys.
+    pub fn expire(&mut self, now: Instant) {
+        self.map.retain(|_, session| session.is_live(now));
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
     }
 
     /// A live session's keys and the instant they expire.
@@ -179,6 +207,7 @@ impl Sessions {
             ));
         }
         session.idle_until = now + SESSION_IDLE;
+        session.used = true;
         Ok(())
     }
 
