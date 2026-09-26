@@ -31,6 +31,18 @@ pub enum Error<'a> {
 
 #[app::logic]
 impl KvStore {
+    /// Creates the empty store. The node runs it once, when the context is created.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `Cannot initialize over already existing state.` when the
+    /// context already has a store.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {}
+    /// ```
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
@@ -38,6 +50,23 @@ impl KvStore {
         }
     }
 
+    /// Stores `value` under `key`, replacing any value already there.
+    ///
+    /// Emits `Inserted` for a new key and `Updated` for an existing one.
+    /// Concurrent writes to the same key from different members converge to the
+    /// latest write.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to write. Any string, including the empty string.
+    /// * `value` - The value to store.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting", "value": "hello"}
+    /// ```
+    #[app::destructive]
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         app::log!("Setting key: {:?} to value: {:?}", key, value);
 
@@ -58,12 +87,26 @@ impl KvStore {
         Ok(())
     }
 
-    /// Updates a value only if the key already exists, using in-place mutation.
+    /// Replaces the value under `key` only if the key already exists, and returns
+    /// whether it did.
     ///
-    /// This demonstrates the `get_mut` API which allows modifying the value
-    /// without a read-modify-write cycle. The change is automatically persisted
-    /// with a new timestamp when the guard is dropped.
+    /// Returns `false` and writes nothing when `key` is absent. Emits `Updated`
+    /// when the value is replaced.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to update. It must already exist for anything to change.
+    /// * `value` - The new value.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting", "value": "hi"}
+    /// ```
+    #[app::destructive]
     pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bool> {
+        // Demonstrates `get_mut`: the guard persists the change, with a new
+        // timestamp, when it is dropped.
         app::log!("Updating if exists: {:?} -> {:?}", key, value);
 
         if let Some(mut v) = self.items.get_mut(&key)? {
@@ -81,11 +124,25 @@ impl KvStore {
         Ok(false)
     }
 
-    /// Gets a value, inserting it if it doesn't exist.
+    /// Returns the value under `key`, first storing `value` there if the key is
+    /// absent.
     ///
-    /// This demonstrates the `entry` API combined with `or_insert`.
-    /// We pattern match to check existence for the event, then use the convenience method.
+    /// An existing value is returned unchanged and `value` is ignored. Emits
+    /// `Inserted` only when the key was absent.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to read, or to create when absent.
+    /// * `value` - The value to store when `key` is absent.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting", "value": "hello"}
+    /// ```
+    #[app::idempotent]
     pub fn get_or_insert(&mut self, key: String, value: String) -> app::Result<String> {
+        // Demonstrates the `entry` API combined with `or_insert`.
         app::log!("Get or insert: {:?} -> {:?}", key, value);
 
         let entry = self.items.entry(key.clone())?;
@@ -104,6 +161,13 @@ impl KvStore {
         Ok(val.get().clone())
     }
 
+    /// Returns every key with its value, as a JSON object ordered by key.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {}
+    /// ```
     pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
         app::log!("Getting all entries");
 
@@ -114,18 +178,53 @@ impl KvStore {
             .collect())
     }
 
+    /// Returns the number of keys in the store.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {}
+    /// ```
     pub fn len(&self) -> app::Result<usize> {
         app::log!("Getting the number of entries");
 
         Ok(self.items.len()?)
     }
 
+    /// Returns the value under `key`, or `null` when the key is absent.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to read.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting"}
+    /// ```
     pub fn get(&self, key: &str) -> app::Result<Option<String>> {
         app::log!("Getting key: {:?}", key);
 
         Ok(self.items.get(key)?.map(|v| v.get().clone()))
     }
 
+    /// Returns the value under `key`, aborting the call when the key is absent.
+    ///
+    /// Kept to show what a guest panic looks like; use `get` or `get_result`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to read. It must exist.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a guest panic (`key not found`) when `key` is absent.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting"}
+    /// ```
     pub fn get_unchecked(&self, key: &str) -> app::Result<String> {
         app::log!("Getting key without checking: {:?}", key);
 
@@ -133,6 +232,21 @@ impl KvStore {
         Ok(self.items.get(key)?.expect("key not found").get().clone())
     }
 
+    /// Returns the value under `key`, failing with a typed error when it is absent.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to read.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `{"kind": "NotFound", "data": "<key>"}` when `key` is absent.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting"}
+    /// ```
     pub fn get_result(&self, key: &str) -> app::Result<String> {
         app::log!("Getting key, possibly failing: {:?}", key);
 
@@ -143,10 +257,25 @@ impl KvStore {
         Ok(value)
     }
 
+    /// Removes `key` and returns the value it held, or `null` when it was absent.
+    ///
+    /// Emits `Removed` only when a value was actually removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to remove.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {"key": "greeting"}
+    /// ```
+    #[app::destructive]
+    #[app::idempotent]
     pub fn remove(&mut self, key: &str) -> app::Result<Option<String>> {
         app::log!("Removing key: {:?}", key);
 
-        // Only emit `Removed` when a value was actually present — emitting for
+        // Only emit `Removed` when a value was actually present - emitting for
         // an absent key would broadcast a change that never happened.
         let removed = self.items.remove(key)?.map(|v| v.get().clone());
         if removed.is_some() {
@@ -156,6 +285,17 @@ impl KvStore {
         Ok(removed)
     }
 
+    /// Removes every key.
+    ///
+    /// Emits `Cleared` only when the store was not already empty.
+    ///
+    /// # Examples
+    ///
+    /// ```json
+    /// {}
+    /// ```
+    #[app::destructive]
+    #[app::idempotent]
     pub fn clear(&mut self) -> app::Result<()> {
         app::log!("Clearing all entries");
 

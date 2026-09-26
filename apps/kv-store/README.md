@@ -2,6 +2,11 @@
 
 A simple key-value store application built with Calimero SDK.
 
+## Guide
+
+`GUIDE.md` tells an agent (or a person) how to use the store without reading this code; `cargo mero bundle` ships it as `metadata.guide`, and the method docs in `src/lib.rs` reach the ABI.
+`scripts/check-kv-store-fixture.sh` keeps both complete.
+
 ## Building
 
 To build the application for WASM:
